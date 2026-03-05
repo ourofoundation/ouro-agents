@@ -1,0 +1,45 @@
+{
+  "agent": {
+    "name": "my-ouro-agent",
+    "model": "openai/gpt-4o",
+    "workspace": "./workspace"
+  },
+  "heartbeat": {
+    "enabled": true,
+    "every": "30m",
+    "model": "openai/gpt-4o-mini",
+    "active_hours": {
+      "start": "08:00",
+      "end": "22:00",
+      "timezone": "America/Chicago"
+    }
+  },
+  "mcp_servers": [
+    {
+      "name": "ouro",
+      "transport": "stdio",
+      "command": "/Users/mmoderwell/ouro/ouro-agents/.venv/bin/python",
+      "args": ["-m", "ouro_mcp.server"],
+      "env": {
+        "OURO_API_KEY": "${OURO_API_KEY}",
+        "OURO_BACKEND_URL": "${OURO_BACKEND_URL}",
+        "SUPABASE_URL": "${SUPABASE_URL}",
+        "SUPABASE_ANON_KEY": "${SUPABASE_ANON_KEY}"
+      }
+    }
+  ],
+  "memory": {
+    "provider": "mem0",
+    "path": "./workspace/memory",
+    "extraction_model": "openai/gpt-4o-mini",
+    "embedder": "text-embedding-3-small",
+    "search_limit": 10,
+    "graph": {
+      "enabled": false
+    }
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000
+  }
+}

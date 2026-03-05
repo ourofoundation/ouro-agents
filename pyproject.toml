@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ouro-agents"
+version = "0.1.0"
+description = "Autonomous Agent Package for Ouro"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "smolagents[mcp]",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "pydantic-settings",
+    "apscheduler",
+    "mem0ai",
+    "chromadb",
+    "anthropic",
+    "litellm",
+    "mcp"
+]
+
+[project.scripts]
+ouro-agents = "ouro_agents.runner:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff"
+]

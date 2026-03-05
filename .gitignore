@@ -1,0 +1,62 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+*.manifest
+*.spec
+
+# Virtual environments
+.env
+.venv
+venv/
+env/
+ENV/
+
+# Test / coverage
+.tox/
+.nox/
+.coverage
+.coverage.*
+.pytest_cache/
+htmlcov/
+*.cover
+
+# Type checkers
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local config (may contain secrets)
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+.uv/
+
+# Environment variables
+.env
+
+
+# Data
+**/*.sqlite3
+**/*.bin
+**/*.jsonl
