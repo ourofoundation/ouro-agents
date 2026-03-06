@@ -1,13 +1,17 @@
 {
   "agent": {
-    "name": "my-ouro-agent",
-    "model": "openai/gpt-4o",
+    "name": "feynman",
+    "model": "anthropic/claude-haiku-4.5",
     "workspace": "./workspace"
+  },
+  "prompt_caching": {
+    "enabled": true,
+    "ttl": "5m"
   },
   "heartbeat": {
     "enabled": true,
     "every": "30m",
-    "model": "openai/gpt-4o-mini",
+    "model": "anthropic/claude-haiku-4.5",
     "active_hours": {
       "start": "08:00",
       "end": "22:00",
@@ -18,20 +22,33 @@
     {
       "name": "ouro",
       "transport": "stdio",
-      "command": "/Users/mmoderwell/ouro/ouro-agents/.venv/bin/python",
+      "command": "/Users/mmoderwell/.pyenv/versions/ouro/bin/python",
       "args": ["-m", "ouro_mcp.server"],
       "env": {
         "OURO_API_KEY": "${OURO_API_KEY}",
-        "OURO_BACKEND_URL": "${OURO_BACKEND_URL}",
-        "SUPABASE_URL": "${SUPABASE_URL}",
-        "SUPABASE_ANON_KEY": "${SUPABASE_ANON_KEY}"
+        "OURO_BACKEND_URL": "${OURO_BACKEND_URL}"
+      }
+    },
+    {
+      "name": "filesystem",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
+    },
+    {
+      "name": "search",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@0.1.4"],
+      "env": {
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
       }
     }
   ],
   "memory": {
     "provider": "mem0",
     "path": "./workspace/memory",
-    "extraction_model": "openai/gpt-4o-mini",
+    "extraction_model": "google/gemini-2.5-flash",
     "embedder": "text-embedding-3-small",
     "search_limit": 10,
     "graph": {

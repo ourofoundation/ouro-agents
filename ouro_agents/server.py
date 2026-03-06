@@ -2,10 +2,11 @@ from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Optional, Any, Dict
 from datetime import datetime
+from uuid import uuid4
 import uvicorn
 import asyncio
 
-from .config import OuroAgentsConfig
+from .config import OuroAgentsConfig, RunMode
 from .agent import OuroAgent
 
 app = FastAPI(title="Ouro Agents Server")
@@ -14,10 +15,14 @@ app = FastAPI(title="Ouro Agents Server")
 agent_instance: Optional[OuroAgent] = None
 last_heartbeat: Optional[datetime] = None
 start_time: datetime = datetime.utcnow()
+session_threads: Dict[str, str] = {}
 
 class RunRequest(BaseModel):
     task: str
     conversation_id: Optional[str] = None
+    session_id: Optional[str] = None
+    mode: Optional[str] = None
+    user_id: Optional[str] = None
 
 class EventPayload(BaseModel):
     event_type: str
@@ -54,11 +59,27 @@ async def run_task(request: RunRequest):
         raise HTTPException(status_code=503, detail="Agent not initialized")
         
     try:
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            if request.session_id and request.session_id in session_threads:
+                conversation_id = session_threads[request.session_id]
+            else:
+                conversation_id = str(uuid4())
+                if request.session_id:
+                    session_threads[request.session_id] = conversation_id
+
+        mode = RunMode(request.mode) if request.mode else RunMode.AUTONOMOUS
         result = await agent_instance.run(
             task=request.task,
-            conversation_id=request.conversation_id
+            conversation_id=conversation_id,
+            mode=mode,
+            user_id=request.user_id,
         )
-        return {"status": "success", "result": result}
+        return {
+            "status": "success",
+            "result": result,
+            "conversation_id": conversation_id,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -73,20 +94,23 @@ async def handle_event(payload: EventPayload, background_tasks: BackgroundTasks)
     data = payload.data
     
     conversation_id = data.get("conversation_id")
-    
-    # Build task from event
+    user_id = data.get("sender_username") or data.get("sender")
+
     if event_type == "new_message":
         content = data.get("content", "")
         sender = data.get("sender", "Unknown")
-        task = f"New message from {sender} in conversation {conversation_id}:\n\n{content}\n\nPlease respond if appropriate."
+        task = f"Message from {sender}:\n\n{content}"
+        mode = RunMode.CHAT
     else:
         task = f"Received event: {event_type}\nData: {data}\n\nDetermine if any action is needed."
-        
-    # Run agent in background so we can return 200 OK immediately to the webhook
+        mode = RunMode.AUTONOMOUS
+
     background_tasks.add_task(
         agent_instance.run,
         task=task,
-        conversation_id=conversation_id
+        conversation_id=conversation_id,
+        mode=mode,
+        user_id=user_id,
     )
     
     return {"status": "accepted", "event_type": event_type}

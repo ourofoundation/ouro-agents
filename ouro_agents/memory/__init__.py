@@ -9,14 +9,16 @@ class MemoryBackend(Protocol):
     """Interface all memory backends must implement."""
 
     def search(self, query: str, agent_id: str,
-               run_id: Optional[str] = None, limit: int = 10) -> List[MemoryResult]:
+               user_id: Optional[str] = None, limit: int = 10) -> List[MemoryResult]:
         ...
 
-    def add(self, content: str, agent_id: str,
-            run_id: Optional[str] = None, metadata: Optional[dict] = None) -> None:
+    def add(self, content: str | list[dict], agent_id: str,
+            user_id: Optional[str] = None, run_id: Optional[str] = None,
+            metadata: Optional[dict] = None) -> None:
         ...
 
-    def get_all(self, agent_id: str, limit: int = 100) -> List[MemoryResult]:
+    def get_all(self, agent_id: str, user_id: Optional[str] = None,
+                limit: int = 100) -> List[MemoryResult]:
         ...
 
 def format_memories(memories: List[MemoryResult]) -> str:

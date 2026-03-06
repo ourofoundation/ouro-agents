@@ -1,7 +1,11 @@
+from typing import Optional
+
 from smolagents import tool
+
 from . import MemoryBackend
 
-def make_memory_tools(backend: MemoryBackend, agent_id: str) -> list:
+
+def make_memory_tools(backend: MemoryBackend, agent_id: str, user_id: Optional[str] = None) -> list:
 
     @tool
     def memory_store(fact: str) -> str:
@@ -9,7 +13,7 @@ def make_memory_tools(backend: MemoryBackend, agent_id: str) -> list:
         Args:
             fact: The fact to remember
         """
-        backend.add(fact, agent_id=agent_id)
+        backend.add(fact, agent_id=agent_id, user_id=user_id)
         return f"Stored: {fact}"
 
     @tool
@@ -19,7 +23,7 @@ def make_memory_tools(backend: MemoryBackend, agent_id: str) -> list:
             query: What to search for
             limit: Max results
         """
-        results = backend.search(query=query, agent_id=agent_id, limit=limit)
+        results = backend.search(query=query, agent_id=agent_id, user_id=user_id, limit=limit)
         if not results:
             return "No relevant memories found."
         return "\n".join(f"- {r.text}" for r in results)

@@ -18,15 +18,13 @@ dependencies = [
     "mem0ai",
     "chromadb",
     "anthropic",
-    "litellm",
-    "mcp"
+    "openai",
+    "mcp",
+    "ouro-mcp>=0.3.0",
 ]
 
 [project.scripts]
 ouro-agents = "ouro_agents.runner:main"
 
 [project.optional-dependencies]
-dev = [
-    "pytest",
-    "ruff"
-]
+dev = ["pytest", "ruff"]

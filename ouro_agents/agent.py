@@ -1,17 +1,20 @@
 import json
 import logging
+import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from smolagents import LiteLLMModel, ToolCallingAgent, ToolCollection, tool
+from smolagents import OpenAIModel, ToolCallingAgent, ToolCollection, tool
 
-from .config import MCPServerConfig, OuroAgentsConfig
+from .config import MCPServerConfig, OuroAgentsConfig, RunMode
 from .memory import create_memory_backend, format_memories
 from .memory.tools import make_memory_tools
 from .notes import load_notes
 from .skills import load_all_skills
 from .soul import build_prompt, load_soul
+from .tools.python_tool import make_python_tool
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +26,90 @@ class OuroAgent:
         self.notes = load_notes(config.agent.workspace / "NOTES.md")
         self.skills = load_all_skills(config)
         self.memory = create_memory_backend(config.memory)
-        self.memory_tools = make_memory_tools(self.memory, config.agent.name)
-        self.model = LiteLLMModel(model_id=config.agent.model)
+        self.model = self._build_model(config.agent.model)
 
         self._mcp_contexts: list = []
         self._deferred_tools: dict = {}
         self._deferred_tools_by_raw_name: dict = {}
         self._deferred_index: list[dict] = []
         self._mcp_connected = False
+
+    def _is_anthropic_model(self, model_id: str) -> bool:
+        return model_id.startswith("anthropic/")
+
+    def _build_openrouter_extra_body(self, model_id: str) -> Optional[dict]:
+        cfg = self.config.prompt_caching
+        if not cfg.enabled or not self._is_anthropic_model(model_id):
+            return None
+
+        cache_control: dict[str, str] = {"type": "ephemeral"}
+        if cfg.ttl == "1h":
+            cache_control["ttl"] = "1h"
+        return {"cache_control": cache_control}
+
+    def _build_model(self, model_id: str) -> OpenAIModel:
+        model_kwargs = {}
+        extra_body = self._build_openrouter_extra_body(model_id)
+        if extra_body:
+            model_kwargs["extra_body"] = extra_body
+
+        return OpenAIModel(
+            model_id=model_id,
+            api_base="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            **model_kwargs,
+        )
+
+    def _conversation_file(self, conversation_id: str) -> Path:
+        conversations_dir = self.config.agent.workspace / "conversations"
+        conversations_dir.mkdir(parents=True, exist_ok=True)
+        return conversations_dir / f"{conversation_id}.jsonl"
+
+    def _append_conversation_turn(
+        self, conversation_id: str, role: str, content: str
+    ) -> None:
+        path = self._conversation_file(conversation_id)
+        entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "role": role,
+            "content": content,
+        }
+        with open(path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _load_conversation_turns(
+        self, conversation_id: str, limit: int = 12
+    ) -> list[dict]:
+        path = self._conversation_file(conversation_id)
+        if not path.exists():
+            return []
+
+        turns: list[dict] = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    turns.append(json.loads(line))
+                except Exception:
+                    continue
+        return turns[-limit:]
+
+    def _format_conversation_turns(self, turns: list[dict]) -> str:
+        if not turns:
+            return ""
+
+        lines = []
+        for turn in turns:
+            role = str(turn.get("role", "unknown")).lower()
+            content = str(turn.get("content", "")).strip()
+            if not content:
+                continue
+            if len(content) > 600:
+                content = content[:600] + "..."
+            lines.append(f"- {role}: {content}")
+        return "\n".join(lines)
 
     def connect_mcp(self) -> None:
         """Connect to all configured MCP servers once. Safe to call multiple times."""
@@ -40,6 +119,32 @@ class OuroAgent:
         for server in self.config.mcp_servers:
             self._connect_one_server(server)
         self._mcp_connected = True
+
+    @staticmethod
+    def _patch_tool_inputs(mcp_tool) -> None:
+        """Fix mcpadapt's schema conversion for nullable/optional MCP params.
+
+        mcpadapt doesn't translate anyOf: [{type: X}, {type: null}] into
+        smolagents' nullable flag, causing validation errors when the LLM
+        sends null or omits optional parameters.  We also remove anyOf after
+        extracting type info so smolagents' get_tool_json_schema doesn't
+        crash on entries missing a "type" key (e.g. from Any).
+        """
+        for schema in getattr(mcp_tool, "inputs", {}).values():
+            any_of = schema.get("anyOf", [])
+            has_null = any(item.get("type") == "null" for item in any_of)
+            has_default = "default" in schema
+
+            if has_null:
+                non_null = [item for item in any_of if item.get("type") != "null"]
+                if non_null:
+                    schema["type"] = non_null[0].get("type", "string")
+                else:
+                    schema.setdefault("type", "string")
+                schema["nullable"] = True
+                del schema["anyOf"]
+            elif has_default:
+                schema["nullable"] = True
 
     def _connect_one_server(self, server: MCPServerConfig) -> None:
         if server.transport == "stdio":
@@ -52,11 +157,14 @@ class OuroAgent:
                     command=server.command, args=server.args or [], env=server.env
                 )
                 ctx = ToolCollection.from_mcp(
-                    server_parameters=server_params, trust_remote_code=True
+                    server_parameters=server_params,
+                    trust_remote_code=True,
+                    structured_output=False,
                 )
                 collection = ctx.__enter__()
                 self._mcp_contexts.append(ctx)
                 for mcp_tool in collection.tools:
+                    self._patch_tool_inputs(mcp_tool)
                     qualified_name = f"{server.name}:{mcp_tool.name}"
                     self._deferred_tools[qualified_name] = mcp_tool
                     self._deferred_index.append(
@@ -120,12 +228,14 @@ class OuroAgent:
             )
         return None, f"Unknown tool '{tool_name}'."
 
-    def _build_agent_tools(self, is_heartbeat: bool = False):
+    def _build_agent_tools(
+        self, mode: RunMode = RunMode.AUTONOMOUS, user_id: Optional[str] = None
+    ):
         """Build the tool list and directory string for a single run."""
         deferred_tools = self._deferred_tools
         deferred_index = self._deferred_index
 
-        if is_heartbeat:
+        if mode == RunMode.HEARTBEAT:
             deferred_index = [
                 item for item in self._deferred_index if item["server"] == "ouro"
             ]
@@ -135,12 +245,13 @@ class OuroAgent:
             }
 
         agent_self = self
+        agent_ref: dict = {}
 
         @tool
-        def fetch_tool(tool_name: str) -> str:
-            """Fetch the full schema for one deferred MCP tool.
+        def load_tool(tool_name: str) -> str:
+            """Load a deferred MCP tool so you can call it directly by name.
             Args:
-                tool_name: Exact tool name, preferably namespaced (e.g. ouro:search_assets)
+                tool_name: Tool name from the deferred tool directory (e.g. ouro:search_assets)
             """
             resolved_name, err = agent_self._resolve_tool_name(tool_name)
             if err:
@@ -149,119 +260,127 @@ class OuroAgent:
                     {
                         "error": err,
                         "example_tools": top_examples,
-                        "hint": (
-                            "Pick from the deferred tool directory in system context, "
-                            "then call fetch_tool with that exact name."
-                        ),
+                        "hint": "Pick from the deferred tool directory in system context.",
                     }
                 )
 
             item = next(i for i in deferred_index if i["tool"] == resolved_name)
+            target = deferred_tools.get(resolved_name)
+            if not target:
+                return json.dumps({"error": f"Tool '{resolved_name}' not available."})
+
+            raw_name = item["raw_name"]
+
+            running_agent = agent_ref.get("agent")
+            if running_agent is not None:
+                running_agent.tools[raw_name] = target
+
             return json.dumps(
                 {
-                    "tool": item["tool"],
+                    "status": "loaded",
+                    "call_as": raw_name,
                     "description": item["description"],
                     "inputs": item["inputs"],
                     "output_type": item["output_type"],
                 }
             )
 
-        @tool
-        def tool_call(tool_name: str, arguments_json: str = "{}") -> str:
-            """Call a deferred MCP tool by name with JSON arguments.
-            Args:
-                tool_name: Tool name from fetch_tool (prefer fully-qualified server:name)
-                arguments_json: JSON object string of arguments, e.g. {"org_id":"..."}
-            """
-            resolved_name, err = agent_self._resolve_tool_name(tool_name)
-            if err:
-                return json.dumps({"error": f"{err} Call fetch_tool first."})
-
-            try:
-                args = json.loads(arguments_json) if arguments_json.strip() else {}
-            except Exception as e:
-                return json.dumps(
-                    {"error": f"arguments_json must be valid JSON object: {e}"}
-                )
-
-            if not isinstance(args, dict):
-                return json.dumps(
-                    {"error": "arguments_json must decode to a JSON object."}
-                )
-
-            target = deferred_tools.get(resolved_name)
-            if not target:
-                return json.dumps({"error": f"Tool '{resolved_name}' not available."})
-            try:
-                result = target(**args)
-            except Exception as e:
-                return json.dumps(
-                    {"error": f"Tool call failed for '{resolved_name}': {e}"}
-                )
-
-            if isinstance(result, str):
-                return result
-            return json.dumps(result)
-
-        all_tools = list(self.memory_tools) + [fetch_tool, tool_call]
+        memory_tools = make_memory_tools(
+            self.memory, self.config.agent.name, user_id=user_id
+        )
+        python_tool, _executor = make_python_tool(workspace=self.config.agent.workspace)
+        all_tools = list(memory_tools) + [load_tool, python_tool]
 
         deferred_tool_directory = "\n".join(
-            f"- {item['tool']}: {item['description'][:140]}" for item in deferred_index
+            f"- {item['tool']}: {item['description'][:240]}" for item in deferred_index
         )
 
-        return all_tools, deferred_tool_directory
+        return all_tools, deferred_tool_directory, agent_ref
+
+    def _build_system_prompt(
+        self,
+        task: str,
+        mode: RunMode,
+        conversation_id: Optional[str],
+        deferred_tool_directory: str,
+        user_id: Optional[str] = None,
+    ) -> str:
+        memories = self.memory.search(
+            task,
+            agent_id=self.config.agent.name,
+            user_id=user_id,
+        )
+        memory_context = format_memories(memories)
+
+        conversation_context = ""
+        if conversation_id and mode != RunMode.HEARTBEAT:
+            turns = self._load_conversation_turns(conversation_id, limit=12)
+            conversation_context = self._format_conversation_turns(turns)
+
+        skills_text = "" if mode == RunMode.HEARTBEAT else self.skills
+
+        return build_prompt(
+            soul=self.soul,
+            notes=self.notes,
+            skills=skills_text,
+            memory_context=memory_context,
+            mode=mode,
+            conversation_context=conversation_context,
+            deferred_tool_directory=deferred_tool_directory,
+        )
 
     async def run(
         self,
         task: str,
         model_override=None,
         conversation_id: Optional[str] = None,
-        is_heartbeat: bool = False,
+        mode: RunMode = RunMode.AUTONOMOUS,
+        user_id: Optional[str] = None,
     ) -> str:
         self.connect_mcp()
         model = model_override or self.model
 
-        memories = self.memory.search(task, agent_id=self.config.agent.name)
-        memory_context = format_memories(memories)
+        all_tools, deferred_tool_directory, agent_ref = self._build_agent_tools(
+            mode, user_id=user_id
+        )
 
-        skills_text = "" if is_heartbeat else self.skills
-        system_prompt = build_prompt(self.soul, self.notes, skills_text, memory_context)
-
-        all_tools, deferred_tool_directory = self._build_agent_tools(is_heartbeat)
+        system_prompt = self._build_system_prompt(
+            task=task,
+            mode=mode,
+            conversation_id=conversation_id,
+            deferred_tool_directory=deferred_tool_directory,
+            user_id=user_id,
+        )
 
         agent = ToolCallingAgent(
             tools=all_tools,
             model=model,
-            max_steps=8,
         )
+        agent_ref["agent"] = agent
 
         agent.prompt_templates["system_prompt"] = (
-            agent.prompt_templates["system_prompt"]
-            + "\n\n"
-            + system_prompt
-            + "\n\n**MCP tool usage rules**:\n"
-            + "- MCP tools are deferred. Pick one from the deferred tool directory below.\n"
-            + "- Do NOT guess parameter names. Call `fetch_tool` first, then pass exact args to `tool_call`.\n"
-            + "- Prefer fully-qualified names like `ouro:create_post` when calling `tool_call`.\n"
-            + "- For content/topic questions on Ouro (e.g. 'what's new in X?'), usually use `ouro:search_assets` (and optionally `ouro:get_team_activity`).\n"
-            + "\n\n**Deferred tool directory (name + short description)**:\n"
-            + deferred_tool_directory
-            + "\n\n**Output format**: For simple replies (greetings, acknowledgments, or when no tools are needed), you must call the `final_answer` tool directly with your response. Never respond with plain text outside a tool call."
+            agent.prompt_templates["system_prompt"] + "\n\n" + system_prompt
         )
 
         result = agent.run(task)
 
-        # Post-run: store in memory + append to run log
         self.memory.add(
-            f"Task: {task}\nResult: {result}",
+            [
+                {"role": "user", "content": task},
+                {"role": "assistant", "content": str(result)},
+            ],
             agent_id=self.config.agent.name,
+            user_id=user_id,
             run_id=conversation_id,
         )
+        if conversation_id and mode != RunMode.HEARTBEAT:
+            self._append_conversation_turn(conversation_id, "user", task)
+            self._append_conversation_turn(conversation_id, "assistant", str(result))
         self._log_run(
             task,
             result,
             model.model_id if hasattr(model, "model_id") else str(model),
-            is_heartbeat,
+            mode,
         )
 
         return str(result)
@@ -275,19 +394,17 @@ class OuroAgent:
 
         # Use heartbeat model if specified, otherwise fallback to primary
         hb_model_id = self.config.heartbeat.model or self.config.agent.model
-        hb_model = LiteLLMModel(model_id=hb_model_id)
+        hb_model = self._build_model(hb_model_id)
 
         result = await self.run(
             checklist,
             model_override=hb_model,
-            is_heartbeat=True,
+            mode=RunMode.HEARTBEAT,
         )
 
         # Parse structured JSON response
         try:
             # Try to find JSON block in the result
-            import re
-
             json_match = re.search(r"```json\n(.*?)\n```", result, re.DOTALL)
             if json_match:
                 parsed = json.loads(json_match.group(1))
@@ -302,11 +419,11 @@ class OuroAgent:
 
         return result
 
-    def _log_run(self, task: str, result: str, model_name: str, is_heartbeat: bool):
+    def _log_run(self, task: str, result: str, model_name: str, mode: RunMode):
         """Append a line to the run log (JSONL)."""
         entry = {
             "timestamp": datetime.utcnow().isoformat(),
-            "trigger": "heartbeat" if is_heartbeat else "task",
+            "trigger": mode.value,
             "task_summary": task[:200] + ("..." if len(task) > 200 else ""),
             "model": model_name,
             "result_summary": str(result)[:200]

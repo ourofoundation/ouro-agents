@@ -61,27 +61,50 @@ class Mem0Backend:
 
         self._mem = Memory.from_config(mem0_config)
 
-    def search(self, query: str, agent_id: str, run_id: Optional[str] = None, limit: int = 10) -> List[MemoryResult]:
-        kwargs = {"query": query, "agent_id": agent_id, "limit": limit}
-        if run_id:
-            kwargs["run_id"] = run_id
+    def search(
+        self,
+        query: str,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[MemoryResult]:
+        kwargs: dict = {"query": query, "agent_id": agent_id, "limit": limit}
+        if user_id:
+            kwargs["user_id"] = user_id
         results = self._mem.search(**kwargs)
-        
-        # Depending on mem0 version, results might be a list or a dict
-        res_list = results.get("results", []) if isinstance(results, dict) else results
-        
-        return [MemoryResult(text=r["memory"], score=r.get("score", 0))
-                for r in res_list]
 
-    def add(self, content: str, agent_id: str, run_id: Optional[str] = None, metadata: Optional[dict] = None) -> None:
-        kwargs = {"agent_id": agent_id, "metadata": metadata or {}}
+        res_list = results.get("results", []) if isinstance(results, dict) else results
+
+        return [
+            MemoryResult(text=r["memory"], score=r.get("score", 0))
+            for r in res_list
+        ]
+
+    def add(
+        self,
+        content: str | list[dict],
+        agent_id: str,
+        user_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+    ) -> None:
+        kwargs: dict = {"agent_id": agent_id, "metadata": metadata or {}}
+        if user_id:
+            kwargs["user_id"] = user_id
         if run_id:
             kwargs["run_id"] = run_id
         self._mem.add(content, **kwargs)
 
-    def get_all(self, agent_id: str, limit: int = 100) -> List[MemoryResult]:
-        results = self._mem.get_all(agent_id=agent_id, limit=limit)
+    def get_all(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[MemoryResult]:
+        kwargs: dict = {"agent_id": agent_id, "limit": limit}
+        if user_id:
+            kwargs["user_id"] = user_id
+        results = self._mem.get_all(**kwargs)
         res_list = results.get("results", []) if isinstance(results, dict) else results
-        return [MemoryResult(text=r["memory"], score=0)
-                for r in res_list]
+        return [MemoryResult(text=r["memory"], score=0) for r in res_list]
 

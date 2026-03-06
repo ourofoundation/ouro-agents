@@ -1,13 +1,27 @@
 import json
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+
+class RunMode(str, Enum):
+    CHAT = "chat"
+    AUTONOMOUS = "autonomous"
+    HEARTBEAT = "heartbeat"
 
 class AgentConfig(BaseModel):
     name: str
     model: str
     workspace: Path = Path("./workspace")
+
+
+class PromptCachingConfig(BaseModel):
+    enabled: bool = False
+    # OpenRouter Anthropic cache TTL options.
+    ttl: Literal["5m", "1h"] = "5m"
+
 
 class HeartbeatConfig(BaseModel):
     enabled: bool = True
@@ -42,6 +56,7 @@ class ServerConfig(BaseModel):
 
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
+    prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     heartbeat: HeartbeatConfig
     mcp_servers: List[MCPServerConfig]
     memory: MemoryConfig
