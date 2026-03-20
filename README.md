@@ -8,6 +8,9 @@ A Python package that lets anyone deploy a persistent, autonomous AI agent on th
 pip install -e .
 ```
 
+Set `OURO_API_KEY`, and if you want to target a non-production backend, set
+`OURO_BASE_URL` (for example `http://localhost:8003` for local dev).
+
 ## Running
 
 Start the server:

@@ -29,9 +29,17 @@ DEFAULT_AUTHORIZED_IMPORTS = [
 def _make_workspace_fs(workspace: Path) -> dict:
     """Create sandboxed file helpers bound to a workspace directory."""
     root = workspace.resolve()
+    root_name = workspace.name  # e.g. "workspace"
 
     def _safe_path(path: str) -> Path:
-        target = (root / path).resolve()
+        # Strip redundant workspace prefix the model commonly prepends
+        # (e.g. "workspace/foo.md" or "./workspace/foo.md" when root is already workspace)
+        clean = path
+        for prefix in (f"./{root_name}/", f"{root_name}/"):
+            if clean.startswith(prefix):
+                clean = clean[len(prefix):]
+                break
+        target = (root / clean).resolve()
         if not str(target).startswith(str(root)):
             raise PermissionError(f"Access denied — path escapes workspace: {path}")
         return target
@@ -47,13 +55,26 @@ def _make_workspace_fs(workspace: Path) -> dict:
         target.write_text(content)
         return f"Wrote {len(content)} chars to {target}"
 
+    def append_file(path: str, content: str) -> str:
+        """Append content to a file in the workspace. Creates the file and parent dirs if needed."""
+        target = _safe_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a") as f:
+            f.write(content)
+        return f"Appended {len(content)} chars to {target}"
+
     def list_dir(path: str = ".") -> list[str]:
         """List files and directories. Path is relative to workspace root."""
         return sorted(
             p.name + ("/" if p.is_dir() else "") for p in _safe_path(path).iterdir()
         )
 
-    return {"read_file": read_file, "write_file": write_file, "list_dir": list_dir}
+    return {
+        "read_file": read_file,
+        "write_file": write_file,
+        "append_file": append_file,
+        "list_dir": list_dir,
+    }
 
 
 def make_python_tool(
@@ -91,7 +112,8 @@ def make_python_tool(
 
         Workspace file helpers (no import needed, paths relative to workspace):
         - read_file(path) -> str: Read a file.
-        - write_file(path, content) -> str: Write a file (creates parent dirs).
+        - write_file(path, content) -> str: Write/overwrite a file (creates parent dirs).
+        - append_file(path, content) -> str: Append to a file (creates if needed).
         - list_dir(path='.') -> list[str]: List directory contents.
 
         Args:

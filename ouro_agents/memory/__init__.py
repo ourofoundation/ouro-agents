@@ -21,11 +21,17 @@ class MemoryBackend(Protocol):
                 limit: int = 100) -> List[MemoryResult]:
         ...
 
-def format_memories(memories: List[MemoryResult]) -> str:
-    """Format memory results into a string for the system prompt."""
-    if not memories:
+def format_memories(
+    memories: List[MemoryResult], min_score: float = 0.3
+) -> str:
+    """Format memory results into a string for the system prompt.
+
+    Filters out low-relevance memories to avoid polluting context with noise.
+    """
+    relevant = [r for r in memories if r.score >= min_score]
+    if not relevant:
         return ""
-    return "\n".join(f"- {r.text}" for r in memories)
+    return "\n".join(f"- {r.text}" for r in relevant)
 
 def create_memory_backend(config) -> MemoryBackend:
     if config.provider == "mem0":

@@ -1,7 +1,7 @@
 {
   "agent": {
     "name": "feynman",
-    "model": "anthropic/claude-haiku-4.5",
+    "model": "minimax/minimax-m2.5",
     "workspace": "./workspace"
   },
   "prompt_caching": {
@@ -11,7 +11,7 @@
   "heartbeat": {
     "enabled": true,
     "every": "30m",
-    "model": "anthropic/claude-haiku-4.5",
+    "model": "minimax/minimax-m2.5",
     "active_hours": {
       "start": "08:00",
       "end": "22:00",
@@ -26,7 +26,7 @@
       "args": ["-m", "ouro_mcp.server"],
       "env": {
         "OURO_API_KEY": "${OURO_API_KEY}",
-        "OURO_BACKEND_URL": "${OURO_BACKEND_URL}"
+        "OURO_BASE_URL": "${OURO_BASE_URL}"
       }
     },
     {
