@@ -1,3 +1,8 @@
+---
+description: Web search via Tavily for current information, research, and fact-checking
+load: stub
+---
+
 # Web Search Skill (Tavily)
 
 You have access to web search via the `search` MCP server. This lets you find current information from across the internet.

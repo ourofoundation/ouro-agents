@@ -1,17 +1,28 @@
+---
+description: Read/write access to workspace files via the run_python sandbox helpers
+load: stub
+---
+
 # Local Filesystem Skill
 
-You have read/write access to your local workspace via the `filesystem` MCP server. All paths are relative to `./workspace`.
+You have read/write access to your local workspace via built-in helpers inside `run_python`. All paths are relative to the workspace root.
 
 ## Available Operations
 
-- `read_file` — read a file's contents
-- `write_file` — create or overwrite a file
-- `edit_file` — make targeted edits to an existing file
-- `list_directory` — list files and subdirectories
-- `create_directory` — create a new directory
-- `move_file` — move or rename a file
-- `search_files` — search file contents by pattern
-- `get_file_info` — file metadata (size, modified time, etc.)
+Inside any `run_python` call (no import needed):
+
+- `read_file(path)` — read a file's contents as a string
+- `write_file(path, content)` — create or overwrite a file (creates parent dirs)
+- `append_file(path, content)` — append to a file (creates it if needed)
+- `list_dir(path='.')` — list files and subdirectories (dirs have trailing `/`)
+- `file_exists(path)` — check if a file or directory exists
+- `get_file_info(path)` — file metadata dict (size_bytes, modified, is_dir, is_file)
+- `create_directory(path)` — create a directory and parents
+- `move_file(src, dst)` — move or rename a file within the workspace
+- `search_files(pattern, path='.')` — find files whose content contains a substring
+- `glob_files(pattern, path='.')` — find files matching a glob pattern (e.g. `*.csv`, `**/*.json`)
+
+These are sandboxed — path traversal outside the workspace is blocked.
 
 ## When to Use the Filesystem
 
@@ -36,6 +47,6 @@ Keep the workspace tidy:
 ## Upload Pattern
 
 To share a local file on Ouro:
-1. Write or generate the file locally (e.g., `workspace/data/results.csv`).
+1. Write or generate the file locally (e.g., `data/results.csv`) using `write_file`.
 2. `load_tool("ouro:create_file")` and pass the absolute local path.
 3. The file is uploaded as an asset on Ouro with the org/team you specify.

@@ -1,3 +1,8 @@
+---
+description: Sandboxed Python execution for calculations, data transforms, and file processing
+load: stub
+---
+
 # Python Execution Skill
 
 You have a `run_python` tool that executes code in a sandboxed Python environment.
@@ -13,7 +18,7 @@ You have a `run_python` tool that executes code in a sandboxed Python environmen
 ## When NOT to Use
 
 - Simple factual answers you already know — just answer directly.
-- Reading/writing files — use the `filesystem` MCP tools instead.
+- Reading/writing files — use the workspace file helpers (see the **filesystem** skill).
 - Fetching web content — use the `search` MCP tools instead.
 - Interacting with Ouro — use the `ouro` MCP tools instead.
 
@@ -26,17 +31,7 @@ You have a `run_python` tool that executes code in a sandboxed Python environmen
 
 ## Workspace File Helpers
 
-Three built-in functions are available inside `run_python` for reading and writing workspace files — no import needed. All paths are relative to the workspace root.
-
-- `read_file(path)` — returns file contents as a string.
-- `write_file(path, content)` — writes content to a file, creating parent directories as needed.
-- `list_dir(path='.')` — lists files and directories (dirs have a trailing `/`).
-
-These are sandboxed to the workspace directory — path traversal outside it is blocked.
-
-**When to use these vs. the filesystem MCP tools:**
-- Use the in-code helpers when you need to read a file, process it, and write results in a single `run_python` call. This avoids bouncing between multiple tool calls.
-- Use the `filesystem` MCP tools for standalone file operations where no code logic is needed.
+Built-in file helpers (`read_file`, `write_file`, `append_file`, `list_dir`, etc.) are available inside `run_python` with no import needed. See the **filesystem** skill for the full reference and workspace conventions.
 
 ## Patterns
 

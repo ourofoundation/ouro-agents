@@ -1,18 +1,11 @@
 from functools import cached_property
-from typing import Literal, Optional
+from typing import Optional
 
 from ouro import Ouro
-from ouro.resources.conversations import Messages
-
-ReplyTargetType = Literal["comment", "conversation"]
 
 
 class OuroReplyPublisher:
-    """Publish agent replies back to Ouro.
-
-    Wraps an ``Ouro`` client with convenience helpers for emitting
-    real-time activity / streaming events and persisting final replies.
-    """
+    """Emit real-time activity and streaming events to Ouro over the websocket."""
 
     def __init__(
         self,
@@ -94,34 +87,3 @@ class OuroReplyPublisher:
             message_id=message_id,
             message=message,
         )
-
-    def publish(
-        self,
-        reply_target_type: Optional[ReplyTargetType],
-        reply_target_id: Optional[str],
-        reply_text: str,
-        message_id: Optional[str] = None,
-    ):
-        reply = reply_text.strip()
-        if not reply_target_type or not reply_target_id or not reply:
-            return None
-
-        if reply_target_type == "conversation":
-            content = self.client.posts.Content()
-            content.from_markdown(reply)
-            return Messages(self.client).create(
-                conversation_id=reply_target_id,
-                id=message_id,
-                text=content.text,
-                json=content.json,
-            )
-
-        if reply_target_type == "comment":
-            content = self.client.comments.Content()
-            content.from_markdown(reply)
-            return self.client.comments.create(
-                content=content,
-                parent_id=reply_target_id,
-            )
-
-        raise ValueError(f"Unsupported reply target type: {reply_target_type}")

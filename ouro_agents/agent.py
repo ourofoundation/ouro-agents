@@ -10,7 +10,6 @@ from smolagents import (
     ActionStep,
     ChatMessageStreamDelta,
     FinalAnswerStep,
-    OpenAIModel,
     ToolCallingAgent,
     ToolCollection,
     tool,
@@ -20,12 +19,34 @@ from smolagents.monitoring import Timing
 
 from .classify import TaskClassification, classify_task
 from .config import MCPServerConfig, OuroAgentsConfig, RunMode
-from .memory import create_memory_backend, format_memories
+from .memory import create_memory_backend
+from .memory.retrieval import retrieve_memories
+from .memory.conversation_state import (
+    ConversationState,
+    load_state,
+    save_state,
+    update_state,
+)
+from .memory.reflection import (
+    apply_reflection,
+    reflect,
+    should_reflect_for_conversation,
+    write_daily_log,
+)
 from .memory.tools import make_memory_tools
+from .memory.user_model import load_user_model
 from .notes import load_notes
 from .skills import load_all_skills, load_relevant_skills
 from .soul import build_prompt, load_soul
 from .tools.python_tool import make_python_tool
+from .tools.scheduler_tools import make_scheduler_tools
+from .usage import (
+    RunUsage,
+    TrackedOpenAIModel,
+    UsageTracker,
+    collect_run_usage,
+    format_usage_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +211,7 @@ class OuroAgent:
         self.skills = load_all_skills(config)
         self.memory = create_memory_backend(config.memory)
         self._workspace = config.agent.workspace
+        self._usage_tracker = UsageTracker()
         self.model = self._build_model(config.agent.model)
 
         self._mcp_contexts: list = []
@@ -197,6 +219,9 @@ class OuroAgent:
         self._deferred_tools_by_raw_name: dict = {}
         self._deferred_index: list[dict] = []
         self._mcp_connected = False
+
+        from .scheduler import AgentScheduler
+        self.scheduler = AgentScheduler(config.agent.workspace / "data" / "scheduled_tasks.json")
 
     @staticmethod
     def _strip_frontmatter(text: str) -> str:
@@ -207,6 +232,103 @@ class OuroAgent:
         if end == -1:
             return text
         return text[end + 3:].lstrip("\n")
+
+    def _refresh_platform_context(self) -> None:
+        """Fetch profile, org, and team info from the Ouro MCP server and cache it.
+
+        Called at startup and on heartbeat. Other runs read from cache.
+        """
+        context: dict = {"profile": None, "organizations": [], "teams": []}
+
+        me_tool = self._deferred_tools.get("ouro:get_me")
+        if me_tool:
+            try:
+                raw = me_tool()
+                context["profile"] = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception as e:
+                logger.warning("Platform context: failed to fetch profile: %s", e)
+
+        org_tool = self._deferred_tools.get("ouro:get_organizations")
+        if org_tool:
+            try:
+                raw = org_tool()
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                context["organizations"] = data.get("results", data) if isinstance(data, dict) else data
+            except Exception as e:
+                logger.warning("Platform context: failed to fetch orgs: %s", e)
+
+        teams_tool = self._deferred_tools.get("ouro:get_teams")
+        if teams_tool:
+            try:
+                raw = teams_tool()
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                context["teams"] = data.get("results", data) if isinstance(data, dict) else data
+            except Exception as e:
+                logger.warning("Platform context: failed to fetch teams: %s", e)
+
+        cache_path = self._workspace / "data" / "platform_context.json"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(context, indent=2))
+        logger.info(
+            "Refreshed platform context: %d orgs, %d teams",
+            len(context["organizations"]),
+            len(context["teams"]),
+        )
+
+    def _load_platform_context(self) -> str:
+        """Load cached platform context for inclusion in the system prompt."""
+        cache_path = self._workspace / "data" / "platform_context.json"
+        if not cache_path.exists():
+            return ""
+
+        try:
+            context = json.loads(cache_path.read_text())
+        except Exception:
+            return ""
+
+        parts: list[str] = []
+
+        profile = context.get("profile")
+        if profile:
+            username = profile.get("username", "?")
+            display = profile.get("display_name")
+            name_str = f"{display} (@{username})" if display else f"@{username}"
+            parts.append(
+                f"You are: {name_str} (id: {profile.get('id', '?')}, "
+                f"email: {profile.get('email', '?')})"
+            )
+
+        orgs = context.get("organizations", [])
+        if orgs:
+            parts.append("\nYour organizations:")
+            for org in orgs:
+                display = org.get("display_name") or org.get("name", "unknown")
+                parts.append(
+                    f"- {display} (id: {org.get('id', '?')}, role: {org.get('role', '?')})"
+                )
+
+        teams = context.get("teams", [])
+        if teams:
+            parts.append("\nYour teams:")
+            for team in teams:
+                desc = team.get("description", "")
+                line = (
+                    f"- {team.get('name', '?')} "
+                    f"(id: {team.get('id', '?')}, "
+                    f"org: {team.get('organization_name', '?')}, "
+                    f"role: {team.get('role', '?')})"
+                )
+                if desc:
+                    line += f" — {desc}"
+                parts.append(line)
+
+        if not parts:
+            return ""
+        parts.append(
+            "\nUse these IDs directly — no need to call get_organizations or get_teams "
+            "unless you need to discover new teams or refresh membership info."
+        )
+        return "\n".join(parts)
 
     def _load_working_memory(self) -> str:
         """Load MEMORY.md and today's daily log for the system prompt."""
@@ -223,6 +345,37 @@ class OuroAgent:
                 parts.append(f"## Today's Log ({date.today().isoformat()})\n{content}")
         return "\n\n".join(parts)
 
+    def _load_scheduled_task_awareness(self) -> str:
+        """Return a compact, read-only summary of scheduled tasks."""
+        tasks = self.scheduler.list_tasks()
+        if not tasks:
+            return ""
+
+        enabled_tasks = [task for task in tasks if task.enabled]
+        disabled_count = len(tasks) - len(enabled_tasks)
+
+        lines = [
+            "## Scheduled Tasks",
+            "These run on their own cadence. Use them as context only; do not manage or execute them during heartbeat.",
+        ]
+
+        if enabled_tasks:
+            for task in enabled_tasks[:8]:
+                status = task.last_run_status or "never-run"
+                lines.append(
+                    f"- {task.name} [{task.schedule} {task.timezone}] status={status} runs={task.run_count}"
+                )
+            remaining = len(enabled_tasks) - min(len(enabled_tasks), 8)
+            if remaining > 0:
+                lines.append(f"- ... and {remaining} more enabled scheduled task(s)")
+        else:
+            lines.append("- No enabled scheduled tasks.")
+
+        if disabled_count:
+            lines.append(f"- Disabled scheduled tasks: {disabled_count}")
+
+        return "\n".join(lines)
+
     def _is_anthropic_model(self, model_id: str) -> bool:
         return model_id.startswith("anthropic/")
 
@@ -236,16 +389,17 @@ class OuroAgent:
             cache_control["ttl"] = "1h"
         return {"cache_control": cache_control}
 
-    def _build_model(self, model_id: str) -> OpenAIModel:
+    def _build_model(self, model_id: str) -> TrackedOpenAIModel:
         model_kwargs = {}
         extra_body = self._build_openrouter_extra_body(model_id)
         if extra_body:
             model_kwargs["extra_body"] = extra_body
 
-        return OpenAIModel(
+        return TrackedOpenAIModel(
             model_id=model_id,
             api_base="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
+            tracker=self._usage_tracker,
             **model_kwargs,
         )
 
@@ -367,6 +521,32 @@ class OuroAgent:
         return f"Earlier context: {summary}\n\nRecent:\n{recent}"
 
     @staticmethod
+    def _compress_tool_call(tc: dict) -> str:
+        """Produce a compact one-line summary of a single tool call."""
+        tool_name = tc.get("tool", "unknown")
+        args = tc.get("args", {})
+        result = str(tc.get("result", ""))
+
+        # final_answer: the assistant content IS the answer, skip it
+        if tool_name == "final_answer":
+            return ""
+        # load_tool: only the tool name matters
+        if tool_name == "load_tool":
+            loaded = args.get("tool_name", "?")
+            return f"- Loaded tool: {loaded}"
+        # memory tools: compact summaries
+        if tool_name == "memory_store":
+            fact = str(args.get("fact", ""))[:100]
+            return f"- Stored memory: {fact}"
+        if tool_name == "memory_recall":
+            query = str(args.get("query", ""))[:60]
+            count = result.count("\n- ") + (1 if result.startswith("- ") else 0)
+            return f"- Recalled {count} memories for: {query}"
+        # Default: name + args + truncated result
+        result_preview = result[:300]
+        return f"- {tool_name}({json.dumps(args)}) → {result_preview}"
+
+    @staticmethod
     def _build_history_steps(turns: list[dict]) -> list:
         """Convert JSONL conversation turns into smolagents memory steps.
 
@@ -391,18 +571,18 @@ class OuroAgent:
 
                     model_output = assistant_content
                     if tool_summary:
-                        tool_lines = []
-                        for tc in tool_summary:
-                            result_preview = str(tc.get("result", ""))[:150]
-                            tool_lines.append(
-                                f"- {tc['tool']}({json.dumps(tc.get('args', {}))}) → {result_preview}"
+                        tool_lines = [
+                            OuroAgent._compress_tool_call(tc)
+                            for tc in tool_summary
+                        ]
+                        tool_lines = [tl for tl in tool_lines if tl]
+                        if tool_lines:
+                            model_output = (
+                                "Tools used:\n"
+                                + "\n".join(tool_lines)
+                                + "\n\n"
+                                + assistant_content
                             )
-                        model_output = (
-                            "Tools used:\n"
-                            + "\n".join(tool_lines)
-                            + "\n\n"
-                            + assistant_content
-                        )
 
                     steps.append(
                         ActionStep(
@@ -434,6 +614,11 @@ class OuroAgent:
         for server in self.config.mcp_servers:
             self._connect_one_server(server)
         self._mcp_connected = True
+
+        try:
+            self._refresh_platform_context()
+        except Exception as e:
+            logger.warning("Failed to refresh platform context at startup: %s", e)
 
     @staticmethod
     def _patch_tool_inputs(mcp_tool) -> None:
@@ -548,24 +733,35 @@ class OuroAgent:
         mode: RunMode = RunMode.AUTONOMOUS,
         user_id: Optional[str] = None,
         classification: Optional[TaskClassification] = None,
+        allowed_servers: Optional[list[str]] = None,
+        preload_tools: Optional[list[str]] = None,
     ):
-        """Build the tool list and directory string for a single run."""
+        """Build the tool list and directory string for a single run.
+
+        Returns (all_tools, deferred_tool_directory, agent_ref, preloaded_names).
+        ``preloaded_names`` lists the raw call names of tools that were eagerly
+        resolved and added to ``all_tools`` so the agent can use them without
+        calling ``load_tool`` first.
+        """
         deferred_tools = self._deferred_tools
         deferred_index = self._deferred_index
 
         if mode == RunMode.HEARTBEAT:
+            servers = set(allowed_servers) if allowed_servers else {"ouro"}
             deferred_index = [
-                item for item in self._deferred_index if item["server"] == "ouro"
+                item for item in self._deferred_index if item["server"] in servers
             ]
-            ouro_tool_names = {item["tool"] for item in deferred_index}
+            filtered_names = {item["tool"] for item in deferred_index}
             deferred_tools = {
-                k: v for k, v in self._deferred_tools.items() if k in ouro_tool_names
+                k: v for k, v in self._deferred_tools.items() if k in filtered_names
             }
         elif classification and classification.relevant_servers:
+            always_available = {"search"}
+            servers = set(classification.relevant_servers) | always_available
             deferred_index = [
                 item
                 for item in self._deferred_index
-                if item["server"] in classification.relevant_servers
+                if item["server"] in servers
             ]
             relevant_names = {item["tool"] for item in deferred_index}
             deferred_tools = {
@@ -614,16 +810,36 @@ class OuroAgent:
             )
 
         memory_tools = make_memory_tools(
-            self.memory, self.config.agent.name, user_id=user_id
+            self.memory, self.config.agent.name,
+            user_id=user_id, workspace=self.config.agent.workspace,
         )
         python_tool, _executor = make_python_tool(workspace=self.config.agent.workspace)
-        all_tools = list(memory_tools) + [load_tool, python_tool]
+        scheduler_tools = make_scheduler_tools(self.scheduler) if mode != RunMode.HEARTBEAT else []
+        all_tools = list(memory_tools) + scheduler_tools + [load_tool, python_tool]
+
+        preloaded_names: list[str] = []
+        for qualified_name in preload_tools or []:
+            resolved, err = self._resolve_tool_name(qualified_name)
+            if err or not resolved:
+                logger.warning("Preload skipped for '%s': %s", qualified_name, err)
+                continue
+            target = deferred_tools.get(resolved)
+            if not target:
+                logger.warning("Preload skipped for '%s': not in available deferred tools", resolved)
+                continue
+            item = next(
+                (i for i in deferred_index if i["tool"] == resolved), None
+            )
+            if item:
+                all_tools.append(target)
+                preloaded_names.append(item["raw_name"])
+                logger.info("Preloaded tool: %s (call as %s)", resolved, item["raw_name"])
 
         deferred_tool_directory = "\n".join(
             f"- {item['tool']}: {item['description'][:240]}" for item in deferred_index
         )
 
-        return all_tools, deferred_tool_directory, agent_ref
+        return all_tools, deferred_tool_directory, agent_ref, preloaded_names
 
     def _build_system_prompt(
         self,
@@ -633,9 +849,18 @@ class OuroAgent:
         deferred_tool_directory: str,
         user_id: Optional[str] = None,
         classification: Optional[TaskClassification] = None,
+        conversation_state: Optional[ConversationState] = None,
+        mode_framing_override: str = "",
+        preloaded_tool_names: Optional[list[str]] = None,
     ) -> str:
+        # In chat mode, conversation state replaces the raw history summary
+        # in the system prompt.  Raw history is injected as structured steps
+        # instead (see run() method).
         conversation_context = ""
-        if conversation_id and mode != RunMode.HEARTBEAT:
+        conversation_state_text = ""
+        if mode == RunMode.CHAT and conversation_state:
+            conversation_state_text = conversation_state.format_for_prompt()
+        elif conversation_id and mode != RunMode.HEARTBEAT:
             turns = self._load_conversation_turns(conversation_id, limit=12)
             conversation_context = self._format_conversation_turns(turns)
 
@@ -648,7 +873,23 @@ class OuroAgent:
         else:
             skills_text = self.skills
 
-        working_memory = self._load_working_memory()
+        working_memory_parts = [self._load_working_memory()]
+        if mode == RunMode.HEARTBEAT:
+            working_memory_parts.append(self._load_scheduled_task_awareness())
+        working_memory = "\n\n".join(part for part in working_memory_parts if part)
+
+        user_model_text = ""
+        if user_id:
+            user_model_text = load_user_model(
+                self.config.agent.workspace, user_id
+            )
+
+        from .memory.context_loader import load_entity_context
+        entity_context_text = load_entity_context(
+            self.config.agent.workspace,
+            conversation_state=conversation_state,
+            task=task,
+        )
 
         return build_prompt(
             soul=self.soul,
@@ -657,7 +898,14 @@ class OuroAgent:
             working_memory=working_memory,
             mode=mode,
             conversation_context=conversation_context,
+            conversation_state=conversation_state_text,
+            user_model=user_model_text,
+            entity_context=entity_context_text,
             deferred_tool_directory=deferred_tool_directory,
+            mode_framing_override=mode_framing_override,
+            platform_context=self._load_platform_context(),
+            chat_conversation_id=conversation_id if mode == RunMode.CHAT else None,
+            preloaded_tool_names=preloaded_tool_names,
         )
 
     def _build_planned_task(self, task: str, classification: TaskClassification) -> str:
@@ -694,7 +942,12 @@ class OuroAgent:
             logger.warning("Planning failed, using raw task: %s", e)
             return task
 
-    def _classify(self, task: str, mode: RunMode) -> Optional[TaskClassification]:
+    def _classify(
+        self,
+        task: str,
+        mode: RunMode,
+        conversation_state: Optional[ConversationState] = None,
+    ) -> Optional[TaskClassification]:
         """Run the lightweight task classifier (skipped for heartbeats)."""
         if mode == RunMode.HEARTBEAT:
             return None
@@ -702,7 +955,12 @@ class OuroAgent:
             classifier_model = self._build_model(
                 self.config.heartbeat.model or self.config.agent.model
             )
-            classification = classify_task(task, classifier_model)
+            conv_summary = (
+                conversation_state.current_topic if conversation_state else None
+            )
+            classification = classify_task(
+                task, classifier_model, conversation_summary=conv_summary
+            )
             logger.info(
                 "Task classified: intent=%s complexity=%s skills=%s servers=%s",
                 classification.intent,
@@ -726,14 +984,15 @@ class OuroAgent:
         return f"is using {tool_name}"
 
     def _build_step_callback(
-        self, status_callback: Optional[RunStatusCallback]
-    ) -> Optional[Callable[[ActionStep], None]]:
-        if not status_callback:
-            return None
-
+        self,
+        status_callback: Optional[RunStatusCallback],
+    ) -> Callable[[ActionStep], None]:
         last_message: dict[str, Optional[str]] = {"value": None}
+        tracker = self._usage_tracker
 
         def _emit(message: str) -> None:
+            if not status_callback:
+                return
             if last_message["value"] == message:
                 return
             last_message["value"] = message
@@ -743,6 +1002,16 @@ class OuroAgent:
                 logger.exception("Failed to emit activity update")
 
         def _callback(step: ActionStep) -> None:
+            in_tok = tracker.total_input_tokens
+            out_tok = tracker.total_output_tokens
+            logger.info(
+                "[Step %d] Tokens so far: in=%s out=%s total=%s",
+                getattr(step, "step_number", 0),
+                f"{in_tok:,}",
+                f"{out_tok:,}",
+                f"{in_tok + out_tok:,}",
+            )
+
             if getattr(step, "is_final_answer", False):
                 return
             if step.error:
@@ -766,18 +1035,70 @@ class OuroAgent:
         user_id: Optional[str] = None,
         status_callback: Optional[RunStatusCallback] = None,
         response_callback: Optional[RunResponseCallback] = None,
+        skip_memory: bool = False,
+        allowed_servers: Optional[list[str]] = None,
+        mode_framing_override: str = "",
+        preload_tools: Optional[list[str]] = None,
     ) -> str:
         self.connect_mcp()
         model = model_override or self.model
 
-        classification = self._classify(task, mode)
+        self._usage_tracker.reset()
 
-        all_tools, deferred_tool_directory, agent_ref = self._build_agent_tools(
-            mode, user_id=user_id, classification=classification
+        # --- Conversation state (chat mode) ---
+        conv_state: Optional[ConversationState] = None
+        if mode == RunMode.CHAT and conversation_id:
+            conversations_dir = self.config.agent.workspace / "conversations"
+            conv_state = load_state(conversations_dir, conversation_id)
+
+            # Pre-turn reflection: if enough turns have passed, curate
+            # memories before processing the new message.
+            if should_reflect_for_conversation(
+                conversations_dir,
+                conversation_id,
+                conv_state,
+                self.config.memory.mid_session_reflection_interval,
+            ):
+                try:
+                    reflection_model = self._build_model(
+                        self.config.heartbeat.model or self.config.agent.model
+                    )
+                    reflection_result = reflect(
+                        conv_state, conversations_dir, conversation_id,
+                        reflection_model,
+                    )
+                    apply_reflection(
+                        reflection_result,
+                        self.memory,
+                        agent_id=self.config.agent.name,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        workspace=self.config.agent.workspace,
+                        conversations_dir=conversations_dir,
+                        conversation_state=conv_state,
+                    )
+                    logger.info(
+                        "Mid-session reflection for %s (turn %d): %d facts, %d prefs",
+                        conversation_id,
+                        conv_state.turn_count if conv_state else 0,
+                        len(reflection_result.facts_to_store),
+                        len(reflection_result.user_preferences),
+                    )
+                except Exception as e:
+                    logger.warning("Reflection failed for %s: %s", conversation_id, e)
+
+        classification = self._classify(task, mode, conversation_state=conv_state)
+
+        all_tools, deferred_tool_directory, agent_ref, preloaded_names = (
+            self._build_agent_tools(
+                mode, user_id=user_id, classification=classification,
+                allowed_servers=allowed_servers,
+                preload_tools=preload_tools,
+            )
         )
 
-        # In chat mode, conversation history is injected as structured memory
-        # steps (below), so we skip it in the system prompt to avoid duplication.
+        # In chat mode, conversation state replaces the raw history summary
+        # in the system prompt.  Raw history is injected as structured steps below.
         system_prompt = self._build_system_prompt(
             task=task,
             mode=mode,
@@ -785,17 +1106,29 @@ class OuroAgent:
             deferred_tool_directory=deferred_tool_directory,
             user_id=user_id,
             classification=classification,
+            conversation_state=conv_state,
+            mode_framing_override=mode_framing_override,
+            preloaded_tool_names=preloaded_names,
         )
 
         # Memory context is per-query (semantic search), so we place it adjacent
         # to the current task rather than in the system prompt.  This keeps the
         # system prompt stable across turns for better LLM prefix caching.
-        memories = self.memory.search(
-            task,
-            agent_id=self.config.agent.name,
-            user_id=user_id,
-        )
-        memory_context = format_memories(memories)
+        # Scheduled tasks use their own learnings system, so skip mem0 for them.
+        memory_context = ""
+        if not skip_memory:
+            retrieval_model = self._build_model(
+                self.config.heartbeat.model or self.config.agent.model
+            )
+            memory_context = retrieve_memories(
+                task=task,
+                backend=self.memory,
+                agent_id=self.config.agent.name,
+                config=self.config.memory,
+                model=retrieval_model,
+                user_id=user_id,
+                conversation_state=conv_state,
+            )
 
         effective_task = task
         if memory_context:
@@ -811,7 +1144,7 @@ class OuroAgent:
             tools=all_tools,
             model=model,
             stream_outputs=bool(response_callback),
-            step_callbacks=[step_callback] if step_callback else None,
+            step_callbacks=[step_callback],
         )
         agent_ref["agent"] = agent
 
@@ -819,17 +1152,18 @@ class OuroAgent:
             agent.prompt_templates["system_prompt"] + "\n\n" + system_prompt
         )
 
-        # In chat mode, load conversation history from disk and inject it as
-        # structured memory steps so the model sees real user/assistant pairs.
+        # In chat mode, the conversation_summary in ConversationState covers
+        # the full history.  We only inject the last 4 turns as structured
+        # steps so the model sees recent user/assistant pairs verbatim.
         has_history = False
         if mode == RunMode.CHAT and conversation_id:
-            turns = self._load_conversation_turns(conversation_id, limit=20)
+            turns = self._load_conversation_turns(conversation_id, limit=4)
             if turns:
                 history_steps = self._build_history_steps(turns)
                 agent.memory.steps.extend(history_steps)
                 has_history = True
                 logger.info(
-                    "Injected %d history steps from %d turns for conversation %s",
+                    "Injected %d history steps from %d recent turns for conversation %s",
                     len(history_steps),
                     len(turns),
                     conversation_id,
@@ -855,7 +1189,14 @@ class OuroAgent:
         # Extract tool call summary from the inner agent before it's discarded
         tool_summary = self._extract_tool_summary(agent)
 
-        should_store = classification is None or classification.worth_remembering
+        # In chat mode, rely on reflection (Phase 5) for curated mem0 storage
+        # instead of storing every turn pair.  Scheduled tasks use their own
+        # learnings system and skip mem0 to avoid polluting the vector store.
+        should_store = (
+            mode != RunMode.CHAT
+            and not skip_memory
+            and (classification is None or classification.worth_remembering)
+        )
         if should_store:
             self.memory.add(
                 [
@@ -874,35 +1215,88 @@ class OuroAgent:
                 str(result),
                 tool_summary=tool_summary or None,
             )
+
+        # Update conversation state after the turn (cheap LLM call)
+        if mode == RunMode.CHAT and conversation_id:
+            try:
+                state_model = self._build_model(
+                    self.config.heartbeat.model or self.config.agent.model
+                )
+                conv_state = update_state(
+                    conv_state, task, str(result), state_model
+                )
+                conversations_dir = self.config.agent.workspace / "conversations"
+                save_state(conversations_dir, conversation_id, conv_state)
+                logger.info(
+                    "Updated conversation state for %s: topic=%s, turn=%d",
+                    conversation_id,
+                    conv_state.current_topic,
+                    conv_state.turn_count,
+                )
+            except Exception as e:
+                logger.warning("Failed to update conversation state: %s", e)
+
+        usage = collect_run_usage(agent, model, self._usage_tracker)
+        logger.info("Run usage: %s", format_usage_summary(usage))
+
         self._log_run(
             task,
             result,
             model.model_id if hasattr(model, "model_id") else str(model),
             mode,
+            usage=usage,
         )
 
         return str(result)
 
     async def heartbeat(self) -> Optional[str]:
-        heartbeat_path = self.config.agent.workspace / "HEARTBEAT.md"
-        if not heartbeat_path.exists():
-            return None
-
-        checklist = heartbeat_path.read_text()
-
-        # Use heartbeat model if specified, otherwise fallback to primary
         hb_model_id = self.config.heartbeat.model or self.config.agent.model
         hb_model = self._build_model(hb_model_id)
 
+        try:
+            self._refresh_platform_context()
+        except Exception as e:
+            logger.warning("Failed to refresh platform context during heartbeat: %s", e)
+
+        # Run memory consolidation on each heartbeat
+        if self.config.memory.consolidation_enabled:
+            from .memory.consolidation import run_consolidation
+            try:
+                run_consolidation(
+                    workspace=self.config.agent.workspace,
+                    backend=self.memory,
+                    agent_id=self.config.agent.name,
+                    config=self.config.memory,
+                    model=hb_model,
+                )
+            except Exception as e:
+                logger.warning("Memory consolidation failed during heartbeat: %s", e)
+
+        # Load the autonomous playbook
+        heartbeat_path = self.config.agent.workspace / "HEARTBEAT.md"
+        if not heartbeat_path.exists():
+            return None
+        playbook = heartbeat_path.read_text()
+
+        proactive_cfg = self.config.heartbeat.proactive
+        servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+
+        from .heartbeat import is_within_active_hours
+        if not is_within_active_hours(self.config.heartbeat):
+            playbook += (
+                "\n\n**Note: You are outside active hours. "
+                "Only check notifications unless something is urgent.**"
+            )
+
         result = await self.run(
-            checklist,
+            playbook,
             model_override=hb_model,
             mode=RunMode.HEARTBEAT,
+            allowed_servers=servers,
         )
 
-        # Parse structured JSON response
+        # Parse structured JSON response and log to daily memory
         try:
-            # Try to find JSON block in the result
             json_match = re.search(r"```json\n(.*?)\n```", result, re.DOTALL)
             if json_match:
                 parsed = json.loads(json_match.group(1))
@@ -910,14 +1304,28 @@ class OuroAgent:
                 parsed = json.loads(result)
 
             if parsed.get("action") == "none":
+                logger.info("Heartbeat: no action taken")
                 return None
+
+            action = parsed.get("action", "unknown")
+            details = parsed.get("details", "")
+            logger.info("Heartbeat action: %s", action)
+
+            log_entry = f"[heartbeat:{action}] {details}" if details else f"[heartbeat:{action}]"
+            write_daily_log(self.config.agent.workspace, log_entry)
         except json.JSONDecodeError:
-            # If not valid JSON, assume it's actionable text
             pass
 
         return result
 
-    def _log_run(self, task: str, result: str, model_name: str, mode: RunMode):
+    def _log_run(
+        self,
+        task: str,
+        result: str,
+        model_name: str,
+        mode: RunMode,
+        usage: Optional[RunUsage] = None,
+    ):
         """Append a line to the run log (JSONL)."""
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -927,6 +1335,8 @@ class OuroAgent:
             "result_summary": str(result)[:200]
             + ("..." if len(str(result)) > 200 else ""),
         }
+        if usage:
+            entry["usage"] = usage.dict()
         log_path = self.config.agent.workspace / "runs.jsonl"
 
         # Ensure workspace exists

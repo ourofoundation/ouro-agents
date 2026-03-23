@@ -1,5 +1,5 @@
-from contextlib import nullcontext
 import logging
+from contextlib import nullcontext
 from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -22,6 +22,7 @@ reply_publisher: Optional[OuroReplyPublisher] = None
 last_heartbeat: Optional[datetime] = None
 start_time: datetime = datetime.utcnow()
 session_threads: Dict[str, str] = {}
+REALTIME_CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
 
 
 class RunRequest(BaseModel):
@@ -58,31 +59,20 @@ async def startup_event():
         getattr(reply_publisher.client.user, "email", "unknown"),
     )
 
-    if config.heartbeat.enabled:
-        from .heartbeat import start_scheduler
-
-        start_scheduler(agent_instance, config.heartbeat)
+    await agent_instance.scheduler.start(agent_instance)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     if agent_instance:
+        agent_instance.scheduler.stop()
         agent_instance.close()
-
-
-def _should_publish_event_result(event_run: EventRunContext, result: str) -> bool:
-    if not event_run.reply_target_type or not event_run.reply_target_id:
-        return False
-    reply = result.strip()
-    if not reply:
-        return False
-    return reply.upper() != "NO_ACTION"
 
 
 def _make_activity_callback(event_run: EventRunContext):
     if (
         not reply_publisher
-        or event_run.event_type != "new-message"
+        or event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
         or not event_run.conversation_id
         or not event_run.user_id
     ):
@@ -103,7 +93,7 @@ def _make_activity_callback(event_run: EventRunContext):
 def _make_response_callback(event_run: EventRunContext, message_id: str):
     if (
         not reply_publisher
-        or event_run.event_type != "new-message"
+        or event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
         or not event_run.conversation_id
         or not event_run.user_id
     ):
@@ -138,14 +128,16 @@ async def _run_event_task(event_run: EventRunContext) -> None:
 
     stream_message_id = str(uuid4())
     activity_callback = _make_activity_callback(event_run)
-    response_callback, response_state = _make_response_callback(
-        event_run, stream_message_id
-    ) if (
-        reply_publisher
-        and event_run.event_type == "new-message"
-        and event_run.conversation_id
-        and event_run.user_id
-    ) else (None, {"has_streamed": False})
+    response_callback, response_state = (
+        _make_response_callback(event_run, stream_message_id)
+        if (
+            reply_publisher
+            and event_run.event_type in REALTIME_CHAT_EVENT_TYPES
+            and event_run.conversation_id
+            and event_run.user_id
+        )
+        else (None, {"has_streamed": False})
+    )
 
     try:
         with (
@@ -156,34 +148,26 @@ async def _run_event_task(event_run: EventRunContext) -> None:
             if activity_callback:
                 activity_callback("thinking", "is thinking about it...", True)
 
-            result = await agent_instance.run(
+            await agent_instance.run(
                 task=event_run.task,
                 conversation_id=event_run.conversation_id,
                 mode=event_run.mode,
                 user_id=event_run.user_id,
                 status_callback=activity_callback,
                 response_callback=response_callback,
+                preload_tools=list(event_run.preload_tools) if event_run.preload_tools else None,
             )
-
-            created = None
-            if reply_publisher and _should_publish_event_result(event_run, result):
-                created = reply_publisher.publish(
-                    reply_target_type=event_run.reply_target_type,
-                    reply_target_id=event_run.reply_target_id,
-                    reply_text=result,
-                    message_id=stream_message_id,
-                )
 
             if (
                 response_callback
                 and reply_publisher
-                and (response_state["has_streamed"] or isinstance(created, dict))
+                and response_state["has_streamed"]
             ):
                 reply_publisher.emit_llm_response_end(
                     recipient_id=event_run.user_id,
                     conversation_id=event_run.conversation_id,
                     message_id=stream_message_id,
-                    message=created if isinstance(created, dict) else None,
+                    message=None,
                 )
 
             if activity_callback:
@@ -196,12 +180,23 @@ async def _run_event_task(event_run: EventRunContext) -> None:
 
 @app.get("/health")
 async def health_check():
+    scheduled_tasks = agent_instance.scheduler.list_tasks() if agent_instance else []
     return {
         "status": "ok",
         "uptime_seconds": (datetime.utcnow() - start_time).total_seconds(),
         "last_heartbeat": last_heartbeat.isoformat() if last_heartbeat else None,
         "agent_name": agent_instance.config.agent.name if agent_instance else None,
+        "scheduled_tasks": len(scheduled_tasks),
     }
+
+
+@app.get("/tasks")
+async def list_tasks():
+    """List all scheduled tasks (debug/monitoring endpoint)."""
+    if not agent_instance:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    tasks = agent_instance.scheduler.list_tasks()
+    return {"tasks": [t.model_dump() for t in tasks]}
 
 
 @app.post("/run")
