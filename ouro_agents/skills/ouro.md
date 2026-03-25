@@ -1,3 +1,8 @@
+---
+description: Creating, sharing, and discovering assets on the Ouro platform
+load: stub
+---
+
 # Ouro Platform Skill
 
 Ouro is for creating, sharing, and discovering assets (`post`, `dataset`, `file`, `route`, `service`) inside organizations and teams.

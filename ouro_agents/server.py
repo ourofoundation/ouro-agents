@@ -10,7 +10,9 @@ from pydantic import BaseModel
 
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
+from .logging_config import uvicorn_log_config
 from .events import EventRunContext, build_event_run_context
+from .provenance import resolve_event_provenance
 from .publisher import OuroReplyPublisher
 
 app = FastAPI(title="Ouro Agents Server")
@@ -126,6 +128,15 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         logger.warning("Skipping event run because the agent is not initialized")
         return
 
+    # Route active/pending plan feedback to the dedicated review path
+    prov = event_run.provenance
+    if prov and prov.is_plan_feedback:
+        try:
+            await agent_instance.handle_plan_feedback(event_run)
+        except Exception:
+            logger.exception("Failed to handle plan feedback event")
+        return
+
     stream_message_id = str(uuid4())
     activity_callback = _make_activity_callback(event_run)
     response_callback, response_state = (
@@ -156,6 +167,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 status_callback=activity_callback,
                 response_callback=response_callback,
                 preload_tools=list(event_run.preload_tools) if event_run.preload_tools else None,
+                asset_refs=list(event_run.asset_refs) if event_run.asset_refs else None,
             )
 
             if (
@@ -237,10 +249,33 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         raise HTTPException(status_code=503, detail="Agent not initialized")
 
     try:
-        event_run = build_event_run_context(body)
+        # Resolve provenance before building the event context so task
+        # framing can be plan-aware from the start.
+        event_data = body.get("data", {})
+        source_id = event_data.get("source_id")
+        planning_cfg = agent_instance.config.planning
+
+        provenance = resolve_event_provenance(
+            source_id=source_id,
+            event_data=event_data,
+            workspace=agent_instance.config.agent.workspace,
+            planning_team_id=planning_cfg.team_id,
+            planning_org_id=planning_cfg.org_id,
+            planning_enabled=planning_cfg.enabled,
+        )
+
+        event_run = build_event_run_context(body, provenance=provenance)
     except Exception as exc:
         logger.warning("Invalid webhook payload: %s", body)
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}")
+
+    if provenance and (provenance.is_plan_feedback or provenance.in_planning_space):
+        logger.info(
+            "Event provenance: plan_feedback=%s historical=%s planning_space=%s",
+            provenance.is_plan_feedback,
+            provenance.is_historical_plan_feedback,
+            provenance.in_planning_space,
+        )
 
     background_tasks.add_task(_run_event_task, event_run)
 
@@ -254,4 +289,5 @@ def start_server(config_path: str = "config.json"):
         host=config.server.host,
         port=config.server.port,
         reload=True,
+        log_config=uvicorn_log_config(),
     )

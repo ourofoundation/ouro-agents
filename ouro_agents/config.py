@@ -13,10 +13,27 @@ class RunMode(str, Enum):
     HEARTBEAT = "heartbeat"
 
 
+class ToolPreloadConfig(BaseModel):
+    """Tools to auto-preload per run mode, saving a load_tool call."""
+    chat: List[str] = Field(default_factory=lambda: ["ouro:send_message"])
+    autonomous: List[str] = Field(default_factory=list)
+    heartbeat: List[str] = Field(default_factory=list)
+
+
+class MainAgentMaxStepsConfig(BaseModel):
+    """Max tool-calling loop steps for the main smolagents agent (default is 20)."""
+
+    chat: int = 20
+    autonomous: int = 20
+    heartbeat: int = 20
+
+
 class AgentConfig(BaseModel):
     name: str
     model: str
     workspace: Path = Path("./workspace")
+    preload_tools: ToolPreloadConfig = Field(default_factory=ToolPreloadConfig)
+    max_steps: MainAgentMaxStepsConfig = Field(default_factory=MainAgentMaxStepsConfig)
 
 
 class PromptCachingConfig(BaseModel):
@@ -60,9 +77,9 @@ class MemoryConfig(BaseModel):
     embedder: str
     search_limit: int = 10
     retrieval_queries: int = 3
-    max_retrieval_tokens: int = 800
+    max_retrieval_tokens: int = 4000
     consolidation_enabled: bool = True
-    memory_md_max_tokens: int = 1500
+    memory_md_max_tokens: int = 4000
     mid_session_reflection_interval: int = 10
     decay_after_days: int = 30
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
@@ -73,6 +90,30 @@ class ServerConfig(BaseModel):
     port: int = 8000
 
 
+class PlanningConfig(BaseModel):
+    enabled: bool = False
+    cadence: str = "1d"
+    min_heartbeats: int = 4
+    review_window: str = "2h"
+    auto_approve: bool = True
+    team_id: Optional[str] = None
+    org_id: Optional[str] = None
+
+
+class SubAgentOverride(BaseModel):
+    """Per-profile config overrides (e.g. use a different model for the planner)."""
+    model: Optional[str] = None
+    max_steps: Optional[int] = None
+
+
+class SubAgentConfig(BaseModel):
+    enabled: bool = True
+    default_model: Optional[str] = None
+    overrides: Dict[str, SubAgentOverride] = Field(default_factory=dict)
+    custom_profiles_dir: Optional[str] = None
+    parallel_dispatch: bool = True
+
+
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
@@ -80,6 +121,8 @@ class OuroAgentsConfig(BaseSettings):
     mcp_servers: List[MCPServerConfig]
     memory: MemoryConfig
     server: ServerConfig = Field(default_factory=ServerConfig)
+    subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
+    planning: PlanningConfig = Field(default_factory=PlanningConfig)
 
     @classmethod
     def load_from_file(cls, path: str | Path) -> "OuroAgentsConfig":

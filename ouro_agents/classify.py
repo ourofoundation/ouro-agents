@@ -1,94 +1,89 @@
+"""Lightweight task classification utilities.
+
+The LLM-based classifier has been replaced by the preflight subagent.
+This module retains only the regex-based trivial-message detection and
+the PreflightResult dataclass for structured preflight output.
+"""
+
 import json
 import logging
+import re
 from dataclasses import dataclass, field
-from typing import Optional
-
-from smolagents import OpenAIModel
 
 logger = logging.getLogger(__name__)
 
-INTENTS = [
-    "question",    # asking for information, no side effects
-    "create",      # producing new content (post, dataset, file)
-    "analyze",     # data exploration, computation, research
-    "research",    # web search + synthesis
-    "manage",      # admin tasks: notifications, team ops, file org
-    "converse",    # casual chat, greetings, follow-ups
-]
+_TRIVIAL_PATTERNS = re.compile(
+    r"^("
+    r"h(i|ey|ello|owdy|ola)"
+    r"|yo\b"
+    r"|sup\b"
+    r"|thanks?( you)?\.?"
+    r"|thank(s| you)( so much)?!?"
+    r"|ty\b"
+    r"|ok(ay)?\.?"
+    r"|sure\.?"
+    r"|got it\.?"
+    r"|cool\.?"
+    r"|nice\.?"
+    r"|great\.?"
+    r"|awesome\.?"
+    r"|perfect\.?"
+    r"|sounds good\.?"
+    r"|good morning\.?"
+    r"|good afternoon\.?"
+    r"|good evening\.?"
+    r"|good night\.?"
+    r"|gm\b"
+    r"|gn\b"
+    r"|bye\.?"
+    r"|goodbye\.?"
+    r"|see ya\.?"
+    r"|lgtm\.?"
+    r"|np\.?"
+    r"|no worries\.?"
+    r"|nvm\.?"
+    r"|never\s*mind\.?"
+    r"|👋|🙏|👍|😊"
+    r")$",
+    re.IGNORECASE,
+)
 
-SKILL_NAMES = ["ouro", "python", "filesystem", "web-search"]
 
-MCP_SERVERS = ["ouro", "filesystem", "search"]
+def is_trivial_message(text: str) -> bool:
+    """Return True for greetings, acknowledgments, and other trivial messages."""
+    return bool(_TRIVIAL_PATTERNS.match(text.strip()))
 
 
 @dataclass
-class TaskClassification:
+class PreflightResult:
+    """Structured output from the preflight subagent."""
+
     intent: str = "converse"
-    complexity: str = "simple"          # simple | moderate | complex
-    needs_planning: bool = False
-    relevant_skills: list[str] = field(default_factory=list)
-    relevant_servers: list[str] = field(default_factory=list)
+    complexity: str = "simple"
     worth_remembering: bool = True
+    briefing: str = ""
+    plan: str = ""
 
     @property
     def is_trivial(self) -> bool:
         return self.intent == "converse" and self.complexity == "simple"
 
 
-CLASSIFY_PROMPT = f"""\
-You are a task classifier for an AI agent. Given a user message, output a JSON object with these fields:
-
-- "intent": one of {json.dumps(INTENTS)}
-- "complexity": "simple" | "moderate" | "complex"
-- "needs_planning": true if the task has multiple distinct steps or ambiguity that benefits from a plan
-- "relevant_skills": subset of {json.dumps(SKILL_NAMES)} the agent will likely need
-- "relevant_servers": subset of {json.dumps(MCP_SERVERS)} whose tools the agent will likely call
-- "worth_remembering": false for greetings, acknowledgments, trivial follow-ups; true otherwise
-
-Rules:
-- "simple" = answerable in one step or a direct reply
-- "moderate" = 2-3 tool calls, straightforward
-- "complex" = multi-step, research + synthesis, or ambiguous scope
-- When unsure, lean toward including more skills/servers rather than fewer
-- Output ONLY valid JSON, no markdown fences, no explanation
-"""
-
-
-def classify_task(
-    task: str,
-    model: OpenAIModel,
-    conversation_summary: Optional[str] = None,
-) -> TaskClassification:
-    """Classify a task using a cheap LLM call before full execution."""
-    user_content = f"Task: {task}"
-    if conversation_summary:
-        user_content = f"Conversation context: {conversation_summary}\n\n{user_content}"
+def parse_preflight_result(raw: str) -> PreflightResult:
+    """Parse the JSON output of the preflight subagent into a PreflightResult."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
     try:
-        result = model(
-            [
-                {"role": "system", "content": CLASSIFY_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-        )
-        text = result.content if hasattr(result, "content") else str(result)
-
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
         data = json.loads(text)
-        return TaskClassification(
+        return PreflightResult(
             intent=data.get("intent", "converse"),
             complexity=data.get("complexity", "simple"),
-            needs_planning=data.get("needs_planning", False),
-            relevant_skills=[s for s in data.get("relevant_skills", []) if s in SKILL_NAMES],
-            relevant_servers=[s for s in data.get("relevant_servers", []) if s in MCP_SERVERS],
             worth_remembering=data.get("worth_remembering", True),
+            briefing=data.get("briefing", ""),
+            plan=data.get("plan", ""),
         )
     except Exception as e:
-        logger.warning("Task classification failed, using defaults: %s", e)
-        return TaskClassification(
-            relevant_skills=list(SKILL_NAMES),
-            relevant_servers=list(MCP_SERVERS),
-        )
+        logger.warning("Failed to parse preflight result, using defaults: %s", e)
+        return PreflightResult(briefing=text if text else "")

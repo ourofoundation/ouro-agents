@@ -14,10 +14,9 @@ from typing import Optional
 
 from . import MemoryBackend
 from ..config import MemoryConfig
+from ..constants import CHARS_PER_TOKEN
 
 logger = logging.getLogger(__name__)
-
-CHARS_PER_TOKEN = 4
 
 COMPACTION_PROMPT = """\
 You are a memory curator. Given the current contents of MEMORY.md (the agent's

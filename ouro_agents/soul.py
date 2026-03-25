@@ -4,10 +4,9 @@ from pathlib import Path
 from typing import Optional
 
 from .config import RunMode
+from .constants import CHARS_PER_TOKEN
 
 logger = logging.getLogger(__name__)
-
-CHARS_PER_TOKEN = 4
 
 
 def load_soul(path: Path) -> str:
@@ -18,19 +17,15 @@ def load_soul(path: Path) -> str:
 
 
 MCP_TOOL_RULES = (
-    "- MCP tools are deferred. Pick one from the deferred tool directory below.\n"
-    "- To use a tool: call `load_tool` with the tool name, then call the tool directly by its `call_as` name.\n"
-    "  Example: load_tool('ouro:search_assets') → search_assets(query='...')\n"
-    "- Never pass placeholder values (e.g. `<path_to_file>`). Use real values only.\n"
-    "- If a tool call fails, fix arguments and retry one time before giving up.\n"
-    "- Prefer fully-qualified names like `ouro:create_post` when calling `load_tool`.\n"
-    "- For content/topic questions on Ouro (e.g. 'what's new in X?'), usually use `ouro:search_assets` "
-    "(and optionally `ouro:get_team_activity`).\n"
-    "- Ouro chat: use `load_tool('ouro:send_message')` then `send_message(conversation_id=..., text=...)` "
-    "to post a reply in a conversation. Use the `conversation_id` from the task or context (UUID).\n"
-    "- PATHS: All file paths (filesystem tools AND run_python helpers) are relative to the workspace root.\n"
-    "  Use 'report.md' or 'data/file.json' — NOT 'workspace/report.md' or './workspace/data/file.json'.\n"
-    "- OPTIONAL PARAMS: Omit optional parameters you don't need. Do NOT pass 'null' or None — just leave them out."
+    '- MCP tools are deferred. Call `load_tool(["ouro:tool_name"])`, then call the tool by its `call_as` name. '
+    "Preloaded tools (listed below when present) can be called directly — no `load_tool` needed.\n"
+    "- Emit real tool calls only — no narration, pseudo-JSON, or plain-text pseudo-calls.\n"
+    "- Omit optional params you don't need (don't pass null). Retry once on failure, then move on.\n"
+    "- Batch where possible: load_tool, memory_recall, memory_store, and delegate all accept arrays.\n"
+    "- File paths are always relative to the workspace root (e.g. 'data/file.json', not 'workspace/data/file.json').\n"
+    "- Link assets in markdown with `[label](asset:<uuid>)` or typed `post:`/`file:`/`dataset:` links.\n"
+    "- For complex multi-step workflows or batch operations, delegate to the `developer` subagent — "
+    "it has direct access to the Ouro Python SDK."
 )
 
 CHAT_FRAMING = (
@@ -52,6 +47,19 @@ HEARTBEAT_FRAMING = (
     "— quality over quantity. If nothing feels worth doing, it's okay to pass."
 )
 
+PLANNING_FRAMING = (
+    "You are entering a planning phase. Review recent activity, your memory, "
+    "and ongoing work, then create a plan for the upcoming period. "
+    "Be thoughtful and realistic. Publish your plan as an Ouro post "
+    "so your team can review it before you begin."
+)
+
+REVIEW_FRAMING = (
+    "You have a pending plan that may have received human feedback. "
+    "Check for comments on the plan post, incorporate any feedback, "
+    "and finalize the plan."
+)
+
 _MODE_FRAMING = {
     RunMode.CHAT: CHAT_FRAMING,
     RunMode.AUTONOMOUS: AUTONOMOUS_FRAMING,
@@ -60,19 +68,20 @@ _MODE_FRAMING = {
 
 # Section ordering — lower number = higher priority = appears first in prompt
 SECTION_PRIORITY = {
-    "mode":               1,
-    "current_datetime":   2,
-    "soul":               3,
-    "platform_context":   4,
-    "user_model":         5,
-    "output":             6,
-    "notes":              7,
+    "mode": 1,
+    "current_datetime": 2,
+    "soul": 3,
+    "platform_context": 4,
+    "user_model": 5,
+    "output": 6,
+    "notes": 7,
     "conversation_state": 8,
-    "entity_context":     9,
-    "conversation":      10,
-    "working_memory":    11,
-    "tool_rules":        12,
-    "skills":            13,
+    "entity_context": 9,
+    "conversation": 10,
+    "working_memory": 11,
+    "subagents": 12,
+    "tool_rules": 13,
+    "skills": 14,
 }
 
 
@@ -80,13 +89,21 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
 
 
-SYSTEM_PROMPT_TOKEN_BUDGET = 12000
+SYSTEM_PROMPT_TOKEN_BUDGET = 64000
 
 # Sections that should never be truncated, in order of protection
-_PROTECTED_SECTIONS = {"mode", "current_datetime", "soul", "platform_context", "conversation_state", "output"}
+_PROTECTED_SECTIONS = {"mode", "current_datetime", "soul", "platform_context", "output"}
 
 # Sections that can be truncated, in order of expendability (first = cut first)
-_TRIMMABLE_SECTIONS = ["skills", "entity_context", "working_memory", "user_model", "notes", "conversation"]
+_TRIMMABLE_SECTIONS = [
+    "skills",
+    "entity_context",
+    "working_memory",
+    "user_model",
+    "notes",
+    "conversation",
+    "conversation_state",
+]
 
 
 def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
@@ -112,7 +129,9 @@ def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
         # Trim by removing content from the end, keeping the header
         max_chars = max(400, (section_tokens - overage) * CHARS_PER_TOKEN)
         if max_chars < len(sections[section_key]):
-            sections[section_key] = sections[section_key][:max_chars] + "\n[...truncated]"
+            sections[section_key] = (
+                sections[section_key][:max_chars] + "\n[...truncated]"
+            )
             saved = section_tokens - _estimate_tokens(sections[section_key])
             overage -= saved
             logger.info(
@@ -133,6 +152,17 @@ def _current_datetime_section() -> str:
     )
 
 
+# Sections that change every turn and should live in the task message
+# (not the system prompt) to enable prefix caching on the static part.
+_DYNAMIC_SECTIONS = {
+    "conversation_state",
+    "entity_context",
+    "working_memory",
+    "conversation",
+    "user_model",
+}
+
+
 def build_prompt(
     soul: str,
     notes: str,
@@ -144,12 +174,18 @@ def build_prompt(
     user_model: str = "",
     entity_context: str = "",
     deferred_tool_directory: str = "",
+    subagent_directory: str = "",
     mode_framing_override: str = "",
     platform_context: str = "",
     chat_conversation_id: Optional[str] = None,
     preloaded_tool_names: Optional[list[str]] = None,
-) -> str:
-    """Assemble the full system prompt, ordered by section priority."""
+) -> tuple[str, str]:
+    """Assemble the system prompt and dynamic context.
+
+    Returns (system_prompt, dynamic_context) where:
+    - system_prompt: stable sections suitable for LLM prefix caching
+    - dynamic_context: per-turn sections to prepend to the task message
+    """
 
     sections: dict[str, str] = {}
 
@@ -166,9 +202,7 @@ def build_prompt(
         sections["soul"] = f"## IDENTITY AND RULES (SOUL)\n{soul}"
 
     if platform_context:
-        sections["platform_context"] = (
-            f"## PLATFORM CONTEXT\n{platform_context}"
-        )
+        sections["platform_context"] = f"## PLATFORM CONTEXT\n{platform_context}"
 
     if user_model:
         sections["user_model"] = f"## USER CONTEXT\n{user_model}"
@@ -183,18 +217,32 @@ def build_prompt(
         sections["working_memory"] = f"## WORKING MEMORY\n{working_memory}"
 
     if conversation_state:
-        sections["conversation_state"] = (
-            f"## CONVERSATION STATE\n{conversation_state}"
-        )
+        sections["conversation_state"] = f"## CONVERSATION STATE\n{conversation_state}"
 
     if entity_context:
-        sections["entity_context"] = (
-            f"## ACTIVE CONTEXT\n{entity_context}"
-        )
+        sections["entity_context"] = f"## ACTIVE CONTEXT\n{entity_context}"
 
     if conversation_context:
         sections["conversation"] = (
             f"## RECENT CONVERSATION (most recent last)\n{conversation_context}"
+        )
+
+    if subagent_directory:
+        sections["subagents"] = (
+            "## SUBAGENTS (use `delegate` tool to invoke)\n"
+            "You have specialized subagents that run in their own context window. "
+            "Delegate when the work is self-contained, heavy, or would meaningfully pollute your main context — "
+            "not for quick lookups or simple one-step actions. "
+            "Use `research` for web-search-heavy investigation or multi-source synthesis. "
+            "Use `writer` for final posts, polished drafts, and other quality-sensitive writing tasks. "
+            "Use `developer` for complex Ouro SDK workflows, batch operations, and multi-step data pipelines. "
+            "Call `delegate` with a list of task specs — each has `subagent`, `task`, and optionally "
+            "`asset_refs` (Ouro asset UUIDs) and `return_mode`. Multiple tasks run in parallel automatically. "
+            "Subagents save their output as Ouro assets (posts, files, datasets) and return a compact "
+            "JSON handoff with `asset_id`, `name`, and `description`. "
+            "Use `get_asset(asset_id)` to read the full content when needed. "
+            "Do not write plain-text pseudo-calls like `delegate(...)`.\n\n"
+            f"{subagent_directory}"
         )
 
     if deferred_tool_directory:
@@ -216,14 +264,11 @@ def build_prompt(
         _preloaded = set(preloaded_tool_names or [])
         if "send_message" in _preloaded:
             send_instr = (
-                "post your reply with `send_message(conversation_id=..., text=...)` "
+                "post your reply by calling `send_message` with the real `conversation_id` and reply text "
                 "(already loaded)."
             )
         else:
-            send_instr = (
-                "post your reply with `load_tool('ouro:send_message')` then "
-                "`send_message(conversation_id=..., text=...)`."
-            )
+            send_instr = "load `ouro:send_message`, then call `send_message` with the real `conversation_id` and reply text."
         sections["output"] = (
             "## OUTPUT FORMAT\n"
             f"If the task or context includes an Ouro `conversation_id` (or you are clearly in an Ouro chat): "
@@ -238,7 +283,8 @@ def build_prompt(
             "## OUTPUT FORMAT\n"
             "For simple replies (greetings, acknowledgments, or when no tools are needed), "
             "call the `final_answer` tool directly with your response. "
-            "Never respond with plain text outside a tool call."
+            "Never respond with plain text outside a tool call. "
+            "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON."
         )
 
     ordered_keys = sorted(
@@ -248,9 +294,22 @@ def build_prompt(
 
     _enforce_budget(sections, ordered_keys)
 
-    total_tokens = sum(_estimate_tokens(sections[k]) for k in ordered_keys)
+    # Split into static (cacheable) and dynamic (per-turn) sections
+    static_keys = [k for k in ordered_keys if k not in _DYNAMIC_SECTIONS]
+    dynamic_keys = [k for k in ordered_keys if k in _DYNAMIC_SECTIONS]
+
+    static_tokens = sum(_estimate_tokens(sections[k]) for k in static_keys)
+    dynamic_tokens = sum(_estimate_tokens(sections[k]) for k in dynamic_keys)
     logger.info(
-        "System prompt: ~%d tokens across %d sections", total_tokens, len(ordered_keys)
+        "System prompt: ~%d static tokens + ~%d dynamic tokens across %d sections",
+        static_tokens,
+        dynamic_tokens,
+        len(ordered_keys),
     )
 
-    return "\n\n---\n\n".join(sections[k] for k in ordered_keys)
+    system_prompt = "\n\n---\n\n".join(sections[k] for k in static_keys)
+    dynamic_context = (
+        "\n\n---\n\n".join(sections[k] for k in dynamic_keys) if dynamic_keys else ""
+    )
+
+    return system_prompt, dynamic_context

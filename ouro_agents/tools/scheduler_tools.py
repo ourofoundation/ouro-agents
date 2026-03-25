@@ -7,7 +7,7 @@ from typing import Optional
 
 from smolagents import tool
 
-from ..scheduler import AgentScheduler, ScheduledTask, SYSTEM_HEARTBEAT_ID
+from ..scheduler import AgentScheduler, ScheduledTask, SYSTEM_PROTECTED_IDS
 
 
 def make_scheduler_tools(scheduler: AgentScheduler) -> list:
@@ -130,8 +130,8 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
         Args:
             task_id: The ID of the task to delete
         """
-        if task_id == SYSTEM_HEARTBEAT_ID:
-            return json.dumps({"error": "Cannot delete the system heartbeat task."})
+        if task_id in SYSTEM_PROTECTED_IDS:
+            return json.dumps({"error": "Cannot delete a system task."})
 
         removed = scheduler.remove_task(task_id)
         if not removed:

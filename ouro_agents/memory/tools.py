@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 from typing import Optional
@@ -14,51 +15,107 @@ def make_memory_tools(
     workspace: Optional[Path] = None,
 ) -> list:
 
-    @tool
-    def memory_store(fact: str, category: str = "general", importance: float = 0.5) -> str:
-        """Store an important fact in long-term memory with optional categorization.
-        Args:
-            fact: The fact to remember
-            category: One of: fact, preference, learning, decision, observation, general
-            importance: How important this is (0.0-1.0). 0.3=minor, 0.5=normal, 0.7=significant, 0.9=critical
-        """
-        valid_categories = set(CATEGORY_LABELS.keys())
-        if category not in valid_categories:
-            category = "general"
-        importance = max(0.0, min(1.0, importance))
-
-        backend.add(
-            fact,
-            agent_id=agent_id,
-            user_id=user_id,
-            metadata={
-                "category": category,
-                "importance": importance,
-                "source": "manual",
-            },
-        )
-        return f"Stored [{category}, importance={importance}]: {fact}"
+    valid_categories = set(CATEGORY_LABELS.keys())
 
     @tool
-    def memory_recall(query: str, category: str = "", limit: int = 5) -> str:
-        """Search memory for facts relevant to a query, optionally filtered by category.
-        Args:
-            query: What to search for
-            category: Optional filter — one of: fact, preference, learning, decision, observation, general. Leave empty for all.
-            limit: Max results
-        """
-        results = backend.search(query=query, agent_id=agent_id, user_id=user_id, limit=limit)
-        if category:
-            results = [r for r in results if r.category == category]
-        if not results:
-            return "No relevant memories found."
+    def memory_store(facts: list) -> str:
+        """Store one or more facts in long-term memory.
 
-        lines: list[str] = []
-        for r in results:
-            score_str = f" (score={r.score:.2f})" if r.score > 0 else ""
-            cat_str = f" [{r.category}]" if r.category != "general" else ""
-            lines.append(f"- {r.text}{cat_str}{score_str}")
-        return "\n".join(lines)
+        Args:
+            facts: List of facts to store. Each is a dict with keys:
+                - fact (str, required): The fact to remember
+                - category (str, optional): One of: fact, preference, learning, decision, observation, general (default: general)
+                - importance (float, optional): 0.0–1.0. 0.3=minor, 0.5=normal, 0.7=significant, 0.9=critical (default: 0.5)
+
+        Example single:  [{"fact": "User prefers dark mode", "category": "preference"}]
+        Example multi:   [{"fact": "Uses PostgreSQL", "category": "fact"}, {"fact": "Prefers concise answers", "category": "preference", "importance": 0.7}]
+        """
+        if not facts:
+            return "No facts provided."
+
+        results: list[str] = []
+        for entry in facts:
+            if isinstance(entry, str):
+                entry = {"fact": entry}
+            fact = entry.get("fact", "")
+            if not fact:
+                continue
+            cat = entry.get("category", "general")
+            if cat not in valid_categories:
+                cat = "general"
+            imp = max(0.0, min(1.0, float(entry.get("importance", 0.5))))
+
+            backend.add(
+                fact,
+                agent_id=agent_id,
+                user_id=user_id,
+                metadata={
+                    "category": cat,
+                    "importance": imp,
+                    "source": "manual",
+                },
+            )
+            results.append(f"Stored [{cat}, importance={imp}]: {fact}")
+
+        return "\n".join(results) if results else "No valid facts provided."
+
+    @tool
+    def memory_recall(queries: list) -> str:
+        """Search memory for facts relevant to one or more queries. Results are grouped by query.
+
+        Args:
+            queries: List of search specs. Each is a dict with keys:
+                - query (str, required): What to search for
+                - category (str, optional): Filter — one of: fact, preference, learning, decision, observation, general. Omit for all.
+                - limit (int, optional): Max results per query (default: 5)
+
+        Example single:  [{"query": "user's favorite language"}]
+        Example multi:   [{"query": "API preferences"}, {"query": "past decisions about auth", "category": "decision"}]
+        """
+        if not queries:
+            return "No queries provided."
+
+        def _search_one(spec: dict) -> tuple[str, list[str]]:
+            if isinstance(spec, str):
+                spec = {"query": spec}
+            query = spec.get("query", "")
+            category = spec.get("category", "")
+            limit = int(spec.get("limit", 5))
+
+            results = backend.search(
+                query=query, agent_id=agent_id, user_id=user_id, limit=limit,
+            )
+            if category:
+                results = [r for r in results if r.category == category]
+
+            lines: list[str] = []
+            for r in results:
+                score_str = f" (score={r.score:.2f})" if r.score > 0 else ""
+                cat_str = f" [{r.category}]" if r.category != "general" else ""
+                lines.append(f"- {r.text}{cat_str}{score_str}")
+            return query, lines
+
+        if len(queries) == 1:
+            query, lines = _search_one(queries[0])
+            return "\n".join(lines) if lines else "No relevant memories found."
+
+        all_sections: list[str] = []
+        with ThreadPoolExecutor(max_workers=min(4, len(queries))) as pool:
+            future_to_idx = {
+                pool.submit(_search_one, spec): i for i, spec in enumerate(queries)
+            }
+            ordered: list[tuple[str, list[str]]] = [("", [])] * len(queries)
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                ordered[idx] = future.result()
+
+        for query, lines in ordered:
+            if lines:
+                all_sections.append(f"## Query: \"{query}\"\n" + "\n".join(lines))
+            else:
+                all_sections.append(f"## Query: \"{query}\"\nNo relevant memories found.")
+
+        return "\n\n".join(all_sections)
 
     @tool
     def memory_status() -> str:

@@ -22,6 +22,8 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pydantic import BaseModel, Field
 
+from .heartbeat import format_active_period_status
+
 logger = logging.getLogger(__name__)
 
 MAX_TASKS = 50
@@ -157,6 +159,7 @@ def parse_trigger(schedule: str, tz: str = "UTC"):
 # ---------------------------------------------------------------------------
 
 SYSTEM_HEARTBEAT_ID = "system:heartbeat"
+SYSTEM_PROTECTED_IDS = frozenset({SYSTEM_HEARTBEAT_ID})
 
 
 class AgentScheduler:
@@ -280,7 +283,11 @@ class AgentScheduler:
             misfire_grace_time=300,
             replace_existing=True,
         )
-        logger.info("Registered heartbeat: every %s", heartbeat_config.every)
+        logger.info(
+            "Registered heartbeat: every %s; %s",
+            heartbeat_config.every,
+            format_active_period_status(heartbeat_config),
+        )
 
     async def _execute_heartbeat(self) -> None:
         if not self._agent:

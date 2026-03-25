@@ -10,13 +10,14 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "smolagents[mcp]",
+    "rich",
     "fastapi",
     "uvicorn",
     "pydantic",
     "pydantic-settings",
     "apscheduler",
     "mem0ai",
-    "chromadb",
+    "chromadb<1.0",
     "anthropic",
     "openai",
     "mcp",

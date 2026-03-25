@@ -2,11 +2,33 @@
   "agent": {
     "name": "feynman",
     "model": "xiaomi/mimo-v2-omni",
-    "workspace": "./workspace"
+    "workspace": "./workspace",
+    "max_steps": {
+      "chat": 40,
+      "autonomous": 60,
+      "heartbeat": 60
+    }
   },
-  "prompt_caching": {
+  "subagents": {
+    "overrides": {
+      "research": {
+        "model": "xiaomi/mimo-v2-flash",
+        "max_steps": 30
+      },
+      "writer": {
+        "model": "anthropic/claude-4.6-sonnet"
+      },
+      "executor": { "max_steps": 24 }
+    }
+  },
+  "planning": {
     "enabled": true,
-    "ttl": "5m"
+    "cadence": "4h",
+    "min_heartbeats": 4,
+    "review_window": "1h",
+    "auto_approve": false,
+    "team_id": "019d1d59-21a9-76cb-90de-eaea75bf319d",
+    "org_id": "00000000-0000-0000-0000-000000000000"
   },
   "heartbeat": {
     "enabled": true,
@@ -20,6 +42,22 @@
     "proactive": {
       "enabled": true,
       "servers": ["ouro", "search"]
+    }
+  },
+  "memory": {
+    "provider": "mem0",
+    "path": "./workspace/memory",
+    "extraction_model": "xiaomi/mimo-v2-flash",
+    "embedder": "text-embedding-3-small",
+    "search_limit": 10,
+    "retrieval_queries": 3,
+    "max_retrieval_tokens": 1500,
+    "consolidation_enabled": true,
+    "memory_md_max_tokens": 1500,
+    "mid_session_reflection_interval": 5,
+    "decay_after_days": 30,
+    "graph": {
+      "enabled": false
     }
   },
   "mcp_servers": [
@@ -43,24 +81,12 @@
       }
     }
   ],
-  "memory": {
-    "provider": "mem0",
-    "path": "./workspace/memory",
-    "extraction_model": "google/gemini-2.5-flash",
-    "embedder": "text-embedding-3-small",
-    "search_limit": 10,
-    "retrieval_queries": 3,
-    "max_retrieval_tokens": 800,
-    "consolidation_enabled": true,
-    "memory_md_max_tokens": 1500,
-    "mid_session_reflection_interval": 5,
-    "decay_after_days": 30,
-    "graph": {
-      "enabled": false
-    }
-  },
   "server": {
     "host": "0.0.0.0",
     "port": 8000
+  },
+  "prompt_caching": {
+    "enabled": true,
+    "ttl": "5m"
   }
 }

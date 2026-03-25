@@ -1,9 +1,10 @@
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from datetime import datetime, timezone
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 from .config import HeartbeatConfig
 
@@ -27,6 +28,7 @@ def is_within_active_hours(config: HeartbeatConfig) -> bool:
 
     try:
         import zoneinfo
+
         tz = zoneinfo.ZoneInfo(tz_str) if tz_str else None
     except (ImportError, KeyError):
         logger.warning("Invalid timezone %s, treating as always active", tz_str)
@@ -44,12 +46,29 @@ def is_within_active_hours(config: HeartbeatConfig) -> bool:
     return current_time >= start or current_time <= end
 
 
+def format_active_period_status(config: HeartbeatConfig) -> str:
+    """One-line summary for logging: configured window (if any) and whether now is inside it."""
+    if not config.active_hours:
+        return "active_period=always"
+
+    start_str = config.active_hours.get("start")
+    end_str = config.active_hours.get("end")
+    tz_label = config.active_hours.get("timezone") or "local"
+
+    if not start_str or not end_str:
+        return "active_period=always (active_hours missing start/end)"
+
+    in_window = is_within_active_hours(config)
+    state = "active" if in_window else "inactive"
+    return f"period={start_str}–{end_str} ({tz_label}); now={state}"
+
+
 def start_scheduler(agent, config: HeartbeatConfig):
     from .agent import OuroAgent
 
     scheduler = AsyncIOScheduler()
 
-    match = re.match(r'(\d+)([smhd])', config.every)
+    match = re.match(r"(\d+)([smhd])", config.every)
     if not match:
         logger.error("Invalid heartbeat interval: %s", config.every)
         return
@@ -58,14 +77,14 @@ def start_scheduler(agent, config: HeartbeatConfig):
     unit = match.group(2)
 
     kwargs = {}
-    if unit == 's':
-        kwargs['seconds'] = val
-    elif unit == 'm':
-        kwargs['minutes'] = val
-    elif unit == 'h':
-        kwargs['hours'] = val
-    elif unit == 'd':
-        kwargs['days'] = val
+    if unit == "s":
+        kwargs["seconds"] = val
+    elif unit == "m":
+        kwargs["minutes"] = val
+    elif unit == "h":
+        kwargs["hours"] = val
+    elif unit == "d":
+        kwargs["days"] = val
 
     trigger = IntervalTrigger(**kwargs)
 
@@ -78,6 +97,7 @@ def start_scheduler(agent, config: HeartbeatConfig):
         try:
             logger.info("Running heartbeat...")
             import ouro_agents.server as server_module
+
             server_module.last_heartbeat = datetime.utcnow()
 
             await agent.heartbeat()

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from smolagents import tool
 from smolagents.local_python_executor import LocalPythonExecutor
+
+if TYPE_CHECKING:
+    from ouro.client import Ouro
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_AUTHORIZED_IMPORTS = [
     "json",
@@ -25,6 +31,14 @@ DEFAULT_AUTHORIZED_IMPORTS = [
     "base64",
     "glob",
     "urllib.parse",
+]
+
+OURO_AUTHORIZED_IMPORTS = [
+    "ouro",
+    "ouro.client",
+    "ouro.resources",
+    "ouro.models",
+    "httpx",
 ]
 
 
@@ -136,14 +150,45 @@ def _make_workspace_fs(workspace: Path) -> dict:
     }
 
 
+def _make_ouro_helpers(ouro_client: "Ouro") -> dict:
+    """Create a pre-authenticated ``ouro`` accessor for the sandbox.
+
+    Returns a dict with a single ``get_ouro_client`` callable that the
+    sandboxed code can use to obtain the live Ouro SDK client.
+    """
+
+    def get_ouro_client():
+        """Return a pre-authenticated Ouro SDK client.
+
+        The client is already authenticated — no API key needed.
+        Use it to interact with the Ouro platform directly:
+
+            ouro = get_ouro_client()
+            results = ouro.assets.search("climate data")
+            post = ouro.posts.create(title="Report", content="...", org_id="...", team_id="...")
+            ds = ouro.datasets.get("<uuid>")
+        """
+        return ouro_client
+
+    return {"get_ouro_client": get_ouro_client}
+
+
 def make_python_tool(
     workspace: Optional[Path] = None,
     additional_authorized_imports: list[str] | None = None,
     max_print_outputs_length: int = 50_000,
+    ouro_client: Optional["Ouro"] = None,
 ):
     authorized = DEFAULT_AUTHORIZED_IMPORTS + (additional_authorized_imports or [])
 
+    if ouro_client is not None:
+        authorized += OURO_AUTHORIZED_IMPORTS
+        logger.info("Ouro SDK client injected into Python sandbox")
+
     fs_funcs = _make_workspace_fs(workspace) if workspace else {}
+
+    if ouro_client is not None:
+        fs_funcs.update(_make_ouro_helpers(ouro_client))
 
     executor = LocalPythonExecutor(
         additional_authorized_imports=authorized,
@@ -156,6 +201,25 @@ def make_python_tool(
     # it's used standalone.
     executor.send_tools({})
 
+    ouro_docs = ""
+    if ouro_client is not None:
+        ouro_docs = """
+
+        Ouro SDK (ouro-py) — direct platform access:
+        - Call `get_ouro_client()` to get a pre-authenticated Ouro client (no import needed).
+        - Then use the client's resources: `.posts`, `.datasets`, `.files`, `.assets`,
+          `.conversations`, `.comments`, `.organizations`, `.teams`, `.users`, etc.
+        - Use this for complex multi-step workflows, batch operations, or data pipelines
+          where chaining multiple MCP tool calls would be cumbersome.
+        - You can also `import ouro` or `import httpx` if needed.
+        - Common patterns:
+            ouro = get_ouro_client()
+            results = ouro.assets.search("topic")
+            post = ouro.posts.create(title="My Post", content="...", org_id="...", team_id="...")
+            ds = ouro.datasets.get("<uuid>")
+            rows = ouro.datasets.query("<uuid>", query="SELECT * FROM data LIMIT 10")
+            ouro.files.upload(file_path="report.pdf", org_id="...", team_id="...")"""
+
     @tool
     def run_python(code: str) -> str:
         """Execute Python code in a sandboxed environment with restricted imports.
@@ -165,6 +229,11 @@ def make_python_tool(
 
         State persists between calls within a single run — variables defined in one
         call are available in later calls. Print output is captured alongside the result.
+
+        Important sandbox rules:
+        - Do NOT use open(), pathlib.Path, os, pandas, numpy, or other unlisted libraries.
+        - Only the imports listed below are allowed. If you need filesystem access, use the helpers below instead of imports.
+        - Paths for file helpers are relative to the workspace root.
 
         Authorized imports: json, math, statistics, datetime, re, collections,
         itertools, functools, csv, io, textwrap, hashlib, base64, urllib.parse.
@@ -181,6 +250,11 @@ def make_python_tool(
         - search_files(pattern, path='.') -> list[str]: Find files whose content contains a substring.
         - glob_files(pattern, path='.') -> list[str]: Find files matching a glob pattern.
 
+        Common patterns:
+        - Read JSON: data = json.loads(read_file('data.json'))
+        - Write CSV/text: write_file('out/report.csv', csv_text)
+        - Check files: list_dir('.'), file_exists('foo.txt'), get_file_info('foo.txt')
+
         Args:
             code: Valid Python code to execute.
         """
@@ -195,5 +269,8 @@ def make_python_tool(
         if result.output is not None:
             parts.append(f"[result]\n{result.output}")
         return "\n".join(parts) if parts else "(no output)"
+
+    if ouro_docs:
+        run_python.description += ouro_docs
 
     return run_python, executor

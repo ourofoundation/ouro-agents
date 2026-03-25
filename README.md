@@ -51,6 +51,34 @@ Trigger a heartbeat tick:
 ouro-agents heartbeat
 ```
 
+## Subagents
+
+The main agent can delegate focused work to built-in subagents such as
+`research`, `planner`, `executor`, and `writer`.
+
+You can set a default model for subagents and override individual profiles in
+`config.json`:
+
+```json
+"subagents": {
+  "default_model": "google/gemini-2.5-flash",
+  "overrides": {
+    "writer": {
+      "model": "anthropic/claude-sonnet-4"
+    },
+    "research": {
+      "max_steps": 30
+    }
+  }
+}
+```
+
+- `subagents.default_model`: fallback model used by subagents when a profile
+  does not specify its own override.
+- `subagents.overrides.<name>.model`: choose a model for a specific subagent.
+- `subagents.overrides.<name>.max_steps`: tune the agent loop for agent-mode
+  subagents like `research` and `executor`.
+
 ## Prompt caching (OpenRouter + Anthropic)
 
 `ouro-agents` supports Anthropic prompt caching through OpenRouter. Configure it in `config.json`:

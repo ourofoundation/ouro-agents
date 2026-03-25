@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
 from . import MemoryResult, format_memories
+from ..constants import CHARS_PER_TOKEN
 
 if TYPE_CHECKING:
     from . import MemoryBackend
@@ -21,8 +22,6 @@ if TYPE_CHECKING:
     from ..config import MemoryConfig
 
 logger = logging.getLogger(__name__)
-
-CHARS_PER_TOKEN = 4
 
 QUERY_DECOMPOSITION_PROMPT = """\
 You are a search query generator. Given a user request and conversation context,

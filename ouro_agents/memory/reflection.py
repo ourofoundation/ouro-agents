@@ -116,7 +116,7 @@ def should_reflect_for_conversation(
 
 
 def _load_recent_turns(
-    conversations_dir: Path, conversation_id: str, limit: int = 8
+    conversations_dir: Path, conversation_id: str, limit: int = 20
 ) -> list[dict]:
     """Load the most recent turns from a conversation JSONL."""
     jsonl_path = conversations_dir / f"{conversation_id}.jsonl"
@@ -130,6 +130,40 @@ def _load_recent_turns(
         except json.JSONDecodeError:
             continue
     return turns
+
+
+def parse_reflection_result(text: str) -> ReflectionResult:
+    """Parse an LLM response string into a ReflectionResult.
+
+    Handles markdown fences, and normalizes facts that come as plain strings
+    into the expected dict format. Returns an empty result on parse failure.
+    """
+    try:
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        data = json.loads(text)
+
+        facts_raw = data.get("facts_to_store", [])
+        facts = []
+        for f in facts_raw:
+            if isinstance(f, str):
+                facts.append({"text": f, "category": "fact", "importance": 0.5})
+            elif isinstance(f, dict):
+                facts.append({
+                    "text": f.get("text", ""),
+                    "category": f.get("category", "fact"),
+                    "importance": f.get("importance", 0.5),
+                })
+
+        return ReflectionResult(
+            facts_to_store=facts,
+            user_preferences=data.get("user_preferences", []),
+            daily_log_entry=data.get("daily_log_entry", ""),
+        )
+    except Exception as e:
+        logger.warning("Failed to parse reflection result: %s", e)
+        return ReflectionResult()
 
 
 def reflect(
@@ -162,28 +196,7 @@ def reflect(
             ],
         )
         text = result.content if hasattr(result, "content") else str(result)
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        data = json.loads(text)
-
-        facts_raw = data.get("facts_to_store", [])
-        facts = []
-        for f in facts_raw:
-            if isinstance(f, str):
-                facts.append({"text": f, "category": "fact", "importance": 0.5})
-            elif isinstance(f, dict):
-                facts.append({
-                    "text": f.get("text", ""),
-                    "category": f.get("category", "fact"),
-                    "importance": f.get("importance", 0.5),
-                })
-
-        return ReflectionResult(
-            facts_to_store=facts,
-            user_preferences=data.get("user_preferences", []),
-            daily_log_entry=data.get("daily_log_entry", ""),
-        )
+        return parse_reflection_result(text)
     except Exception as e:
         logger.warning("Reflection LLM call failed: %s", e)
         return ReflectionResult()
