@@ -240,8 +240,9 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
     transparently when possible.
     """
 
-    def __init__(self, *args, compactor_model=None, **kwargs):
+    def __init__(self, *args, compactor_model=None, reply_message_id=None, **kwargs):
         self._compactor_model = compactor_model
+        self._reply_message_id = reply_message_id
         super().__init__(*args, **kwargs)
         _patch_model_for_xml_tool_calls(self.model)
 
@@ -269,7 +270,17 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                         continue
                     cleaned[key] = value
                 arguments = cleaned
+        injected_id = None
+        if (
+            self._reply_message_id
+            and tool_name == "send_message"
+            and isinstance(arguments, dict)
+        ):
+            injected_id = self._reply_message_id
+            arguments = {**arguments, "message_id": injected_id}
         result = super().execute_tool_call(tool_name, arguments)
+        if injected_id is not None:
+            self._reply_message_id = None
         if isinstance(result, str) and len(result) > _MAX_TOOL_OUTPUT_CHARS:
             logger.warning(
                 "Tool '%s' returned %d chars (limit %d); compacting...",

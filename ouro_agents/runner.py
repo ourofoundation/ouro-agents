@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 from .config import OuroAgentsConfig, RunMode
@@ -77,6 +79,17 @@ def main():
 
     run_parser = subparsers.add_parser("run", help="Run a single task")
     run_parser.add_argument("task", help="The task for the agent to perform")
+    run_parser.add_argument(
+        "--debug-md",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write the full system prompt and each agent step to a markdown file. "
+            "With no PATH, uses <workspace>/debug-runs/run-<UTC timestamp>.md"
+        ),
+    )
 
     chat_parser = subparsers.add_parser("chat", help="Start interactive chat mode")
     chat_parser.add_argument(
@@ -104,9 +117,22 @@ def main():
     elif args.command == "run":
         config = OuroAgentsConfig.load_from_file(args.config)
         display.run_header(args.task)
+        debug_md_path = None
+        if getattr(args, "debug_md", None) is not None:
+            ws = config.agent.workspace
+            if args.debug_md == "":
+                debug_md_path = (
+                    ws
+                    / "debug-runs"
+                    / f"run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.md"
+                )
+            else:
+                debug_md_path = Path(args.debug_md).expanduser().resolve()
         with OuroAgent(config) as agent:
-            result = asyncio.run(agent.run(args.task))
+            result = asyncio.run(agent.run(args.task, debug_markdown_path=debug_md_path))
         display.run_result(result)
+        if debug_md_path is not None:
+            display.info(f"Debug markdown written to {debug_md_path}")
     elif args.command == "chat":
         sys.exit(_run_chat(args.config, args.conversation_id, display))
     elif args.command == "heartbeat":

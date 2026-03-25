@@ -6,6 +6,30 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
+# OpenRouter unified `reasoning` request field (effort vs max_tokens; model-dependent).
+ReasoningEffort = Literal["xhigh", "high", "medium", "low", "minimal", "none"]
+
+
+class ReasoningConfig(BaseModel):
+    """Maps to OpenRouter's top-level ``reasoning`` chat-completions parameter."""
+
+    effort: Optional[ReasoningEffort] = None
+    max_tokens: Optional[int] = None
+    exclude: Optional[bool] = None
+    enabled: Optional[bool] = None
+
+
+def merge_reasoning(*layers: Optional[ReasoningConfig]) -> Optional[ReasoningConfig]:
+    """Later layers override earlier ones for each non-None field."""
+    merged: dict[str, Any] = {}
+    for layer in layers:
+        if layer is None:
+            continue
+        merged.update(layer.model_dump(exclude_none=True))
+    if not merged:
+        return None
+    return ReasoningConfig(**merged)
+
 
 class RunMode(str, Enum):
     CHAT = "chat"
@@ -53,6 +77,8 @@ class HeartbeatConfig(BaseModel):
     model: str
     active_hours: Optional[Dict[str, str]] = None
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
+    # Overlay on top-level ``reasoning`` for heartbeat model and other heartbeat=True builds.
+    reasoning: Optional[ReasoningConfig] = None
 
 
 class MCPServerConfig(BaseModel):
@@ -104,6 +130,7 @@ class SubAgentOverride(BaseModel):
     """Per-profile config overrides (e.g. use a different model for the planner)."""
     model: Optional[str] = None
     max_steps: Optional[int] = None
+    reasoning: Optional[ReasoningConfig] = None
 
 
 class SubAgentConfig(BaseModel):
@@ -116,6 +143,8 @@ class SubAgentConfig(BaseModel):
 
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
+    # OpenRouter: request-level reasoning control (effort / max_tokens / exclude / enabled).
+    reasoning: Optional[ReasoningConfig] = None
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     heartbeat: HeartbeatConfig
     mcp_servers: List[MCPServerConfig]

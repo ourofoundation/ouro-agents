@@ -2,8 +2,8 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from . import MemoryBackend, MemoryResult
 from ..config import MemoryConfig
+from . import MemoryBackend, MemoryResult
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,9 @@ class Mem0Backend:
 
         llm_provider, llm_model = _split_provider_and_model(config.extraction_model)
         if llm_provider is None:
-            llm_provider = "anthropic" if "claude" in config.extraction_model else "openai"
+            llm_provider = (
+                "anthropic" if "claude" in config.extraction_model else "openai"
+            )
 
         embedder_provider, embedder_model = _split_provider_and_model(config.embedder)
         if embedder_provider is None:
@@ -52,16 +54,13 @@ class Mem0Backend:
                 "config": {
                     "collection_name": "ouro_agent_memory",
                     "path": str(chroma_path),
-                }
+                },
             },
-            "llm": {
-                "provider": llm_provider,
-                "config": {"model": llm_model}
-            },
+            "llm": {"provider": llm_provider, "config": {"model": llm_model}},
             "embedder": {
                 "provider": embedder_provider,
-                "config": {"model": embedder_model}
-            }
+                "config": {"model": embedder_model},
+            },
         }
 
         if config.graph and config.graph.enabled:
@@ -88,11 +87,13 @@ class Mem0Backend:
         out: list[MemoryResult] = []
         for r in res_list:
             meta = _extract_metadata(r)
-            out.append(MemoryResult(
-                text=r["memory"],
-                score=r.get("score", 0),
-                **meta,
-            ))
+            out.append(
+                MemoryResult(
+                    text=r["memory"],
+                    score=r.get("score", 0),
+                    **meta,
+                )
+            )
         return out
 
     def add(
@@ -137,4 +138,3 @@ class Mem0Backend:
             self._mem.update(memory_id, metadata=metadata)
         except Exception as e:
             logger.warning("Failed to update memory metadata %s: %s", memory_id, e)
-

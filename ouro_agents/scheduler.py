@@ -295,8 +295,11 @@ class AgentScheduler:
         try:
             logger.info("Running heartbeat...")
             import ouro_agents.server as server_module
+            from .display import get_display
+
             server_module.last_heartbeat = datetime.utcnow()
             await self._agent.heartbeat()
+            get_display().flush_pending_run_summary()
         except Exception:
             logger.exception("Heartbeat failed")
 
@@ -319,6 +322,7 @@ class AgentScheduler:
         try:
             logger.info("Running scheduled task '%s' (run #%d)...", task.name, task.run_count + 1)
             from .config import RunMode
+            from .display import get_display
 
             result = await self._agent.run(
                 task=effective_prompt,
@@ -326,6 +330,7 @@ class AgentScheduler:
                 mode=RunMode.AUTONOMOUS,
                 skip_memory=True,
             )
+            get_display().flush_pending_run_summary()
             self.store.update(
                 task_id,
                 last_run_at=datetime.now(timezone.utc).isoformat(),
@@ -364,7 +369,8 @@ class AgentScheduler:
 
             # Use the cheap model (same one used for classification/reflection)
             model = self._agent._build_model(
-                self._agent.config.heartbeat.model or self._agent.config.agent.model
+                self._agent.config.heartbeat.model or self._agent.config.agent.model,
+                heartbeat=True,
             )
 
             result = refine(

@@ -67,9 +67,7 @@ def make_load_tool(
                 "hint": "Pick from the deferred tool directory in system context.",
             }
 
-        item = next(
-            (i for i in deferred_index if i["tool"] == resolved_name), None
-        )
+        item = next((i for i in deferred_index if i["tool"] == resolved_name), None)
         target = deferred_tools.get(resolved_name)
         if not target or not item:
             return {"error": f"Tool '{resolved_name}' not available."}
@@ -85,7 +83,7 @@ def make_load_tool(
             "call_as": raw_name,
             "description": item["description"],
             "inputs": item["inputs"],
-            "output_type": item["output_type"],
+            # "output_type": item["output_type"], # probably not needed
         }
 
     @tool

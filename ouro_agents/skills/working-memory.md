@@ -1,6 +1,6 @@
 ---
 description: Persistent working memory system — file conventions for MEMORY.md, daily logs, entities, tasks, user models, and conversation state
-load: always
+load: stub
 ---
 
 # Working Memory

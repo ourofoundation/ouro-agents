@@ -17,7 +17,6 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 from rich.theme import Theme
-
 from smolagents.monitoring import AgentLogger, LogLevel
 
 from .subagents.context import SubAgentUsage
@@ -60,6 +59,14 @@ class OuroDisplay:
 
     def __init__(self, verbosity: Verbosity = Verbosity.NORMAL):
         self.verbosity = verbosity
+        self._pending_run_summary: (
+            tuple[
+                RunUsage,
+                float | None,
+                Optional[list[tuple[str, SubAgentUsage]]],
+            ]
+            | None
+        ) = None
         self.console = Console(
             theme=THEME,
             highlight=False,
@@ -204,36 +211,131 @@ class OuroDisplay:
             parts.append(f"out ${u.output_cost_usd:.6f}")
         return parts
 
+    @staticmethod
+    def _format_usage_number(value: int) -> str:
+        return f"{value:,}" if value else "-"
+
+    @staticmethod
+    def _format_usage_cost(value: float | None) -> str:
+        return f"${value:.6f}" if value is not None else "-"
+
+    @staticmethod
+    def _format_usage_duration(duration_s: float | None) -> str:
+        return f"{duration_s:.1f}s" if duration_s is not None else "-"
+
+    @staticmethod
+    def _escape_md_cell(value: str) -> str:
+        return value.replace("|", "\\|").replace("\n", "<br>")
+
+    def _usage_rows(
+        self,
+        usage: RunUsage,
+        duration_s: float | None = None,
+        subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
+    ) -> list[tuple[str, str, str, str, str, str, str, str, str]]:
+        rows: list[tuple[str, str, str, str, str, str, str, str, str]] = []
+
+        def _run_row(
+            scope: str,
+            row_usage: RunUsage,
+            row_duration_s: float | None = None,
+        ) -> tuple[str, str, str, str, str, str, str, str, str]:
+            return (
+                self._escape_md_cell(scope),
+                self._format_usage_number(row_usage.steps),
+                self._format_usage_number(row_usage.input_tokens),
+                self._format_usage_number(row_usage.cached_input_tokens),
+                self._format_usage_number(row_usage.uncached_input_tokens),
+                self._format_usage_number(row_usage.output_tokens),
+                self._format_usage_number(row_usage.reasoning_tokens),
+                self._format_usage_cost(row_usage.cost_usd),
+                self._format_usage_duration(row_duration_s),
+            )
+
+        def _subagent_row(
+            scope: str,
+            row_usage: SubAgentUsage,
+        ) -> tuple[str, str, str, str, str, str, str, str, str]:
+            return (
+                self._escape_md_cell(scope),
+                self._format_usage_number(row_usage.steps),
+                self._format_usage_number(row_usage.input_tokens),
+                self._format_usage_number(row_usage.cached_input_tokens),
+                self._format_usage_number(row_usage.uncached_input_tokens),
+                self._format_usage_number(row_usage.output_tokens),
+                self._format_usage_number(row_usage.reasoning_tokens),
+                self._format_usage_cost(row_usage.cost_usd),
+                self._format_usage_duration(row_usage.wall_time_ms / 1000),
+            )
+
+        if not subagent_ledger:
+            return [_run_row("total", usage, duration_s)]
+
+        main_usage = residual_main_usage(usage, subagent_ledger)
+        rows.append(_run_row("main", main_usage))
+        rows.extend(
+            _subagent_row(f"sub:{name}", sub_usage)
+            for name, sub_usage in subagent_ledger
+        )
+        rows.append(_run_row("total", usage, duration_s))
+        return rows
+
+    def _render_run_summary(
+        self,
+        usage: RunUsage,
+        duration_s: float | None = None,
+        subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
+    ) -> None:
+        rows = self._usage_rows(
+            usage=usage,
+            duration_s=duration_s,
+            subagent_ledger=subagent_ledger,
+        )
+        if not rows:
+            return
+
+        md_lines = [
+            "## Usage",
+            "",
+            "| Scope | Steps | Input | Cached | Uncached | Output | Reasoning | Cost | Duration |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        for row in rows:
+            md_lines.append("| " + " | ".join(row) + " |")
+
+        self.blank()
+        self.markdown("\n".join(md_lines))
+
+    def queue_run_summary(
+        self,
+        usage: RunUsage,
+        duration_s: float | None = None,
+        subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
+    ) -> None:
+        self._pending_run_summary = (usage, duration_s, subagent_ledger)
+
+    def flush_pending_run_summary(self) -> None:
+        if self._pending_run_summary is None:
+            return
+        usage, duration_s, subagent_ledger = self._pending_run_summary
+        self._pending_run_summary = None
+        self._render_run_summary(
+            usage=usage,
+            duration_s=duration_s,
+            subagent_ledger=subagent_ledger,
+        )
+
     def run_summary(
         self,
         usage: RunUsage,
         duration_s: float | None = None,
         subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
     ) -> None:
-        def _emit_dim_line(label: str, detail_parts: list[str], dur: float | None):
-            seg = " · ".join(detail_parts)
-            if dur is not None:
-                seg = f"{seg} · {dur:.1f}s" if seg else f"{dur:.1f}s"
-            self.console.print(f"  [ouro.dim]{label}[/] {seg}")
-
-        if not subagent_ledger:
-            parts = self._run_usage_detail_parts(usage)
-            if duration_s is not None:
-                parts.append(f"{duration_s:.1f}s")
-            if parts:
-                self.blank()
-                self.console.print(f"[ouro.dim]{' · '.join(parts)}[/]")
-            return
-
-        self.blank()
-        main_parts = self._run_usage_detail_parts(
-            residual_main_usage(usage, subagent_ledger)
+        self._render_run_summary(
+            usage=usage,
+            duration_s=duration_s,
+            subagent_ledger=subagent_ledger,
         )
-        _emit_dim_line("main", main_parts, None)
-        for name, su in subagent_ledger:
-            _emit_dim_line(f"sub:{name}", self._subagent_usage_detail_parts(su), None)
-        total_parts = self._run_usage_detail_parts(usage)
-        _emit_dim_line("task total", total_parts, duration_s)
 
     def markdown(self, text: str) -> None:
         """Render markdown content with proper formatting (headers, bold, lists, code, etc.)."""
@@ -262,9 +364,7 @@ class OuroDisplay:
 
     def chat_header(self, conversation_id: str) -> None:
         self.header("ouro-agents", f"conversation {conversation_id}")
-        self.console.print(
-            "[ouro.dim]commands: /exit /quit /new /conversation <id>[/]"
-        )
+        self.console.print("[ouro.dim]commands: /exit /quit /new /conversation <id>[/]")
         self.blank()
 
     def chat_response(self, text: str) -> None:
@@ -272,6 +372,7 @@ class OuroDisplay:
         self.console.print(f"[ouro.bold]agent[/]")
         self.markdown(text)
         self.blank()
+        self.flush_pending_run_summary()
 
     def run_header(self, task: str) -> None:
         self.header("ouro-agents run")
@@ -283,7 +384,7 @@ class OuroDisplay:
         self.rule("result")
         self.blank()
         self.markdown(result)
-        self.blank()
+        self.flush_pending_run_summary()
 
     def heartbeat_result(self, result: str | None) -> None:
         self.blank()
@@ -293,7 +394,7 @@ class OuroDisplay:
             self.markdown(result)
         else:
             self.info("heartbeat: no action taken")
-        self.blank()
+        self.flush_pending_run_summary()
 
     def planning_result(self, result: str | None) -> None:
         self.blank()
@@ -303,7 +404,7 @@ class OuroDisplay:
             self.markdown(result)
         else:
             self.info("planning: no plan generated")
-        self.blank()
+        self.flush_pending_run_summary()
 
     def review_result(self, result: str | None) -> None:
         self.blank()
@@ -313,7 +414,7 @@ class OuroDisplay:
             self.markdown(result)
         else:
             self.info("review: no plan to review")
-        self.blank()
+        self.flush_pending_run_summary()
 
 
 _display: OuroDisplay | None = None
@@ -350,6 +451,7 @@ class OuroLogger(AgentLogger):
         self.console = self._display.console
         self.level = level
         self.show_final_answer = show_final_answer
+        self._last_tool_name: str | None = None
 
     def log(self, *args, level: int | str | LogLevel = LogLevel.INFO, **kwargs) -> None:
         if isinstance(level, str):
@@ -361,6 +463,7 @@ class OuroLogger(AgentLogger):
             if isinstance(arg, Text):
                 plain = arg.plain
                 if plain.startswith("Final answer:"):
+                    self._last_tool_name = None
                     if self.show_final_answer:
                         body = plain[len("Final answer:") :].strip()
                         if body:
@@ -371,18 +474,28 @@ class OuroLogger(AgentLogger):
 
             if isinstance(arg, Panel):
                 renderable = arg.renderable
-                plain = renderable.plain if isinstance(renderable, Text) else str(renderable)
-                if "Calling tool:" in plain and "'final_answer'" in plain and not self.show_final_answer:
-                    return
+                plain = (
+                    renderable.plain
+                    if isinstance(renderable, Text)
+                    else str(renderable)
+                )
                 if "Calling tool:" in plain:
+                    match = re.search(r"Calling tool:\s*'([^']+)'", plain)
+                    self._last_tool_name = match.group(1) if match else None
+                    if (
+                        self._last_tool_name == "final_answer"
+                        and not self.show_final_answer
+                    ):
+                        return
                     self._display._log_tool_call(plain)
                     return
 
             if isinstance(arg, str):
                 if arg.startswith("Observations:"):
-                    body = arg[len("Observations:"):].strip()
-                    if body:
+                    body = arg[len("Observations:") :].strip()
+                    if body and self._last_tool_name != "final_answer":
                         self._display.observation(body)
+                    self._last_tool_name = None
                     return
 
         self.console.print(*args, **kwargs)
@@ -430,7 +543,9 @@ class OuroLogger(AgentLogger):
             self._display.info(content[:200])
         self._display.blank()
 
-    def log_messages(self, messages: list[dict], level: LogLevel = LogLevel.DEBUG) -> None:
+    def log_messages(
+        self, messages: list[dict], level: LogLevel = LogLevel.DEBUG
+    ) -> None:
         if level > self.level:
             return
         for msg in messages[:3]:

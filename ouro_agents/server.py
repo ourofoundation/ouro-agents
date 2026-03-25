@@ -1,8 +1,7 @@
 import logging
 from contextlib import nullcontext
 from datetime import datetime
-from typing import Any, Dict, Optional
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -10,10 +9,15 @@ from pydantic import BaseModel
 
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
+from .display import get_display
 from .logging_config import uvicorn_log_config
 from .events import EventRunContext, build_event_run_context
 from .provenance import resolve_event_provenance
 from .publisher import OuroReplyPublisher
+from .uuid_v7 import uuid7_str
+
+if TYPE_CHECKING:
+    from ouro.client import Ouro
 
 app = FastAPI(title="Ouro Agents Server")
 logger = logging.getLogger(__name__)
@@ -24,7 +28,7 @@ reply_publisher: Optional[OuroReplyPublisher] = None
 last_heartbeat: Optional[datetime] = None
 start_time: datetime = datetime.utcnow()
 session_threads: Dict[str, str] = {}
-REALTIME_CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
+REALTIME_CHAT_EVENT_TYPES = {"new-message"}
 
 
 class RunRequest(BaseModel):
@@ -123,6 +127,37 @@ def _make_response_callback(event_run: EventRunContext, message_id: str):
     return _callback, state
 
 
+def _fetch_full_message_for_stream_end(
+    ouro: "Ouro",
+    conversation_id: str,
+    stream_message_id: str,
+) -> Optional[dict]:
+    """Load the persisted assistant message after a chat turn for llm-response-end payloads.
+
+    Prefer the row whose id matches ``stream_message_id`` (if the client set it on create);
+    otherwise the latest message authored by the authenticated agent user.
+    """
+    from ouro.resources.conversations import Messages
+
+    try:
+        msgs = Messages(ouro).list(conversation_id=conversation_id)
+    except Exception:
+        logger.exception("Failed to list messages for llm-response-end")
+        return None
+    if not msgs:
+        return None
+    for m in msgs:
+        if str(m.get("id")) == stream_message_id:
+            return m
+    agent_uid = getattr(ouro.user, "id", None) or getattr(ouro.user, "user_id", None)
+    if agent_uid is not None:
+        agent_uid = str(agent_uid)
+        for m in reversed(msgs):
+            if str(m.get("user_id")) == agent_uid:
+                return m
+    return msgs[-1]
+
+
 async def _run_event_task(event_run: EventRunContext) -> None:
     if not agent_instance:
         logger.warning("Skipping event run because the agent is not initialized")
@@ -133,11 +168,16 @@ async def _run_event_task(event_run: EventRunContext) -> None:
     if prov and prov.is_plan_feedback:
         try:
             await agent_instance.handle_plan_feedback(event_run)
+            get_display().flush_pending_run_summary()
         except Exception:
             logger.exception("Failed to handle plan feedback event")
         return
 
-    stream_message_id = str(uuid4())
+    if event_run.event_type == "new-conversation":
+        # Conversation creation has no user message yet; we do not run the agent.
+        return
+
+    stream_message_id = uuid7_str()
     activity_callback = _make_activity_callback(event_run)
     response_callback, response_state = (
         _make_response_callback(event_run, stream_message_id)
@@ -168,6 +208,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 response_callback=response_callback,
                 preload_tools=list(event_run.preload_tools) if event_run.preload_tools else None,
                 asset_refs=list(event_run.asset_refs) if event_run.asset_refs else None,
+                reply_message_id=stream_message_id,
             )
 
             if (
@@ -175,15 +216,21 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 and reply_publisher
                 and response_state["has_streamed"]
             ):
+                full_message = _fetch_full_message_for_stream_end(
+                    reply_publisher.client,
+                    event_run.conversation_id,
+                    stream_message_id,
+                )
                 reply_publisher.emit_llm_response_end(
                     recipient_id=event_run.user_id,
                     conversation_id=event_run.conversation_id,
                     message_id=stream_message_id,
-                    message=None,
+                    message=full_message,
                 )
 
             if activity_callback:
                 activity_callback("typing", None, False)
+            get_display().flush_pending_run_summary()
     except Exception:
         if activity_callback:
             activity_callback("typing", None, False)
@@ -222,7 +269,7 @@ async def run_task(request: RunRequest):
             if request.session_id and request.session_id in session_threads:
                 conversation_id = session_threads[request.session_id]
             else:
-                conversation_id = str(uuid4())
+                conversation_id = uuid7_str()
                 if request.session_id:
                     session_threads[request.session_id] = conversation_id
 
@@ -233,6 +280,7 @@ async def run_task(request: RunRequest):
             mode=mode,
             user_id=request.user_id,
         )
+        get_display().flush_pending_run_summary()
         return {
             "status": "success",
             "result": result,

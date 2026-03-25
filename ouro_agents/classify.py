@@ -9,6 +9,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,10 @@ _TRIVIAL_PATTERNS = re.compile(
 )
 
 
-def is_trivial_message(text: str) -> bool:
+def is_trivial_message(text: Optional[str]) -> bool:
     """Return True for greetings, acknowledgments, and other trivial messages."""
+    if text is None:
+        return False
     return bool(_TRIVIAL_PATTERNS.match(text.strip()))
 
 

@@ -9,6 +9,7 @@ description = "Autonomous Agent Package for Ouro"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "uuid7-standard>=1.1.0",
     "smolagents[mcp]",
     "rich",
     "fastapi",
@@ -17,7 +18,8 @@ dependencies = [
     "pydantic-settings",
     "apscheduler",
     "mem0ai",
-    "chromadb<1.0",
+    # Aligned with mem0 vector_stores extra; do not cap <1.0 — that downgrades vs existing on-disk data and breaks sysdb (KeyError: '_type').
+    "chromadb>=0.4.24",
     "anthropic",
     "openai",
     "mcp",

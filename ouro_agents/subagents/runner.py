@@ -17,9 +17,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
+from smolagents import ActionStep
+
 from ..artifacts import fetch_asset_content, parse_asset_result
 from ..constants import GLOBAL_ORG_UUID
 from ..platform_context_prompt import format_platform_context_for_prompt
+from ..usage import format_subagent_usage_summary
 from .context import SubAgentContext, SubAgentResult, SubAgentUsage
 from .delegate_utils import (
     delegate_success_payload,
@@ -94,6 +97,14 @@ def _compute_usage(model, before: Optional[dict], wall_ms: int) -> SubAgentUsage
     )
 
 
+def _count_agent_steps(agent) -> int:
+    return sum(
+        1
+        for step in getattr(getattr(agent, "memory", None), "steps", [])
+        if isinstance(step, ActionStep)
+    )
+
+
 def _format_delegate_payload(
     result: Optional[SubAgentResult],
     profile: Optional[SubAgentProfile],
@@ -133,17 +144,16 @@ def run_subagent(
     t0 = time.monotonic()
 
     try:
-        text = _run_agent(profile, task, ctx)
+        text, agent = _run_agent(profile, task, ctx)
         wall_ms = int((time.monotonic() - t0) * 1000)
         usage = _compute_usage(ctx.model, before, wall_ms)
+        usage.steps = _count_agent_steps(agent)
 
         cost_str = f" cost=${usage.cost_usd:.4f}" if usage.cost_usd is not None else ""
         logger.info(
-            "Subagent '%s' usage: calls=%d in=%d out=%d wall=%dms%s",
+            "Subagent '%s' usage: %s wall=%dms%s",
             profile.name,
-            usage.llm_calls,
-            usage.input_tokens,
-            usage.output_tokens,
+            format_subagent_usage_summary(usage),
             usage.wall_time_ms,
             cost_str,
         )
@@ -380,7 +390,7 @@ def _format_task_context(
     return "\n\n".join(parts)
 
 
-def _run_agent(profile: SubAgentProfile, task: str, ctx: SubAgentContext) -> str:
+def _run_agent(profile: SubAgentProfile, task: str, ctx: SubAgentContext) -> tuple[str, object]:
     """Run a subagent as a ToolCallingAgent with restricted tools."""
     from ..memory.tools import make_memory_tools
     from ..tools.agent_base import (
@@ -529,7 +539,7 @@ def _run_agent(profile: SubAgentProfile, task: str, ctx: SubAgentContext) -> str
 
     try:
         result = agent.run(effective_task)
-        return str(result)
+        return str(result), agent
     except Exception as e:
         logger.error("Subagent '%s' agent loop failed: %s", profile.name, e)
-        return ""
+        return "", agent

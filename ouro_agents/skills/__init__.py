@@ -122,6 +122,13 @@ def load_all_skills(config: OuroAgentsConfig) -> str:
     return _render_skills(index)
 
 
+def load_startup_skills(config: OuroAgentsConfig) -> str:
+    """Build prompt text for skills that should be loaded by default."""
+    index = _build_index(config.agent.workspace)
+    always_parts = [entry.body for entry in index.values() if entry.load == "always"]
+    return "\n\n---\n\n".join(always_parts)
+
+
 def load_relevant_skills(
     config: OuroAgentsConfig,
     relevant_names: Optional[list[str]] = None,
@@ -149,7 +156,7 @@ def _render_skills(index: dict[str, SkillEntry]) -> str:
             always_parts.append(entry.body)
         else:
             desc = entry.description or name
-            stub_lines.append(f"- **{name}**: {desc}")
+            stub_lines.append(f"- {name}: {desc}")
 
     sections: list[str] = []
     if always_parts:
@@ -161,14 +168,30 @@ def _render_skills(index: dict[str, SkillEntry]) -> str:
     return "\n\n---\n\n".join(sections)
 
 
-def get_skill_directory(config: OuroAgentsConfig) -> str:
+def get_skill_directory(
+    config: OuroAgentsConfig, *, include_always: bool = False
+) -> str:
     """One-line-per-skill directory for system prompts."""
     index = _build_index(config.agent.workspace)
     lines = []
     for name, entry in index.items():
+        if entry.load == "always" and not include_always:
+            continue
         desc = entry.description or entry.body.strip().split("\n")[0].lstrip("# ").strip()
         lines.append(f"- {name}: {desc}")
     return "\n".join(lines)
+
+
+def list_skill_names(
+    workspace: Optional[Path] = None, *, include_always: bool = True
+) -> list[str]:
+    """Return available skill names for a workspace."""
+    index = _build_index(workspace)
+    return sorted(
+        name
+        for name, entry in index.items()
+        if include_always or entry.load != "always"
+    )
 
 
 # ---------------------------------------------------------------------------

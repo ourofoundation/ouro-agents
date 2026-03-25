@@ -19,13 +19,25 @@ def load_soul(path: Path) -> str:
 MCP_TOOL_RULES = (
     '- MCP tools are deferred. Call `load_tool(["ouro:tool_name"])`, then call the tool by its `call_as` name. '
     "Preloaded tools (listed below when present) can be called directly — no `load_tool` needed.\n"
+    "- Skills can also be loaded on demand with `load_skill([\"skill-name\"])` when you need detailed guidance.\n"
     "- Emit real tool calls only — no narration, pseudo-JSON, or plain-text pseudo-calls.\n"
     "- Omit optional params you don't need (don't pass null). Retry once on failure, then move on.\n"
-    "- Batch where possible: load_tool, memory_recall, memory_store, and delegate all accept arrays.\n"
+    "- Batch where possible: load_tool, load_skill, memory_recall, memory_store, and delegate all accept arrays.\n"
     "- File paths are always relative to the workspace root (e.g. 'data/file.json', not 'workspace/data/file.json').\n"
     "- Link assets in markdown with `[label](asset:<uuid>)` or typed `post:`/`file:`/`dataset:` links.\n"
     "- For complex multi-step workflows or batch operations, delegate to the `developer` subagent — "
     "it has direct access to the Ouro Python SDK."
+)
+
+SUBAGENT_RULES = (
+    "Subagents run in their own context. Use `delegate` with a list of task specs "
+    "(multiple tasks run in parallel). Each spec: `subagent`, `task`, optional `asset_refs` and `return_mode`.\n\n"
+    "**MUST delegate:** web search → `research` (never call search tools yourself), "
+    "long-form writing → `writer`, SDK/batch workflows → `developer`, "
+    "focused sub-tasks → `executor`.\n"
+    "**Handle yourself:** simple questions, single tool calls, chat replies, quick lookups.\n\n"
+    "Subagents save output as Ouro assets and return JSON with `asset_id`, `name`, `description`. "
+    "Use `get_asset(asset_id)` for full content."
 )
 
 CHAT_FRAMING = (
@@ -82,6 +94,7 @@ SECTION_PRIORITY = {
     "subagents": 12,
     "tool_rules": 13,
     "skills": 14,
+    "skill_directory": 15,
 }
 
 
@@ -96,6 +109,7 @@ _PROTECTED_SECTIONS = {"mode", "current_datetime", "soul", "platform_context", "
 
 # Sections that can be truncated, in order of expendability (first = cut first)
 _TRIMMABLE_SECTIONS = [
+    "skill_directory",
     "skills",
     "entity_context",
     "working_memory",
@@ -167,6 +181,7 @@ def build_prompt(
     soul: str,
     notes: str,
     skills: str,
+    skill_directory: str = "",
     working_memory: str = "",
     mode: RunMode = RunMode.AUTONOMOUS,
     conversation_context: str = "",
@@ -211,7 +226,16 @@ def build_prompt(
         sections["notes"] = f"## DEPLOYMENT CONTEXT (NOTES)\n{notes}"
 
     if skills:
-        sections["skills"] = f"## SKILLS AND KNOWLEDGE\n{skills}"
+        sections["skills"] = f"## LOADED SKILLS\n{skills}"
+
+    if skill_directory:
+        sections["skill_directory"] = (
+            "## AVAILABLE SKILLS (use `load_skill` to activate)\n"
+            "These skills are available on demand but are not loaded yet. "
+            "Call `load_skill` with one or more names from this directory when you need "
+            "detailed guidance.\n\n"
+            f"{skill_directory}"
+        )
 
     if working_memory:
         sections["working_memory"] = f"## WORKING MEMORY\n{working_memory}"
@@ -229,19 +253,8 @@ def build_prompt(
 
     if subagent_directory:
         sections["subagents"] = (
-            "## SUBAGENTS (use `delegate` tool to invoke)\n"
-            "You have specialized subagents that run in their own context window. "
-            "Delegate when the work is self-contained, heavy, or would meaningfully pollute your main context — "
-            "not for quick lookups or simple one-step actions. "
-            "Use `research` for web-search-heavy investigation or multi-source synthesis. "
-            "Use `writer` for final posts, polished drafts, and other quality-sensitive writing tasks. "
-            "Use `developer` for complex Ouro SDK workflows, batch operations, and multi-step data pipelines. "
-            "Call `delegate` with a list of task specs — each has `subagent`, `task`, and optionally "
-            "`asset_refs` (Ouro asset UUIDs) and `return_mode`. Multiple tasks run in parallel automatically. "
-            "Subagents save their output as Ouro assets (posts, files, datasets) and return a compact "
-            "JSON handoff with `asset_id`, `name`, and `description`. "
-            "Use `get_asset(asset_id)` to read the full content when needed. "
-            "Do not write plain-text pseudo-calls like `delegate(...)`.\n\n"
+            f"## SUBAGENTS (use `delegate` tool to invoke)\n"
+            f"{SUBAGENT_RULES}\n\n"
             f"{subagent_directory}"
         )
 

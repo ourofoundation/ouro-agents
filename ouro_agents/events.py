@@ -73,7 +73,8 @@ def _build_event_task(
         return task, RunMode.CHAT, tuple(preload_names), asset_refs
 
     if event_type == "new-conversation":
-        return None, RunMode.CHAT, tuple(preload_names), asset_refs
+        # No user message yet; server skips running the agent for this event.
+        return "", RunMode.CHAT, tuple(preload_names), asset_refs
 
     if event_type in {"comment", "mention"}:
         source_asset_type = data.get("source_asset_type", "unknown")

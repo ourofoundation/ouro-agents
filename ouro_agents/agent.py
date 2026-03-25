@@ -18,9 +18,15 @@ from smolagents import (
 from smolagents.memory import TaskStep
 from smolagents.monitoring import Timing
 
-from .classify import PreflightResult, is_trivial_message, parse_preflight_result
-from .config import MCPServerConfig, OuroAgentsConfig, RunMode
 from .artifacts import fetch_asset_content
+from .classify import PreflightResult, is_trivial_message, parse_preflight_result
+from .config import (
+    MCPServerConfig,
+    OuroAgentsConfig,
+    ReasoningConfig,
+    RunMode,
+    merge_reasoning,
+)
 from .memory import create_memory_backend
 from .memory.conversation_state import (
     ConversationState,
@@ -36,7 +42,7 @@ from .memory.reflection import (
 from .memory.tools import make_memory_tools
 from .memory.user_model import load_user_model
 from .notes import load_notes
-from .skills import load_all_skills
+from .skills import get_skill_directory, load_startup_skills
 from .soul import build_prompt, load_soul
 from .subagents.context import SubAgentUsage
 from .subagents.delegate_utils import (
@@ -48,6 +54,7 @@ from .subagents.delegate_utils import (
 )
 from .tools.python_tool import make_python_tool
 from .tools.scheduler_tools import make_scheduler_tools
+from .tools.skills_tools import make_load_skill_tool
 from .usage import (
     RunUsage,
     TrackedOpenAIModel,
@@ -63,6 +70,125 @@ logger = logging.getLogger(__name__)
 
 RunStatusCallback = Callable[[str, Optional[str], bool], None]
 RunResponseCallback = Callable[[str], None]
+
+
+def _markdown_fence(content: str, lang: str = "text") -> str:
+    """Fence ``content`` for embedding in markdown (handles nested ``` sequences)."""
+    fence = "```"
+    while fence in content:
+        fence += "`"
+    return f"{fence}{lang}\n{content}\n{fence}\n"
+
+
+def _serialize_memory_step_for_debug(step) -> str:
+    """Format a single smolagents memory step into markdown for debug runs."""
+    if isinstance(step, TaskStep):
+        t = getattr(step, "task", "") or ""
+        return f"## TaskStep\n\n{_markdown_fence(t)}\n\n"
+    if isinstance(step, ActionStep):
+        parts: list[str] = []
+        sn = getattr(step, "step_number", None)
+        parts.append(
+            f"## Action step {sn}\n\n" if sn is not None else "## Action step\n\n"
+        )
+        mo = getattr(step, "model_output", None) or ""
+        if mo:
+            parts.append("### Model output\n\n")
+            parts.append(_markdown_fence(mo))
+            parts.append("\n\n")
+        tcs = getattr(step, "tool_calls", None) or []
+        if tcs:
+            parts.append("### Tool calls\n\n")
+            for tc in tcs:
+                name = getattr(tc, "name", "?")
+                args = getattr(tc, "arguments", None)
+                try:
+                    args_str = json.dumps(args, ensure_ascii=False) if args is not None else ""
+                except TypeError:
+                    args_str = str(args)
+                if len(args_str) > 8000:
+                    args_str = args_str[:8000] + "..."
+                parts.append(f"- **{name}** `{args_str}`\n")
+            parts.append("\n")
+        obs = getattr(step, "observations", None) or ""
+        if obs:
+            obs_s = str(obs)
+            cap = 80_000
+            truncated = len(obs_s) > cap
+            if truncated:
+                obs_s = obs_s[:cap]
+            parts.append("### Observations\n\n")
+            parts.append(_markdown_fence(obs_s))
+            if truncated:
+                parts.append("\n\n*(truncated)*\n")
+            parts.append("\n\n")
+        err = getattr(step, "error", None)
+        if err:
+            parts.append("### Error\n\n")
+            parts.append(_markdown_fence(str(err)))
+            parts.append("\n\n")
+        if getattr(step, "is_final_answer", False):
+            parts.append("*Marked as final answer step.*\n\n")
+        return "".join(parts)
+    return f"## {type(step).__name__}\n\n{_markdown_fence(repr(step))}\n\n"
+
+
+def _write_run_debug_markdown_preamble(
+    path: Path,
+    *,
+    task: str,
+    effective_task: str,
+    full_system_prompt: str,
+    run_id: str,
+    mode: RunMode,
+    preflight: Optional[PreflightResult],
+) -> None:
+    """Write header, system prompt, and task; run trace is appended after the agent finishes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = [
+        "# Ouro Agents run debug\n\n",
+        f"- **Timestamp (UTC):** {datetime.now(timezone.utc).isoformat()}\n",
+        f"- **Run id:** `{run_id}`\n",
+        f"- **Mode:** `{mode.value}`\n\n",
+        "## Original task\n\n",
+        _markdown_fence(task),
+        "\n## Effective task (what the agent sees)\n\n",
+        _markdown_fence(effective_task),
+        "\n## Full system prompt\n\n",
+        "This is the smolagents base template plus the Ouro-built soul prompt.\n\n",
+        _markdown_fence(full_system_prompt),
+    ]
+    if preflight is not None:
+        lines.extend(
+            [
+                "\n## Preflight (step 0)\n\n",
+                f"- **intent:** `{preflight.intent}`\n",
+                f"- **complexity:** `{preflight.complexity}`\n",
+                f"- **worth_remembering:** `{preflight.worth_remembering}`\n\n",
+            ]
+        )
+        if preflight.briefing:
+            lines.extend(["### Briefing\n\n", _markdown_fence(preflight.briefing), "\n"])
+        if preflight.plan:
+            lines.extend(["### Plan\n\n", _markdown_fence(preflight.plan), "\n"])
+    else:
+        lines.append("\n## Preflight (step 0)\n\n*(skipped or not applicable)*\n\n")
+
+    lines.append("\n---\n\n## Agent steps (memory trace)\n\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("".join(lines))
+
+
+def _append_run_debug_markdown_trace(path: Path, agent, result: str) -> None:
+    """Append serialized memory steps and final result to a debug markdown file."""
+    parts: list[str] = []
+    for step in getattr(agent.memory, "steps", []) or []:
+        parts.append(_serialize_memory_step_for_debug(step))
+    parts.append("## Final result\n\n")
+    parts.append(_markdown_fence(str(result)))
+    parts.append("\n")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("".join(parts))
 
 
 def _extract_streamed_answer_text(arguments_blob: str) -> Optional[str]:
@@ -182,7 +308,8 @@ class OuroAgent:
         self.config = config
         self.soul = load_soul(config.agent.workspace / "SOUL.md")
         self.notes = load_notes(config.agent.workspace / "NOTES.md")
-        self.skills = load_all_skills(config)
+        self.skills = load_startup_skills(config)
+        self.skill_directory = get_skill_directory(config)
         self.memory = create_memory_backend(config.memory)
         self._workspace = config.agent.workspace
         self._usage_tracker = UsageTracker()
@@ -338,19 +465,60 @@ class OuroAgent:
     def _is_anthropic_model(self, model_id: str) -> bool:
         return model_id.startswith("anthropic/")
 
-    def _build_openrouter_extra_body(self, model_id: str) -> Optional[dict]:
+    def _resolve_reasoning(
+        self,
+        *,
+        subagent_profile: Optional[str] = None,
+        heartbeat: bool = False,
+    ) -> Optional[ReasoningConfig]:
+        """Merge global + optional heartbeat overlay + optional subagent override."""
+        layers: list[Optional[ReasoningConfig]] = [self.config.reasoning]
+        if heartbeat:
+            layers.append(self.config.heartbeat.reasoning)
+        if subagent_profile:
+            override = self.config.subagents.overrides.get(subagent_profile)
+            if override and override.reasoning is not None:
+                layers.append(override.reasoning)
+        return merge_reasoning(*layers)
+
+    def _build_openrouter_extra_body(
+        self,
+        model_id: str,
+        reasoning: Optional[ReasoningConfig],
+    ) -> Optional[dict]:
+        body: dict = {}
         cfg = self.config.prompt_caching
-        if not cfg.enabled or not self._is_anthropic_model(model_id):
-            return None
+        if cfg.enabled and self._is_anthropic_model(model_id):
+            cache_control: dict[str, str] = {"type": "ephemeral"}
+            if cfg.ttl == "1h":
+                cache_control["ttl"] = "1h"
+            body["cache_control"] = cache_control
 
-        cache_control: dict[str, str] = {"type": "ephemeral"}
-        if cfg.ttl == "1h":
-            cache_control["ttl"] = "1h"
-        return {"cache_control": cache_control}
+        if reasoning is not None:
+            r = reasoning.model_dump(exclude_none=True)
+            if r:
+                body["reasoning"] = r
 
-    def _build_model(self, model_id: str) -> TrackedOpenAIModel:
+        return body if body else None
+
+    def _build_model(
+        self,
+        model_id: str,
+        *,
+        reasoning: Optional[ReasoningConfig] = None,
+        subagent_profile: Optional[str] = None,
+        heartbeat: bool = False,
+    ) -> TrackedOpenAIModel:
         model_kwargs = {}
-        extra_body = self._build_openrouter_extra_body(model_id)
+        resolved = (
+            reasoning
+            if reasoning is not None
+            else self._resolve_reasoning(
+                subagent_profile=subagent_profile,
+                heartbeat=heartbeat,
+            )
+        )
+        extra_body = self._build_openrouter_extra_body(model_id, resolved)
         if extra_body:
             model_kwargs["extra_body"] = extra_body
 
@@ -374,7 +542,9 @@ class OuroAgent:
 
         api_key = os.getenv("OURO_API_KEY")
         if not api_key:
-            logger.warning("OURO_API_KEY not set — Ouro SDK unavailable in Python sandbox")
+            logger.warning(
+                "OURO_API_KEY not set — Ouro SDK unavailable in Python sandbox"
+            )
             self._ouro_client = None
             return None
 
@@ -478,7 +648,8 @@ class OuroAgent:
 
         try:
             summary_model = self._build_model(
-                self.config.heartbeat.model or self.config.agent.model
+                self.config.heartbeat.model or self.config.agent.model,
+                heartbeat=True,
             )
             result = summary_model(
                 [
@@ -795,6 +966,7 @@ class OuroAgent:
             workspace=self.config.agent.workspace,
             ouro_client=ouro_client,
         )
+        load_skill = make_load_skill_tool(self.config.agent.workspace)
         scheduler_tools = (
             make_scheduler_tools(self.scheduler) if mode != RunMode.HEARTBEAT else []
         )
@@ -891,7 +1063,10 @@ class OuroAgent:
                 logger.info("Delegating to subagent '%s': %s", sa, task_str[:120])
                 result, profile = _do_delegate(sa, task_str, refs)
                 return _format_delegate_result(
-                    result, profile, sa, spec.get("return_mode", ""),
+                    result,
+                    profile,
+                    sa,
+                    spec.get("return_mode", ""),
                 )
 
             if len(tasks) == 1:
@@ -920,14 +1095,12 @@ class OuroAgent:
 
         delegate.description += f"\n\nAvailable subagents: {_subagent_names_str}"
 
-        delegate_tools = (
-            [delegate] if mode != RunMode.HEARTBEAT else []
-        )
+        delegate_tools = [delegate] if mode != RunMode.HEARTBEAT else []
         all_tools = (
             list(memory_tools)
             + scheduler_tools
             + delegate_tools
-            + [load_tool, python_tool]
+            + [load_tool, load_skill, python_tool]
         )
 
         preloaded_names: list[str] = []
@@ -952,7 +1125,7 @@ class OuroAgent:
                 )
 
         deferred_tool_directory = "\n".join(
-            f"- {item['tool']}: {item['description'][:240]}" for item in deferred_index
+            f"- {item['tool']}: {item['description'][:80]}" for item in deferred_index
         )
 
         return all_tools, deferred_tool_directory, agent_ref, preloaded_names
@@ -982,6 +1155,7 @@ class OuroAgent:
             conversation_context = self._format_conversation_turns(turns)
 
         skills_text = "" if mode == RunMode.HEARTBEAT else self.skills
+        skill_directory = "" if mode == RunMode.HEARTBEAT else self.skill_directory
 
         working_memory_parts = [self._load_working_memory()]
         if mode == RunMode.HEARTBEAT:
@@ -1015,6 +1189,7 @@ class OuroAgent:
             soul=self.soul,
             notes=self.notes,
             skills=skills_text,
+            skill_directory=skill_directory,
             working_memory=working_memory,
             mode=mode,
             conversation_context=conversation_context,
@@ -1038,7 +1213,7 @@ class OuroAgent:
             or self.config.subagents.default_model
             or self.config.agent.model
         )
-        return self._build_model(model_id)
+        return self._build_model(model_id, subagent_profile=profile.name)
 
     def _apply_profile_overrides(self, profile):
         """Apply config overrides (max_steps, etc.) to a profile."""
@@ -1061,7 +1236,8 @@ class OuroAgent:
         from .subagents.context import SubAgentContext
 
         compactor_model = self._build_model(
-            self.config.heartbeat.model or self.config.agent.model
+            self.config.heartbeat.model or self.config.agent.model,
+            heartbeat=True,
         )
 
         ouro_client = (
@@ -1371,6 +1547,8 @@ class OuroAgent:
         mode_framing_override: str = "",
         preload_tools: Optional[list[str]] = None,
         asset_refs: Optional[list[str]] = None,
+        reply_message_id: Optional[str] = None,
+        debug_markdown_path: Optional[Path] = None,
     ) -> str:
         run_started_at = time.monotonic()
         self.connect_mcp()
@@ -1429,7 +1607,11 @@ class OuroAgent:
         display = get_display()
         preflight: Optional[PreflightResult] = None
 
-        if not is_trivial and not skip_memory and mode != RunMode.HEARTBEAT:
+        if (
+            not is_trivial
+            and not skip_memory
+            and mode not in {RunMode.HEARTBEAT, RunMode.CHAT}
+        ):
             preflight = self._run_preflight(
                 task,
                 conv_state=conv_state,
@@ -1452,7 +1634,9 @@ class OuroAgent:
         context_parts: list[str] = []
         if dynamic_context:
             context_parts.append(dynamic_context)
-        asset_context = fetch_asset_content(self._deferred_tools, list(asset_refs or []))
+        asset_context = fetch_asset_content(
+            self._deferred_tools, list[str](asset_refs or [])
+        )
         if asset_context:
             context_parts.append(f"## Input Assets\n{asset_context}")
         if preflight and preflight.briefing:
@@ -1475,7 +1659,8 @@ class OuroAgent:
             RunMode.HEARTBEAT: self.config.agent.max_steps.heartbeat,
         }[mode]
         compactor_model = self._build_model(
-            self.config.heartbeat.model or self.config.agent.model
+            self.config.heartbeat.model or self.config.agent.model,
+            heartbeat=True,
         )
         agent = _SanitizedToolCallingAgent(
             tools=all_tools,
@@ -1485,12 +1670,27 @@ class OuroAgent:
             step_callbacks=[step_callback],
             logger=create_logger(display=display),
             compactor_model=compactor_model,
+            reply_message_id=reply_message_id,
         )
         agent_ref["agent"] = agent
 
         agent.prompt_templates["system_prompt"] = (
             agent.prompt_templates["system_prompt"] + "\n\n" + system_prompt
         )
+
+        if debug_markdown_path:
+            try:
+                _write_run_debug_markdown_preamble(
+                    Path(debug_markdown_path),
+                    task=task,
+                    effective_task=effective_task,
+                    full_system_prompt=agent.prompt_templates["system_prompt"],
+                    run_id=run_id,
+                    mode=mode,
+                    preflight=preflight,
+                )
+            except OSError as e:
+                logger.warning("Failed to write debug markdown preamble: %s", e)
 
         # In chat mode, inject recent turns as structured steps so the model
         # sees user/assistant pairs verbatim.
@@ -1524,6 +1724,14 @@ class OuroAgent:
         else:
             result = agent.run(effective_task, reset=use_reset)
 
+        if debug_markdown_path:
+            try:
+                _append_run_debug_markdown_trace(
+                    Path(debug_markdown_path), agent, str(result)
+                )
+            except OSError as e:
+                logger.warning("Failed to append debug markdown trace: %s", e)
+
         tool_summary = self._extract_tool_summary(agent, for_persistence=True)
 
         # Memory storage: skip for trivial messages and chat mode (reflector handles it)
@@ -1552,7 +1760,8 @@ class OuroAgent:
         if mode == RunMode.CHAT and conversation_id:
             try:
                 state_model = self._build_model(
-                    self.config.heartbeat.model or self.config.agent.model
+                    self.config.heartbeat.model or self.config.agent.model,
+                    heartbeat=True,
                 )
                 conv_state = update_state(conv_state, task, str(result), state_model)
                 conversations_dir = self.config.agent.workspace / "conversations"
@@ -1581,7 +1790,7 @@ class OuroAgent:
         )
         _display = display or get_display()
         ledger = self._subagent_ledger or None
-        _display.run_summary(
+        _display.queue_run_summary(
             usage=usage,
             duration_s=max(0.0, time.monotonic() - run_started_at),
             subagent_ledger=ledger,
@@ -1599,7 +1808,7 @@ class OuroAgent:
 
     async def heartbeat(self) -> Optional[str]:
         hb_model_id = self.config.heartbeat.model or self.config.agent.model
-        hb_model = self._build_model(hb_model_id)
+        hb_model = self._build_model(hb_model_id, heartbeat=True)
 
         try:
             self._refresh_platform_context()
@@ -1855,7 +2064,7 @@ class OuroAgent:
         from .planning import PlanStore
 
         hb_model_id = self.config.heartbeat.model or self.config.agent.model
-        hb_model = self._build_model(hb_model_id)
+        hb_model = self._build_model(hb_model_id, heartbeat=True)
 
         try:
             self._refresh_platform_context()
@@ -1898,7 +2107,7 @@ class OuroAgent:
             return None
 
         hb_model_id = self.config.heartbeat.model or self.config.agent.model
-        hb_model = self._build_model(hb_model_id)
+        hb_model = self._build_model(hb_model_id, heartbeat=True)
 
         try:
             self._refresh_platform_context()
@@ -1935,7 +2144,7 @@ class OuroAgent:
             and current.status in ("pending_review", "active")
         ):
             hb_model_id = self.config.heartbeat.model or self.config.agent.model
-            hb_model = self._build_model(hb_model_id)
+            hb_model = self._build_model(hb_model_id, heartbeat=True)
             proactive_cfg = self.config.heartbeat.proactive
             servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
 
@@ -1955,7 +2164,9 @@ class OuroAgent:
             task=event_run.task,
             mode=event_run.mode,
             user_id=event_run.user_id,
-            preload_tools=list(event_run.preload_tools) if event_run.preload_tools else None,
+            preload_tools=(
+                list(event_run.preload_tools) if event_run.preload_tools else None
+            ),
         )
 
     def _log_run(

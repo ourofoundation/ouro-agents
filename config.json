@@ -2,6 +2,7 @@
   "agent": {
     "name": "feynman",
     "model": "xiaomi/mimo-v2-omni",
+    "reasoning": { "effort": "high" },
     "workspace": "./workspace",
     "max_steps": {
       "chat": 40,
@@ -11,9 +12,15 @@
   },
   "subagents": {
     "overrides": {
+      "preflight": {
+        "model": "xiaomi/mimo-v2-flash",
+        "reasoning": { "effort": "none" },
+        "max_steps": 4
+      },
       "research": {
         "model": "xiaomi/mimo-v2-flash",
-        "max_steps": 30
+        "reasoning": { "effort": "low" },
+        "max_steps": 10
       },
       "writer": {
         "model": "anthropic/claude-4.6-sonnet"
@@ -26,17 +33,17 @@
     "cadence": "4h",
     "min_heartbeats": 4,
     "review_window": "1h",
-    "auto_approve": false,
-    "team_id": "019d1d59-21a9-76cb-90de-eaea75bf319d",
-    "org_id": "00000000-0000-0000-0000-000000000000"
+    "auto_approve": true,
+    "org_id": "00000000-0000-0000-0000-000000000000",
+    "team_id": "019d1d59-21a9-76cb-90de-eaea75bf319d"
   },
   "heartbeat": {
     "enabled": true,
-    "every": "30m",
+    "every": "1h",
     "model": "xiaomi/mimo-v2-omni",
     "active_hours": {
-      "start": "08:00",
-      "end": "22:00",
+      "start": "09:00",
+      "end": "17:00",
       "timezone": "America/Chicago"
     },
     "proactive": {
