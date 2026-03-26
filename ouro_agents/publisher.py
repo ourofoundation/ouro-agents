@@ -9,20 +9,30 @@ class OuroReplyPublisher:
 
     def __init__(
         self,
+        client: Optional[Ouro] = None,
+        *,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
     ):
+        self._client = client
         self._api_key = api_key
         self._base_url = base_url
 
     @cached_property
     def client(self) -> Ouro:
+        if self._client is not None:
+            return self._client
         return Ouro(
             api_key=self._api_key,
             base_url=self._base_url,
         )
 
     def describe_config(self) -> dict:
+        if self._client is not None:
+            return {
+                "base_url": str(getattr(self._client, "base_url", "shared")),
+                "shared_client": True,
+            }
         return {
             "base_url": self._base_url,
             "api_key_present": bool(self._api_key),

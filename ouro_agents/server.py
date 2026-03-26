@@ -53,15 +53,19 @@ async def startup_event():
     config = OuroAgentsConfig.load_from_file("config.json")
     agent_instance = OuroAgent(config)
     agent_instance.connect_mcp()
-    ouro_env = _get_ouro_client_env(config)
-    reply_publisher = OuroReplyPublisher(
-        api_key=ouro_env.get("OURO_API_KEY"),
-        base_url=ouro_env.get("OURO_BASE_URL") or ouro_env.get("OURO_BACKEND_URL"),
-    )
+    ouro_client = agent_instance._get_ouro_client()
+    if ouro_client:
+        reply_publisher = OuroReplyPublisher(client=ouro_client)
+    else:
+        ouro_env = _get_ouro_client_env(config)
+        reply_publisher = OuroReplyPublisher(
+            api_key=ouro_env.get("OURO_API_KEY"),
+            base_url=ouro_env.get("OURO_BASE_URL") or ouro_env.get("OURO_BACKEND_URL"),
+        )
     logger.info("Reply publisher config: %s", reply_publisher.describe_config())
     reply_publisher.ensure_ready()
     logger.info(
-        "Reply publisher authenticated to %s as %s",
+        "Reply publisher ready: %s as %s",
         reply_publisher.client.base_url,
         getattr(reply_publisher.client.user, "email", "unknown"),
     )
