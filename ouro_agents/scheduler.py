@@ -32,6 +32,7 @@ MAX_TASKS = 50
 # Data model
 # ---------------------------------------------------------------------------
 
+
 class ScheduledTask(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     name: str
@@ -39,8 +40,12 @@ class ScheduledTask(BaseModel):
     schedule: str  # cron expression ("0 9 * * *") or interval ("4h", "30m")
     timezone: str = "UTC"
     enabled: bool = True
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
+    updated_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     last_run_at: Optional[str] = None
     last_run_status: Optional[str] = None  # "success" | "error" | "running"
     last_error: Optional[str] = None
@@ -51,6 +56,7 @@ class ScheduledTask(BaseModel):
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
+
 
 class TaskStore:
     """Read/write scheduled tasks as a JSON file in the workspace."""
@@ -96,7 +102,12 @@ class TaskStore:
         tasks = self.load()
         for i, t in enumerate(tasks):
             if t.id == task_id:
-                updated = t.model_copy(update={**kwargs, "updated_at": datetime.now(timezone.utc).isoformat()})
+                updated = t.model_copy(
+                    update={
+                        **kwargs,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
                 tasks[i] = updated
                 self.save(tasks)
                 return updated
@@ -193,7 +204,11 @@ class AgentScheduler:
             "Scheduler started: %d user task(s), heartbeat=%s, consolidation=%s",
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
-            config.memory.consolidation_schedule if config.memory.consolidation_enabled else "disabled",
+            (
+                config.memory.consolidation_schedule
+                if config.memory.consolidation_enabled
+                else "disabled"
+            ),
         )
 
     def stop(self) -> None:
@@ -217,7 +232,12 @@ class AgentScheduler:
     def update_task(self, task_id: str, **kwargs: Any) -> Optional[ScheduledTask]:
         # If schedule changes, validate the new one first
         if "schedule" in kwargs:
-            tz = kwargs.get("timezone") or (self.store.get(task_id) or ScheduledTask(name="", prompt="")).timezone
+            tz = (
+                kwargs.get("timezone")
+                or (
+                    self.store.get(task_id) or ScheduledTask(name="", prompt="")
+                ).timezone
+            )
             parse_trigger(kwargs["schedule"], tz)
 
         updated = self.store.update(task_id, **kwargs)
@@ -247,7 +267,9 @@ class AgentScheduler:
         try:
             trigger = parse_trigger(task.schedule, task.timezone)
         except ValueError:
-            logger.warning("Skipping task '%s' with invalid schedule: %s", task.name, task.schedule)
+            logger.warning(
+                "Skipping task '%s' with invalid schedule: %s", task.name, task.schedule
+            )
             return
 
         self._scheduler.add_job(
@@ -262,6 +284,11 @@ class AgentScheduler:
         logger.info("Registered scheduled task: %s (%s)", task.name, task.schedule)
 
     def _register_heartbeat(self, heartbeat_config) -> None:
+        from datetime import datetime
+
+        from apscheduler.triggers.cron import CronTrigger
+        from apscheduler.triggers.interval import IntervalTrigger
+
         from .config import HeartbeatConfig
 
         match = _INTERVAL_RE.match(heartbeat_config.every)
@@ -271,32 +298,76 @@ class AgentScheduler:
 
         val = int(match.group(1))
         unit = match.group(2)
-        kwargs = {
-            "s": {"seconds": val},
-            "m": {"minutes": val},
-            "h": {"hours": val},
-            "d": {"days": val},
-        }[unit]
-        trigger = IntervalTrigger(**kwargs)
 
-        self._scheduler.add_job(
+        start_hour = 0
+        start_minute = 0
+        if heartbeat_config.active_hours and "start" in heartbeat_config.active_hours:
+            try:
+                start_time = datetime.strptime(
+                    heartbeat_config.active_hours["start"], "%H:%M"
+                ).time()
+                start_hour = start_time.hour
+                start_minute = start_time.minute
+            except Exception:
+                pass
+
+        if unit == "d":
+            trigger = CronTrigger(day=f"*/{val}", hour=start_hour, minute=start_minute)
+        else:
+            kwargs = {
+                "s": {"seconds": val},
+                "m": {"minutes": val},
+                "h": {"hours": val},
+            }[unit]
+
+            tz = None
+            if (
+                heartbeat_config.active_hours
+                and "timezone" in heartbeat_config.active_hours
+            ):
+                try:
+                    import zoneinfo
+
+                    tz = zoneinfo.ZoneInfo(heartbeat_config.active_hours["timezone"])
+                except Exception:
+                    pass
+
+            # Anchor date in the past to align intervals to the start time
+            anchor = datetime(2026, 1, 1, start_hour, start_minute, tzinfo=tz)
+            trigger = IntervalTrigger(**kwargs, start_date=anchor)
+
+        job = self._scheduler.add_job(
             self._execute_heartbeat,
             trigger=trigger,
             id=SYSTEM_HEARTBEAT_ID,
             max_instances=1,
             misfire_grace_time=300,
             replace_existing=True,
+            next_run_time=trigger.get_next_fire_time(None, datetime.now(timezone.utc))
         )
+        
+        next_run = job.next_run_time if hasattr(job, "next_run_time") else None
+        next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S %Z") if next_run else "unknown"
+        
         logger.info(
-            "Registered heartbeat: every %s; %s",
+            "Registered heartbeat: every %s; %s; next_run=%s",
             heartbeat_config.every,
             format_active_period_status(heartbeat_config),
+            next_run_str,
         )
 
     async def _execute_heartbeat(self) -> None:
         if not self._agent:
             return
         try:
+            from .modes.heartbeat import is_within_active_hours
+            if not is_within_active_hours(self._agent.config.heartbeat):
+                logger.info("Outside active hours, skipping heartbeat")
+                job = self._scheduler.get_job(SYSTEM_HEARTBEAT_ID)
+                if job and hasattr(job, "next_run_time") and job.next_run_time:
+                    logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+                return
+
             logger.info("Running heartbeat...")
             import ouro_agents.server as server_module
             from .display import get_display
@@ -304,6 +375,10 @@ class AgentScheduler:
             server_module.last_heartbeat = datetime.utcnow()
             await self._agent.heartbeat()
             get_display().flush_pending_run_summary()
+            
+            job = self._scheduler.get_job(SYSTEM_HEARTBEAT_ID)
+            if job and hasattr(job, "next_run_time") and job.next_run_time:
+                logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
         except Exception:
             logger.exception("Heartbeat failed")
 
@@ -371,7 +446,11 @@ class AgentScheduler:
         effective_prompt = task.prompt + format_learnings_for_prompt(task.learnings)
 
         try:
-            logger.info("Running scheduled task '%s' (run #%d)...", task.name, task.run_count + 1)
+            logger.info(
+                "Running scheduled task '%s' (run #%d)...",
+                task.name,
+                task.run_count + 1,
+            )
             from .config import RunMode
             from .display import get_display
 
@@ -389,7 +468,9 @@ class AgentScheduler:
                 last_error=None,
                 run_count=task.run_count + 1,
             )
-            logger.info("Scheduled task '%s' completed: %s", task.name, str(result)[:200])
+            logger.info(
+                "Scheduled task '%s' completed: %s", task.name, str(result)[:200]
+            )
 
             # Post-run refinement: learn from this execution
             self._run_refinement(task)
@@ -413,7 +494,7 @@ class AgentScheduler:
             return
 
         try:
-            from .refinement import refine, apply_learnings
+            from .refinement import apply_learnings, refine
 
             conversations_dir = self._agent.config.agent.workspace / "conversations"
             conversation_id = f"scheduled-{task.id}"
@@ -444,6 +525,8 @@ class AgentScheduler:
                     result.summary,
                 )
             elif result.summary:
-                logger.info("Refinement for '%s': %s (no changes)", task.name, result.summary)
+                logger.info(
+                    "Refinement for '%s': %s (no changes)", task.name, result.summary
+                )
         except Exception:
             logger.exception("Refinement failed for task '%s'", task.name)

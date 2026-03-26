@@ -65,6 +65,8 @@ async def startup_event():
         getattr(reply_publisher.client.user, "email", "unknown"),
     )
 
+    app.add_api_route(config.server.webhook_path, handle_event, methods=["POST"])
+
     await agent_instance.scheduler.start(agent_instance)
 
 
@@ -317,7 +319,6 @@ async def run_task(request: RunRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/events")
 async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
     """Webhook receiver for Ouro platform events."""
     if not agent_instance:

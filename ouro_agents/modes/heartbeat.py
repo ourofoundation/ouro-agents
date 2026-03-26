@@ -63,6 +63,48 @@ def is_within_active_hours(config: HeartbeatConfig) -> bool:
     return current_time >= start or current_time <= end
 
 
+def estimate_beats_per_period(config: HeartbeatConfig) -> str:
+    if not config.active_hours or "start" not in config.active_hours or "end" not in config.active_hours:
+        return "continuous"
+    
+    try:
+        start = datetime.strptime(config.active_hours["start"], "%H:%M").time()
+        end = datetime.strptime(config.active_hours["end"], "%H:%M").time()
+        
+        start_secs = start.hour * 3600 + start.minute * 60
+        end_secs = end.hour * 3600 + end.minute * 60
+        
+        if end_secs < start_secs:
+            duration_secs = (24 * 3600 - start_secs) + end_secs
+        else:
+            duration_secs = end_secs - start_secs
+            
+        match = re.match(r"(\d+)([smhd])", config.every)
+        if not match:
+            return "unknown"
+            
+        val = int(match.group(1))
+        unit = match.group(2)
+        
+        interval_secs = 0
+        if unit == "s":
+            interval_secs = val
+        elif unit == "m":
+            interval_secs = val * 60
+        elif unit == "h":
+            interval_secs = val * 3600
+        elif unit == "d":
+            interval_secs = val * 86400
+            
+        if interval_secs == 0:
+            return "unknown"
+            
+        beats = max(1, int(duration_secs / interval_secs) + 1)
+        return f"~{beats} beats/period"
+    except Exception:
+        return "unknown"
+
+
 def format_active_period_status(config: HeartbeatConfig) -> str:
     """One-line summary for logging: configured window (if any) and whether now is inside it."""
     if not config.active_hours:
@@ -77,7 +119,8 @@ def format_active_period_status(config: HeartbeatConfig) -> str:
 
     in_window = is_within_active_hours(config)
     state = "active" if in_window else "inactive"
-    return f"period={start_str}–{end_str} ({tz_label}); now={state}"
+    beats_est = estimate_beats_per_period(config)
+    return f"period={start_str}–{end_str} ({tz_label}); now={state}; {beats_est}"
 
 
 # ---------------------------------------------------------------------------
@@ -96,22 +139,46 @@ def start_scheduler(agent, config: HeartbeatConfig):
     val = int(match.group(1))
     unit = match.group(2)
 
-    kwargs = {}
-    if unit == "s":
-        kwargs["seconds"] = val
-    elif unit == "m":
-        kwargs["minutes"] = val
-    elif unit == "h":
-        kwargs["hours"] = val
-    elif unit == "d":
-        kwargs["days"] = val
+    start_hour = 0
+    start_minute = 0
+    if config.active_hours and "start" in config.active_hours:
+        try:
+            start_time = datetime.strptime(config.active_hours["start"], "%H:%M").time()
+            start_hour = start_time.hour
+            start_minute = start_time.minute
+        except Exception:
+            pass
 
-    trigger = IntervalTrigger(**kwargs)
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    if unit == "d":
+        trigger = CronTrigger(day=f"*/{val}", hour=start_hour, minute=start_minute)
+    else:
+        kwargs = {
+            "s": {"seconds": val},
+            "m": {"minutes": val},
+            "h": {"hours": val},
+        }[unit]
+        
+        tz = None
+        if config.active_hours and "timezone" in config.active_hours:
+            try:
+                import zoneinfo
+                tz = zoneinfo.ZoneInfo(config.active_hours["timezone"])
+            except Exception:
+                pass
+        
+        # Anchor date in the past to align intervals to the start time
+        anchor = datetime(2024, 1, 1, start_hour, start_minute, tzinfo=tz)
+        trigger = IntervalTrigger(**kwargs, start_date=anchor)
 
     async def _run_heartbeat():
         active = is_within_active_hours(config)
         if not active:
             logger.info("Outside active hours, skipping heartbeat")
+            if job and hasattr(job, "next_run_time") and job.next_run_time:
+                logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
             return
 
         try:
@@ -121,12 +188,21 @@ def start_scheduler(agent, config: HeartbeatConfig):
             server_module.last_heartbeat = datetime.utcnow()
 
             await agent.heartbeat()
+            if job and hasattr(job, "next_run_time") and job.next_run_time:
+                logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
         except Exception as e:
             logger.error("Heartbeat failed: %s", e)
 
-    scheduler.add_job(_run_heartbeat, trigger)
+    job = scheduler.add_job(
+        _run_heartbeat, 
+        trigger,
+        next_run_time=trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+    )
     scheduler.start()
-    logger.info("Started heartbeat scheduler: every %s", config.every)
+    
+    next_run = job.next_run_time if hasattr(job, "next_run_time") else None
+    next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S %Z") if next_run else "unknown"
+    logger.info("Started heartbeat scheduler: every %s; %s; next_run=%s", config.every, format_active_period_status(config), next_run_str)
 
 
 # ---------------------------------------------------------------------------
