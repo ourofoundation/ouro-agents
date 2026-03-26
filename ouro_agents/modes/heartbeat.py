@@ -177,8 +177,8 @@ def start_scheduler(agent, config: HeartbeatConfig):
         active = is_within_active_hours(config)
         if not active:
             logger.info("Outside active hours, skipping heartbeat")
-            if job and hasattr(job, "next_run_time") and job.next_run_time:
-                logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+            # Don't log next_run_time here, since the next trigger will also be skipped
+            # until we actually enter active hours.
             return
 
         try:

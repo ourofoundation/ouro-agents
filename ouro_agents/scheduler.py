@@ -363,9 +363,8 @@ class AgentScheduler:
             from .modes.heartbeat import is_within_active_hours
             if not is_within_active_hours(self._agent.config.heartbeat):
                 logger.info("Outside active hours, skipping heartbeat")
-                job = self._scheduler.get_job(SYSTEM_HEARTBEAT_ID)
-                if job and hasattr(job, "next_run_time") and job.next_run_time:
-                    logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+                # Don't log next_run_time here, since the next trigger will also be skipped
+                # until we actually enter active hours.
                 return
 
             logger.info("Running heartbeat...")

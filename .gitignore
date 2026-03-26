@@ -64,3 +64,6 @@ Thumbs.db
 
 # Workspace
 workspace/*
+
+# Config file
+config.json
