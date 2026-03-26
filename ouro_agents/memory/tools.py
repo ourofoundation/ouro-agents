@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from smolagents import tool
 
-from . import CATEGORY_LABELS, MemoryBackend
+from . import MemoryBackend
+
+if TYPE_CHECKING:
+    from .ouro_docs import OuroDocStore
 
 
 def make_memory_tools(
@@ -13,51 +18,8 @@ def make_memory_tools(
     agent_id: str,
     user_id: Optional[str] = None,
     workspace: Optional[Path] = None,
+    doc_store: Optional[OuroDocStore] = None,
 ) -> list:
-
-    valid_categories = set(CATEGORY_LABELS.keys())
-
-    @tool
-    def memory_store(facts: list) -> str:
-        """Store one or more facts in long-term memory.
-
-        Args:
-            facts: List of facts to store. Each is a dict with keys:
-                - fact (str, required): The fact to remember
-                - category (str, optional): One of: fact, preference, learning, decision, observation, general (default: general)
-                - importance (float, optional): 0.0–1.0. 0.3=minor, 0.5=normal, 0.7=significant, 0.9=critical (default: 0.5)
-
-        Example single:  [{"fact": "User prefers dark mode", "category": "preference"}]
-        Example multi:   [{"fact": "Uses PostgreSQL", "category": "fact"}, {"fact": "Prefers concise answers", "category": "preference", "importance": 0.7}]
-        """
-        if not facts:
-            return "No facts provided."
-
-        results: list[str] = []
-        for entry in facts:
-            if isinstance(entry, str):
-                entry = {"fact": entry}
-            fact = entry.get("fact", "")
-            if not fact:
-                continue
-            cat = entry.get("category", "general")
-            if cat not in valid_categories:
-                cat = "general"
-            imp = max(0.0, min(1.0, float(entry.get("importance", 0.5))))
-
-            backend.add(
-                fact,
-                agent_id=agent_id,
-                user_id=user_id,
-                metadata={
-                    "category": cat,
-                    "importance": imp,
-                    "source": "manual",
-                },
-            )
-            results.append(f"Stored [{cat}, importance={imp}]: {fact}")
-
-        return "\n".join(results) if results else "No valid facts provided."
 
     @tool
     def memory_recall(queries: list) -> str:
@@ -92,7 +54,10 @@ def make_memory_tools(
             for r in results:
                 score_str = f" (score={r.score:.2f})" if r.score > 0 else ""
                 cat_str = f" [{r.category}]" if r.category != "general" else ""
-                lines.append(f"- {r.text}{cat_str}{score_str}")
+                raw_refs = getattr(r, "metadata", {}).get("asset_refs", "") if hasattr(r, "metadata") else ""
+                refs = [x for x in raw_refs.split(",") if x] if isinstance(raw_refs, str) else raw_refs
+                ref_str = f" refs={','.join(refs)}" if refs else ""
+                lines.append(f"- {r.text}{cat_str}{score_str}{ref_str}")
             return query, lines
 
         if len(queries) == 1:
@@ -119,7 +84,7 @@ def make_memory_tools(
 
     @tool
     def memory_status() -> str:
-        """Show memory system status: total memories, MEMORY.md size, recent daily log activity."""
+        """Show memory system status: total memories, working memory size, recent daily log activity."""
         lines: list[str] = ["## Memory Status"]
 
         try:
@@ -135,33 +100,44 @@ def make_memory_tools(
         except Exception:
             lines.append("Vector store: unable to query")
 
-        if workspace:
+        today = date.today().isoformat()
+
+        if doc_store:
+            content = doc_store.read(f"MEMORY:{agent_id}")
+            if content:
+                tokens = len(content) // 4
+                lines.append(f"Working memory (MEMORY post): ~{tokens} tokens")
+
+            daily_content = doc_store.read(f"DAILY:{agent_id}:{today}")
+            if daily_content:
+                entry_count = sum(
+                    1 for line in daily_content.split("\n") if line.strip().startswith("-")
+                )
+                lines.append(f"Today's log: {entry_count} entries")
+
+            lines.append("Storage: Ouro posts (shared)")
+        elif workspace:
             memory_md = workspace / "MEMORY.md"
             if memory_md.exists():
                 content = memory_md.read_text()
                 tokens = len(content) // 4
-                lines.append(f"MEMORY.md: ~{tokens} tokens")
-            else:
-                lines.append("MEMORY.md: not found")
+                lines.append(f"Working memory (MEMORY.md): ~{tokens} tokens")
 
-            today_log = workspace / "memory" / "daily" / f"{date.today().isoformat()}.md"
+            today_log = workspace / "memory" / "daily" / f"{today}.md"
             if today_log.exists():
                 log_lines = today_log.read_text().strip().split("\n")
-                entry_count = sum(1 for l in log_lines if l.strip().startswith("-"))
+                entry_count = sum(1 for line in log_lines if line.strip().startswith("-"))
                 lines.append(f"Today's log: {entry_count} entries")
-            else:
-                lines.append("Today's log: empty")
 
+            lines.append("Storage: local files")
+
+        if workspace:
             entities_dir = workspace / "memory" / "entities"
             if entities_dir.exists():
                 entity_files = list(entities_dir.glob("*.md"))
-                lines.append(f"Entity files: {len(entity_files)}")
-
-            tasks_dir = workspace / "memory" / "tasks"
-            if tasks_dir.exists():
-                task_files = list(tasks_dir.glob("*.md"))
-                lines.append(f"Task files: {len(task_files)}")
+                if entity_files:
+                    lines.append(f"Entity files: {len(entity_files)}")
 
         return "\n".join(lines)
 
-    return [memory_store, memory_recall, memory_status]
+    return [memory_recall, memory_status]

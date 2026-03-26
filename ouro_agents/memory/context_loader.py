@@ -4,13 +4,18 @@ Automatically detects and loads relevant workspace files based on conversation
 state and the current request, so the agent doesn't have to manually read them.
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..constants import CHARS_PER_TOKEN
 from .conversation_state import ConversationState
+
+if TYPE_CHECKING:
+    from .ouro_docs import OuroDocStore
 
 logger = logging.getLogger(__name__)
 MAX_ENTITY_CONTEXT_TOKENS = 4000
@@ -109,9 +114,23 @@ def _load_file_truncated(path: Path, max_tokens: int) -> str:
         return ""
 
 
-def _load_recent_daily_context(workspace: Path) -> str:
+def _load_recent_daily_context(
+    workspace: Path,
+    doc_store: Optional[OuroDocStore] = None,
+    agent_name: str = "",
+) -> str:
     """Load yesterday's daily log if it exists (today's is already in working memory)."""
     yesterday = (date.today() - timedelta(days=1)).isoformat()
+
+    if doc_store and agent_name:
+        content = doc_store.read(f"DAILY:{agent_name}:{yesterday}")
+        if content:
+            max_chars = 300 * CHARS_PER_TOKEN
+            if len(content) > max_chars:
+                content = content[:max_chars] + "\n[...truncated]"
+            return f"### Yesterday ({yesterday})\n{content}"
+        return ""
+
     daily_path = workspace / "memory" / "daily" / f"{yesterday}.md"
     if not daily_path.exists():
         return ""
@@ -125,6 +144,8 @@ def load_entity_context(
     workspace: Path,
     conversation_state: Optional[ConversationState] = None,
     task: str = "",
+    doc_store: Optional[OuroDocStore] = None,
+    agent_name: str = "",
 ) -> str:
     """Load relevant entity files, task files, and recent daily context.
 
@@ -134,13 +155,13 @@ def load_entity_context(
     sections: list[str] = []
     total_tokens = 0
 
-    # 1. Entity files matching conversation key_entities
+    # 1. Entity files matching conversation key_entities (always local)
     entity_text = load_entity_files(workspace, conversation_state, max_tokens=MAX_ENTITY_CONTEXT_TOKENS)
     if entity_text:
         sections.append(entity_text)
         total_tokens += len(entity_text) // CHARS_PER_TOKEN
 
-    # 2. Active task files
+    # 2. Active task files (always local)
     task_files = _find_active_task_files(workspace)
     if task_files:
         task_parts: list[str] = []
@@ -155,8 +176,10 @@ def load_entity_context(
         if task_parts:
             sections.append("### Active Tasks\n" + "\n\n".join(task_parts))
 
-    # 3. Yesterday's daily log for continuity
-    daily_context = _load_recent_daily_context(workspace)
+    # 3. Yesterday's daily log for continuity (doc_store if available)
+    daily_context = _load_recent_daily_context(
+        workspace, doc_store=doc_store, agent_name=agent_name,
+    )
     if daily_context:
         sections.append(daily_context)
         total_tokens += len(daily_context) // CHARS_PER_TOKEN

@@ -1,14 +1,17 @@
 """Token and cost tracking for OpenRouter-powered agent runs."""
 
 import functools
+import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from smolagents import OpenAIModel
 
 logger = logging.getLogger(__name__)
+
+ReasoningCallback = Callable[[str], None]
 
 TRACKER_INT_FIELDS = {
     "input_tokens": "total_input_tokens",
@@ -272,8 +275,15 @@ class TrackedOpenAIModel(OpenAIModel):
     """``OpenAIModel`` that intercepts every API call to record generation IDs
     and per-call token counts on a shared :class:`UsageTracker`."""
 
-    def __init__(self, *args, tracker: Optional[UsageTracker] = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        tracker: Optional[UsageTracker] = None,
+        reasoning_callback: Optional[ReasoningCallback] = None,
+        **kwargs,
+    ):
         self._tracker = tracker or UsageTracker()
+        self._reasoning_callback = reasoning_callback
         super().__init__(*args, **kwargs)
 
     @property
@@ -288,33 +298,73 @@ class TrackedOpenAIModel(OpenAIModel):
         @functools.wraps(original_create)
         def tracked_create(*args, **kwargs):
             if kwargs.get("stream"):
-                return _wrap_stream(original_create(*args, **kwargs), tracker)
+                return _wrap_stream(
+                    original_create(*args, **kwargs),
+                    tracker,
+                    reasoning_callback=self._reasoning_callback,
+                )
             response = original_create(*args, **kwargs)
-            _record_response(response, tracker)
+            _record_response(
+                response,
+                tracker,
+                reasoning_callback=self._reasoning_callback,
+            )
             return response
 
         client.chat.completions.create = tracked_create
         return client
 
 
-def _record_response(response, tracker: UsageTracker):
+def _record_response(
+    response,
+    tracker: UsageTracker,
+    *,
+    reasoning_callback: Optional[ReasoningCallback] = None,
+):
+    record_usage_from_response(
+        response,
+        tracker,
+        gen_id_prefix="noid",
+        reasoning_callback=reasoning_callback,
+    )
+
+
+def record_usage_from_response(
+    response: Any,
+    tracker: UsageTracker,
+    *,
+    gen_id_prefix: str = "usage",
+    reasoning_callback: Optional[ReasoningCallback] = None,
+) -> Optional[str]:
+    """Record usage from an OpenAI-compatible response object."""
     gen_id = _usage_field(response, "id")
     usage_data = _extract_usage_data(_usage_field(response, "usage"))
+    _emit_reasoning_texts(
+        _extract_visible_reasoning_from_response(response),
+        reasoning_callback,
+    )
     if not gen_id and _stream_usage_has_tokens(usage_data):
-        gen_id = f"noid-{uuid.uuid4().hex}"
+        gen_id = f"{gen_id_prefix}-{uuid.uuid4().hex}"
     if gen_id:
         tracker.record(gen_id, usage_data)
+    return gen_id
 
 
 def _stream_usage_has_tokens(data: dict[str, Any]) -> bool:
     return any(_to_int(data.get(k)) for k in STREAM_USAGE_TOKEN_FIELDS)
 
 
-def _wrap_stream(stream, tracker: UsageTracker):
+def _wrap_stream(
+    stream,
+    tracker: UsageTracker,
+    *,
+    reasoning_callback: Optional[ReasoningCallback] = None,
+):
     """Iterate over an OpenAI stream, capturing the generation ID and final
     usage chunk, then record them on the tracker."""
     gen_id = None
     usage_data: dict[str, Any] = {}
+    reasoning_by_choice: dict[int, str] = {}
     for chunk in stream:
         cid = _usage_field(chunk, "id")
         if not gen_id and cid:
@@ -322,11 +372,31 @@ def _wrap_stream(stream, tracker: UsageTracker):
         usage = _usage_field(chunk, "usage")
         if usage:
             usage_data = _extract_usage_data(usage)
+        _merge_stream_reasoning_chunk(reasoning_by_choice, chunk)
         yield chunk
     if not gen_id and _stream_usage_has_tokens(usage_data):
         gen_id = f"stream-{uuid.uuid4().hex}"
     if gen_id:
         tracker.record(gen_id, usage_data)
+    _emit_reasoning_texts(reasoning_by_choice.values(), reasoning_callback)
+
+
+def _merge_stream_reasoning_chunk(reasoning_by_choice: dict[int, str], chunk: Any) -> None:
+    choices = _usage_field(chunk, "choices") or []
+    for index, choice in enumerate(choices):
+        delta = _usage_field(choice, "delta")
+        if delta is None:
+            continue
+        text = _extract_stream_visible_reasoning_from_message(delta)
+        if not text:
+            continue
+        current = reasoning_by_choice.get(index, "")
+        if current and text.startswith(current):
+            reasoning_by_choice[index] = text
+        elif not current:
+            reasoning_by_choice[index] = text
+        elif text not in current:
+            reasoning_by_choice[index] = current + text
 
 
 def _to_int(value: Any) -> int:
@@ -352,6 +422,76 @@ def _usage_field(obj: Any, name: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(name)
     return getattr(obj, name, None)
+
+
+def _normalize_reasoning_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        parts = [_normalize_reasoning_value(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    if isinstance(value, dict):
+        for key in ("text", "reasoning", "summary", "content", "value"):
+            text = _normalize_reasoning_value(value.get(key))
+            if text:
+                return text
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            return str(value).strip()
+    return str(value).strip()
+
+
+def _extract_visible_reasoning_from_message(message: Any) -> str:
+    if message is None:
+        return ""
+    for field in ("reasoning", "reasoning_details"):
+        text = _normalize_reasoning_value(_usage_field(message, field))
+        if text:
+            return text
+    return ""
+
+
+def _extract_stream_visible_reasoning_from_message(message: Any) -> str:
+    if message is None:
+        return ""
+    reasoning = _usage_field(message, "reasoning")
+    if isinstance(reasoning, str):
+        return reasoning
+    return _extract_visible_reasoning_from_message(message)
+
+
+def _extract_visible_reasoning_from_response(response: Any) -> list[str]:
+    choices = _usage_field(response, "choices") or []
+    texts: list[str] = []
+    seen: set[str] = set()
+    for choice in choices:
+        message = _usage_field(choice, "message")
+        text = _extract_visible_reasoning_from_message(message)
+        if text and text not in seen:
+            seen.add(text)
+            texts.append(text)
+    return texts
+
+
+def _emit_reasoning_texts(
+    texts,
+    reasoning_callback: Optional[ReasoningCallback],
+) -> None:
+    if reasoning_callback is None:
+        return
+    seen: set[str] = set()
+    for text in texts:
+        cleaned = str(text).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        try:
+            reasoning_callback(cleaned)
+        except Exception:
+            logger.exception("Failed to emit visible reasoning text")
 
 
 def _cost_details_as_dict(cost_details: Any) -> dict[str, Any]:
@@ -584,11 +724,27 @@ def _residual_cost(
     return max(0.0, round(total_v - sub_sum, 8))
 
 
+def _usage_call_count(usage: Any) -> int:
+    return int(
+        getattr(usage, "num_api_calls", getattr(usage, "llm_calls", 0)) or 0
+    )
+
+
+def _combine_ledgers(*ledgers: Optional[list[tuple[str, Any]]]) -> list[tuple[str, Any]]:
+    combined: list[tuple[str, Any]] = []
+    for ledger in ledgers:
+        if ledger:
+            combined.extend(ledger)
+    return combined
+
+
 def residual_main_usage(
     total: RunUsage,
-    ledger: list[tuple[str, Any]],
+    subagent_ledger: Optional[list[tuple[str, Any]]] = None,
+    memory_ledger: Optional[list[tuple[str, Any]]] = None,
 ) -> RunUsage:
-    """Subtract per-subagent deltas from aggregate tracker totals (shared tracker)."""
+    """Subtract subagent and memory deltas from aggregate tracker totals."""
+    ledger = _combine_ledgers(subagent_ledger, memory_ledger)
     sub_cost = _sum_subagent_costs(ledger, "cost_usd")
     sub_in_cost = _sum_subagent_costs(ledger, "input_cost_usd")
     sub_out_cost = _sum_subagent_costs(ledger, "output_cost_usd")
@@ -614,7 +770,7 @@ def residual_main_usage(
         accepted_prediction_tokens=total.accepted_prediction_tokens,
         rejected_prediction_tokens=total.rejected_prediction_tokens,
         total_tokens=0,
-        num_api_calls=max(0, total.num_api_calls - _sum_ledger_attr(ledger, "llm_calls")),
+        num_api_calls=max(0, total.num_api_calls - sum(_usage_call_count(u) for _, u in ledger)),
         cost_usd=_residual_cost(total.cost_usd, sub_cost),
         input_cost_usd=_residual_cost(total.input_cost_usd, sub_in_cost),
         output_cost_usd=_residual_cost(total.output_cost_usd, sub_out_cost),
@@ -636,17 +792,37 @@ def format_subagent_usage_summary(u: Any) -> str:
     )
 
 
+def format_component_usage_summary(u: Any) -> str:
+    """One-line usage summary for auxiliary tracked components."""
+    calls_attr = "num_api_calls" if hasattr(u, "num_api_calls") else "llm_calls"
+    return " | ".join(
+        _usage_summary_parts(
+            u,
+            calls_attr=calls_attr,
+            include_cache_write=True,
+        )
+    )
+
+
 def format_usage_breakdown(
     total: RunUsage,
-    ledger: list[tuple[str, Any]],
+    subagent_ledger: Optional[list[tuple[str, Any]]] = None,
+    memory_ledger: Optional[list[tuple[str, Any]]] = None,
 ) -> str:
-    """Human-readable usage for logs: main residual, each subagent, then task total."""
-    if not ledger:
+    """Human-readable usage for logs: main residual, details, then task total."""
+    if not subagent_ledger and not memory_ledger:
         return format_usage_summary(total)
-    main = residual_main_usage(total, ledger)
+    main = residual_main_usage(total, subagent_ledger, memory_ledger)
     lines = [
         "main: " + format_usage_summary(main),
-        *[f"sub:{name}: " + format_subagent_usage_summary(u) for name, u in ledger],
+        *[
+            f"sub:{name}: " + format_subagent_usage_summary(u)
+            for name, u in (subagent_ledger or [])
+        ],
+        *[
+            f"memory:{name}: " + format_component_usage_summary(u)
+            for name, u in (memory_ledger or [])
+        ],
         "task_total: " + format_usage_summary(total),
     ]
     return "\n".join(lines)

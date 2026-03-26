@@ -1,8 +1,8 @@
 {
   "agent": {
-    "name": "feynman",
-    "model": "xiaomi/mimo-v2-omni",
-    "reasoning": { "effort": "high" },
+    "name": "hermes",
+    "model": "xiaomi/mimo-v2-flash",
+    "reasoning": { "effort": "medium" },
     "workspace": "./workspace",
     "max_steps": {
       "chat": 40,
@@ -23,7 +23,7 @@
         "max_steps": 10
       },
       "writer": {
-        "model": "anthropic/claude-4.6-sonnet"
+        "model": "xiaomi/mimo-v2-flash"
       },
       "executor": { "max_steps": 24 }
     }
@@ -40,7 +40,7 @@
   "heartbeat": {
     "enabled": true,
     "every": "1h",
-    "model": "xiaomi/mimo-v2-omni",
+    "model": "xiaomi/mimo-v2-flash",
     "active_hours": {
       "start": "09:00",
       "end": "17:00",
@@ -55,7 +55,7 @@
     "provider": "mem0",
     "path": "./workspace/memory",
     "extraction_model": "xiaomi/mimo-v2-flash",
-    "embedder": "text-embedding-3-small",
+    "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "retrieval_queries": 3,
     "max_retrieval_tokens": 1500,
@@ -65,7 +65,9 @@
     "decay_after_days": 30,
     "graph": {
       "enabled": false
-    }
+    },
+    "org_id": "00000000-0000-0000-0000-000000000000",
+    "team_id": "019d2578-d61f-7ee7-aa00-d38ac86b7c1c"
   },
   "mcp_servers": [
     {

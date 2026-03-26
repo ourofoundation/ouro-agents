@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import re
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -15,11 +14,9 @@ from smolagents import (
     ToolCollection,
     tool,
 )
-from smolagents.memory import TaskStep
-from smolagents.monitoring import Timing
 
-from .artifacts import fetch_asset_content
-from .classify import PreflightResult, is_trivial_message, parse_preflight_result
+from .artifacts import PrefetchSpec, resolve_prefetch
+from .classify import is_trivial_message
 from .config import (
     MCPServerConfig,
     OuroAgentsConfig,
@@ -27,6 +24,7 @@ from .config import (
     RunMode,
     merge_reasoning,
 )
+from .display import OuroDisplay, create_logger, get_display
 from .memory import create_memory_backend
 from .memory.conversation_state import (
     ConversationState,
@@ -34,6 +32,7 @@ from .memory.conversation_state import (
     save_state,
     update_state,
 )
+from .memory.ouro_docs import OuroDocStore
 from .memory.reflection import (
     apply_reflection,
     should_reflect_for_conversation,
@@ -41,9 +40,9 @@ from .memory.reflection import (
 )
 from .memory.tools import make_memory_tools
 from .memory.user_model import load_user_model
-from .notes import load_notes
+from .modes import ModeProfile, apply_mode_override, resolve_mode_profile
 from .skills import get_skill_directory, load_startup_skills
-from .soul import build_prompt, load_soul
+from .soul import build_prompt
 from .subagents.context import SubAgentUsage
 from .subagents.delegate_utils import (
     delegate_success_payload,
@@ -52,6 +51,15 @@ from .subagents.delegate_utils import (
     summarize_delegate_text,
     validate_delegate_result,
 )
+from .subagents.preflight import PreflightResult, parse_preflight_result
+from .subagents.reflector import (
+    ReflectionResult,
+    build_run_reflection_task,
+    normalize_daily_log_entry,
+    parse_reflection_result,
+)
+from .tool_prompt import build_tool_calling_system_prompt
+from .tools.agent_base import SanitizedToolCallingAgent as _SanitizedToolCallingAgent
 from .tools.python_tool import make_python_tool
 from .tools.scheduler_tools import make_scheduler_tools
 from .tools.skills_tools import make_load_skill_tool
@@ -62,8 +70,23 @@ from .usage import (
     collect_run_usage,
     format_usage_breakdown,
 )
+from .utils.callbacks import build_step_callback
+from .utils.conversation import (
+    append_conversation_turn,
+    build_history_steps,
+    conversation_file,
+    extract_tool_summary,
+    format_conversation_turns,
+    load_conversation_turns,
+)
+from .utils.debug import (
+    append_run_debug_markdown_trace,
+    write_run_debug_markdown_preamble,
+)
+from .utils.streaming import FinalAnswerStreamer
 
 if TYPE_CHECKING:
+    from .modes.planning import PlanCycle
     from .subagents.context import SubAgentContext
 
 logger = logging.getLogger(__name__)
@@ -72,247 +95,21 @@ RunStatusCallback = Callable[[str, Optional[str], bool], None]
 RunResponseCallback = Callable[[str], None]
 
 
-def _markdown_fence(content: str, lang: str = "text") -> str:
-    """Fence ``content`` for embedding in markdown (handles nested ``` sequences)."""
-    fence = "```"
-    while fence in content:
-        fence += "`"
-    return f"{fence}{lang}\n{content}\n{fence}\n"
-
-
-def _serialize_memory_step_for_debug(step) -> str:
-    """Format a single smolagents memory step into markdown for debug runs."""
-    if isinstance(step, TaskStep):
-        t = getattr(step, "task", "") or ""
-        return f"## TaskStep\n\n{_markdown_fence(t)}\n\n"
-    if isinstance(step, ActionStep):
-        parts: list[str] = []
-        sn = getattr(step, "step_number", None)
-        parts.append(
-            f"## Action step {sn}\n\n" if sn is not None else "## Action step\n\n"
-        )
-        mo = getattr(step, "model_output", None) or ""
-        if mo:
-            parts.append("### Model output\n\n")
-            parts.append(_markdown_fence(mo))
-            parts.append("\n\n")
-        tcs = getattr(step, "tool_calls", None) or []
-        if tcs:
-            parts.append("### Tool calls\n\n")
-            for tc in tcs:
-                name = getattr(tc, "name", "?")
-                args = getattr(tc, "arguments", None)
-                try:
-                    args_str = json.dumps(args, ensure_ascii=False) if args is not None else ""
-                except TypeError:
-                    args_str = str(args)
-                if len(args_str) > 8000:
-                    args_str = args_str[:8000] + "..."
-                parts.append(f"- **{name}** `{args_str}`\n")
-            parts.append("\n")
-        obs = getattr(step, "observations", None) or ""
-        if obs:
-            obs_s = str(obs)
-            cap = 80_000
-            truncated = len(obs_s) > cap
-            if truncated:
-                obs_s = obs_s[:cap]
-            parts.append("### Observations\n\n")
-            parts.append(_markdown_fence(obs_s))
-            if truncated:
-                parts.append("\n\n*(truncated)*\n")
-            parts.append("\n\n")
-        err = getattr(step, "error", None)
-        if err:
-            parts.append("### Error\n\n")
-            parts.append(_markdown_fence(str(err)))
-            parts.append("\n\n")
-        if getattr(step, "is_final_answer", False):
-            parts.append("*Marked as final answer step.*\n\n")
-        return "".join(parts)
-    return f"## {type(step).__name__}\n\n{_markdown_fence(repr(step))}\n\n"
-
-
-def _write_run_debug_markdown_preamble(
-    path: Path,
-    *,
-    task: str,
-    effective_task: str,
-    full_system_prompt: str,
-    run_id: str,
-    mode: RunMode,
-    preflight: Optional[PreflightResult],
-) -> None:
-    """Write header, system prompt, and task; run trace is appended after the agent finishes."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = [
-        "# Ouro Agents run debug\n\n",
-        f"- **Timestamp (UTC):** {datetime.now(timezone.utc).isoformat()}\n",
-        f"- **Run id:** `{run_id}`\n",
-        f"- **Mode:** `{mode.value}`\n\n",
-        "## Original task\n\n",
-        _markdown_fence(task),
-        "\n## Effective task (what the agent sees)\n\n",
-        _markdown_fence(effective_task),
-        "\n## Full system prompt\n\n",
-        "This is the smolagents base template plus the Ouro-built soul prompt.\n\n",
-        _markdown_fence(full_system_prompt),
-    ]
-    if preflight is not None:
-        lines.extend(
-            [
-                "\n## Preflight (step 0)\n\n",
-                f"- **intent:** `{preflight.intent}`\n",
-                f"- **complexity:** `{preflight.complexity}`\n",
-                f"- **worth_remembering:** `{preflight.worth_remembering}`\n\n",
-            ]
-        )
-        if preflight.briefing:
-            lines.extend(["### Briefing\n\n", _markdown_fence(preflight.briefing), "\n"])
-        if preflight.plan:
-            lines.extend(["### Plan\n\n", _markdown_fence(preflight.plan), "\n"])
-    else:
-        lines.append("\n## Preflight (step 0)\n\n*(skipped or not applicable)*\n\n")
-
-    lines.append("\n---\n\n## Agent steps (memory trace)\n\n")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("".join(lines))
-
-
-def _append_run_debug_markdown_trace(path: Path, agent, result: str) -> None:
-    """Append serialized memory steps and final result to a debug markdown file."""
-    parts: list[str] = []
-    for step in getattr(agent.memory, "steps", []) or []:
-        parts.append(_serialize_memory_step_for_debug(step))
-    parts.append("## Final result\n\n")
-    parts.append(_markdown_fence(str(result)))
-    parts.append("\n")
-    with open(path, "a", encoding="utf-8") as f:
-        f.write("".join(parts))
-
-
-def _extract_streamed_answer_text(arguments_blob: str) -> Optional[str]:
-    try:
-        parsed = json.loads(arguments_blob)
-        if isinstance(parsed, dict) and "answer" in parsed:
-            answer = parsed["answer"]
-            if isinstance(answer, str):
-                return answer
-            return json.dumps(answer)
-    except Exception:
-        pass
-
-    match = re.search(r'"answer"\s*:\s*', arguments_blob)
-    if not match:
-        return None
-
-    idx = match.end()
-    if idx >= len(arguments_blob):
-        return ""
-
-    if arguments_blob[idx] != '"':
-        return arguments_blob[idx:].strip()
-
-    idx += 1
-    chars: list[str] = []
-    escape = False
-
-    while idx < len(arguments_blob):
-        ch = arguments_blob[idx]
-        idx += 1
-
-        if escape:
-            if ch == "n":
-                chars.append("\n")
-            elif ch == "r":
-                chars.append("\r")
-            elif ch == "t":
-                chars.append("\t")
-            elif ch == "b":
-                chars.append("\b")
-            elif ch == "f":
-                chars.append("\f")
-            elif ch == "u" and idx + 4 <= len(arguments_blob):
-                hex_value = arguments_blob[idx : idx + 4]
-                if len(hex_value) == 4 and re.fullmatch(r"[0-9a-fA-F]{4}", hex_value):
-                    chars.append(chr(int(hex_value, 16)))
-                    idx += 4
-                else:
-                    break
-            else:
-                chars.append(ch)
-            escape = False
-            continue
-
-        if ch == "\\":
-            escape = True
-            continue
-        if ch == '"':
-            return "".join(chars)
-        chars.append(ch)
-
-    return "".join(chars)
-
-
-class _FinalAnswerStreamer:
-    def __init__(self):
-        self._tool_names: dict[int, str] = {}
-        self._arguments_by_index: dict[int, str] = {}
-        self._streamed_text = ""
-
-    def consume(self, delta: ChatMessageStreamDelta) -> Optional[str]:
-        tool_calls = delta.tool_calls or []
-        emitted: list[str] = []
-
-        for tool_call in tool_calls:
-            index = tool_call.index or 0
-            function = tool_call.function
-            if function is None:
-                continue
-            if function.name:
-                self._tool_names[index] = function.name
-            if function.arguments:
-                self._arguments_by_index[index] = self._arguments_by_index.get(
-                    index, ""
-                ) + str(function.arguments)
-
-            if self._tool_names.get(index) != "final_answer":
-                continue
-
-            current_text = _extract_streamed_answer_text(
-                self._arguments_by_index.get(index, "")
-            )
-            if current_text is None:
-                continue
-
-            if current_text.startswith(self._streamed_text):
-                chunk = current_text[len(self._streamed_text) :]
-            else:
-                chunk = current_text
-
-            self._streamed_text = current_text
-            if chunk:
-                emitted.append(chunk)
-
-        if emitted:
-            return "".join(emitted)
-        return None
-
-
-from .display import OuroDisplay, create_logger, get_display
-from .tools.agent_base import SanitizedToolCallingAgent as _SanitizedToolCallingAgent
-
-
 class OuroAgent:
     def __init__(self, config: OuroAgentsConfig):
         self.config = config
-        self.soul = load_soul(config.agent.workspace / "SOUL.md")
-        self.notes = load_notes(config.agent.workspace / "NOTES.md")
+        soul_path = config.agent.workspace / "SOUL.md"
+        self.soul = soul_path.read_text() if soul_path.exists() else ""
+        notes_path = config.agent.workspace / "NOTES.md"
+        self.notes = notes_path.read_text() if notes_path.exists() else ""
         self.skills = load_startup_skills(config)
         self.skill_directory = get_skill_directory(config)
-        self.memory = create_memory_backend(config.memory)
-        self._workspace = config.agent.workspace
         self._usage_tracker = UsageTracker()
+        self.memory = create_memory_backend(
+            config.memory,
+            usage_tracker=self._usage_tracker,
+        )
+        self._workspace = config.agent.workspace
         self._subagent_ledger: list[tuple[str, SubAgentUsage]] = []
         self.model = self._build_model(config.agent.model)
 
@@ -322,13 +119,14 @@ class OuroAgent:
         self._deferred_index: list[dict] = []
         self._mcp_connected = False
 
+        self.doc_store: OuroDocStore | None = None
+
         from .scheduler import AgentScheduler
 
         self.scheduler = AgentScheduler(
             config.agent.workspace / "data" / "scheduled_tasks.json"
         )
 
-        # Load custom subagent profiles and merge into the delegatable registry
         self._load_custom_profiles()
 
     def _load_custom_profiles(self) -> None:
@@ -417,18 +215,30 @@ class OuroAgent:
         return format_platform_context_for_prompt(self._workspace)
 
     def _load_working_memory(self) -> str:
-        """Load MEMORY.md and today's daily log for the system prompt."""
+        """Load working memory and today's daily log for the system prompt."""
         parts: list[str] = []
-        memory_md = self._workspace / "MEMORY.md"
-        if memory_md.exists():
-            content = self._strip_frontmatter(memory_md.read_text()).strip()
+        name = self.config.agent.name
+        today = date.today().isoformat()
+
+        if self.doc_store:
+            content = self.doc_store.read(f"MEMORY:{name}")
             if content:
-                parts.append(content)
-        daily = self._workspace / "memory" / "daily" / f"{date.today().isoformat()}.md"
-        if daily.exists():
-            content = self._strip_frontmatter(daily.read_text()).strip()
-            if content:
-                parts.append(f"## Today's Log ({date.today().isoformat()})\n{content}")
+                parts.append(self._strip_frontmatter(content).strip())
+            daily_content = self.doc_store.read(f"DAILY:{name}:{today}")
+            if daily_content:
+                parts.append(f"## Today's Log ({today})\n{daily_content}")
+        else:
+            memory_md = self._workspace / "MEMORY.md"
+            if memory_md.exists():
+                content = self._strip_frontmatter(memory_md.read_text()).strip()
+                if content:
+                    parts.append(content)
+            daily = self._workspace / "memory" / "daily" / f"{today}.md"
+            if daily.exists():
+                content = self._strip_frontmatter(daily.read_text()).strip()
+                if content:
+                    parts.append(f"## Today's Log ({today})\n{content}")
+
         return "\n\n".join(parts)
 
     def _load_scheduled_task_awareness(self) -> str:
@@ -527,6 +337,7 @@ class OuroAgent:
             api_base="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
             tracker=self._usage_tracker,
+            reasoning_callback=get_display().reasoning,
             **model_kwargs,
         )
 
@@ -562,83 +373,8 @@ class OuroAgent:
 
         return self._ouro_client
 
-    def _conversation_file(self, conversation_id: str) -> Path:
-        conversations_dir = self.config.agent.workspace / "conversations"
-        conversations_dir.mkdir(parents=True, exist_ok=True)
-        return conversations_dir / f"{conversation_id}.jsonl"
-
-    def _append_conversation_turn(
-        self,
-        conversation_id: str,
-        role: str,
-        content: str,
-        tool_summary: Optional[list[dict]] = None,
-    ) -> None:
-        path = self._conversation_file(conversation_id)
-        entry: dict = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "role": role,
-            "content": content,
-        }
-        if tool_summary:
-            entry["tool_summary"] = tool_summary
-        with open(path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-
-    @staticmethod
-    def _extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dict]:
-        """Extract tool call information from the inner agent's memory.
-
-        When ``for_persistence`` is True, results are truncated for compact
-        JSONL storage.  When False (default), full results are kept so they
-        remain available in the current run's context window.
-        """
-        max_result_chars = 500 if for_persistence else 4000
-        summary = []
-        for step in inner_agent.memory.steps:
-            if not isinstance(step, ActionStep) or not step.tool_calls:
-                continue
-            for tc in step.tool_calls:
-                obs = step.observations or ""
-                if len(obs) > max_result_chars:
-                    obs = obs[:max_result_chars] + "..."
-                summary.append({"tool": tc.name, "args": tc.arguments, "result": obs})
-        return summary
-
-    def _load_conversation_turns(
-        self, conversation_id: str, limit: int = 24
-    ) -> list[dict]:
-        path = self._conversation_file(conversation_id)
-        if not path.exists():
-            return []
-
-        turns: list[dict] = []
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    turns.append(json.loads(line))
-                except Exception:
-                    continue
-        return turns[-limit:]
-
-    @staticmethod
-    def _format_turns_verbatim(turns: list[dict], max_chars: int = 1600) -> str:
-        lines = []
-        for turn in turns:
-            role = str(turn.get("role", "unknown")).lower()
-            content = str(turn.get("content", "")).strip()
-            if not content:
-                continue
-            if len(content) > max_chars:
-                content = content[:max_chars] + "..."
-            lines.append(f"- {role}: {content}")
-        return "\n".join(lines)
-
     def _summarize_turns(self, turns: list[dict]) -> str:
-        """Compress older conversation turns into a brief summary."""
+        """Compress older conversation turns into a brief summary via LLM."""
         condensed = []
         for turn in turns:
             role = str(turn.get("role", "unknown")).lower()
@@ -670,121 +406,33 @@ class OuroAgent:
             logger.warning("Conversation summarization failed: %s", e)
             return f"({len(turns)} earlier messages about: {blob[:200]}...)"
 
-    def _format_conversation_turns(
-        self, turns: list[dict], recent_verbatim: int = 8
-    ) -> str:
-        if not turns:
-            return ""
+    def _init_doc_store(self) -> None:
+        """Initialize the OuroDocStore if memory.org_id and memory.team_id are configured."""
+        mem_cfg = self.config.memory
+        if not mem_cfg.org_id or not mem_cfg.team_id:
+            logger.info(
+                "OuroDocStore: org_id/team_id not configured, using local files only"
+            )
+            return
+        self.doc_store = OuroDocStore(
+            agent_name=self.config.agent.name,
+            org_id=mem_cfg.org_id,
+            team_id=mem_cfg.team_id,
+            client=self._get_ouro_client(),
+        )
+        self._load_identity_from_ouro()
 
-        if len(turns) <= recent_verbatim:
-            return self._format_turns_verbatim(turns)
-
-        old_turns = turns[:-recent_verbatim]
-        recent_turns = turns[-recent_verbatim:]
-
-        summary = self._summarize_turns(old_turns)
-        recent = self._format_turns_verbatim(recent_turns)
-        return f"Earlier context: {summary}\n\nRecent:\n{recent}"
-
-    @staticmethod
-    def _compress_tool_call(tc: dict, max_result_chars: int = 600) -> str:
-        """Produce a compact summary of a single tool call for history injection."""
-        tool_name = tc.get("tool", "unknown")
-        args = tc.get("args", {})
-        result = str(tc.get("result", ""))
-
-        # final_answer: the assistant content IS the answer, skip it
-        if tool_name == "final_answer":
-            return ""
-        # load_tool: summarize which tools were loaded
-        if tool_name == "load_tool":
-            names = args.get("tool_names", [])
-            if isinstance(names, list) and names:
-                return f"- Loaded tools: {', '.join(str(n) for n in names)}"
-            return "- Loaded tool(s)"
-        # memory tools: compact summaries
-        if tool_name == "memory_store":
-            facts = args.get("facts", [])
-            if isinstance(facts, list):
-                count = len(facts)
-                preview = str(facts[0].get("fact", ""))[:80] if facts else ""
-                suffix = f" and {count - 1} more" if count > 1 else ""
-                return f"- Stored memory: {preview}{suffix}"
-            return "- Stored memory"
-        if tool_name == "memory_recall":
-            queries = args.get("queries", [])
-            if isinstance(queries, list):
-                query_strs = [
-                    str(q.get("query", q) if isinstance(q, dict) else q)[:50]
-                    for q in queries[:3]
-                ]
-                count = result.count("\n- ") + (1 if result.startswith("- ") else 0)
-                return f"- Recalled {count} memories for: {'; '.join(query_strs)}"
-            return "- Recalled memories"
-        # Default: name + args + result (keep more for recent history)
-        result_preview = result[:max_result_chars]
-        if len(result) > max_result_chars:
-            result_preview += "..."
-        return f"- {tool_name}({json.dumps(args)}) → {result_preview}"
-
-    @staticmethod
-    def _build_history_steps(turns: list[dict]) -> list:
-        """Convert JSONL conversation turns into smolagents memory steps.
-
-        Pairs user/assistant turns into TaskStep + ActionStep sequences so the
-        model sees proper structured conversation history instead of a text blob.
-        """
-        _DUMMY_TIMING = Timing(start_time=0.0, end_time=0.0)
-        steps: list = []
-        i = 0
-        while i < len(turns):
-            turn = turns[i]
-            role = turn.get("role", "")
-            content = turn.get("content", "")
-
-            if role == "user":
-                steps.append(TaskStep(task=content))
-                # Look for a paired assistant response
-                if i + 1 < len(turns) and turns[i + 1].get("role") == "assistant":
-                    assistant_turn = turns[i + 1]
-                    assistant_content = assistant_turn.get("content", "")
-                    tool_summary = assistant_turn.get("tool_summary")
-
-                    model_output = assistant_content
-                    if tool_summary:
-                        tool_lines = [
-                            OuroAgent._compress_tool_call(tc) for tc in tool_summary
-                        ]
-                        tool_lines = [tl for tl in tool_lines if tl]
-                        if tool_lines:
-                            model_output = (
-                                "Tools used:\n"
-                                + "\n".join(tool_lines)
-                                + "\n\n"
-                                + assistant_content
-                            )
-
-                    steps.append(
-                        ActionStep(
-                            step_number=len(steps),
-                            timing=_DUMMY_TIMING,
-                            model_output=model_output,
-                            is_final_answer=True,
-                        )
-                    )
-                    i += 2
-                    continue
-            elif role == "assistant":
-                steps.append(
-                    ActionStep(
-                        step_number=len(steps),
-                        timing=_DUMMY_TIMING,
-                        model_output=content,
-                        is_final_answer=True,
-                    )
-                )
-            i += 1
-        return steps
+    def _load_identity_from_ouro(self) -> None:
+        """Load soul, notes, and heartbeat from Ouro posts (falls back to local files)."""
+        if not self.doc_store:
+            return
+        name = self.config.agent.name
+        soul = self.doc_store.read(f"SOUL:{name}")
+        if soul:
+            self.soul = soul
+        notes = self.doc_store.read(f"NOTES:{name}")
+        if notes:
+            self.notes = notes
 
     def connect_mcp(self) -> None:
         """Connect to all configured MCP servers once. Safe to call multiple times."""
@@ -794,6 +442,11 @@ class OuroAgent:
         for server in self.config.mcp_servers:
             self._connect_one_server(server)
         self._mcp_connected = True
+
+        try:
+            self._init_doc_store()
+        except Exception as e:
+            logger.warning("Failed to initialize OuroDocStore: %s", e)
 
         try:
             self._refresh_platform_context()
@@ -915,7 +568,7 @@ class OuroAgent:
 
     def _build_agent_tools(
         self,
-        mode: RunMode = RunMode.AUTONOMOUS,
+        profile: ModeProfile,
         user_id: Optional[str] = None,
         allowed_servers: Optional[list[str]] = None,
         preload_tools: Optional[list[str]] = None,
@@ -933,8 +586,12 @@ class OuroAgent:
         deferred_tools = self._deferred_tools
         deferred_index = self._deferred_index
 
-        if mode == RunMode.HEARTBEAT:
-            servers = set(allowed_servers) if allowed_servers else {"ouro"}
+        if profile.restricted_servers:
+            servers = (
+                set(allowed_servers)
+                if allowed_servers
+                else set(profile.default_servers)
+            )
             deferred_index = [
                 item for item in self._deferred_index if item["server"] in servers
             ]
@@ -960,7 +617,12 @@ class OuroAgent:
             self.config.agent.name,
             user_id=user_id,
             workspace=self.config.agent.workspace,
+            doc_store=self.doc_store,
         )
+        if profile.memory_tool_filter is not None:
+            allowed = set(profile.memory_tool_filter)
+            memory_tools = [t for t in memory_tools if t.name in allowed]
+
         ouro_client = self._get_ouro_client()
         python_tool, _executor = make_python_tool(
             workspace=self.config.agent.workspace,
@@ -968,7 +630,9 @@ class OuroAgent:
         )
         load_skill = make_load_skill_tool(self.config.agent.workspace)
         scheduler_tools = (
-            make_scheduler_tools(self.scheduler) if mode != RunMode.HEARTBEAT else []
+            make_scheduler_tools(self.scheduler)
+            if not profile.restricted_servers
+            else []
         )
 
         # Build the delegate tool for subagent dispatch
@@ -1095,13 +759,18 @@ class OuroAgent:
 
         delegate.description += f"\n\nAvailable subagents: {_subagent_names_str}"
 
-        delegate_tools = [delegate] if mode != RunMode.HEARTBEAT else []
-        all_tools = (
-            list(memory_tools)
-            + scheduler_tools
-            + delegate_tools
-            + [load_tool, load_skill, python_tool]
-        )
+        delegate_tools = [] if profile.restricted_servers else [delegate]
+
+        _has_memory_filter = profile.memory_tool_filter is not None
+        if _has_memory_filter:
+            all_tools = list(memory_tools)
+        else:
+            all_tools = (
+                list(memory_tools)
+                + scheduler_tools
+                + delegate_tools
+                + [load_tool, load_skill, python_tool]
+            )
 
         preloaded_names: list[str] = []
         for qualified_name in preload_tools or []:
@@ -1124,16 +793,20 @@ class OuroAgent:
                     "Preloaded tool: %s (call as %s)", resolved, item["raw_name"]
                 )
 
-        deferred_tool_directory = "\n".join(
-            f"- {item['tool']}: {item['description'][:80]}" for item in deferred_index
-        )
+        if _has_memory_filter:
+            deferred_tool_directory = ""
+        else:
+            deferred_tool_directory = "\n".join(
+                f"- {item['tool']}: {item['description'][:80]}"
+                for item in deferred_index
+            )
 
         return all_tools, deferred_tool_directory, agent_ref, preloaded_names
 
     def _build_system_prompt(
         self,
         task: str,
-        mode: RunMode,
+        profile: ModeProfile,
         conversation_id: Optional[str],
         deferred_tool_directory: str,
         user_id: Optional[str] = None,
@@ -1148,36 +821,46 @@ class OuroAgent:
         """
         conversation_context = ""
         conversation_state_text = ""
-        if mode == RunMode.CHAT and conversation_state:
+        if profile.load_conversation_state and conversation_state:
             conversation_state_text = conversation_state.format_for_prompt()
-        elif conversation_id and mode != RunMode.HEARTBEAT:
-            turns = self._load_conversation_turns(conversation_id, limit=24)
-            conversation_context = self._format_conversation_turns(turns)
+        elif conversation_id and not profile.lightweight:
+            turns = load_conversation_turns(self._workspace, conversation_id, limit=24)
+            conversation_context = format_conversation_turns(
+                turns, summarize_fn=self._summarize_turns
+            )
 
-        skills_text = "" if mode == RunMode.HEARTBEAT else self.skills
-        skill_directory = "" if mode == RunMode.HEARTBEAT else self.skill_directory
+        skills_text = "" if profile.lightweight else self.skills
+        skill_directory = "" if profile.lightweight else self.skill_directory
 
         working_memory_parts = [self._load_working_memory()]
-        if mode == RunMode.HEARTBEAT:
+        if profile.load_scheduled_tasks:
             working_memory_parts.append(self._load_scheduled_task_awareness())
         working_memory = "\n\n".join(part for part in working_memory_parts if part)
 
         user_model_text = ""
         if user_id:
-            user_model_text = load_user_model(self.config.agent.workspace, user_id)
+            if self.doc_store:
+                user_model_text = self.doc_store.read(f"USER:{user_id}")
+            if not user_model_text and user_id:
+                user_model_text = load_user_model(self.config.agent.workspace, user_id)
 
         from .memory.context_loader import load_entity_context
+        from .modes.planning import PlanStore, format_plans_index_for_prompt
 
         entity_context_text = load_entity_context(
             self.config.agent.workspace,
             conversation_state=conversation_state,
             task=task,
+            doc_store=self.doc_store,
+            agent_name=self.config.agent.name,
         )
 
-        # Build the subagent directory for the prompt
+        plan_store = PlanStore(self.config.agent.workspace / "plans")
+        plans_index_text = format_plans_index_for_prompt(plan_store.load_all_active())
+
         from .subagents.profiles import DELEGATABLE_PROFILES
 
-        if mode != RunMode.HEARTBEAT and DELEGATABLE_PROFILES:
+        if not profile.lightweight and DELEGATABLE_PROFILES:
             subagent_directory = "\n".join(
                 f"- **{p.name}**: {p.description}"
                 for p in DELEGATABLE_PROFILES.values()
@@ -1189,9 +872,9 @@ class OuroAgent:
             soul=self.soul,
             notes=self.notes,
             skills=skills_text,
+            profile=profile,
             skill_directory=skill_directory,
             working_memory=working_memory,
-            mode=mode,
             conversation_context=conversation_context,
             conversation_state=conversation_state_text,
             user_model=user_model_text,
@@ -1200,8 +883,11 @@ class OuroAgent:
             subagent_directory=subagent_directory,
             mode_framing_override=mode_framing_override,
             platform_context=self._load_platform_context(),
-            chat_conversation_id=conversation_id if mode == RunMode.CHAT else None,
+            chat_conversation_id=(
+                conversation_id if profile.include_chat_conversation_id else None
+            ),
             preloaded_tool_names=preloaded_tool_names,
+            plans_index=plans_index_text,
         )
 
     def _resolve_subagent_model(self, profile) -> "TrackedOpenAIModel":
@@ -1341,91 +1027,16 @@ class OuroAgent:
 
         return run_subagents_parallel(dispatch_list)
 
-    @staticmethod
-    def _tool_activity_message(tool_name: str) -> str:
-        if tool_name == "load_tool":
-            return "is preparing a tool"
-        if tool_name == "delegate":
-            return "is delegating to a subagent"
-        if tool_name.startswith("memory_"):
-            return "is checking memory"
-        if tool_name in ("python_interpreter", "run_python"):
-            return "is running Python"
-        return f"is using {tool_name}"
-
     def _build_step_callback(
         self,
         status_callback: Optional[RunStatusCallback],
         display: Optional[OuroDisplay] = None,
     ) -> Callable[[ActionStep], None]:
-        last_message: dict[str, Optional[str]] = {"value": None}
-        tracker = self._usage_tracker
-        _display = display or get_display()
-
-        def _emit(message: str) -> None:
-            _display.step(message)
-            if not status_callback:
-                return
-            if last_message["value"] == message:
-                return
-            last_message["value"] = message
-            try:
-                status_callback("thinking", message, True)
-            except Exception:
-                logger.exception("Failed to emit activity update")
-
-        def _callback(step: ActionStep) -> None:
-            in_tok = tracker.total_input_tokens
-            out_tok = tracker.total_output_tokens
-            step_num = getattr(step, "step_number", 0)
-            timing = getattr(step, "timing", None)
-            duration_s = None
-            if timing is not None:
-                start_time = getattr(timing, "start_time", None)
-                end_time = getattr(timing, "end_time", None)
-                if isinstance(start_time, (int, float)) and isinstance(
-                    end_time, (int, float)
-                ):
-                    duration_s = max(0.0, end_time - start_time)
-
-            logger.info(
-                "[Step %d] Tokens so far: in=%s out=%s total=%s",
-                step_num,
-                f"{in_tok:,}",
-                f"{out_tok:,}",
-                f"{in_tok + out_tok:,}",
-            )
-            cost = getattr(tracker, "total_cost_usd", None)
-            _display.token_summary(
-                input_tokens=in_tok,
-                output_tokens=out_tok,
-                cached_input_tokens=tracker.total_cached_input_tokens,
-                step_number=step_num,
-                duration_s=duration_s,
-                cost_usd=cost,
-            )
-
-            if getattr(step, "is_final_answer", False):
-                return
-            if step.error:
-                _emit("hit an error, retrying...")
-                return
-            tool_calls = getattr(step, "tool_calls", None) or []
-            if tool_calls:
-                tool_name = getattr(tool_calls[0], "name", None) or "a tool"
-                _display.tool_call(tool_name)
-                if status_callback:
-                    msg = self._tool_activity_message(tool_name)
-                    if last_message["value"] != msg:
-                        last_message["value"] = msg
-                        try:
-                            status_callback("thinking", msg, True)
-                        except Exception:
-                            logger.exception("Failed to emit activity update")
-                return
-            _emit("thinking...")
-
-        return _callback
+        return build_step_callback(
+            self._usage_tracker,
+            status_callback=status_callback,
+            display=display,
+        )
 
     def _run_preflight(
         self,
@@ -1445,7 +1056,7 @@ class OuroAgent:
         from .subagents.profiles import PREFLIGHT
 
         _display = display or get_display()
-        _display.step("step 0: analyzing task...")
+        _display.step("Step 0: preflight")
         if status_callback:
             try:
                 status_callback("thinking", "is analyzing the task...", True)
@@ -1478,6 +1089,57 @@ class OuroAgent:
 
         return parse_preflight_result(result.text)
 
+    def _run_reflection(
+        self,
+        task: str,
+        conversation_state: Optional[ConversationState] = None,
+        conversation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        run_id: str = "",
+        display: Optional[OuroDisplay] = None,
+        status_callback: Optional[RunStatusCallback] = None,
+    ) -> Optional[ReflectionResult]:
+        """Run the reflector subagent as a visible step.
+
+        Mirrors ``_run_preflight``: shows a display step, tracks usage via the
+        subagent ledger, and returns a parsed ``ReflectionResult`` (or None on
+        failure).
+        """
+        from .subagents.profiles import REFLECTOR
+
+        _display = display or get_display()
+        _display.step("reflecting...")
+        if status_callback:
+            try:
+                status_callback("thinking", "is reflecting...", True)
+            except Exception:
+                logger.exception("Failed to emit reflection status")
+
+        t0 = time.monotonic()
+        result = self._run_subagent(
+            REFLECTOR,
+            task,
+            conversation_state=conversation_state,
+            conversation_id=conversation_id,
+            user_id=user_id,
+            run_id=run_id,
+        )
+        duration_s = time.monotonic() - t0
+
+        if result.usage and result.usage.total_tokens:
+            _display.token_summary(
+                input_tokens=result.usage.input_tokens,
+                output_tokens=result.usage.output_tokens,
+                duration_s=duration_s,
+                cost_usd=result.usage.cost_usd,
+            )
+
+        if not result.success:
+            logger.warning("Reflector subagent failed: %s", result.error)
+            return None
+
+        return parse_reflection_result(result.text)
+
     def _maybe_reflect_post_turn(
         self,
         conv_state: Optional[ConversationState],
@@ -1498,21 +1160,15 @@ class OuroAgent:
             return
 
         try:
-            from .memory.reflection import parse_reflection_result
-            from .subagents.profiles import REFLECTOR
-
-            reflection_output = self._run_subagent(
-                REFLECTOR,
-                "reflect",
+            reflection_result = self._run_reflection(
+                "Reflect on the recent conversation turns and extract what is worth remembering.",
                 conversation_state=conv_state,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 run_id=run_id,
             )
-            if not reflection_output.success:
-                logger.warning("Reflector subagent failed: %s", reflection_output.error)
+            if not reflection_result:
                 return
-            reflection_result = parse_reflection_result(reflection_output.text)
             apply_reflection(
                 reflection_result,
                 self.memory,
@@ -1522,6 +1178,7 @@ class OuroAgent:
                 workspace=self.config.agent.workspace,
                 conversations_dir=conversations_dir,
                 conversation_state=conv_state,
+                doc_store=self.doc_store,
             )
             logger.info(
                 "Post-turn reflection for %s (turn %d): %d facts, %d prefs",
@@ -1532,6 +1189,76 @@ class OuroAgent:
             )
         except Exception as e:
             logger.warning("Post-turn reflection failed for %s: %s", conversation_id, e)
+
+    def _post_run_reflect(
+        self,
+        task: str,
+        result: str,
+        tool_summary: list[dict],
+        mode: RunMode = RunMode.AUTONOMOUS,
+        user_id: Optional[str] = None,
+        run_id: str = "",
+    ) -> None:
+        """Run reflection after an autonomous/event run via the reflector subagent.
+
+        Extracts curated facts (with categories, importance, asset refs) and
+        writes a daily log entry. Runs as a proper subagent so usage is tracked
+        and the step is visible in the display.
+        """
+        reflection_task = build_run_reflection_task(
+            task=task,
+            result=str(result),
+            tool_summary=tool_summary,
+            run_mode=mode.value,
+        )
+
+        try:
+            reflection = self._run_reflection(
+                reflection_task,
+                user_id=user_id,
+                run_id=run_id,
+            )
+            if not reflection:
+                return
+
+            for fact in reflection.facts_to_store:
+                text = fact.get("text", "")
+                if not text:
+                    continue
+                metadata = {
+                    "category": fact.get("category", "fact"),
+                    "importance": fact.get("importance", 0.5),
+                    "source": f"run-reflection:{run_id}",
+                }
+                asset_refs = fact.get("asset_refs", [])
+                if asset_refs:
+                    metadata["asset_refs"] = ",".join(asset_refs)
+                try:
+                    self.memory.add(
+                        text,
+                        agent_id=self.config.agent.name,
+                        user_id=user_id,
+                        run_id=run_id,
+                        metadata=metadata,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to store run-reflection fact: %s", e)
+
+            if reflection.daily_log_entry:
+                write_daily_log(
+                    self.config.agent.workspace,
+                    normalize_daily_log_entry(reflection.daily_log_entry, mode.value),
+                    doc_store=self.doc_store,
+                    agent_name=self.config.agent.name,
+                )
+
+            logger.info(
+                "Post-run reflection: %d facts, daily=%s",
+                len(reflection.facts_to_store),
+                bool(reflection.daily_log_entry),
+            )
+        except Exception as e:
+            logger.warning("Post-run reflection failed: %s", e)
 
     async def run(
         self,
@@ -1546,40 +1273,44 @@ class OuroAgent:
         allowed_servers: Optional[list[str]] = None,
         mode_framing_override: str = "",
         preload_tools: Optional[list[str]] = None,
-        asset_refs: Optional[list[str]] = None,
+        prefetch: Optional[PrefetchSpec] = None,
         reply_message_id: Optional[str] = None,
         debug_markdown_path: Optional[Path] = None,
+        extra_tools: Optional[list] = None,
     ) -> str:
         run_started_at = time.monotonic()
         self.connect_mcp()
         model = model_override or self.model
 
         self._usage_tracker.reset()
+        self.memory.reset_usage()
         self._subagent_ledger.clear()
         run_id = conversation_id or f"run_{uuid4().hex[:12]}"
 
-        # Merge mode-specific preload tools with any explicit preload_tools
-        mode_preloads = {
-            RunMode.CHAT: self.config.agent.preload_tools.chat,
-            RunMode.AUTONOMOUS: self.config.agent.preload_tools.autonomous,
-            RunMode.HEARTBEAT: self.config.agent.preload_tools.heartbeat,
-        }.get(mode, [])
+        # Resolve mode profile and apply user config overrides
+        profile = resolve_mode_profile(mode)
+        override = self.config.modes.overrides.get(profile.name)
+        if override:
+            profile = apply_mode_override(profile, override)
+
+        # Merge profile preload tools with any explicit preload_tools
+        mode_preloads = list(profile.preload_tools)
         if mode_preloads:
             preload_tools = list(set((preload_tools or []) + mode_preloads))
 
-        # --- Conversation state (chat mode) ---
+        # --- Conversation state ---
         conv_state: Optional[ConversationState] = None
-        if mode == RunMode.CHAT and conversation_id:
+        if profile.load_conversation_state and conversation_id:
             conversations_dir = self.config.agent.workspace / "conversations"
             conv_state = load_state(conversations_dir, conversation_id)
 
         # --- Trivial message fast path (regex only, no LLM) ---
         is_trivial = is_trivial_message(task)
 
-        # --- Build tools (full set, no classification filtering) ---
+        # --- Build tools ---
         all_tools, deferred_tool_directory, agent_ref, preloaded_names = (
             self._build_agent_tools(
-                mode,
+                profile,
                 user_id=user_id,
                 allowed_servers=allowed_servers,
                 preload_tools=preload_tools,
@@ -1588,12 +1319,14 @@ class OuroAgent:
                 run_id=run_id,
             )
         )
+        if extra_tools:
+            all_tools.extend(extra_tools)
 
         # Build system prompt (static, cacheable) + dynamic context (per-turn).
         system_prompt, dynamic_context = self._build_system_prompt(
             task=task,
-            mode=mode,
-            conversation_id=conversation_id if mode != RunMode.CHAT else None,
+            profile=profile,
+            conversation_id=conversation_id,
             deferred_tool_directory=deferred_tool_directory,
             user_id=user_id,
             conversation_state=conv_state,
@@ -1602,22 +1335,16 @@ class OuroAgent:
         )
 
         # --- Step 0: Preflight subagent (visible) ---
-        # Replaces the old hidden classifier, context_loader, planner, and
-        # retrieve_memories pipeline with one visible subagent call.
         display = get_display()
         preflight: Optional[PreflightResult] = None
 
-        if (
-            not is_trivial
-            and not skip_memory
-            and mode not in {RunMode.HEARTBEAT, RunMode.CHAT}
-        ):
+        if not is_trivial and not skip_memory and not profile.skip_preflight:
             preflight = self._run_preflight(
                 task,
                 conv_state=conv_state,
                 user_id=user_id,
                 run_id=run_id,
-                asset_refs=asset_refs,
+                asset_refs=prefetch.asset_ids if prefetch else None,
                 display=display,
                 status_callback=status_callback,
             )
@@ -1630,15 +1357,14 @@ class OuroAgent:
                 len(preflight.plan),
             )
 
-        # Assemble the effective task: dynamic context + preflight briefing/plan + request
+        # Assemble the effective task: dynamic context + prefetched data + preflight + request
         context_parts: list[str] = []
         if dynamic_context:
             context_parts.append(dynamic_context)
-        asset_context = fetch_asset_content(
-            self._deferred_tools, list[str](asset_refs or [])
-        )
-        if asset_context:
-            context_parts.append(f"## Input Assets\n{asset_context}")
+        if prefetch:
+            prefetch_context = resolve_prefetch(self._deferred_tools, prefetch)
+            if prefetch_context:
+                context_parts.append(prefetch_context)
         if preflight and preflight.briefing:
             context_parts.append(f"## Context Briefing\n{preflight.briefing}")
         if preflight and preflight.plan:
@@ -1653,11 +1379,7 @@ class OuroAgent:
             effective_task = task
 
         step_callback = self._build_step_callback(status_callback, display)
-        main_max_steps = {
-            RunMode.CHAT: self.config.agent.max_steps.chat,
-            RunMode.AUTONOMOUS: self.config.agent.max_steps.autonomous,
-            RunMode.HEARTBEAT: self.config.agent.max_steps.heartbeat,
-        }[mode]
+        main_max_steps = profile.max_steps
         compactor_model = self._build_model(
             self.config.heartbeat.model or self.config.agent.model,
             heartbeat=True,
@@ -1674,13 +1396,13 @@ class OuroAgent:
         )
         agent_ref["agent"] = agent
 
-        agent.prompt_templates["system_prompt"] = (
-            agent.prompt_templates["system_prompt"] + "\n\n" + system_prompt
+        agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
+            system_prompt
         )
 
         if debug_markdown_path:
             try:
-                _write_run_debug_markdown_preamble(
+                write_run_debug_markdown_preamble(
                     Path(debug_markdown_path),
                     task=task,
                     effective_task=effective_task,
@@ -1695,10 +1417,10 @@ class OuroAgent:
         # In chat mode, inject recent turns as structured steps so the model
         # sees user/assistant pairs verbatim.
         has_history = False
-        if mode == RunMode.CHAT and conversation_id:
-            turns = self._load_conversation_turns(conversation_id, limit=8)
+        if profile.load_conversation_state and conversation_id:
+            turns = load_conversation_turns(self._workspace, conversation_id, limit=8)
             if turns:
-                history_steps = self._build_history_steps(turns)
+                history_steps = build_history_steps(turns)
                 agent.memory.steps.extend(history_steps)
                 has_history = True
                 logger.info(
@@ -1712,7 +1434,7 @@ class OuroAgent:
 
         if response_callback:
             final_result = None
-            streamer = _FinalAnswerStreamer()
+            streamer = FinalAnswerStreamer()
             for event in agent.run(effective_task, stream=True, reset=use_reset):
                 if isinstance(event, ChatMessageStreamDelta):
                     chunk = streamer.consume(event)
@@ -1726,38 +1448,35 @@ class OuroAgent:
 
         if debug_markdown_path:
             try:
-                _append_run_debug_markdown_trace(
+                append_run_debug_markdown_trace(
                     Path(debug_markdown_path), agent, str(result)
                 )
             except OSError as e:
                 logger.warning("Failed to append debug markdown trace: %s", e)
 
-        tool_summary = self._extract_tool_summary(agent, for_persistence=True)
+        tool_summary = extract_tool_summary(agent, for_persistence=True)
 
-        # Memory storage: skip for trivial messages and chat mode (reflector handles it)
         worth_remembering = preflight.worth_remembering if preflight else not is_trivial
-        should_store = mode != RunMode.CHAT and not skip_memory and worth_remembering
-        if should_store:
-            self.memory.add(
-                [
-                    {"role": "user", "content": task},
-                    {"role": "assistant", "content": str(result)},
-                ],
-                agent_id=self.config.agent.name,
+        if not profile.skip_post_reflection and not skip_memory and worth_remembering:
+            self._post_run_reflect(
+                task,
+                str(result),
+                tool_summary,
+                mode=mode,
                 user_id=user_id,
-                run_id=conversation_id,
+                run_id=run_id,
             )
-        if conversation_id and mode != RunMode.HEARTBEAT:
-            self._append_conversation_turn(conversation_id, "user", task)
-            self._append_conversation_turn(
+        if conversation_id and profile.append_conversation_turns:
+            append_conversation_turn(self._workspace, conversation_id, "user", task)
+            append_conversation_turn(
+                self._workspace,
                 conversation_id,
                 "assistant",
                 str(result),
                 tool_summary=tool_summary or None,
             )
 
-        # Post-turn: update conversation state + mid-session reflection
-        if mode == RunMode.CHAT and conversation_id:
+        if profile.update_conversation_state and conversation_id:
             try:
                 state_model = self._build_model(
                     self.config.heartbeat.model or self.config.agent.model,
@@ -1784,9 +1503,10 @@ class OuroAgent:
             )
 
         usage = collect_run_usage(agent, model, self._usage_tracker)
+        memory_ledger = self.memory.usage_ledger() or None
         logger.info(
             "Run usage:\n%s",
-            format_usage_breakdown(usage, self._subagent_ledger),
+            format_usage_breakdown(usage, self._subagent_ledger, memory_ledger),
         )
         _display = display or get_display()
         ledger = self._subagent_ledger or None
@@ -1794,6 +1514,7 @@ class OuroAgent:
             usage=usage,
             duration_s=max(0.0, time.monotonic() - run_started_at),
             subagent_ledger=ledger,
+            memory_ledger=memory_ledger,
         )
 
         self._log_run(
@@ -1807,359 +1528,52 @@ class OuroAgent:
         return str(result)
 
     async def heartbeat(self) -> Optional[str]:
-        hb_model_id = self.config.heartbeat.model or self.config.agent.model
-        hb_model = self._build_model(hb_model_id, heartbeat=True)
+        from .modes.heartbeat import run_heartbeat
 
-        try:
-            self._refresh_platform_context()
-        except Exception as e:
-            logger.warning("Failed to refresh platform context during heartbeat: %s", e)
+        return await run_heartbeat(self)
 
-        # Run memory consolidation on each heartbeat
-        if self.config.memory.consolidation_enabled:
-            from .memory.consolidation import run_consolidation
+    async def force_planning_heartbeat(self, goal: str = "") -> Optional[str]:
+        from .modes.heartbeat import force_planning_heartbeat
 
-            try:
-                run_consolidation(
-                    workspace=self.config.agent.workspace,
-                    backend=self.memory,
-                    agent_id=self.config.agent.name,
-                    config=self.config.memory,
-                    model=hb_model,
-                )
-            except Exception as e:
-                logger.warning("Memory consolidation failed during heartbeat: %s", e)
+        return await force_planning_heartbeat(self, goal=goal)
 
-        proactive_cfg = self.config.heartbeat.proactive
-        servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+    async def force_review_heartbeat(self, plan_id: str | None = None) -> Optional[str]:
+        from .modes.heartbeat import force_review_heartbeat
 
-        # --- Planning cycle integration ---
-        if self.config.planning.enabled:
-            from .planning import PlanStore, next_action
-
-            plan_store = PlanStore(self.config.agent.workspace / "plans")
-            current = plan_store.load_current()
-            planning_cfg = self.config.planning
-
-            action = next_action(
-                current=current,
-                cadence=planning_cfg.cadence,
-                min_heartbeats=planning_cfg.min_heartbeats,
-                review_window=planning_cfg.review_window,
-                auto_approve=planning_cfg.auto_approve,
-            )
-
-            if action == "plan":
-                if current and current.status == "active":
-                    plan_store.archive_current()
-                return await self._planning_heartbeat(hb_model, plan_store, servers)
-
-            if action == "check_review":
-                reviewed = await self._review_heartbeat(
-                    hb_model, plan_store, current, servers
-                )
-                if reviewed:
-                    current = reviewed
-
-            if action == "execute" and current and current.status == "pending_review":
-                # Auto-approve: review window elapsed, activate the plan as-is
-                current.status = "active"
-                current.activated_at = datetime.now(timezone.utc).isoformat()
-                plan_store.save_current(current)
-                logger.info(
-                    "Plan cycle %s auto-approved (review window elapsed)", current.id
-                )
-                write_daily_log(
-                    self.config.agent.workspace,
-                    "[planning:auto-approved] Plan activated without feedback",
-                )
-
-            if current and current.status == "active":
-                current.heartbeats_completed += 1
-                plan_store.save_current(current)
-
-        # Load the autonomous playbook
-        heartbeat_path = self.config.agent.workspace / "HEARTBEAT.md"
-        if not heartbeat_path.exists():
-            return None
-        playbook = heartbeat_path.read_text()
-
-        from .heartbeat import is_within_active_hours
-
-        if not is_within_active_hours(self.config.heartbeat):
-            playbook += (
-                "\n\n**Note: You are outside active hours. "
-                "Only check notifications unless something is urgent.**"
-            )
-
-        # Inject active plan as context for the execution heartbeat
-        if self.config.planning.enabled:
-            current = plan_store.load_current()
-            if current and current.status == "active" and current.plan_text:
-                playbook += f"\n\n## Current Plan\nYou are executing the following plan:\n{current.plan_text}"
-
-        result = await self.run(
-            playbook,
-            model_override=hb_model,
-            mode=RunMode.HEARTBEAT,
-            allowed_servers=servers,
-        )
-
-        # Parse structured JSON response and log to daily memory
-        try:
-            json_match = re.search(r"```json\n(.*?)\n```", result, re.DOTALL)
-            if json_match:
-                parsed = json.loads(json_match.group(1))
-            else:
-                parsed = json.loads(result)
-
-            if parsed.get("action") == "none":
-                logger.info("Heartbeat: no action taken")
-                return None
-
-            action = parsed.get("action", "unknown")
-            details = parsed.get("details", "")
-            logger.info("Heartbeat action: %s", action)
-
-            log_entry = (
-                f"[heartbeat:{action}] {details}"
-                if details
-                else f"[heartbeat:{action}]"
-            )
-            write_daily_log(self.config.agent.workspace, log_entry)
-        except json.JSONDecodeError:
-            pass
-
-        return result
-
-    async def _planning_heartbeat(
-        self, hb_model, plan_store, servers: list[str]
-    ) -> Optional[str]:
-        """Run a planning heartbeat: generate a plan and publish it for review."""
-        from .planning import PlanCycle, build_planning_prompt
-        from .soul import PLANNING_FRAMING
-
-        planning_cfg = self.config.planning
-        previous = plan_store.load_history(limit=1)
-        previous_plan = previous[0] if previous else None
-
-        prompt = build_planning_prompt(
-            cadence=planning_cfg.cadence,
-            team_id=planning_cfg.team_id,
-            org_id=planning_cfg.org_id,
-            previous_plan=previous_plan,
-        )
-
-        result = await self.run(
-            prompt,
-            model_override=hb_model,
-            mode=RunMode.HEARTBEAT,
-            allowed_servers=servers,
-            mode_framing_override=PLANNING_FRAMING,
-            preload_tools=["ouro:create_post"],
-        )
-
-        # Parse the structured JSON response to extract plan + post_id
-        cycle = PlanCycle(status="pending_review")
-        try:
-            json_match = re.search(r"```json\n(.*?)\n```", result, re.DOTALL)
-            raw = json_match.group(1) if json_match else result
-            parsed = json.loads(raw)
-            cycle.plan_text = parsed.get("plan", "")
-            cycle.post_id = parsed.get("post_id")
-        except (json.JSONDecodeError, AttributeError):
-            logger.warning(
-                "Could not parse planning result as JSON, storing raw result"
-            )
-            cycle.plan_text = result
-
-        plan_store.save_current(cycle)
-        logger.info("Planning cycle %s created (post_id=%s)", cycle.id, cycle.post_id)
-        write_daily_log(
-            self.config.agent.workspace,
-            f"[planning:created] New plan cycle {cycle.id[:8]}",
-        )
-        return result
-
-    async def _review_heartbeat(
-        self,
-        hb_model,
-        plan_store,
-        current,
-        servers: list[str],
-        inline_feedback: Optional[str] = None,
-    ):
-        """Check for human feedback on the plan post and activate if reviewed.
-
-        If *inline_feedback* is provided (e.g. from a webhook event), it is
-        included directly in the prompt so the agent doesn't need to call
-        get_comments.
-        """
-        from .planning import build_feedback_review_prompt, build_review_prompt
-        from .soul import REVIEW_FRAMING
-
-        if not current or not current.post_id:
-            # No post to check — auto-activate
-            if current:
-                current.status = "active"
-                current.activated_at = datetime.now(timezone.utc).isoformat()
-                plan_store.save_current(current)
-                logger.info("Plan cycle %s activated (no post to review)", current.id)
-                write_daily_log(
-                    self.config.agent.workspace,
-                    "[planning:activated] Plan activated (no post)",
-                )
-            return current
-
-        if inline_feedback:
-            prompt = build_feedback_review_prompt(
-                post_id=current.post_id,
-                plan_text=current.plan_text,
-                feedback_text=inline_feedback,
-            )
-            preload = ["ouro:update_post", "ouro:create_comment"]
-        else:
-            prompt = build_review_prompt(
-                post_id=current.post_id, plan_text=current.plan_text
-            )
-            preload = ["ouro:get_comments", "ouro:update_post"]
-
-        result = await self.run(
-            prompt,
-            model_override=hb_model,
-            mode=RunMode.HEARTBEAT,
-            allowed_servers=servers,
-            mode_framing_override=REVIEW_FRAMING,
-            preload_tools=preload,
-        )
-
-        # Parse the review result
-        try:
-            json_match = re.search(r"```json\n(.*?)\n```", result, re.DOTALL)
-            raw = json_match.group(1) if json_match else result
-            parsed = json.loads(raw)
-            feedback = parsed.get("feedback_summary")
-            revised = parsed.get("revised_plan")
-
-            if feedback:
-                current.human_feedback = feedback
-                current.plan_text = revised or current.plan_text
-                current.status = "active"
-                current.activated_at = datetime.now(timezone.utc).isoformat()
-                plan_store.save_current(current)
-                logger.info("Plan cycle %s activated with feedback", current.id)
-                write_daily_log(
-                    self.config.agent.workspace,
-                    f"[planning:reviewed] Plan updated with feedback: {feedback[:100]}",
-                )
-                return current
-        except (json.JSONDecodeError, AttributeError):
-            logger.warning("Could not parse review result as JSON")
-
-        # No feedback found — leave as pending_review
-        return None
-
-    async def force_planning_heartbeat(self) -> Optional[str]:
-        """Force a planning cycle regardless of cadence/timing (CLI entry point)."""
-        from .planning import PlanStore
-
-        hb_model_id = self.config.heartbeat.model or self.config.agent.model
-        hb_model = self._build_model(hb_model_id, heartbeat=True)
-
-        try:
-            self._refresh_platform_context()
-        except Exception as e:
-            logger.warning("Failed to refresh platform context: %s", e)
-
-        if self.config.memory.consolidation_enabled:
-            from .memory.consolidation import run_consolidation
-
-            try:
-                run_consolidation(
-                    workspace=self.config.agent.workspace,
-                    backend=self.memory,
-                    agent_id=self.config.agent.name,
-                    config=self.config.memory,
-                    model=hb_model,
-                )
-            except Exception as e:
-                logger.warning("Memory consolidation failed: %s", e)
-
-        proactive_cfg = self.config.heartbeat.proactive
-        servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
-
-        plan_store = PlanStore(self.config.agent.workspace / "plans")
-        current = plan_store.load_current()
-        if current and current.status == "active":
-            plan_store.archive_current()
-
-        return await self._planning_heartbeat(hb_model, plan_store, servers)
-
-    async def force_review_heartbeat(self) -> Optional[str]:
-        """Force a review check on the current plan (CLI entry point)."""
-        from .planning import PlanStore
-
-        plan_store = PlanStore(self.config.agent.workspace / "plans")
-        current = plan_store.load_current()
-
-        if not current or current.status not in ("pending_review", "active"):
-            logger.info("No plan cycle to review")
-            return None
-
-        hb_model_id = self.config.heartbeat.model or self.config.agent.model
-        hb_model = self._build_model(hb_model_id, heartbeat=True)
-
-        try:
-            self._refresh_platform_context()
-        except Exception as e:
-            logger.warning("Failed to refresh platform context: %s", e)
-
-        proactive_cfg = self.config.heartbeat.proactive
-        servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
-
-        reviewed = await self._review_heartbeat(hb_model, plan_store, current, servers)
-        if reviewed:
-            return f"Plan activated.\n\n{reviewed.plan_text}"
-        return "No feedback found — plan remains pending review."
+        return await force_review_heartbeat(self, plan_id=plan_id)
 
     async def handle_plan_feedback(self, event_run) -> Optional[str]:
-        """Handle feedback on a plan post from an incoming event.
-
-        For active/pending_review plans, runs the review heartbeat with the
-        feedback text inlined.  For completed plans, runs the event task
-        normally (the enriched task framing tells the agent to store insights).
-        """
-        from .planning import PlanStore
+        """Handle feedback on a plan post from an incoming event."""
+        from .modes.planning import PlanStore, run_review_heartbeat
 
         prov = event_run.provenance
         if not prov or not prov.plan_cycle:
             return None
 
         plan_store = PlanStore(self.config.agent.workspace / "plans")
-        current = plan_store.load_current()
+        matched = plan_store.load_by_post_id(prov.plan_cycle.post_id)
 
-        if (
-            current
-            and current.post_id == prov.plan_cycle.post_id
-            and current.status in ("pending_review", "active")
-        ):
+        if matched and matched.status in ("pending_review", "active"):
             hb_model_id = self.config.heartbeat.model or self.config.agent.model
             hb_model = self._build_model(hb_model_id, heartbeat=True)
             proactive_cfg = self.config.heartbeat.proactive
             servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
 
-            reviewed = await self._review_heartbeat(
+            reviewed = await run_review_heartbeat(
+                self,
                 hb_model,
                 plan_store,
-                current,
+                matched,
                 servers,
-                inline_feedback=event_run.task,
+                inline_feedback=event_run.feedback_text or event_run.task,
+                reply_parent_id=event_run.reply_parent_id,
+                thread_parent_id=event_run.thread_parent_id,
+                prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
             )
             if reviewed:
                 logger.info("Plan updated via event feedback (cycle %s)", reviewed.id)
             return reviewed.plan_text if reviewed else None
 
-        # Historical or unmatched — run as a normal enriched task
         return await self.run(
             task=event_run.task,
             mode=event_run.mode,

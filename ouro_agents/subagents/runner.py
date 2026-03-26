@@ -22,6 +22,8 @@ from smolagents import ActionStep
 from ..artifacts import fetch_asset_content, parse_asset_result
 from ..constants import GLOBAL_ORG_UUID
 from ..platform_context_prompt import format_platform_context_for_prompt
+from ..skills import resolve_skills
+from ..tool_prompt import build_tool_calling_system_prompt
 from ..usage import format_subagent_usage_summary
 from .context import SubAgentContext, SubAgentResult, SubAgentUsage
 from .delegate_utils import (
@@ -31,7 +33,6 @@ from .delegate_utils import (
     summarize_delegate_text,
     validate_delegate_result,
 )
-from ..skills import resolve_skills
 from .profiles import SubAgentProfile
 
 logger = logging.getLogger(__name__)
@@ -74,12 +75,8 @@ def _compute_usage(model, before: Optional[dict], wall_ms: int) -> SubAgentUsage
         return after_v - before_v
 
     cost_delta = _fdelta(tracker.total_cost_usd, before["cost_usd"])
-    in_cost_delta = _fdelta(
-        tracker.total_input_cost_usd, before["input_cost_usd"]
-    )
-    out_cost_delta = _fdelta(
-        tracker.total_output_cost_usd, before["output_cost_usd"]
-    )
+    in_cost_delta = _fdelta(tracker.total_input_cost_usd, before["input_cost_usd"])
+    out_cost_delta = _fdelta(tracker.total_output_cost_usd, before["output_cost_usd"])
 
     return SubAgentUsage(
         input_tokens=tracker.total_input_tokens - before["input_tokens"],
@@ -390,7 +387,9 @@ def _format_task_context(
     return "\n\n".join(parts)
 
 
-def _run_agent(profile: SubAgentProfile, task: str, ctx: SubAgentContext) -> tuple[str, object]:
+def _run_agent(
+    profile: SubAgentProfile, task: str, ctx: SubAgentContext
+) -> tuple[str, object]:
     """Run a subagent as a ToolCallingAgent with restricted tools."""
     from ..memory.tools import make_memory_tools
     from ..tools.agent_base import (
@@ -401,7 +400,7 @@ def _run_agent(profile: SubAgentProfile, task: str, ctx: SubAgentContext) -> tup
     active_deferred_index: list[dict] = []
     preloaded_raw_names: list[str] = []
 
-    memory_tool_names = {"memory_store", "memory_recall", "memory_status"}
+    memory_tool_names = {"memory_recall", "memory_status"}
     if memory_tool_names & set(profile.allowed_tools):
         mem_tools = make_memory_tools(
             ctx.backend,
@@ -491,9 +490,11 @@ def _run_agent(profile: SubAgentProfile, task: str, ctx: SubAgentContext) -> tup
     agent_ref["agent"] = agent
 
     if profile.system_prompt:
-        agent.prompt_templates["system_prompt"] = (
-            agent.prompt_templates["system_prompt"] + "\n\n" + profile.system_prompt
+        agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
+            profile.system_prompt
         )
+    else:
+        agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt()
 
     task_sections: list[str] = []
 

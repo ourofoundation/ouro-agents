@@ -23,6 +23,7 @@ dependencies = [
     "anthropic",
     "openai",
     "mcp",
+    "textual",
     "ouro-mcp>=0.3.0",
     "ouro-py",
 ]

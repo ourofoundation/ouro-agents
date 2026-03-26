@@ -8,61 +8,75 @@ This replaces the old idle-timer approach with a turn-count trigger that
 integrates naturally with the conversation state tracker.
 """
 
-import json
 import logging
-from dataclasses import dataclass, field
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from ..subagents.reflector import ReflectionResult
 from .conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
 
 
-def write_daily_log(workspace: Path, entry_text: str) -> None:
-    """Append a timestamped entry to today's daily log file."""
-    today = datetime.now().strftime("%Y-%m-%d")
-    daily_path = workspace / "memory" / "daily" / f"{today}.md"
-    daily_path.parent.mkdir(parents=True, exist_ok=True)
+_LIST_ITEM_RE = re.compile(r"^\s*[-*] ")
 
+
+def _append_markdown_list_item(existing: str, addition: str) -> str:
+    """Merge a markdown list item into the current trailing list."""
+    existing = existing.rstrip()
+    addition = addition.strip()
+    if not existing:
+        return addition
+    if not addition:
+        return existing
+
+    separator = "\n"
+    if not _LIST_ITEM_RE.match(addition):
+        separator = "\n\n"
+
+    return f"{existing}{separator}{addition}"
+
+
+def write_daily_log(
+    workspace: Path,
+    entry_text: str,
+    doc_store=None,
+    agent_name: str = "",
+) -> None:
+    """Append a timestamped entry to today's daily log.
+
+    Uses doc_store.append() when available (preserves TipTap formatting),
+    falls back to local file.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
     ts = datetime.now().strftime("%H:%M")
     entry = f"- {ts} — {entry_text}\n"
+    daily_path = workspace / "memory" / "daily" / f"{today}.md"
 
+    if doc_store and agent_name:
+        post_name = f"DAILY:{agent_name}:{today}"
+        if doc_store.exists(post_name):
+            current = doc_store.read(post_name)
+            op_ok = doc_store.write(
+                post_name, _append_markdown_list_item(current, entry)
+            )
+        else:
+            op_ok = doc_store.write(post_name, f"# {post_name}\n\n{entry}")
+        if op_ok:
+            return
+        logger.warning(
+            "Failed to write daily log to Ouro post %s; falling back to local file",
+            post_name,
+        )
+
+    daily_path.parent.mkdir(parents=True, exist_ok=True)
     if not daily_path.exists():
         daily_path.write_text(f"# {today}\n\n{entry}")
     else:
         with open(daily_path, "a") as f:
             f.write(entry)
-
-REFLECTION_PROMPT = """\
-You are a memory curator. Given a conversation state and the last few messages,
-extract what is worth remembering long-term. Be selective — only include things
-that would be useful in FUTURE conversations.
-
-Output ONLY valid JSON matching this schema, no markdown fences:
-{
-  "facts_to_store": [{"text": "string", "category": "fact"|"decision"|"learning"|"observation", "importance": 0.0-1.0}],
-  "user_preferences": ["string"],
-  "daily_log_entry": "string"
-}
-
-Rules:
-- facts_to_store: Important facts, decisions, or knowledge gained. NOT conversation mechanics.
-  Assign a category and importance (0.3=minor, 0.5=normal, 0.7=significant, 0.9=critical).
-- user_preferences: Communication style, interests, or workflow patterns observed.
-  Only include clear, repeated signals.
-- daily_log_entry: One-line summary of what was accomplished.
-- If nothing is worth remembering, return empty lists and an empty string.
-- Be concise. Each fact/preference should be one sentence.
-"""
-
-
-@dataclass
-class ReflectionResult:
-    facts_to_store: list[dict] = field(default_factory=list)
-    user_preferences: list[str] = field(default_factory=list)
-    daily_log_entry: str = ""
 
 
 def should_reflect(
@@ -115,93 +129,6 @@ def should_reflect_for_conversation(
     return should_reflect(conversation_state, reflection_interval, last_turn)
 
 
-def _load_recent_turns(
-    conversations_dir: Path, conversation_id: str, limit: int = 20
-) -> list[dict]:
-    """Load the most recent turns from a conversation JSONL."""
-    jsonl_path = conversations_dir / f"{conversation_id}.jsonl"
-    if not jsonl_path.exists():
-        return []
-    lines = jsonl_path.read_text().strip().split("\n")
-    turns = []
-    for line in lines[-limit:]:
-        try:
-            turns.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return turns
-
-
-def parse_reflection_result(text: str) -> ReflectionResult:
-    """Parse an LLM response string into a ReflectionResult.
-
-    Handles markdown fences, and normalizes facts that come as plain strings
-    into the expected dict format. Returns an empty result on parse failure.
-    """
-    try:
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        data = json.loads(text)
-
-        facts_raw = data.get("facts_to_store", [])
-        facts = []
-        for f in facts_raw:
-            if isinstance(f, str):
-                facts.append({"text": f, "category": "fact", "importance": 0.5})
-            elif isinstance(f, dict):
-                facts.append({
-                    "text": f.get("text", ""),
-                    "category": f.get("category", "fact"),
-                    "importance": f.get("importance", 0.5),
-                })
-
-        return ReflectionResult(
-            facts_to_store=facts,
-            user_preferences=data.get("user_preferences", []),
-            daily_log_entry=data.get("daily_log_entry", ""),
-        )
-    except Exception as e:
-        logger.warning("Failed to parse reflection result: %s", e)
-        return ReflectionResult()
-
-
-def reflect(
-    conversation_state: Optional[ConversationState],
-    conversations_dir: Path,
-    conversation_id: str,
-    model,
-) -> ReflectionResult:
-    """Run the reflection LLM call and return structured results."""
-    state_json = json.dumps(
-        conversation_state.to_dict() if conversation_state else {},
-        indent=2,
-    )
-    turns = _load_recent_turns(conversations_dir, conversation_id)
-    turns_text = "\n".join(
-        f"{t.get('role', '?')}: {str(t.get('content', ''))[:300]}"
-        for t in turns
-    )
-
-    user_content = (
-        f"Conversation state:\n{state_json}\n\n"
-        f"Recent messages:\n{turns_text}"
-    )
-
-    try:
-        result = model(
-            [
-                {"role": "system", "content": REFLECTION_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-        )
-        text = result.content if hasattr(result, "content") else str(result)
-        return parse_reflection_result(text)
-    except Exception as e:
-        logger.warning("Reflection LLM call failed: %s", e)
-        return ReflectionResult()
-
-
 def apply_reflection(
     result: ReflectionResult,
     memory_backend,
@@ -211,39 +138,58 @@ def apply_reflection(
     workspace: Path,
     conversations_dir: Path,
     conversation_state: Optional[ConversationState] = None,
+    doc_store=None,
 ) -> None:
     """Apply reflection results: store facts, update user model, write daily log."""
+    # TODO: Support reflector-driven updates/merges for existing memories once
+    # memory IDs and end-to-end update semantics are exposed to the reflector.
     for fact in result.facts_to_store:
         text = fact.get("text", "")
         if not text:
             continue
         try:
+            metadata = {
+                "category": fact.get("category", "fact"),
+                "importance": fact.get("importance", 0.5),
+                "source": f"reflection:{conversation_id}",
+            }
+            asset_refs = fact.get("asset_refs", [])
+            if asset_refs:
+                metadata["asset_refs"] = ",".join(asset_refs)
             memory_backend.add(
                 text,
                 agent_id=agent_id,
                 user_id=user_id,
                 run_id=conversation_id,
-                metadata={
-                    "category": fact.get("category", "fact"),
-                    "importance": fact.get("importance", 0.5),
-                    "source": f"reflection:{conversation_id}",
-                },
+                metadata=metadata,
             )
-            logger.info("Reflection stored fact [%s]: %s", fact.get("category"), text[:80])
+            logger.info(
+                "Reflection stored fact [%s]: %s", fact.get("category"), text[:80]
+            )
         except Exception as e:
             logger.warning("Failed to store reflected fact: %s", e)
 
     if result.user_preferences and user_id:
         from .user_model import append_to_user_model
+
         try:
             append_to_user_model(
-                workspace, user_id, "Preferences", result.user_preferences
+                workspace,
+                user_id,
+                "Preferences",
+                result.user_preferences,
+                doc_store=doc_store,
             )
         except Exception as e:
             logger.warning("Failed to update user model: %s", e)
 
     if result.daily_log_entry:
-        write_daily_log(workspace, result.daily_log_entry)
+        write_daily_log(
+            workspace,
+            result.daily_log_entry,
+            doc_store=doc_store,
+            agent_name=agent_id,
+        )
         logger.info("Reflection logged to daily: %s", result.daily_log_entry[:80])
 
     turn_count = conversation_state.turn_count if conversation_state else 0

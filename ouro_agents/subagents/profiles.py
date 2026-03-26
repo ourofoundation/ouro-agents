@@ -19,16 +19,16 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from .preflight import PREFLIGHT_PROMPT, HEARTBEAT_PREFLIGHT_PROMPT
 from .prompts import (
     CONTEXT_LOADER_PROMPT,
     DEVELOPER_PROMPT,
     EXECUTOR_PROMPT,
     PLANNER_PROMPT,
-    PREFLIGHT_PROMPT,
-    REFLECTOR_PROMPT,
     RESEARCH_PROMPT,
     WRITER_PROMPT,
 )
+from .reflector import REFLECTOR_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,16 @@ PREFLIGHT = SubAgentProfile(
     subagent_log_level="info",
 )
 
+HEARTBEAT_PREFLIGHT = SubAgentProfile(
+    name="heartbeat_preflight",
+    description="Decide what the agent should focus on during an autonomous heartbeat.",
+    system_prompt=HEARTBEAT_PREFLIGHT_PROMPT,
+    allowed_tools=["memory_recall"],
+    max_steps=3,
+    memory_scopes=[],
+    subagent_log_level="info",
+)
+
 CONTEXT_LOADER = SubAgentProfile(
     name="context_loader",
     description="Load internal memory, entity files, and task context into a concise briefing.",
@@ -104,7 +114,7 @@ REFLECTOR = SubAgentProfile(
     description="Curate long-term memories from recent conversation turns.",
     system_prompt=REFLECTOR_PROMPT,
     allowed_tools=["memory_recall"],
-    max_steps=3,
+    max_steps=7,
 )
 
 # Delegate-able profiles
@@ -184,7 +194,16 @@ DEVELOPER = SubAgentProfile(
 )
 
 # All built-in profiles
-PROFILES = [PREFLIGHT, CONTEXT_LOADER, RESEARCH, PLANNER, REFLECTOR, EXECUTOR, WRITER, DEVELOPER]
+PROFILES = [
+    PREFLIGHT,
+    CONTEXT_LOADER,
+    RESEARCH,
+    PLANNER,
+    REFLECTOR,
+    EXECUTOR,
+    WRITER,
+    DEVELOPER,
+]
 
 # All built-in profiles by name (for merging with custom)
 _BUILTIN_PROFILES: dict[str, SubAgentProfile] = {p.name: p for p in PROFILES}

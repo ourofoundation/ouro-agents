@@ -1,10 +1,14 @@
 import json
-from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+
+# Re-export RunMode from its canonical home in modes.profiles.
+# This avoids circular imports at module load (modes.profiles has no dependency
+# on config), while keeping ``from .config import RunMode`` working everywhere.
+from .modes.profiles import RunMode  # noqa: F401
 
 # OpenRouter unified `reasoning` request field (effort vs max_tokens; model-dependent).
 ReasoningEffort = Literal["xhigh", "high", "medium", "low", "minimal", "none"]
@@ -31,33 +35,10 @@ def merge_reasoning(*layers: Optional[ReasoningConfig]) -> Optional[ReasoningCon
     return ReasoningConfig(**merged)
 
 
-class RunMode(str, Enum):
-    CHAT = "chat"
-    AUTONOMOUS = "autonomous"
-    HEARTBEAT = "heartbeat"
-
-
-class ToolPreloadConfig(BaseModel):
-    """Tools to auto-preload per run mode, saving a load_tool call."""
-    chat: List[str] = Field(default_factory=lambda: ["ouro:send_message"])
-    autonomous: List[str] = Field(default_factory=list)
-    heartbeat: List[str] = Field(default_factory=list)
-
-
-class MainAgentMaxStepsConfig(BaseModel):
-    """Max tool-calling loop steps for the main smolagents agent (default is 20)."""
-
-    chat: int = 20
-    autonomous: int = 20
-    heartbeat: int = 20
-
-
 class AgentConfig(BaseModel):
     name: str
     model: str
     workspace: Path = Path("./workspace")
-    preload_tools: ToolPreloadConfig = Field(default_factory=ToolPreloadConfig)
-    max_steps: MainAgentMaxStepsConfig = Field(default_factory=MainAgentMaxStepsConfig)
 
 
 class PromptCachingConfig(BaseModel):
@@ -105,10 +86,13 @@ class MemoryConfig(BaseModel):
     retrieval_queries: int = 3
     max_retrieval_tokens: int = 4000
     consolidation_enabled: bool = True
+    consolidation_schedule: str = "0 3 * * *"
     memory_md_max_tokens: int = 4000
     mid_session_reflection_interval: int = 10
     decay_after_days: int = 30
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
+    org_id: Optional[str] = None
+    team_id: Optional[str] = None
 
 
 class ServerConfig(BaseModel):
@@ -141,6 +125,17 @@ class SubAgentConfig(BaseModel):
     parallel_dispatch: bool = True
 
 
+class ModeOverride(BaseModel):
+    """Per-mode config overrides (e.g. change max_steps or preload_tools for a mode)."""
+    max_steps: Optional[int] = None
+    preload_tools: Optional[List[str]] = None
+
+
+class ModeConfig(BaseModel):
+    """User-level mode overrides, keyed by mode name (chat, heartbeat, plan, etc.)."""
+    overrides: Dict[str, ModeOverride] = Field(default_factory=dict)
+
+
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
     # OpenRouter: request-level reasoning control (effort / max_tokens / exclude / enabled).
@@ -152,6 +147,7 @@ class OuroAgentsConfig(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
+    modes: ModeConfig = Field(default_factory=ModeConfig)
 
     @classmethod
     def load_from_file(cls, path: str | Path) -> "OuroAgentsConfig":
@@ -166,9 +162,6 @@ class OuroAgentsConfig(BaseSettings):
         with open(path, "r") as f:
             data = json.load(f)
 
-        # Environment variable expansion could be handled here if needed,
-        # but pydantic-settings also handles some of it.
-        # For explicit ${VAR} replacement in JSON strings:
         import os
         import re
 
@@ -178,11 +171,33 @@ class OuroAgentsConfig(BaseSettings):
             elif isinstance(obj, list):
                 return [replace_env_vars(v) for v in obj]
             elif isinstance(obj, str):
-                # Replace ${VAR} with os.environ.get('VAR', '')
                 return re.sub(
                     r"\$\{([^}]+)\}", lambda m: os.environ.get(m.group(1), ""), obj
                 )
             return obj
 
         expanded_data = replace_env_vars(data)
+
+        # Migrate legacy per-mode config fields into modes.overrides.
+        # The old "chat" key mapped to CHAT_REPLY (CHAT always zeroed preloads)
+        # and max_steps.chat was shared by both CHAT and CHAT_REPLY.
+        agent_data = expanded_data.get("agent", {})
+        legacy_preloads = agent_data.pop("preload_tools", None)
+        legacy_max_steps = agent_data.pop("max_steps", None)
+        if legacy_preloads or legacy_max_steps:
+            modes_data = expanded_data.setdefault("modes", {})
+            overrides = modes_data.setdefault("overrides", {})
+            if legacy_preloads and isinstance(legacy_preloads, dict):
+                for mode_name, tools in legacy_preloads.items():
+                    targets = ["chat-reply"] if mode_name == "chat" else [mode_name]
+                    for target in targets:
+                        entry = overrides.setdefault(target, {})
+                        entry.setdefault("preload_tools", tools)
+            if legacy_max_steps and isinstance(legacy_max_steps, dict):
+                for mode_name, steps in legacy_max_steps.items():
+                    targets = ["chat", "chat-reply"] if mode_name == "chat" else [mode_name]
+                    for target in targets:
+                        entry = overrides.setdefault(target, {})
+                        entry.setdefault("max_steps", steps)
+
         return cls(**expanded_data)

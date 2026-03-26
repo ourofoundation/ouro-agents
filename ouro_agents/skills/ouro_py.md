@@ -26,8 +26,9 @@ ouro = get_ouro_client()
 - `download(id, output_path=None, asset_type=None)` → dict with `id`, `path`, `filename`, `content_type`, `bytes`
 
 ### Posts (ouro.posts)
-- `create(name, content_markdown=None, content=None, content_path=None, description=None, visibility=None, **kwargs)` → Post
-  - Use exactly one of: `content_markdown` (markdown string), `content` (Content object), or `content_path` (.md file path)
+- `create(name, content=None, content_markdown=None, content_path=None, description=None, visibility=None, **kwargs)` → Post
+  - `name` is the post title (there is no `title` parameter)
+  - Body: use exactly one of `content` (Content object), `content_markdown`, or `content_path` — omit `content` when using markdown or a path
   - Pass `org_id` and `team_id` in kwargs
 - `retrieve(id)` → Post
 - `update(id, name=None, content=None, description=None, visibility=None, **kwargs)` → Post

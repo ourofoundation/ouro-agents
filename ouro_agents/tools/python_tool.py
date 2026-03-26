@@ -31,6 +31,7 @@ DEFAULT_AUTHORIZED_IMPORTS = [
     "base64",
     "glob",
     "urllib.parse",
+    # "open",
 ]
 
 OURO_AUTHORIZED_IMPORTS = [
@@ -165,7 +166,7 @@ def _make_ouro_helpers(ouro_client: "Ouro") -> dict:
 
             ouro = get_ouro_client()
             results = ouro.assets.search("climate data")
-            post = ouro.posts.create(title="Report", content="...", org_id="...", team_id="...")
+            post = ouro.posts.create(name="Report", content_markdown="...", org_id="...", team_id="...")
             ds = ouro.datasets.get("<uuid>")
         """
         return ouro_client
@@ -215,7 +216,7 @@ def make_python_tool(
         - Common patterns:
             ouro = get_ouro_client()
             results = ouro.assets.search("topic")
-            post = ouro.posts.create(title="My Post", content="...", org_id="...", team_id="...")
+            post = ouro.posts.create(name="My Post", content_markdown="...", org_id="...", team_id="...")
             ds = ouro.datasets.get("<uuid>")
             rows = ouro.datasets.query("<uuid>", query="SELECT * FROM data LIMIT 10")
             ouro.files.upload(file_path="report.pdf", org_id="...", team_id="...")"""

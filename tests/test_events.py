@@ -1,15 +1,17 @@
-import unittest
 import importlib.util
 import sys
 import types
-from pathlib import Path
+import unittest
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 
 def _load_events_module():
     repo_root = Path(__file__).resolve().parents[2]
     package_dir = repo_root / "ouro-agents" / "ouro_agents"
+    original_config = sys.modules.get("ouro_agents.config")
+    original_provenance = sys.modules.get("ouro_agents.provenance")
 
     if "ouro_agents" not in sys.modules:
         package = types.ModuleType("ouro_agents")
@@ -57,8 +59,11 @@ def _load_events_module():
 
     class RunMode(str, Enum):
         CHAT = "chat"
+        CHAT_REPLY = "chat-reply"
         AUTONOMOUS = "autonomous"
         HEARTBEAT = "heartbeat"
+        PLAN = "plan"
+        REVIEW = "review"
 
     config_module.RunMode = RunMode
     sys.modules["ouro_agents.config"] = config_module
@@ -82,6 +87,27 @@ def _load_events_module():
     provenance_module.AssetProvenance = AssetProvenance
     sys.modules["ouro_agents.provenance"] = provenance_module
 
+    # Stub the artifacts module so events.py can import PrefetchSpec
+    artifacts_spec = importlib.util.spec_from_file_location(
+        "ouro_agents.artifacts",
+        package_dir / "artifacts.py",
+    )
+    artifacts_module = importlib.util.module_from_spec(artifacts_spec)
+    sys.modules["ouro_agents.artifacts"] = artifacts_module
+    assert artifacts_spec and artifacts_spec.loader
+
+    # artifacts.py imports from .constants — stub it
+    constants_spec = importlib.util.spec_from_file_location(
+        "ouro_agents.constants",
+        package_dir / "constants.py",
+    )
+    constants_module = importlib.util.module_from_spec(constants_spec)
+    sys.modules["ouro_agents.constants"] = constants_module
+    assert constants_spec and constants_spec.loader
+    constants_spec.loader.exec_module(constants_module)
+
+    artifacts_spec.loader.exec_module(artifacts_module)
+
     spec = importlib.util.spec_from_file_location(
         "ouro_agents.events",
         package_dir / "events.py",
@@ -90,6 +116,14 @@ def _load_events_module():
     sys.modules["ouro_agents.events"] = module
     assert spec and spec.loader
     spec.loader.exec_module(module)
+    if original_config is not None:
+        sys.modules["ouro_agents.config"] = original_config
+    else:
+        sys.modules.pop("ouro_agents.config", None)
+    if original_provenance is not None:
+        sys.modules["ouro_agents.provenance"] = original_provenance
+    else:
+        sys.modules.pop("ouro_agents.provenance", None)
     return module
 
 
@@ -97,21 +131,53 @@ build_event_run_context = _load_events_module().build_event_run_context
 
 
 class TestBuildEventRunContext(unittest.TestCase):
-    def test_comment_event_populates_source_asset_ref(self):
+    def test_comment_event_prefetches_target_asset_and_thread(self):
         event_run = build_event_run_context(
             {
                 "event": "comment",
                 "user_id": "recipient-1",
                 "data": {
                     "user_id": "actor-1",
-                    "source_id": "asset-123",
-                    "source_asset_type": "post",
+                    "source_id": "comment-456",
+                    "source_asset_type": "comment",
+                    "target_id": "asset-123",
+                    "target_asset_type": "post",
                     "text": "What do you think?",
                 },
             }
         )
 
-        self.assertEqual(event_run.asset_refs, ("asset-123",))
+        self.assertEqual(event_run.prefetch.asset_ids, ["asset-123", "comment-456"])
+        self.assertEqual(event_run.prefetch.comment_parent_ids, ["asset-123"])
+        self.assertEqual(event_run.reply_parent_id, "comment-456")
+        self.assertEqual(event_run.thread_parent_id, "asset-123")
+        self.assertEqual(event_run.feedback_text, "What do you think?")
+
+    def test_comment_event_uses_focus_asset_when_available(self):
+        event_run = build_event_run_context(
+            {
+                "event": "comment",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "source_id": "comment-789",
+                    "source_asset_type": "comment",
+                    "target_id": "thread-123",
+                    "target_asset_type": "comment",
+                    "focus_asset_id": "plan-post-1",
+                    "focus_asset_type": "post",
+                    "text": "Can we tighten the scope?",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.prefetch.asset_ids, ["plan-post-1", "comment-789"])
+        self.assertEqual(event_run.prefetch.comment_parent_ids, ["thread-123"])
+        self.assertIn("post (id: plan-post-1)", event_run.task)
+        self.assertIn("create_comment on `comment-789`", event_run.task)
+        self.assertEqual(event_run.reply_parent_id, "comment-789")
+        self.assertEqual(event_run.thread_parent_id, "thread-123")
+        self.assertEqual(event_run.feedback_text, "Can we tighten the scope?")
 
 
 if __name__ == "__main__":

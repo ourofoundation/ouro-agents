@@ -1,19 +1,12 @@
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
-from .config import RunMode
 from .constants import CHARS_PER_TOKEN
+from .modes.framing import build_output_format
+from .modes.profiles import ModeProfile
 
 logger = logging.getLogger(__name__)
-
-
-def load_soul(path: Path) -> str:
-    """Load SOUL.md if it exists, return empty string otherwise."""
-    if path.exists():
-        return path.read_text()
-    return ""
 
 
 MCP_TOOL_RULES = (
@@ -22,9 +15,12 @@ MCP_TOOL_RULES = (
     "- Skills can also be loaded on demand with `load_skill([\"skill-name\"])` when you need detailed guidance.\n"
     "- Emit real tool calls only — no narration, pseudo-JSON, or plain-text pseudo-calls.\n"
     "- Omit optional params you don't need (don't pass null). Retry once on failure, then move on.\n"
-    "- Batch where possible: load_tool, load_skill, memory_recall, memory_store, and delegate all accept arrays.\n"
+    "- Batch where possible: load_tool, load_skill, memory_recall, and delegate all accept arrays.\n"
     "- File paths are always relative to the workspace root (e.g. 'data/file.json', not 'workspace/data/file.json').\n"
     "- Link assets in markdown with `[label](asset:<uuid>)` or typed `post:`/`file:`/`dataset:` links.\n"
+    "- Memory is curated automatically after each run — facts, daily log entries, and asset references "
+    "are extracted from your actions. Focus on the task; memory handles itself.\n"
+    "- When memory_recall returns results with asset refs, use get_asset to load the referenced assets if needed.\n"
     "- For complex multi-step workflows or batch operations, delegate to the `developer` subagent — "
     "it has direct access to the Ouro Python SDK."
 )
@@ -40,44 +36,6 @@ SUBAGENT_RULES = (
     "Use `get_asset(asset_id)` for full content."
 )
 
-CHAT_FRAMING = (
-    "You are in a conversation. Your primary goal is to help the person you're talking to. "
-    "Be conversational, clear, and concise. Ask clarifying questions when a request is ambiguous. "
-    "On Ouro, user-visible replies must be posted with MCP (`send_message`); the run's final answer alone "
-    "does not appear in the thread. Use other tools when the request calls for it; when you do, say what you found or did."
-)
-
-AUTONOMOUS_FRAMING = (
-    "You are operating autonomously to complete a task. "
-    "Work through the task step by step, using tools as needed. "
-    "Report what you accomplished when finished."
-)
-
-HEARTBEAT_FRAMING = (
-    "You are running an autonomous heartbeat. Review your context and playbook, "
-    "then decide what's most valuable to do right now. Be genuine and thoughtful "
-    "— quality over quantity. If nothing feels worth doing, it's okay to pass."
-)
-
-PLANNING_FRAMING = (
-    "You are entering a planning phase. Review recent activity, your memory, "
-    "and ongoing work, then create a plan for the upcoming period. "
-    "Be thoughtful and realistic. Publish your plan as an Ouro post "
-    "so your team can review it before you begin."
-)
-
-REVIEW_FRAMING = (
-    "You have a pending plan that may have received human feedback. "
-    "Check for comments on the plan post, incorporate any feedback, "
-    "and finalize the plan."
-)
-
-_MODE_FRAMING = {
-    RunMode.CHAT: CHAT_FRAMING,
-    RunMode.AUTONOMOUS: AUTONOMOUS_FRAMING,
-    RunMode.HEARTBEAT: HEARTBEAT_FRAMING,
-}
-
 # Section ordering — lower number = higher priority = appears first in prompt
 SECTION_PRIORITY = {
     "mode": 1,
@@ -88,13 +46,14 @@ SECTION_PRIORITY = {
     "output": 6,
     "notes": 7,
     "conversation_state": 8,
-    "entity_context": 9,
-    "conversation": 10,
-    "working_memory": 11,
-    "subagents": 12,
-    "tool_rules": 13,
-    "skills": 14,
-    "skill_directory": 15,
+    "plans_index": 9,
+    "entity_context": 10,
+    "conversation": 11,
+    "working_memory": 12,
+    "subagents": 13,
+    "tool_rules": 14,
+    "skills": 15,
+    "skill_directory": 16,
 }
 
 
@@ -138,9 +97,7 @@ def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
             continue
         section_tokens = _estimate_tokens(sections[section_key])
         if section_tokens <= 100:
-            # Not worth trimming tiny sections
             continue
-        # Trim by removing content from the end, keeping the header
         max_chars = max(400, (section_tokens - overage) * CHARS_PER_TOKEN)
         if max_chars < len(sections[section_key]):
             sections[section_key] = (
@@ -170,6 +127,7 @@ def _current_datetime_section() -> str:
 # (not the system prompt) to enable prefix caching on the static part.
 _DYNAMIC_SECTIONS = {
     "conversation_state",
+    "plans_index",
     "entity_context",
     "working_memory",
     "conversation",
@@ -181,9 +139,9 @@ def build_prompt(
     soul: str,
     notes: str,
     skills: str,
+    profile: ModeProfile,
     skill_directory: str = "",
     working_memory: str = "",
-    mode: RunMode = RunMode.AUTONOMOUS,
     conversation_context: str = "",
     conversation_state: str = "",
     user_model: str = "",
@@ -194,6 +152,7 @@ def build_prompt(
     platform_context: str = "",
     chat_conversation_id: Optional[str] = None,
     preloaded_tool_names: Optional[list[str]] = None,
+    plans_index: str = "",
 ) -> tuple[str, str]:
     """Assemble the system prompt and dynamic context.
 
@@ -204,13 +163,19 @@ def build_prompt(
 
     sections: dict[str, str] = {}
 
-    framing = mode_framing_override or _MODE_FRAMING[mode]
+    framing = mode_framing_override or profile.framing
     sections["mode"] = f"## MODE\n{framing}"
-    if mode == RunMode.CHAT and chat_conversation_id:
-        sections["mode"] += (
-            f"\n\n**Conversation id for this run:** `{chat_conversation_id}` "
-            "(use as `conversation_id` in `send_message` when posting)."
-        )
+    if profile.include_chat_conversation_id and chat_conversation_id:
+        annotation = profile.conversation_id_annotation
+        if annotation:
+            sections["mode"] += (
+                f"\n\n**Conversation id for this run:** `{chat_conversation_id}` "
+                f"({annotation})."
+            )
+        else:
+            sections["mode"] += (
+                f"\n\n**Conversation id for this run:** `{chat_conversation_id}`"
+            )
     sections["current_datetime"] = _current_datetime_section()
 
     if soul:
@@ -243,6 +208,9 @@ def build_prompt(
     if conversation_state:
         sections["conversation_state"] = f"## CONVERSATION STATE\n{conversation_state}"
 
+    if plans_index:
+        sections["plans_index"] = f"## PLAN POST INDEX\n{plans_index}"
+
     if entity_context:
         sections["entity_context"] = f"## ACTIVE CONTEXT\n{entity_context}"
 
@@ -273,32 +241,9 @@ def build_prompt(
         )
         sections["tool_rules"] = tool_rules_text
 
-    if mode == RunMode.CHAT:
-        _preloaded = set(preloaded_tool_names or [])
-        if "send_message" in _preloaded:
-            send_instr = (
-                "post your reply by calling `send_message` with the real `conversation_id` and reply text "
-                "(already loaded)."
-            )
-        else:
-            send_instr = "load `ouro:send_message`, then call `send_message` with the real `conversation_id` and reply text."
-        sections["output"] = (
-            "## OUTPUT FORMAT\n"
-            f"If the task or context includes an Ouro `conversation_id` (or you are clearly in an Ouro chat): "
-            f"{send_instr} "
-            "Then call `final_answer` with the **same** text as `send_message` so streaming and "
-            "local logs match the message you posted. If you should not reply, call `final_answer` with exactly "
-            "NO_ACTION only (do not call `send_message`).\n"
-            "If there is no Ouro conversation_id (e.g. ad-hoc API run), respond with `final_answer` only."
-        )
-    else:
-        sections["output"] = (
-            "## OUTPUT FORMAT\n"
-            "For simple replies (greetings, acknowledgments, or when no tools are needed), "
-            "call the `final_answer` tool directly with your response. "
-            "Never respond with plain text outside a tool call. "
-            "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON."
-        )
+    sections["output"] = build_output_format(
+        profile.output_format, profile.name, preloaded_tool_names
+    )
 
     ordered_keys = sorted(
         sections.keys(),

@@ -1,4 +1,5 @@
 from .context import SubAgentContext, SubAgentResult, SubAgentUsage
+from .preflight import PreflightResult, parse_preflight_result
 from .profiles import (
     CONTEXT_LOADER,
     DELEGATABLE_PROFILES,
@@ -15,6 +16,7 @@ from .profiles import (
     get_all_profiles,
     load_custom_profiles,
 )
+from .reflector import ReflectionResult, parse_reflection_result
 from .runner import (
     run_subagent,
     run_subagents_parallel,
@@ -26,6 +28,10 @@ __all__ = [
     "SubAgentContext",
     "SubAgentResult",
     "SubAgentUsage",
+    "PreflightResult",
+    "parse_preflight_result",
+    "ReflectionResult",
+    "parse_reflection_result",
     "run_subagent",
     "run_subagents_parallel",
     "PREFLIGHT",

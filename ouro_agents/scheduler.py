@@ -22,7 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pydantic import BaseModel, Field
 
-from .heartbeat import format_active_period_status
+from .modes.heartbeat import format_active_period_status
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,8 @@ def parse_trigger(schedule: str, tz: str = "UTC"):
 # ---------------------------------------------------------------------------
 
 SYSTEM_HEARTBEAT_ID = "system:heartbeat"
-SYSTEM_PROTECTED_IDS = frozenset({SYSTEM_HEARTBEAT_ID})
+SYSTEM_CONSOLIDATION_ID = "system:consolidation"
+SYSTEM_PROTECTED_IDS = frozenset({SYSTEM_HEARTBEAT_ID, SYSTEM_CONSOLIDATION_ID})
 
 
 class AgentScheduler:
@@ -179,17 +180,20 @@ class AgentScheduler:
             if task.enabled:
                 self._register_job(task)
 
-        # Register heartbeat from config if enabled
+        # Register system tasks
         config = agent.config
         if config.heartbeat.enabled:
             self._register_heartbeat(config.heartbeat)
+        if config.memory.consolidation_enabled:
+            self._register_consolidation(config.memory)
 
         self._scheduler.start()
         task_count = len(self.store.load())
         logger.info(
-            "Scheduler started: %d user task(s), heartbeat=%s",
+            "Scheduler started: %d user task(s), heartbeat=%s, consolidation=%s",
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
+            config.memory.consolidation_schedule if config.memory.consolidation_enabled else "disabled",
         )
 
     def stop(self) -> None:
@@ -302,6 +306,53 @@ class AgentScheduler:
             get_display().flush_pending_run_summary()
         except Exception:
             logger.exception("Heartbeat failed")
+
+    def _register_consolidation(self, memory_config) -> None:
+        try:
+            trigger = parse_trigger(memory_config.consolidation_schedule)
+        except ValueError:
+            logger.error(
+                "Invalid consolidation schedule: %s",
+                memory_config.consolidation_schedule,
+            )
+            return
+
+        self._scheduler.add_job(
+            self._execute_consolidation,
+            trigger=trigger,
+            id=SYSTEM_CONSOLIDATION_ID,
+            max_instances=1,
+            misfire_grace_time=600,
+            replace_existing=True,
+        )
+        logger.info(
+            "Registered consolidation: %s",
+            memory_config.consolidation_schedule,
+        )
+
+    async def _execute_consolidation(self) -> None:
+        if not self._agent:
+            return
+        try:
+            logger.info("Running memory consolidation...")
+            from .memory.consolidation import run_consolidation
+
+            agent = self._agent
+            hb_model = agent._build_model(
+                agent.config.heartbeat.model or agent.config.agent.model,
+                heartbeat=True,
+            )
+            results = run_consolidation(
+                workspace=agent.config.agent.workspace,
+                backend=agent.memory,
+                agent_id=agent.config.agent.name,
+                config=agent.config.memory,
+                model=hb_model,
+                doc_store=agent.doc_store,
+            )
+            logger.info("Memory consolidation complete: %s", results)
+        except Exception:
+            logger.exception("Memory consolidation failed")
 
     async def _execute_task(self, task_id: str) -> None:
         if not self._agent:

@@ -28,6 +28,7 @@ THEME = Theme(
         "ouro.accent": "#6B8AFF",
         "ouro.tool": "#6B8AFF bold",
         "ouro.step": "dim cyan",
+        "ouro.thought": "#B48EAD",
         "ouro.error": "red",
         "ouro.success": "green",
         "ouro.muted": "#888888",
@@ -64,6 +65,7 @@ class OuroDisplay:
                 RunUsage,
                 float | None,
                 Optional[list[tuple[str, SubAgentUsage]]],
+                Optional[list[tuple[str, RunUsage]]],
             ]
             | None
         ) = None
@@ -105,17 +107,25 @@ class OuroDisplay:
 
     def step(self, message: str) -> None:
         if self.verbosity >= Verbosity.NORMAL:
-            self.console.print(f"  [ouro.step]> {escape(message)}[/]")
+            self.console.print(f"[ouro.step]> {escape(message)}[/]")
+
+    def thought(self, message: str) -> None:
+        if self.verbosity >= Verbosity.NORMAL:
+            self.console.print(f"[ouro.thought]Thought: {escape(message)}[/]")
+
+    def reasoning(self, message: str) -> None:
+        if self.verbosity >= Verbosity.NORMAL:
+            self.console.print(f"[ouro.thought]Reasoning: {escape(message)}[/]")
 
     def tool_call(self, tool_name: str) -> None:
         if self.verbosity >= Verbosity.NORMAL:
-            self.console.print(f"  [ouro.step]>[/] [ouro.tool]{escape(tool_name)}[/]")
+            self.console.print(f"[ouro.step]>[/] [ouro.tool]{escape(tool_name)}[/]")
 
     def observation(self, text: str) -> None:
         """Render tool observation/result as markdown."""
         if self.verbosity < Verbosity.NORMAL:
             return
-        self.console.print(f"  [ouro.dim]observation:[/]")
+        self.console.print(f"  [ouro.dim]Observation:[/]")
         md = Markdown(text, code_theme="monokai")
         self.console.print(md)
 
@@ -129,7 +139,7 @@ class OuroDisplay:
         args_str = args_match.group(1).strip() if args_match else ""
         if args_str:
             self.console.print(
-                f"  [ouro.step]>[/] [ouro.tool]{escape(name)}[/]"
+                f"[ouro.step]>[/] [ouro.tool]{escape(name)}[/]"
                 f"[ouro.dim]({escape(args_str)})[/]"
             )
         else:
@@ -147,7 +157,7 @@ class OuroDisplay:
         if self.verbosity < Verbosity.NORMAL:
             return
         total = input_tokens + output_tokens
-        parts = [f"step {step_number}"] if step_number else []
+        parts = []  # [f"Step {step_number}"] if step_number else []
         if duration_s is not None:
             parts.append(f"{duration_s:.2f}s")
         parts.append(f"{total:,} tok")
@@ -160,7 +170,7 @@ class OuroDisplay:
             parts.append(f"out {output_tokens:,}")
         if cost_usd is not None:
             parts.append(f"${cost_usd:.6f}")
-        self.console.print(f"  [ouro.dim]({' | '.join(parts)})[/]")
+        self.console.print(f"  [ouro.dim]{' | '.join(parts)}[/]")
 
     @staticmethod
     def _run_usage_detail_parts(usage: RunUsage) -> list[str]:
@@ -232,6 +242,7 @@ class OuroDisplay:
         usage: RunUsage,
         duration_s: float | None = None,
         subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
+        memory_ledger: Optional[list[tuple[str, RunUsage]]] = None,
     ) -> list[tuple[str, str, str, str, str, str, str, str, str]]:
         rows: list[tuple[str, str, str, str, str, str, str, str, str]] = []
 
@@ -268,14 +279,18 @@ class OuroDisplay:
                 self._format_usage_duration(row_usage.wall_time_ms / 1000),
             )
 
-        if not subagent_ledger:
+        if not subagent_ledger and not memory_ledger:
             return [_run_row("total", usage, duration_s)]
 
-        main_usage = residual_main_usage(usage, subagent_ledger)
+        main_usage = residual_main_usage(usage, subagent_ledger, memory_ledger)
         rows.append(_run_row("main", main_usage))
         rows.extend(
             _subagent_row(f"sub:{name}", sub_usage)
-            for name, sub_usage in subagent_ledger
+            for name, sub_usage in (subagent_ledger or [])
+        )
+        rows.extend(
+            _run_row(f"memory:{name}", memory_usage)
+            for name, memory_usage in (memory_ledger or [])
         )
         rows.append(_run_row("total", usage, duration_s))
         return rows
@@ -285,17 +300,18 @@ class OuroDisplay:
         usage: RunUsage,
         duration_s: float | None = None,
         subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
+        memory_ledger: Optional[list[tuple[str, RunUsage]]] = None,
     ) -> None:
         rows = self._usage_rows(
             usage=usage,
             duration_s=duration_s,
             subagent_ledger=subagent_ledger,
+            memory_ledger=memory_ledger,
         )
         if not rows:
             return
 
         md_lines = [
-            "## Usage",
             "",
             "| Scope | Steps | Input | Cached | Uncached | Output | Reasoning | Cost | Duration |",
             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
@@ -311,18 +327,20 @@ class OuroDisplay:
         usage: RunUsage,
         duration_s: float | None = None,
         subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
+        memory_ledger: Optional[list[tuple[str, RunUsage]]] = None,
     ) -> None:
-        self._pending_run_summary = (usage, duration_s, subagent_ledger)
+        self._pending_run_summary = (usage, duration_s, subagent_ledger, memory_ledger)
 
     def flush_pending_run_summary(self) -> None:
         if self._pending_run_summary is None:
             return
-        usage, duration_s, subagent_ledger = self._pending_run_summary
+        usage, duration_s, subagent_ledger, memory_ledger = self._pending_run_summary
         self._pending_run_summary = None
         self._render_run_summary(
             usage=usage,
             duration_s=duration_s,
             subagent_ledger=subagent_ledger,
+            memory_ledger=memory_ledger,
         )
 
     def run_summary(
@@ -330,11 +348,13 @@ class OuroDisplay:
         usage: RunUsage,
         duration_s: float | None = None,
         subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
+        memory_ledger: Optional[list[tuple[str, RunUsage]]] = None,
     ) -> None:
         self._render_run_summary(
             usage=usage,
             duration_s=duration_s,
             subagent_ledger=subagent_ledger,
+            memory_ledger=memory_ledger,
         )
 
     def markdown(self, text: str) -> None:

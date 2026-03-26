@@ -1,6 +1,7 @@
 """Shared ToolCallingAgent subclass used by both the parent agent and subagents."""
 
 import ast
+import json
 import logging
 import re
 import uuid
@@ -12,6 +13,8 @@ from smolagents.models import (
     MessageRole,
     parse_json_if_needed,
 )
+
+from ..display import get_display
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +74,43 @@ _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _FUNCTION_RE = re.compile(r"<function=([^>]+)>", re.DOTALL)
 _PARAMETER_RE = re.compile(r"<parameter=([^>]+)>(.*?)</parameter>", re.DOTALL)
 _CALLING_TOOLS_RE = re.compile(r"Calling tools:\s*", re.IGNORECASE)
+_INLINE_TOOL_CALL_RE = re.compile(
+    r"(?:^|[\n\r`:]|\btool\s+)\s*(?P<name>[a-z][a-z0-9_:-]*)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _make_tool_call(
+    func_name: str,
+    arguments,
+    *,
+    tool_id: str | None = None,
+) -> ChatMessageToolCall:
+    return ChatMessageToolCall(
+        id=str(tool_id or uuid.uuid4()),
+        type="function",
+        function=ChatMessageToolCallFunction(
+            name=func_name,
+            arguments=arguments,
+        ),
+    )
+
+
+def _extract_tool_call_fields(item: dict) -> tuple[str | None, object]:
+    function = item.get("function", item)
+    if not isinstance(function, dict):
+        return None, {}
+
+    func_name = function.get("name")
+    arguments = function.get("arguments", {})
+
+    # Accept a few common near-miss shapes from weaker models.
+    if not func_name:
+        func_name = function.get("tool") or function.get("recipient_name")
+    if arguments == {}:
+        arguments = function.get("args", function.get("parameters", {}))
+
+    return func_name, arguments
 
 
 def _tool_calls_from_data(data) -> list[ChatMessageToolCall] | None:
@@ -83,27 +123,56 @@ def _tool_calls_from_data(data) -> list[ChatMessageToolCall] | None:
     for item in data:
         if not isinstance(item, dict):
             continue
-        function = item.get("function", item)
-        if not isinstance(function, dict):
-            continue
-
-        func_name = function.get("name")
-        arguments = function.get("arguments", {})
+        func_name, arguments = _extract_tool_call_fields(item)
         if not func_name:
             continue
 
-        result.append(
-            ChatMessageToolCall(
-                id=str(item.get("id") or uuid.uuid4()),
-                type="function",
-                function=ChatMessageToolCallFunction(
-                    name=func_name,
-                    arguments=arguments,
-                ),
-            )
-        )
+        result.append(_make_tool_call(func_name, arguments, tool_id=item.get("id")))
 
     return result or None
+
+
+def _extract_balanced_block(
+    content: str,
+    start_idx: int,
+    opening: str,
+    closing: str,
+) -> str | None:
+    if start_idx < 0 or start_idx >= len(content) or content[start_idx] != opening:
+        return None
+
+    depth = 0
+    in_string = False
+    string_quote = ""
+    escape = False
+
+    for idx in range(start_idx, len(content)):
+        ch = content[idx]
+
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == string_quote:
+                in_string = False
+            continue
+
+        if ch in ("'", '"'):
+            in_string = True
+            string_quote = ch
+            continue
+        if ch == opening:
+            depth += 1
+            continue
+        if ch == closing:
+            depth -= 1
+            if depth == 0:
+                return content[start_idx : idx + 1]
+
+    return None
 
 
 def _parse_xml_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
@@ -145,41 +214,7 @@ def _parse_xml_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
 
 
 def _extract_bracketed_block(content: str, start_idx: int) -> str | None:
-    if start_idx < 0 or start_idx >= len(content) or content[start_idx] != "[":
-        return None
-
-    depth = 0
-    in_string = False
-    string_quote = ""
-    escape = False
-
-    for idx in range(start_idx, len(content)):
-        ch = content[idx]
-
-        if in_string:
-            if escape:
-                escape = False
-                continue
-            if ch == "\\":
-                escape = True
-                continue
-            if ch == string_quote:
-                in_string = False
-            continue
-
-        if ch in ("'", '"'):
-            in_string = True
-            string_quote = ch
-            continue
-        if ch == "[":
-            depth += 1
-            continue
-        if ch == "]":
-            depth -= 1
-            if depth == 0:
-                return content[start_idx : idx + 1]
-
-    return None
+    return _extract_balanced_block(content, start_idx, "[", "]")
 
 
 def _parse_narrated_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
@@ -200,6 +235,84 @@ def _parse_narrated_tool_calls(content: str) -> list[ChatMessageToolCall] | None
     return _tool_calls_from_data(parsed)
 
 
+def _parse_structured_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+    seen_blocks: set[str] = set()
+
+    for idx, ch in enumerate(content):
+        if ch not in "[{":
+            continue
+        block = _extract_balanced_block(content, idx, ch, "]" if ch == "[" else "}")
+        if not block or block in seen_blocks:
+            continue
+        seen_blocks.add(block)
+
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(block)
+            except Exception:
+                continue
+            tool_calls = _tool_calls_from_data(parsed)
+            if tool_calls:
+                return tool_calls
+
+    return None
+
+
+def _python_literal(node: ast.AST):
+    return ast.literal_eval(node)
+
+
+def _parse_inline_tool_call(content: str) -> list[ChatMessageToolCall] | None:
+    for match in _INLINE_TOOL_CALL_RE.finditer(content):
+        func_name = match.group("name").strip()
+        open_idx = content.find("(", match.start("name"))
+        payload = _extract_balanced_block(content, open_idx, "(", ")")
+        if not payload:
+            continue
+
+        try:
+            parsed = ast.parse(f"f{payload}", mode="eval")
+        except Exception:
+            continue
+
+        call = parsed.body
+        if not isinstance(call, ast.Call):
+            continue
+
+        try:
+            if len(call.args) > 1:
+                continue
+            if any(keyword.arg is None for keyword in call.keywords):
+                continue
+
+            arguments = {}
+            if call.args:
+                only_arg = _python_literal(call.args[0])
+                if not isinstance(only_arg, dict):
+                    continue
+                arguments.update(only_arg)
+
+            for keyword in call.keywords:
+                arguments[keyword.arg] = _python_literal(keyword.value)
+        except Exception:
+            continue
+
+        return [_make_tool_call(func_name, arguments)]
+
+    return None
+
+
+def _message_preview(content: str, max_chars: int = 600) -> str:
+    preview = content.strip()
+    if len(preview) > max_chars:
+        preview = preview[:max_chars] + "..."
+    return preview
+
+
+def _treat_as_reasoning_only(exc: Exception, preview: str) -> bool:
+    return bool(preview) and "does not contain any JSON blob" in str(exc)
+
+
 def _patch_model_for_xml_tool_calls(model):
     """Wrap model.parse_tool_calls to fall back to salvage parsers."""
     original = model.parse_tool_calls
@@ -207,12 +320,26 @@ def _patch_model_for_xml_tool_calls(model):
     def patched(message):
         try:
             return original(message)
-        except Exception:
+        except Exception as exc:
             content = message.content or ""
             tool_calls = _parse_xml_tool_calls(content)
             if not tool_calls:
                 tool_calls = _parse_narrated_tool_calls(content)
             if not tool_calls:
+                tool_calls = _parse_structured_tool_calls(content)
+            if not tool_calls:
+                tool_calls = _parse_inline_tool_call(content)
+            if not tool_calls:
+                preview = _message_preview(content)
+                if preview:
+                    get_display().thought(preview)
+                if _treat_as_reasoning_only(exc, preview):
+                    logger.info(
+                        "Treating non-tool model output as reasoning-only text and continuing."
+                    )
+                    message.role = MessageRole.ASSISTANT
+                    message.tool_calls = []
+                    return message
                 raise
             logger.info(
                 "Recovered tool call via fallback parser: %s",

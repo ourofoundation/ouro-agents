@@ -28,6 +28,7 @@ Rules:
 - Merge related entries into single concise statements
 - Keep the same section structure: ## Facts, ## Preferences, ## Learnings
 - Keep entries that represent durable knowledge, ongoing preferences, or hard-won learnings
+- ALWAYS preserve [label](asset:<uuid>) links — these are direct references to Ouro assets and must not be stripped or rewritten
 - Target: under {max_tokens} tokens (~{max_chars} characters)
 - Preserve the YAML frontmatter header exactly as-is
 
@@ -40,6 +41,7 @@ decide which log entries (if any) should be promoted to MEMORY.md as durable kno
 Rules:
 - Only promote facts, patterns, or learnings that will be useful in FUTURE sessions
 - Do NOT promote one-off task completions ("Published X post") unless they reveal a reusable pattern
+- ALWAYS preserve [label](asset:<uuid>) links from log entries — these are direct references to Ouro assets
 - Output a JSON array of objects: [{"section": "Facts"|"Preferences"|"Learnings", "entry": "text"}]
 - If nothing is worth promoting, return an empty array: []
 - Output ONLY the JSON array, no markdown fences, no explanation."""
@@ -62,21 +64,31 @@ def compact_memory_md(
     workspace: Path,
     config: MemoryConfig,
     model,
+    doc_store=None,
+    agent_name: str = "",
 ) -> bool:
-    """Rewrite MEMORY.md if it exceeds the token budget. Returns True if compacted."""
-    memory_path = workspace / "MEMORY.md"
-    if not memory_path.exists():
+    """Rewrite working memory if it exceeds the token budget. Returns True if compacted."""
+    post_name = f"MEMORY:{agent_name}" if agent_name else ""
+
+    if doc_store and post_name:
+        content = doc_store.read(post_name)
+    else:
+        memory_path = workspace / "MEMORY.md"
+        if not memory_path.exists():
+            return False
+        content = memory_path.read_text()
+
+    if not content:
         return False
 
-    content = memory_path.read_text()
     body = _strip_frontmatter(content)
     tokens = _estimate_tokens(body)
 
     if tokens <= config.memory_md_max_tokens:
-        logger.debug("MEMORY.md is %d tokens, under %d budget", tokens, config.memory_md_max_tokens)
+        logger.debug("Working memory is %d tokens, under %d budget", tokens, config.memory_md_max_tokens)
         return False
 
-    logger.info("MEMORY.md is %d tokens, compacting to %d", tokens, config.memory_md_max_tokens)
+    logger.info("Working memory is %d tokens, compacting to %d", tokens, config.memory_md_max_tokens)
     max_chars = config.memory_md_max_tokens * CHARS_PER_TOKEN
 
     try:
@@ -97,31 +109,42 @@ def compact_memory_md(
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-        memory_path.write_text(text)
+        if doc_store and post_name:
+            if not doc_store.write(post_name, text):
+                raise RuntimeError(f"Failed to update Ouro post {post_name}")
+        else:
+            (workspace / "MEMORY.md").write_text(text)
+
         new_tokens = _estimate_tokens(_strip_frontmatter(text))
-        logger.info("Compacted MEMORY.md: %d -> %d tokens", tokens, new_tokens)
+        logger.info("Compacted working memory: %d -> %d tokens", tokens, new_tokens)
         return True
     except Exception as e:
-        logger.warning("MEMORY.md compaction failed: %s", e)
+        logger.warning("Working memory compaction failed: %s", e)
         return False
 
 
 def promote_daily_entries(
     workspace: Path,
     model,
+    doc_store=None,
+    agent_name: str = "",
 ) -> int:
-    """Promote worthy entries from yesterday's daily log to MEMORY.md. Returns count."""
+    """Promote worthy entries from yesterday's daily log to working memory. Returns count."""
     yesterday = (date.today() - timedelta(days=1)).isoformat()
-    daily_path = workspace / "memory" / "daily" / f"{yesterday}.md"
-    if not daily_path.exists():
-        return 0
 
-    daily_content = daily_path.read_text().strip()
+    if doc_store and agent_name:
+        daily_content = doc_store.read(f"DAILY:{agent_name}:{yesterday}").strip()
+        memory_content = doc_store.read(f"MEMORY:{agent_name}")
+    else:
+        daily_path = workspace / "memory" / "daily" / f"{yesterday}.md"
+        if not daily_path.exists():
+            return 0
+        daily_content = daily_path.read_text().strip()
+        memory_path = workspace / "MEMORY.md"
+        memory_content = memory_path.read_text() if memory_path.exists() else ""
+
     if not daily_content or len(daily_content) < 20:
         return 0
-
-    memory_path = workspace / "MEMORY.md"
-    memory_content = memory_path.read_text() if memory_path.exists() else ""
 
     try:
         result = model(
@@ -131,7 +154,7 @@ def promote_daily_entries(
                     "role": "user",
                     "content": (
                         f"Yesterday's daily log:\n{daily_content}\n\n"
-                        f"Current MEMORY.md:\n{memory_content}"
+                        f"Current working memory:\n{memory_content}"
                     ),
                 },
             ],
@@ -145,7 +168,7 @@ def promote_daily_entries(
         if not isinstance(entries, list) or not entries:
             return 0
 
-        content = memory_path.read_text() if memory_path.exists() else ""
+        content = memory_content
         for entry in entries:
             section = entry.get("section", "Facts")
             text = entry.get("entry", "").strip()
@@ -161,8 +184,14 @@ def promote_daily_entries(
             else:
                 content = content.rstrip() + f"\n\n{header}\n{bullet}"
 
-        memory_path.write_text(content)
-        logger.info("Promoted %d entries from %s daily log to MEMORY.md", len(entries), yesterday)
+        if doc_store and agent_name:
+            post_name = f"MEMORY:{agent_name}"
+            if not doc_store.write(post_name, content):
+                raise RuntimeError(f"Failed to update Ouro post {post_name}")
+        else:
+            (workspace / "MEMORY.md").write_text(content)
+
+        logger.info("Promoted %d entries from %s daily log to working memory", len(entries), yesterday)
         return len(entries)
     except Exception as e:
         logger.warning("Daily log promotion failed: %s", e)
@@ -210,26 +239,72 @@ def decay_old_memories(
     return decayed
 
 
+def _consolidate_user_comments(doc_store, agent_name: str, model) -> int:
+    """Merge comments from other agents into USER:* posts this agent owns."""
+    if not doc_store:
+        return 0
+
+    merged = 0
+    team_posts = doc_store.search(f"USER:")
+    for post in team_posts:
+        name = post.get("name") or ""
+        if not name.startswith("USER:"):
+            continue
+        if not doc_store.is_owner(name):
+            continue
+
+        comments = doc_store.read_comments(name)
+        if not comments:
+            continue
+
+        new_entries = []
+        for c in comments:
+            content = c.get("content_markdown") or c.get("content", "")
+            if content.strip():
+                new_entries.append(content.strip())
+
+        if not new_entries:
+            continue
+
+        section_md = "## Recent Contributions\n" + "\n".join(f"- {e}" for e in new_entries) + "\n"
+        if not doc_store.append(name, section_md):
+            logger.warning("Failed to consolidate comments into %s", name)
+            continue
+        merged += len(new_entries)
+        logger.info("Consolidated %d comments into %s", len(new_entries), name)
+
+    return merged
+
+
 def run_consolidation(
     workspace: Path,
     backend: MemoryBackend,
     agent_id: str,
     config: MemoryConfig,
     model,
+    doc_store=None,
 ) -> dict:
     """Run all consolidation tasks. Returns a summary dict."""
     results = {
         "compacted": False,
         "promoted": 0,
         "decayed": 0,
+        "comments_merged": 0,
     }
 
     if not config.consolidation_enabled:
         return results
 
-    results["compacted"] = compact_memory_md(workspace, config, model)
-    results["promoted"] = promote_daily_entries(workspace, model)
+    results["compacted"] = compact_memory_md(
+        workspace, config, model,
+        doc_store=doc_store, agent_name=agent_id,
+    )
+    results["promoted"] = promote_daily_entries(
+        workspace, model,
+        doc_store=doc_store, agent_name=agent_id,
+    )
     results["decayed"] = decay_old_memories(backend, agent_id, config)
+    results["comments_merged"] = _consolidate_user_comments(doc_store, agent_id, model)
 
     logger.info("Consolidation complete: %s", results)
     return results

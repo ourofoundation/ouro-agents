@@ -10,9 +10,9 @@ from pydantic import BaseModel
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
 from .display import get_display
-from .logging_config import uvicorn_log_config
 from .events import EventRunContext, build_event_run_context
-from .provenance import resolve_event_provenance
+from .logging_config import uvicorn_log_config
+from .provenance import resolve_event_focus_asset, resolve_event_provenance
 from .publisher import OuroReplyPublisher
 from .uuid_v7 import uuid7_str
 
@@ -158,6 +158,35 @@ def _fetch_full_message_for_stream_end(
     return msgs[-1]
 
 
+def _resolve_comment_root_asset(comment_id: str) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a comment ID to its root non-comment parent asset."""
+    if not agent_instance:
+        return None, None
+
+    try:
+        ouro = agent_instance._get_ouro_client()
+        asset = ouro.assets.retrieve(comment_id)
+        seen: set[str] = set()
+
+        while asset and getattr(asset, "asset_type", None) == "comment":
+            asset_id = str(getattr(asset, "id", ""))
+            if not asset_id or asset_id in seen:
+                logger.warning("Circular or invalid comment chain while resolving %s", comment_id)
+                return None, None
+            seen.add(asset_id)
+            parent_id = getattr(asset, "parent_id", None)
+            if not parent_id:
+                return None, None
+            asset = ouro.assets.retrieve(str(parent_id))
+
+        if not asset:
+            return None, None
+        return str(getattr(asset, "id", "")) or None, getattr(asset, "asset_type", None)
+    except Exception:
+        logger.exception("Failed to resolve root asset for comment %s", comment_id)
+        return None, None
+
+
 async def _run_event_task(event_run: EventRunContext) -> None:
     if not agent_instance:
         logger.warning("Skipping event run because the agent is not initialized")
@@ -206,16 +235,14 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 user_id=event_run.user_id,
                 status_callback=activity_callback,
                 response_callback=response_callback,
-                preload_tools=list(event_run.preload_tools) if event_run.preload_tools else None,
-                asset_refs=list(event_run.asset_refs) if event_run.asset_refs else None,
+                preload_tools=(
+                    list(event_run.preload_tools) if event_run.preload_tools else None
+                ),
+                prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
                 reply_message_id=stream_message_id,
             )
 
-            if (
-                response_callback
-                and reply_publisher
-                and response_state["has_streamed"]
-            ):
+            if response_callback and reply_publisher and response_state["has_streamed"]:
                 full_message = _fetch_full_message_for_stream_end(
                     reply_publisher.client,
                     event_run.conversation_id,
@@ -299,17 +326,29 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
     try:
         # Resolve provenance before building the event context so task
         # framing can be plan-aware from the start.
-        event_data = body.get("data", {})
+        event_data = dict(body.get("data", {}) or {})
+        body = dict(body)
+        body["data"] = event_data
         source_id = event_data.get("source_id")
+        focus_asset_id, focus_asset_type = resolve_event_focus_asset(
+            source_id=source_id,
+            event_data=event_data,
+            resolve_comment_parent=_resolve_comment_root_asset,
+        )
+        if focus_asset_id:
+            event_data["focus_asset_id"] = focus_asset_id
+        if focus_asset_type:
+            event_data["focus_asset_type"] = focus_asset_type
         planning_cfg = agent_instance.config.planning
 
         provenance = resolve_event_provenance(
-            source_id=source_id,
+            source_id=focus_asset_id or source_id,
             event_data=event_data,
             workspace=agent_instance.config.agent.workspace,
             planning_team_id=planning_cfg.team_id,
             planning_org_id=planning_cfg.org_id,
             planning_enabled=planning_cfg.enabled,
+            resolve_comment_parent=_resolve_comment_root_asset,
         )
 
         event_run = build_event_run_context(body, provenance=provenance)

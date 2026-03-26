@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, List, Optional
+from typing import TYPE_CHECKING, Any, Protocol, List, Optional
 
 from pydantic import BaseModel
 
@@ -35,6 +35,12 @@ class MemoryBackend(Protocol):
         ...
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
+        ...
+
+    def reset_usage(self) -> None:
+        ...
+
+    def usage_ledger(self) -> list[tuple[str, Any]]:
         ...
 
 
@@ -83,8 +89,8 @@ def expand_query(task: str, state: ConversationState) -> str:
     return " ".join(parts)
 
 
-def create_memory_backend(config) -> MemoryBackend:
+def create_memory_backend(config, usage_tracker=None) -> MemoryBackend:
     if config.provider == "mem0":
         from .mem0 import Mem0Backend
-        return Mem0Backend(config)
+        return Mem0Backend(config, usage_tracker=usage_tracker)
     raise ValueError(f"Unknown memory provider: {config.provider}")

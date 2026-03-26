@@ -1,20 +1,25 @@
 import logging
+import os
+from functools import wraps
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from ..config import MemoryConfig
+from ..usage import RunUsage, UsageTracker, record_usage_from_response
 from . import MemoryBackend, MemoryResult
 
 logger = logging.getLogger(__name__)
 
 
-def _split_provider_and_model(model_id: str) -> tuple[Optional[str], str]:
-    """Normalize 'openai/gpt-4o-mini' into ('openai', 'gpt-4o-mini')."""
-    if "/" in model_id:
-        provider, model = model_id.split("/", 1)
-        if provider in {"openai", "anthropic"} and model:
-            return provider, model
-    return None, model_id
+def _get_openrouter_api_key() -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError("mem0 requires OPENROUTER_API_KEY")
+    return api_key
+
+
+def _get_openrouter_base_url() -> str:
+    return os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 
 
 def _extract_metadata(raw: dict) -> dict:
@@ -30,22 +35,29 @@ def _extract_metadata(raw: dict) -> dict:
 
 
 class Mem0Backend:
-    def __init__(self, config: MemoryConfig):
+    def __init__(
+        self,
+        config: MemoryConfig,
+        usage_tracker: Optional[UsageTracker] = None,
+    ):
         from mem0 import Memory
+
+        self._extraction_model = config.extraction_model
+        self._embedding_model = config.embedder
+        self._shared_usage_tracker = usage_tracker
+        self._extraction_tracker = UsageTracker()
+        self._embedding_tracker = UsageTracker()
 
         chroma_path = config.path / "chroma"
         chroma_path.mkdir(parents=True, exist_ok=True)
+        openrouter_api_key = _get_openrouter_api_key()
+        openrouter_base_url = _get_openrouter_base_url()
 
-        llm_provider, llm_model = _split_provider_and_model(config.extraction_model)
-        if llm_provider is None:
-            llm_provider = (
-                "anthropic" if "claude" in config.extraction_model else "openai"
-            )
-
-        embedder_provider, embedder_model = _split_provider_and_model(config.embedder)
-        if embedder_provider is None:
-            embedder_provider = (
-                "openai" if "text-embedding" in config.embedder else "huggingface"
+        def extraction_response_callback(_llm, response, _params) -> None:
+            self._record_usage(
+                response,
+                self._extraction_tracker,
+                gen_id_prefix="mem0-extract",
             )
 
         mem0_config = {
@@ -56,10 +68,22 @@ class Mem0Backend:
                     "path": str(chroma_path),
                 },
             },
-            "llm": {"provider": llm_provider, "config": {"model": llm_model}},
+            "llm": {
+                "provider": "openai",
+                "config": {
+                    "model": config.extraction_model,
+                    "api_key": openrouter_api_key,
+                    "openrouter_base_url": openrouter_base_url,
+                    "response_callback": extraction_response_callback,
+                },
+            },
             "embedder": {
-                "provider": embedder_provider,
-                "config": {"model": embedder_model},
+                "provider": "openai",
+                "config": {
+                    "model": config.embedder,
+                    "api_key": openrouter_api_key,
+                    "openai_base_url": openrouter_base_url,
+                },
             },
         }
 
@@ -70,6 +94,70 @@ class Mem0Backend:
             }
 
         self._mem = Memory.from_config(mem0_config)
+        self._wrap_embedding_client()
+
+    def _record_usage(
+        self,
+        response,
+        tracker: UsageTracker,
+        *,
+        gen_id_prefix: str,
+    ) -> None:
+        record_usage_from_response(response, tracker, gen_id_prefix=gen_id_prefix)
+        if self._shared_usage_tracker is not None:
+            record_usage_from_response(
+                response,
+                self._shared_usage_tracker,
+                gen_id_prefix=gen_id_prefix,
+            )
+
+    def _wrap_embedding_client(self) -> None:
+        client = getattr(getattr(self._mem, "embedding_model", None), "client", None)
+        embeddings = getattr(client, "embeddings", None)
+        original_create = getattr(embeddings, "create", None)
+        if original_create is None:
+            logger.warning("mem0 embedding client does not expose embeddings.create")
+            return
+
+        @wraps(original_create)
+        def tracked_create(*args, **kwargs):
+            response = original_create(*args, **kwargs)
+            self._record_usage(
+                response,
+                self._embedding_tracker,
+                gen_id_prefix="mem0-embed",
+            )
+            return response
+
+        embeddings.create = tracked_create
+
+    def reset_usage(self) -> None:
+        self._extraction_tracker.reset()
+        self._embedding_tracker.reset()
+
+    def usage_ledger(self) -> list[tuple[str, RunUsage]]:
+        ledger: list[tuple[str, RunUsage]] = []
+        if self._extraction_tracker.num_calls:
+            ledger.append(
+                (
+                    "extraction",
+                    RunUsage.from_tracker(
+                        self._extraction_tracker,
+                        model_id=self._extraction_model,
+                    ),
+                )
+            )
+        if self._embedding_tracker.num_calls:
+            ledger.append(
+                (
+                    "embeddings",
+                    RunUsage.from_tracker(
+                        self._embedding_tracker,
+                        model_id=self._embedding_model,
+                    ),
+                )
+            )
+        return ledger
 
     def search(
         self,

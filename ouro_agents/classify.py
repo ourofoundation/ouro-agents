@@ -1,17 +1,14 @@
 """Lightweight task classification utilities.
 
 The LLM-based classifier has been replaced by the preflight subagent.
-This module retains only the regex-based trivial-message detection and
-the PreflightResult dataclass for structured preflight output.
+This module now retains only regex-based trivial-message detection plus
+compatibility re-exports for preflight parsing types.
 """
 
-import json
-import logging
 import re
-from dataclasses import dataclass, field
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from .subagents.preflight import PreflightResult, parse_preflight_result
 
 _TRIVIAL_PATTERNS = re.compile(
     r"^("
@@ -55,38 +52,3 @@ def is_trivial_message(text: Optional[str]) -> bool:
     if text is None:
         return False
     return bool(_TRIVIAL_PATTERNS.match(text.strip()))
-
-
-@dataclass
-class PreflightResult:
-    """Structured output from the preflight subagent."""
-
-    intent: str = "converse"
-    complexity: str = "simple"
-    worth_remembering: bool = True
-    briefing: str = ""
-    plan: str = ""
-
-    @property
-    def is_trivial(self) -> bool:
-        return self.intent == "converse" and self.complexity == "simple"
-
-
-def parse_preflight_result(raw: str) -> PreflightResult:
-    """Parse the JSON output of the preflight subagent into a PreflightResult."""
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-    try:
-        data = json.loads(text)
-        return PreflightResult(
-            intent=data.get("intent", "converse"),
-            complexity=data.get("complexity", "simple"),
-            worth_remembering=data.get("worth_remembering", True),
-            briefing=data.get("briefing", ""),
-            plan=data.get("plan", ""),
-        )
-    except Exception as e:
-        logger.warning("Failed to parse preflight result, using defaults: %s", e)
-        return PreflightResult(briefing=text if text else "")

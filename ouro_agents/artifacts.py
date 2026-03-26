@@ -4,6 +4,8 @@ Subagents persist their output as real Ouro assets (posts, files, datasets)
 via MCP tools and return a structured asset object as their final_answer.
 This module provides helpers to:
 
+  - PrefetchSpec / resolve_prefetch: declare what context to pre-fetch for a
+    run (assets, comment threads, etc.) and resolve it into formatted markdown.
   - fetch_asset_content: retrieve asset content via get_asset for injection
     into subagent task prompts (replacing the old ArtifactStore.format_for_prompt)
   - parse_asset_result: extract a structured asset object from a subagent's
@@ -14,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from .constants import CHARS_PER_TOKEN
@@ -147,5 +150,112 @@ def fetch_asset_content(
         block = f"{header}\n\n{body}".strip()
         parts.append(block)
         total_chars += len(block)
+
+    return "\n\n".join(parts)
+
+
+def _fetch_comment_thread(
+    deferred_tools: dict,
+    parent_ids: list[str],
+    max_tokens: int = 3000,
+) -> str:
+    """Pre-fetch comments for assets and format as a readable thread."""
+    if not parent_ids:
+        return ""
+
+    get_comments = deferred_tools.get("ouro:get_comments")
+    if not get_comments:
+        logger.warning("Cannot fetch comments: ouro:get_comments not available")
+        return ""
+
+    parts: list[str] = []
+    total_chars = 0
+    max_chars = max_tokens * CHARS_PER_TOKEN
+
+    for parent_id in parent_ids:
+        try:
+            raw = get_comments(parent_id=parent_id)
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as e:
+            logger.warning("Failed to fetch comments for %s: %s", parent_id, e)
+            continue
+
+        results = data.get("results", []) if isinstance(data, dict) else []
+        if not results:
+            continue
+
+        thread_lines: list[str] = [f"### Comment thread on {parent_id}"]
+        for comment in results:
+            author = comment.get("author", "unknown")
+            text = comment.get("text", "").strip()
+            created = comment.get("created_at", "")
+            cid = comment.get("id", "")
+            reply_count = comment.get("reply_count", 0)
+
+            if not text:
+                continue
+
+            entry = f"- **@{author}**"
+            if created:
+                entry += f" ({created})"
+            entry += f": {text}"
+            if reply_count:
+                entry += f" _({reply_count} replies)_"
+            if cid:
+                entry += f" [id: {cid}]"
+            thread_lines.append(entry)
+
+        block = "\n".join(thread_lines)
+        remaining = max_chars - total_chars
+        if remaining < 200:
+            parts.append("[...additional comment threads truncated]")
+            break
+        if len(block) > remaining:
+            block = block[:remaining] + "\n[...truncated]"
+        parts.append(block)
+        total_chars += len(block)
+
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# PrefetchSpec — declares what context to pre-fetch for a run
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PrefetchSpec:
+    """Declares what context should be pre-fetched before an agent run.
+
+    Add new fields here when new prefetch types are needed — no signature
+    changes required anywhere in the call chain.
+    """
+
+    asset_ids: list[str] = field(default_factory=list)
+    comment_parent_ids: list[str] = field(default_factory=list)
+
+    @property
+    def empty(self) -> bool:
+        return not self.asset_ids and not self.comment_parent_ids
+
+
+def resolve_prefetch(deferred_tools: dict, spec: PrefetchSpec) -> str:
+    """Resolve a PrefetchSpec into formatted markdown context.
+
+    Each block is self-contained — adding a new prefetch type means adding
+    a field to PrefetchSpec and a block here.
+    """
+    if spec.empty:
+        return ""
+
+    parts: list[str] = []
+
+    asset_ctx = fetch_asset_content(deferred_tools, spec.asset_ids)
+    if asset_ctx:
+        parts.append(f"## Input Assets\n{asset_ctx}")
+
+    comment_ctx = _fetch_comment_thread(deferred_tools, spec.comment_parent_ids)
+    if comment_ctx:
+        parts.append(f"## Comment Thread\n{comment_ctx}")
 
     return "\n\n".join(parts)
