@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -173,7 +174,9 @@ def _resolve_comment_root_asset(comment_id: str) -> tuple[Optional[str], Optiona
         while asset and getattr(asset, "asset_type", None) == "comment":
             asset_id = str(getattr(asset, "id", ""))
             if not asset_id or asset_id in seen:
-                logger.warning("Circular or invalid comment chain while resolving %s", comment_id)
+                logger.warning(
+                    "Circular or invalid comment chain while resolving %s", comment_id
+                )
                 return None, None
             seen.add(asset_id)
             parent_id = getattr(asset, "parent_id", None)
@@ -372,10 +375,20 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
 
 def start_server(config_path: str = "config.json"):
     config = OuroAgentsConfig.load_from_file(config_path)
+    reload = os.getenv("PYTHON_ENV") != "production"
+    reload_excludes = (
+        [
+            "workspace/*",
+            "__pycache__",
+        ]
+        if reload
+        else None
+    )
     uvicorn.run(
         "ouro_agents.server:app",
         host=config.server.host,
         port=config.server.port,
-        reload=True,
+        reload=reload,
+        reload_excludes=reload_excludes,
         log_config=uvicorn_log_config(),
     )
