@@ -1045,14 +1045,14 @@ async def run_planning_heartbeat(
     previous_plan = previous[0] if previous else None
 
     is_continuation = continuation and continuation.post_id
-    mem_cfg = agent.config.memory
+    agent_cfg = agent.config.agent
     prompt = build_planning_prompt(
         cadence=planning_cfg.cadence,
-        team_id=mem_cfg.team_id or planning_cfg.team_id,
-        org_id=mem_cfg.org_id or planning_cfg.org_id,
+        team_id=agent_cfg.team_id,
+        org_id=agent_cfg.org_id,
         previous_plan=previous_plan,
         current_plan=continuation if is_continuation else None,
-        agent_name=agent.config.agent.name,
+        agent_name=agent_cfg.name,
         goal=goal,
     )
 

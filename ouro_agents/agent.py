@@ -407,17 +407,17 @@ class OuroAgent:
             return f"({len(turns)} earlier messages about: {blob[:200]}...)"
 
     def _init_doc_store(self) -> None:
-        """Initialize the OuroDocStore if memory.org_id and memory.team_id are configured."""
-        mem_cfg = self.config.memory
-        if not mem_cfg.org_id or not mem_cfg.team_id:
+        """Initialize the OuroDocStore if agent.org_id and agent.team_id are configured."""
+        agent_cfg = self.config.agent
+        if not agent_cfg.org_id or not agent_cfg.team_id:
             logger.info(
                 "OuroDocStore: org_id/team_id not configured, using local files only"
             )
             return
         self.doc_store = OuroDocStore(
-            agent_name=self.config.agent.name,
-            org_id=mem_cfg.org_id,
-            team_id=mem_cfg.team_id,
+            agent_name=agent_cfg.name,
+            org_id=agent_cfg.org_id,
+            team_id=agent_cfg.team_id,
             client=self._get_ouro_client(),
         )
         self._load_identity_from_ouro()

@@ -231,14 +231,14 @@ def _bootstrap_memory(
     """Create shared team and seed Ouro posts from local workspace files."""
     with OuroAgent(config) as agent:
         tools = agent._deferred_tools
-        org_id = args.org_id or config.memory.org_id
+        org_id = args.org_id or config.agent.org_id
         if not org_id:
             display.error(
-                "No org_id configured. Set memory.org_id in config.json or pass --org-id."
+                "No org_id configured. Set agent.org_id in config.json or pass --org-id."
             )
             sys.exit(1)
 
-        team_id = args.team_id or config.memory.team_id
+        team_id = args.team_id or config.agent.team_id
 
         if not team_id:
             display.info("Creating shared agent team...")
@@ -317,7 +317,7 @@ def _bootstrap_memory(
 
         display.info(f"\nBootstrap complete: {len(seeded)} posts created.")
         display.info(f"Team ID: {team_id}")
-        display.info(f'Add to config.json → memory.team_id: "{team_id}"')
+        display.info(f'Add to config.json → agent.team_id: "{team_id}"')
 
 
 if __name__ == "__main__":

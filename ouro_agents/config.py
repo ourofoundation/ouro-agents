@@ -39,6 +39,8 @@ class AgentConfig(BaseModel):
     name: str
     model: str
     workspace: Path = Path("./workspace")
+    org_id: Optional[str] = None
+    team_id: Optional[str] = None
 
 
 class PromptCachingConfig(BaseModel):
@@ -91,8 +93,6 @@ class MemoryConfig(BaseModel):
     mid_session_reflection_interval: int = 10
     decay_after_days: int = 30
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
-    org_id: Optional[str] = None
-    team_id: Optional[str] = None
 
 
 class ServerConfig(BaseModel):
@@ -107,8 +107,6 @@ class PlanningConfig(BaseModel):
     min_heartbeats: int = 4
     review_window: str = "2h"
     auto_approve: bool = True
-    team_id: Optional[str] = None
-    org_id: Optional[str] = None
 
 
 class SubAgentOverride(BaseModel):
@@ -200,5 +198,14 @@ class OuroAgentsConfig(BaseSettings):
                     for target in targets:
                         entry = overrides.setdefault(target, {})
                         entry.setdefault("max_steps", steps)
+
+        # Migrate legacy per-section org_id/team_id into agent-level fields.
+        agent_section = expanded_data.setdefault("agent", {})
+        for section_key in ("memory", "planning"):
+            section = expanded_data.get(section_key, {})
+            for field in ("org_id", "team_id"):
+                val = section.pop(field, None)
+                if val and not agent_section.get(field):
+                    agent_section[field] = val
 
         return cls(**expanded_data)

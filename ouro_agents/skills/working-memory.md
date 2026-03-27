@@ -27,7 +27,7 @@ You have a persistent working memory system backed by Ouro posts in a shared age
 
 ## Local File Fallbacks
 
-When `memory.org_id` / `memory.team_id` are not configured, the system falls back to local workspace files:
+When `agent.org_id` / `agent.team_id` are not configured, the system falls back to local workspace files:
 
 | Local Path | Maps To |
 |------------|---------|

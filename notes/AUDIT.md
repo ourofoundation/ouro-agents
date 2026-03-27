@@ -2,7 +2,7 @@
 
 ## Context
 
-We migrated the ouro-agents memory system from local file I/O to Ouro posts in a shared agent team. The core abstraction is `OuroDocStore` in `ouro_agents/memory/ouro_docs.py` — it wraps `search_assets`, `get_asset`, `create_post`, `update_post`, `create_comment`, and `get_comments` MCP tools. All file-based memory now routes through it when `memory.org_id` and `memory.team_id` are configured, falling back to local files otherwise.
+We migrated the ouro-agents memory system from local file I/O to Ouro posts in a shared agent team. The core abstraction is `OuroDocStore` in `ouro_agents/memory/ouro_docs.py` — it wraps `search_assets`, `get_asset`, `create_post`, `update_post`, `create_comment`, and `get_comments` MCP tools. All file-based memory now routes through it when `agent.org_id` and `agent.team_id` are configured, falling back to local files otherwise.
 
 **Naming convention for posts:**
 - `SOUL:{agent_name}` — agent identity

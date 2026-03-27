@@ -1,8 +1,8 @@
 """Memory consolidation: compaction, promotion, and decay.
 
 Runs periodically (triggered by heartbeat) to keep the memory system healthy:
-1. MEMORY.md compaction — rewrite when over token budget to merge/prune
-2. Daily log promotion — promote yesterday's important entries to MEMORY.md
+1. Working memory compaction — rewrite when over token budget to merge/prune
+2. Daily log promotion — promote yesterday's important entries to working memory
 3. Memory decay — reduce importance of old unaccessed memories
 """
 
@@ -19,8 +19,8 @@ from ..constants import CHARS_PER_TOKEN
 logger = logging.getLogger(__name__)
 
 COMPACTION_PROMPT = """\
-You are a memory curator. Given the current contents of MEMORY.md (the agent's
-persistent working memory), rewrite it to be more concise and useful.
+You are a memory curator. Given the current contents of the agent's persistent \
+working memory, rewrite it to be more concise and useful.
 
 Rules:
 - Remove duplicate or near-duplicate entries
@@ -32,11 +32,12 @@ Rules:
 - Target: under {max_tokens} tokens (~{max_chars} characters)
 - Preserve the YAML frontmatter header exactly as-is
 
-Output the complete rewritten MEMORY.md content, nothing else."""
+Output the complete rewritten working memory content, nothing else."""
 
 PROMOTION_PROMPT = """\
-You are a memory curator. Given yesterday's daily log and the current MEMORY.md,
-decide which log entries (if any) should be promoted to MEMORY.md as durable knowledge.
+You are a memory curator. Given yesterday's daily log and the agent's current \
+working memory, decide which log entries (if any) should be promoted to working \
+memory as durable knowledge.
 
 Rules:
 - Only promote facts, patterns, or learnings that will be useful in FUTURE sessions

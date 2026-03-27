@@ -348,13 +348,14 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         if focus_asset_type:
             event_data["focus_asset_type"] = focus_asset_type
         planning_cfg = agent_instance.config.planning
+        agent_cfg = agent_instance.config.agent
 
         provenance = resolve_event_provenance(
             source_id=focus_asset_id or source_id,
             event_data=event_data,
-            workspace=agent_instance.config.agent.workspace,
-            planning_team_id=planning_cfg.team_id,
-            planning_org_id=planning_cfg.org_id,
+            workspace=agent_cfg.workspace,
+            planning_team_id=agent_cfg.team_id,
+            planning_org_id=agent_cfg.org_id,
             planning_enabled=planning_cfg.enabled,
             resolve_comment_parent=_resolve_comment_root_asset,
         )
