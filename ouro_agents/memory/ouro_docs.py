@@ -8,6 +8,8 @@ for typed responses and proper Content-level append support.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -15,6 +17,15 @@ if TYPE_CHECKING:
     from ouro.resources.content import Content
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ReadResult:
+    """Content + metadata from an Ouro post read."""
+
+    content: str
+    last_updated: Optional[datetime] = None
+    post_id: Optional[str] = None
 
 
 def _build_client(api_key: str | None = None, base_url: str | None = None) -> "Ouro":
@@ -100,21 +111,35 @@ class OuroDocStore:
 
     def read(self, name: str) -> str:
         """Read a post by name. Returns empty string if not found."""
+        result = self.read_with_meta(name)
+        return result.content
+
+    def read_with_meta(self, name: str) -> ReadResult:
+        """Read a post by name, returning content and metadata."""
         uuid = self._resolve(name)
         if not uuid:
-            return ""
+            return ReadResult(content="")
 
         try:
             post = self._client.posts.retrieve(uuid)
+            content = ""
             if post.content:
-                from ouro.resources.content import Content
+                from ouro.resources.content import Content as ContentCls
 
-                c = Content(json=post.content.data, text=post.content.text, _ouro=self._client)
-                return c.to_markdown().strip()
-            return ""
+                c = ContentCls(
+                    json=post.content.data,
+                    text=post.content.text,
+                    _ouro=self._client,
+                )
+                content = c.to_markdown().strip()
+            return ReadResult(
+                content=content,
+                last_updated=post.last_updated,
+                post_id=str(post.id),
+            )
         except Exception as e:
-            logger.warning("OuroDocStore.read failed for %s: %s", name, e)
-            return ""
+            logger.warning("OuroDocStore.read_with_meta failed for %s: %s", name, e)
+            return ReadResult(content="")
 
     def write(self, name: str, content_md: str) -> bool:
         """Update a post this agent owns. Creates it if it doesn't exist."""

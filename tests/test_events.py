@@ -131,7 +131,8 @@ build_event_run_context = _load_events_module().build_event_run_context
 
 
 class TestBuildEventRunContext(unittest.TestCase):
-    def test_comment_event_prefetches_target_asset_and_thread(self):
+    def test_top_level_comment_prefetches_post_and_all_comments(self):
+        """Top-level comment on a post: load the post + all top-level comments."""
         event_run = build_event_run_context(
             {
                 "event": "comment",
@@ -147,13 +148,15 @@ class TestBuildEventRunContext(unittest.TestCase):
             }
         )
 
-        self.assertEqual(event_run.prefetch.asset_ids, ["asset-123", "comment-456"])
+        self.assertEqual(event_run.prefetch.asset_ids, ["asset-123"])
         self.assertEqual(event_run.prefetch.comment_parent_ids, ["asset-123"])
+        self.assertEqual(event_run.prefetch.thread_comment_parent_ids, [])
         self.assertEqual(event_run.reply_parent_id, "comment-456")
         self.assertEqual(event_run.thread_parent_id, "asset-123")
         self.assertEqual(event_run.feedback_text, "What do you think?")
 
-    def test_comment_event_uses_focus_asset_when_available(self):
+    def test_thread_reply_prefetches_post_comments_and_thread(self):
+        """Thread reply: load the post, all top-level comments, AND the thread."""
         event_run = build_event_run_context(
             {
                 "event": "comment",
@@ -171,8 +174,9 @@ class TestBuildEventRunContext(unittest.TestCase):
             }
         )
 
-        self.assertEqual(event_run.prefetch.asset_ids, ["plan-post-1", "comment-789"])
-        self.assertEqual(event_run.prefetch.comment_parent_ids, ["thread-123"])
+        self.assertEqual(event_run.prefetch.asset_ids, ["plan-post-1"])
+        self.assertEqual(event_run.prefetch.comment_parent_ids, ["plan-post-1"])
+        self.assertEqual(event_run.prefetch.thread_comment_parent_ids, ["thread-123"])
         self.assertIn("post (id: plan-post-1)", event_run.task)
         self.assertIn("create_comment on `comment-789`", event_run.task)
         self.assertEqual(event_run.reply_parent_id, "comment-789")

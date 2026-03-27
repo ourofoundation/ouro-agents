@@ -420,7 +420,27 @@ class OuroAgent:
             team_id=agent_cfg.team_id,
             client=self._get_ouro_client(),
         )
+        self._sync_workspace_docs()
         self._load_identity_from_ouro()
+
+    def _sync_workspace_docs(self) -> None:
+        """Bidirectional sync between local workspace files and Ouro posts."""
+        if not self.doc_store:
+            return
+        from .memory.workspace_sync import sync_workspace
+
+        result = sync_workspace(
+            workspace=self._workspace,
+            doc_store=self.doc_store,
+            agent_name=self.config.agent.name,
+        )
+        if result.pushed:
+            logger.info("Workspace sync pushed: %s", ", ".join(result.pushed))
+        if result.pulled:
+            logger.info("Workspace sync pulled: %s", ", ".join(result.pulled))
+        if result.errors:
+            for err in result.errors:
+                logger.warning("Workspace sync error: %s", err)
 
     def _load_identity_from_ouro(self) -> None:
         """Load soul, notes, and heartbeat from Ouro posts (falls back to local files)."""

@@ -233,10 +233,15 @@ class PrefetchSpec:
 
     asset_ids: list[str] = field(default_factory=list)
     comment_parent_ids: list[str] = field(default_factory=list)
+    thread_comment_parent_ids: list[str] = field(default_factory=list)
 
     @property
     def empty(self) -> bool:
-        return not self.asset_ids and not self.comment_parent_ids
+        return (
+            not self.asset_ids
+            and not self.comment_parent_ids
+            and not self.thread_comment_parent_ids
+        )
 
 
 def resolve_prefetch(deferred_tools: dict, spec: PrefetchSpec) -> str:
@@ -256,6 +261,10 @@ def resolve_prefetch(deferred_tools: dict, spec: PrefetchSpec) -> str:
 
     comment_ctx = _fetch_comment_thread(deferred_tools, spec.comment_parent_ids)
     if comment_ctx:
-        parts.append(f"## Comment Thread\n{comment_ctx}")
+        parts.append(f"## Top-Level Comments\n{comment_ctx}")
+
+    thread_ctx = _fetch_comment_thread(deferred_tools, spec.thread_comment_parent_ids)
+    if thread_ctx:
+        parts.append(f"## Current Thread\n{thread_ctx}")
 
     return "\n\n".join(parts)

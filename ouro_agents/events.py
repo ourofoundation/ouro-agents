@@ -25,6 +25,193 @@ _PLAN_FEEDBACK_PRELOADS: List[str] = [
 ]
 
 
+def _ready_hint(preload_names: list[str]) -> str:
+    if not preload_names:
+        return ""
+    call_names = [n.split(":", 1)[-1] for n in preload_names]
+    return (
+        f"The following tools are already loaded and ready to call directly: "
+        f"{', '.join(call_names)}. No need to call load_tool for these."
+    )
+
+
+# ---------------------------------------------------------------------------
+# CommentContext — parsed once from event data, used by all comment handlers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CommentContext:
+    """All derived fields for a comment/mention event, parsed once."""
+
+    source_id: str
+    source_asset_type: str
+    focus_asset_id: str
+    focus_asset_type: str
+    target_id: Optional[str]
+    target_asset_type: Optional[str]
+    is_thread_reply: bool
+    reply_parent_id: str
+    comment_text: str
+    commenter: str
+
+    @classmethod
+    def from_event(cls, event: WebhookEvent) -> "CommentContext":
+        data = event.data
+        source_id = data.get("source_id", "unknown")
+        source_asset_type = data.get("source_asset_type", "unknown")
+        target_id = data.get("target_id")
+        target_asset_type = data.get("target_asset_type")
+        focus_asset_id = (
+            data.get("focus_asset_id") or target_id or source_id
+        )
+        focus_asset_type = (
+            data.get("focus_asset_type") or target_asset_type or source_asset_type
+        )
+        return cls(
+            source_id=source_id,
+            source_asset_type=source_asset_type,
+            focus_asset_id=focus_asset_id,
+            focus_asset_type=focus_asset_type,
+            target_id=target_id,
+            target_asset_type=target_asset_type,
+            is_thread_reply=target_asset_type == "comment",
+            reply_parent_id=source_id,
+            comment_text=(
+                data.get("text") or data.get("content") or data.get("body") or ""
+            ),
+            commenter=(
+                data.get("sender_username")
+                or data.get("sender")
+                or data.get("username")
+                or "someone"
+            ),
+        )
+
+    def build_prefetch(self) -> PrefetchSpec:
+        asset_ids = (
+            [self.focus_asset_id]
+            if self.focus_asset_id and self.focus_asset_id != "unknown"
+            else []
+        )
+        comment_parent_ids = list(asset_ids)
+
+        thread_comment_parent_ids: list[str] = []
+        if self.is_thread_reply and self.target_id and self.target_id != "unknown":
+            thread_comment_parent_ids.append(self.target_id)
+
+        return PrefetchSpec(
+            asset_ids=asset_ids,
+            comment_parent_ids=comment_parent_ids,
+            thread_comment_parent_ids=thread_comment_parent_ids,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task builders — one per provenance branch, each returns a task string
+# ---------------------------------------------------------------------------
+
+
+def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str:
+    pc = provenance.plan_cycle
+    reply_instruction = (
+        f"Reply in the same thread by calling create_comment with parent_id "
+        f"`{ctx.reply_parent_id}`."
+        if ctx.reply_parent_id and ctx.reply_parent_id != pc.post_id
+        else "Reply on the plan post with create_comment."
+    )
+    return (
+        f"You received feedback on your current plan "
+        f"(cycle {pc.cycle_id[:8]}, status: {pc.status}, "
+        f"post id: {pc.post_id or ctx.focus_asset_id}).\n\n"
+        f"## Feedback\n{ctx.comment_text}\n\n"
+        f"## Your Current Plan\n{pc.plan_text}\n\n"
+        f"Review the feedback, revise your plan if needed, and update "
+        f"the post (update_post). {reply_instruction}\n\n"
+        f"Return a JSON summary:\n"
+        f'```json\n{{"revised_plan": "<updated plan text>", '
+        f'"feedback_summary": "<brief summary of changes>"}}\n```\n\n'
+        f"{_ready_hint(list(_PLAN_FEEDBACK_PRELOADS))}"
+    )
+
+
+def _historical_feedback_task(
+    ctx: CommentContext,
+    provenance: AssetProvenance,
+    preload_names: list[str],
+) -> str:
+    pc = provenance.plan_cycle
+    return (
+        f"You received feedback on a completed plan "
+        f"(cycle {pc.cycle_id[:8]}, post id: {pc.post_id or ctx.focus_asset_id}).\n\n"
+        f"## Feedback\n{ctx.comment_text}\n\n"
+        f"This plan has already been executed. Acknowledge the feedback "
+        f"and note any insights that should inform future planning.\n\n"
+        f"{_ready_hint(preload_names)}"
+    )
+
+
+def _planning_space_task(
+    ctx: CommentContext,
+    raw_data: dict,
+    preload_names: list[str],
+    event_type: str,
+) -> str:
+    return (
+        f"Received a {event_type} in your planning space.\n\n"
+        f"Source asset type: {ctx.source_asset_type}\n"
+        f"Source asset id: {ctx.source_id}\n"
+        f"Focus asset type: {ctx.focus_asset_type}\n"
+        f"Focus asset id: {ctx.focus_asset_id}\n"
+        f"Event data:\n{json.dumps(raw_data, indent=2, sort_keys=True)}\n\n"
+        f"Consider whether this is relevant to your current plan. "
+        f"Reply on Ouro if appropriate.\n\n"
+        f"{_ready_hint(preload_names)}"
+    )
+
+
+def _default_comment_task(
+    ctx: CommentContext,
+    event_type: str,
+    provenance: Optional[AssetProvenance],
+    preload_names: list[str],
+) -> str:
+    if ctx.is_thread_reply:
+        context_hint = (
+            "The full post content, all top-level comments, and the "
+            "current thread are provided below as pre-loaded context — "
+            "no need to call get_asset or get_comments."
+        )
+    else:
+        context_hint = (
+            "The full post content and all comments are provided below "
+            "as pre-loaded context — no need to call get_asset or get_comments."
+        )
+    task = (
+        f"Received a {event_type} on a {ctx.focus_asset_type} (id: {ctx.focus_asset_id}).\n\n"
+        f"**@{ctx.commenter}** wrote:\n> {ctx.comment_text}\n\n"
+        f"{context_hint}\n\n"
+    )
+    hint = _ready_hint(preload_names)
+    if hint:
+        task += f"{hint}\n"
+    if provenance and provenance.is_own_asset:
+        task += (
+            "This is your asset. Respond as the author — with context "
+            "about what you created and why. "
+        )
+    task += (
+        f"Reply on Ouro (create_comment on `{ctx.reply_parent_id}`). "
+        "If no reply or other action is needed, return exactly NO_ACTION."
+    )
+    return task
+
+
+# ---------------------------------------------------------------------------
+# EventRunContext and builders
+# ---------------------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class EventRunContext:
     event_type: str
@@ -46,24 +233,13 @@ class EventRunContext:
 def _build_event_task(
     event: WebhookEvent,
     provenance: Optional[AssetProvenance] = None,
+    comment_ctx: Optional[CommentContext] = None,
 ) -> tuple[str, RunMode, tuple, PrefetchSpec]:
-    """Build the task string, run mode, preload tools, and prefetch spec.
-
-    Returns (task, mode, preload_tools, prefetch).
-    """
+    """Build the task string, run mode, preload tools, and prefetch spec."""
     data = event.data
     event_type = event.event_type
     preload_names = list(EVENT_TOOL_PRELOADS.get(event_type, []))
     prefetch = PrefetchSpec()
-
-    def _ready_hint(names: list[str]) -> str:
-        if not names:
-            return ""
-        call_names = [n.split(":", 1)[-1] for n in names]
-        return (
-            f"The following tools are already loaded and ready to call directly: "
-            f"{', '.join(call_names)}. No need to call load_tool for these."
-        )
 
     if event_type == "new-message":
         sender = event.sender_username or event.actor_user_id or "Unknown"
@@ -82,117 +258,22 @@ def _build_event_task(
         return "", RunMode.CHAT_REPLY, tuple(preload_names), prefetch
 
     if event_type in {"comment", "mention"}:
-        source_asset_type = data.get("source_asset_type", "unknown")
-        source_id = data.get("source_id", "unknown")
-        focus_asset_id = data.get("focus_asset_id") or data.get("target_id") or source_id
-        focus_asset_type = (
-            data.get("focus_asset_type")
-            or data.get("target_asset_type")
-            or source_asset_type
-        )
-        reply_parent_id = source_id
-        thread_parent_id = data.get("target_id") or focus_asset_id
+        ctx = comment_ctx or CommentContext.from_event(event)
+        prefetch = ctx.build_prefetch()
 
-        asset_ids: list[str] = []
-        for asset_id in (focus_asset_id, source_id):
-            if asset_id and asset_id != "unknown" and asset_id not in asset_ids:
-                asset_ids.append(asset_id)
-        comment_parent_ids = (
-            [thread_parent_id] if thread_parent_id and thread_parent_id != "unknown" else []
-        )
-        if asset_ids or comment_parent_ids:
-            prefetch = PrefetchSpec(
-                asset_ids=asset_ids,
-                comment_parent_ids=comment_parent_ids,
-            )
-
-        # --- Plan feedback: active / pending_review plan ---
         if provenance and provenance.is_plan_feedback:
-            preload_names = _PLAN_FEEDBACK_PRELOADS
-            pc = provenance.plan_cycle
-            comment_text = (
-                data.get("text") or data.get("content") or data.get("body") or ""
-            )
-            reply_instruction = (
-                f"Reply in the same thread by calling create_comment with parent_id "
-                f"`{reply_parent_id}`."
-                if reply_parent_id and reply_parent_id != pc.post_id
-                else "Reply on the plan post with create_comment."
-            )
-            task = (
-                f"You received feedback on your current plan "
-                f"(cycle {pc.cycle_id[:8]}, status: {pc.status}, "
-                f"post id: {pc.post_id or focus_asset_id}).\n\n"
-                f"## Feedback\n{comment_text}\n\n"
-                f"## Your Current Plan\n{pc.plan_text}\n\n"
-                f"Review the feedback, revise your plan if needed, and update "
-                f"the post (update_post). {reply_instruction}\n\n"
-                f"Return a JSON summary:\n"
-                f'```json\n{{"revised_plan": "<updated plan text>", '
-                f'"feedback_summary": "<brief summary of changes>"}}\n```\n\n'
-                f"{_ready_hint(preload_names)}"
-            )
-            return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
+            task = _plan_feedback_task(ctx, provenance)
+            return task, RunMode.AUTONOMOUS, tuple(_PLAN_FEEDBACK_PRELOADS), prefetch
 
-        # --- Historical plan feedback: completed plan ---
         if provenance and provenance.is_historical_plan_feedback:
-            pc = provenance.plan_cycle
-            comment_text = (
-                data.get("text") or data.get("content") or data.get("body") or ""
-            )
-            task = (
-                f"You received feedback on a completed plan "
-                f"(cycle {pc.cycle_id[:8]}, post id: {pc.post_id or focus_asset_id}).\n\n"
-                f"## Feedback\n{comment_text}\n\n"
-                f"This plan has already been executed. Acknowledge the feedback "
-                f"and note any insights that should inform future planning.\n\n"
-                f"{_ready_hint(preload_names)}"
-            )
+            task = _historical_feedback_task(ctx, provenance, preload_names)
             return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 
-        # --- Event in the agent's planning space ---
         if provenance and provenance.in_planning_space:
-            task = (
-                f"Received a {event_type} in your planning space.\n\n"
-                f"Source asset type: {source_asset_type}\n"
-                f"Source asset id: {source_id}\n"
-                f"Focus asset type: {focus_asset_type}\n"
-                f"Focus asset id: {focus_asset_id}\n"
-                f"Event data:\n{json.dumps(data, indent=2, sort_keys=True)}\n\n"
-                f"Consider whether this is relevant to your current plan. "
-                f"Reply on Ouro if appropriate.\n\n"
-                f"{_ready_hint(preload_names)}"
-            )
+            task = _planning_space_task(ctx, data, preload_names, event_type)
             return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 
-        # --- Default comment/mention handling ---
-        comment_text = (
-            data.get("text") or data.get("content") or data.get("body") or ""
-        )
-        commenter = (
-            data.get("sender_username")
-            or data.get("sender")
-            or data.get("username")
-            or "someone"
-        )
-        task = (
-            f"Received a {event_type} on a {focus_asset_type} (id: {focus_asset_id}).\n\n"
-            f"**@{commenter}** wrote:\n> {comment_text}\n\n"
-            f"The full asset content and comment thread are provided below as "
-            f"pre-loaded context — no need to call get_asset or get_comments.\n\n"
-        )
-        hint = _ready_hint(preload_names)
-        if hint:
-            task += f"{hint}\n"
-        if provenance and provenance.is_own_asset:
-            task += (
-                "This is your asset. Respond as the author — with context "
-                "about what you created and why. "
-            )
-        task += (
-            f"Reply on Ouro (create_comment on `{reply_parent_id}`). "
-            "If no reply or other action is needed, return exactly NO_ACTION."
-        )
+        task = _default_comment_task(ctx, event_type, provenance, preload_names)
         return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 
     task = (
@@ -209,7 +290,13 @@ def build_event_run_context(
     provenance: Optional[AssetProvenance] = None,
 ) -> EventRunContext:
     event = parse_webhook_event(body)
-    task, mode, preload, prefetch = _build_event_task(event, provenance=provenance)
+    is_comment = event.event_type in {"comment", "mention"}
+
+    comment_ctx = CommentContext.from_event(event) if is_comment else None
+    task, mode, preload, prefetch = _build_event_task(
+        event, provenance=provenance, comment_ctx=comment_ctx,
+    )
+
     return EventRunContext(
         event_type=event.event_type,
         task=task,
@@ -222,13 +309,7 @@ def build_event_run_context(
         source_id=event.source_id,
         focus_asset_id=(event.data or {}).get("focus_asset_id"),
         focus_asset_type=(event.data or {}).get("focus_asset_type"),
-        reply_parent_id=event.source_id if event.event_type in {"comment", "mention"} else None,
-        thread_parent_id=(
-            (event.data or {}).get("target_id") if event.event_type in {"comment", "mention"} else None
-        ),
-        feedback_text=(
-            (event.data or {}).get("text")
-            or (event.data or {}).get("content")
-            or (event.data or {}).get("body")
-        ) if event.event_type in {"comment", "mention"} else None,
+        reply_parent_id=event.source_id if is_comment else None,
+        thread_parent_id=comment_ctx.target_id if comment_ctx else None,
+        feedback_text=comment_ctx.comment_text if comment_ctx else None,
     )

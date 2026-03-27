@@ -751,6 +751,7 @@ Do NOT use any tools besides update_post and final_answer. Do NOT attempt to
 execute any plan items or do actual work — only revise and update the plan.
 
 Step 1. Call update_post to revise the existing plan post (id: {post_id}){post_instructions}.
+   Do NOT change the post name/title — only update the body content.
 
    FORMAT RULES — follow these strictly:
    - Use **headers** (##, ###) to organize sections.
