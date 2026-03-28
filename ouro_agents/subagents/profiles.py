@@ -19,7 +19,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from .preflight import PREFLIGHT_PROMPT, HEARTBEAT_PREFLIGHT_PROMPT
+from .preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
 from .prompts import (
     CONTEXT_LOADER_PROMPT,
     DEVELOPER_PROMPT,
@@ -85,7 +85,7 @@ PREFLIGHT = SubAgentProfile(
     description="Classify task, gather relevant memory context, and optionally sketch an execution plan.",
     system_prompt=PREFLIGHT_PROMPT,
     allowed_tools=["memory_recall"],
-    max_steps=12,
+    max_steps=20,
     memory_scopes=[],
     subagent_log_level="info",
 )

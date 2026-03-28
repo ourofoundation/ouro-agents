@@ -196,10 +196,35 @@ def _resolve_comment_root_asset(comment_id: str) -> tuple[Optional[str], Optiona
         return None, None
 
 
+import asyncio
+
 async def _run_event_task(event_run: EventRunContext) -> None:
     if not agent_instance:
         logger.warning("Skipping event run because the agent is not initialized")
         return
+
+    # Attempt to mark related notifications as read so heartbeat doesn't process them again
+    try:
+        ouro = agent_instance._get_ouro_client()
+        if ouro and event_run.source_id:
+            # Wait briefly to ensure the notification was created by the backend
+            await asyncio.sleep(2)
+            unreads = ouro.notifications.list(unread_only=True, limit=50)
+            if isinstance(unreads, dict):
+                unreads = unreads.get("data", [])
+            
+            for n in unreads:
+                n_asset_id = n.get("asset_id")
+                content = n.get("content") or {}
+                c_asset = content.get("asset") or {}
+                if (
+                    n_asset_id == event_run.source_id or 
+                    c_asset.get("assetId") == event_run.source_id or 
+                    c_asset.get("id") == event_run.source_id
+                ):
+                    ouro.notifications.read(n.get("id"))
+    except Exception as e:
+        logger.warning("Failed to mark notification as read: %s", e)
 
     # Route active/pending plan feedback to the dedicated review path
     prov = event_run.provenance

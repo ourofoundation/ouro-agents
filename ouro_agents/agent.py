@@ -167,7 +167,12 @@ class OuroAgent:
 
         Called at startup and on heartbeat. Other runs read from cache.
         """
-        context: dict = {"profile": None, "organizations": [], "teams": []}
+        context: dict = {
+            "profile": None,
+            "organizations": [],
+            "teams": [],
+            "base_url": os.getenv("OURO_FRONTEND_URL") or os.getenv("OURO_BASE_URL") or "https://ouro.foundation",
+        }
 
         me_tool = self._deferred_tools.get("ouro:get_me")
         if me_tool:

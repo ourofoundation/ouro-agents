@@ -54,6 +54,10 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
 
     parts: list[str] = []
 
+    base_url = context.get("base_url")
+    if base_url:
+        parts.append(f"Platform Base URL: {base_url}")
+
     profile = context.get("profile")
     if profile:
         username = profile.get("username", "?")

@@ -97,3 +97,60 @@ class OuroReplyPublisher:
             message_id=message_id,
             message=message,
         )
+
+    def emit_reasoning(
+        self,
+        *,
+        recipient_id: Optional[str],
+        conversation_id: Optional[str],
+        content: str,
+        message_id: str,
+    ) -> None:
+        if not recipient_id or not conversation_id or not content:
+            return
+        self.client.websocket.emit_reasoning(
+            recipient_id=recipient_id,
+            conversation_id=conversation_id,
+            content=content,
+            message_id=message_id,
+        )
+
+    def emit_tool_start(
+        self,
+        *,
+        recipient_id: Optional[str],
+        conversation_id: Optional[str],
+        message_id: str,
+        tool_name: str,
+        tool_call_id: str,
+        input_data: Optional[dict] = None,
+    ) -> None:
+        if not recipient_id or not conversation_id:
+            return
+        self.client.websocket.emit_tool_start(
+            recipient_id=recipient_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            input_data=input_data,
+        )
+
+    def emit_tool_result(
+        self,
+        *,
+        recipient_id: Optional[str],
+        conversation_id: Optional[str],
+        message_id: str,
+        tool_call_id: str,
+        output_data: Optional[dict] = None,
+    ) -> None:
+        if not recipient_id or not conversation_id:
+            return
+        self.client.websocket.emit_tool_result(
+            recipient_id=recipient_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            tool_call_id=tool_call_id,
+            output_data=output_data,
+        )
