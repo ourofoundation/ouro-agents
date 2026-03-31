@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .constants import CHARS_PER_TOKEN
+from .constants import CHARS_PER_TOKEN, FETCHABLE_ASSET_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +114,11 @@ def fetch_asset_content(
             raw = get_asset(id=ref, detail="full")
             data = json.loads(raw) if isinstance(raw, str) else raw
         except Exception as e:
-            logger.warning("Failed to fetch asset %s: %s", ref, e)
-            parts.append(f"### Asset {ref}\n- status: failed to fetch")
+            if "not supported" in str(e).lower():
+                logger.info("Skipping non-fetchable asset %s: %s", ref, e)
+            else:
+                logger.warning("Failed to fetch asset %s: %s", ref, e)
+                parts.append(f"### Asset {ref}\n- status: failed to fetch")
             continue
 
         if isinstance(data, dict):

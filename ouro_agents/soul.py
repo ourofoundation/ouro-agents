@@ -12,10 +12,14 @@ logger = logging.getLogger(__name__)
 MCP_TOOL_RULES = (
     '- MCP tools are deferred. Call `load_tool(["ouro:tool_name"])`, then call the tool by its `call_as` name. '
     "Preloaded tools (listed below when present) can be called directly — no `load_tool` needed.\n"
-    "- Skills can also be loaded on demand with `load_skill([\"skill-name\"])` when you need detailed guidance.\n"
+    '- Skills can also be loaded on demand with `load_skill(["skill-name"])` when you need detailed guidance.\n'
     "- Emit real tool calls only — no narration, pseudo-JSON, or plain-text pseudo-calls.\n"
     "- Omit optional params you don't need (don't pass null). Retry once on failure, then move on.\n"
     "- Batch where possible: load_tool, load_skill, memory_recall, and delegate all accept arrays.\n"
+    "- **Prefer Ouro routes over run_python.** Before writing Python code for a task, first check "
+    "whether an Ouro route can accomplish it: use `search_assets` (type 'route') or recall from memory. "
+    "If a matching route exists, use `execute_route` — it's faster, more reliable, and keeps work on-platform. "
+    "Only fall back to `run_python` when no suitable route exists or for pure computation/data transformation.\n"
     "- File paths are always relative to the workspace root (e.g. 'data/file.json', not 'workspace/data/file.json').\n"
     "- Link assets in markdown with `[label](asset:<uuid>)` or typed `post:`/`file:`/`dataset:` links.\n"
     "- Memory is curated automatically after each run — facts, daily log entries, and asset references "
@@ -173,9 +177,9 @@ def build_prompt(
                 f"({annotation})."
             )
         else:
-            sections["mode"] += (
-                f"\n\n**Conversation id for this run:** `{chat_conversation_id}`"
-            )
+            sections[
+                "mode"
+            ] += f"\n\n**Conversation id for this run:** `{chat_conversation_id}`"
     sections["current_datetime"] = _current_datetime_section()
 
     if soul:

@@ -14,6 +14,7 @@ from smolagents.models import (
     parse_json_if_needed,
 )
 
+from .. import smolagents_patches as _smolagents_patches  # noqa: F401
 from ..display import get_display
 
 logger = logging.getLogger(__name__)

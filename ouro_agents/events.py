@@ -6,6 +6,7 @@ from ouro.events import WebhookEvent, parse_webhook_event
 
 from .artifacts import PrefetchSpec
 from .config import RunMode
+from .constants import FETCHABLE_ASSET_TYPES
 from .provenance import AssetProvenance
 
 CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
@@ -62,9 +63,7 @@ class CommentContext:
         source_asset_type = data.get("source_asset_type", "unknown")
         target_id = data.get("target_id")
         target_asset_type = data.get("target_asset_type")
-        focus_asset_id = (
-            data.get("focus_asset_id") or target_id or source_id
-        )
+        focus_asset_id = data.get("focus_asset_id") or target_id or source_id
         focus_asset_type = (
             data.get("focus_asset_type") or target_asset_type or source_asset_type
         )
@@ -89,12 +88,17 @@ class CommentContext:
         )
 
     def build_prefetch(self) -> PrefetchSpec:
-        asset_ids = (
+        can_fetch = (
+            self.focus_asset_id
+            and self.focus_asset_id != "unknown"
+            and self.focus_asset_type in FETCHABLE_ASSET_TYPES
+        )
+        asset_ids = [self.focus_asset_id] if can_fetch else []
+        comment_parent_ids = (
             [self.focus_asset_id]
             if self.focus_asset_id and self.focus_asset_id != "unknown"
             else []
         )
-        comment_parent_ids = list(asset_ids)
 
         thread_comment_parent_ids: list[str] = []
         if self.is_thread_reply and self.target_id and self.target_id != "unknown":
@@ -294,7 +298,9 @@ def build_event_run_context(
 
     comment_ctx = CommentContext.from_event(event) if is_comment else None
     task, mode, preload, prefetch = _build_event_task(
-        event, provenance=provenance, comment_ctx=comment_ctx,
+        event,
+        provenance=provenance,
+        comment_ctx=comment_ctx,
     )
 
     return EventRunContext(

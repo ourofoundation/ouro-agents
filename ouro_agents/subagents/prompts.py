@@ -3,7 +3,6 @@
 Prompts owned by a specific subagent module live alongside that module.
 """
 
-
 CONTEXT_LOADER_PROMPT = """\
 You are a research assistant preparing a briefing for an AI agent that is about \
 to handle a user request.

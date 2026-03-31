@@ -6,10 +6,9 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
-from pydantic import BaseModel
-
 from ouro.resources.conversations import Messages
 from ouro_mcp.utils import content_from_markdown
+from pydantic import BaseModel
 
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
@@ -120,7 +119,10 @@ class ServerAgentObserver(AgentObserver):
         )
 
     def on_activity(self, status: str, message: Optional[str], active: bool) -> None:
-        if not self.reply_publisher or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES:
+        if (
+            not self.reply_publisher
+            or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
+        ):
             return
         if not self.event_run.conversation_id or not self.event_run.user_id:
             return
@@ -133,7 +135,10 @@ class ServerAgentObserver(AgentObserver):
         )
 
     def on_stream_chunk(self, chunk: str) -> None:
-        if not self.reply_publisher or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES:
+        if (
+            not self.reply_publisher
+            or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
+        ):
             return
         if not self.event_run.conversation_id or not self.event_run.user_id:
             return
@@ -157,7 +162,12 @@ class ServerAgentObserver(AgentObserver):
 
     def on_result_ready(self, result_text: str) -> None:
         msg = None
-        if self.event_run.conversation_id and self.reply_publisher and result_text and result_text != "NO_ACTION":
+        if (
+            self.event_run.conversation_id
+            and self.reply_publisher
+            and result_text
+            and result_text != "NO_ACTION"
+        ):
             ouro = self.reply_publisher.client
             content = content_from_markdown(ouro, result_text)
             msg = Messages(ouro).create(
@@ -169,7 +179,10 @@ class ServerAgentObserver(AgentObserver):
             )
             self.persisted_message_ref.append(msg)
 
-        if self.reply_publisher and self.event_run.event_type in REALTIME_CHAT_EVENT_TYPES:
+        if (
+            self.reply_publisher
+            and self.event_run.event_type in REALTIME_CHAT_EVENT_TYPES
+        ):
             self.reply_publisher.emit_llm_response_end(
                 recipient_id=self.event_run.user_id,
                 conversation_id=self.event_run.conversation_id,
@@ -186,38 +199,8 @@ class ServerAgentObserver(AgentObserver):
             self.persist_reasoning_cb(content)
 
 
-def _resolve_comment_root_asset(comment_id: str) -> tuple[Optional[str], Optional[str]]:
-    """Resolve a comment ID to its root non-comment parent asset."""
-    if not agent_instance:
-        return None, None
-
-    try:
-        ouro = agent_instance._get_ouro_client()
-        asset = ouro.assets.retrieve(comment_id)
-        seen: set[str] = set()
-
-        while asset and getattr(asset, "asset_type", None) == "comment":
-            asset_id = str(getattr(asset, "id", ""))
-            if not asset_id or asset_id in seen:
-                logger.warning(
-                    "Circular or invalid comment chain while resolving %s", comment_id
-                )
-                return None, None
-            seen.add(asset_id)
-            parent_id = getattr(asset, "parent_id", None)
-            if not parent_id:
-                return None, None
-            asset = ouro.assets.retrieve(str(parent_id))
-
-        if not asset:
-            return None, None
-        return str(getattr(asset, "id", "")) or None, getattr(asset, "asset_type", None)
-    except Exception:
-        logger.exception("Failed to resolve root asset for comment %s", comment_id)
-        return None, None
-
-
 import asyncio
+
 
 async def _run_event_task(event_run: EventRunContext) -> None:
     if not agent_instance:
@@ -233,15 +216,15 @@ async def _run_event_task(event_run: EventRunContext) -> None:
             unreads = ouro.notifications.list(unread_only=True, limit=50)
             if isinstance(unreads, dict):
                 unreads = unreads.get("data", [])
-            
+
             for n in unreads:
                 n_asset_id = n.get("asset_id")
                 content = n.get("content") or {}
                 c_asset = content.get("asset") or {}
                 if (
-                    n_asset_id == event_run.source_id or 
-                    c_asset.get("assetId") == event_run.source_id or 
-                    c_asset.get("id") == event_run.source_id
+                    n_asset_id == event_run.source_id
+                    or c_asset.get("assetId") == event_run.source_id
+                    or c_asset.get("id") == event_run.source_id
                 ):
                     ouro.notifications.read(n.get("id"))
     except Exception as e:
@@ -366,7 +349,6 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         focus_asset_id, focus_asset_type = resolve_event_focus_asset(
             source_id=source_id,
             event_data=event_data,
-            resolve_comment_parent=_resolve_comment_root_asset,
         )
         if focus_asset_id:
             event_data["focus_asset_id"] = focus_asset_id
@@ -382,7 +364,6 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
             planning_team_id=agent_cfg.team_id,
             planning_org_id=agent_cfg.org_id,
             planning_enabled=planning_cfg.enabled,
-            resolve_comment_parent=_resolve_comment_root_asset,
         )
 
         event_run = build_event_run_context(body, provenance=provenance)

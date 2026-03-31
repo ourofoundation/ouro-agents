@@ -2,22 +2,20 @@
 
 When a webhook event arrives (e.g. a comment), this module checks local state
 to determine: is this about something I created? Is it in my planning space?
-Is it on a specific plan post? It primarily uses local state, with optional
-comment-parent resolution supplied by the caller for threaded comment events.
+Is it on a specific plan post?
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+from .constants import FETCHABLE_ASSET_TYPES
 
-AssetResolver = Callable[[str], tuple[Optional[str], Optional[str]]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -67,27 +65,26 @@ def _load_agent_user_id(workspace: Path) -> Optional[str]:
 def resolve_event_focus_asset(
     source_id: Optional[str],
     event_data: Dict[str, Any],
-    resolve_comment_parent: Optional[AssetResolver] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Return the root asset an event is effectively about.
 
-    For direct comments on an asset, this is the webhook ``target_id``.
-    For replies in a comment thread, this optionally resolves the target comment
-    up to its root non-comment parent so plan-post replies can still map back to
-    the original plan post.
+    The backend enriches comment/mention webhook payloads with
+    ``root_asset_id`` / ``root_asset_type`` — the page-level asset
+    (file, post, dataset, etc.) that the comment lives on.
     """
     focus_id = event_data.get("focus_asset_id")
     focus_type = event_data.get("focus_asset_type")
     if focus_id:
         return focus_id, focus_type
 
+    root_id = event_data.get("root_asset_id")
+    root_type = event_data.get("root_asset_type")
+    if root_id:
+        return root_id, root_type
+
     target_id = event_data.get("target_id")
     target_type = event_data.get("target_asset_type")
-    if target_id:
-        if target_type == "comment" and resolve_comment_parent:
-            resolved_id, resolved_type = resolve_comment_parent(target_id)
-            if resolved_id:
-                return resolved_id, resolved_type
+    if target_id and target_type in FETCHABLE_ASSET_TYPES:
         return target_id, target_type
 
     return source_id, event_data.get("source_asset_type")
@@ -100,13 +97,11 @@ def resolve_event_provenance(
     planning_team_id: Optional[str] = None,
     planning_org_id: Optional[str] = None,
     planning_enabled: bool = False,
-    resolve_comment_parent: Optional[AssetResolver] = None,
 ) -> AssetProvenance:
-    """Resolve provenance for an event using local state and optional comment resolution."""
+    """Resolve provenance for an event using local state."""
     focus_asset_id, _focus_asset_type = resolve_event_focus_asset(
         source_id,
         event_data,
-        resolve_comment_parent=resolve_comment_parent,
     )
 
     if not focus_asset_id:

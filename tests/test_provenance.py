@@ -52,12 +52,11 @@ class TestResolveEventProvenance(unittest.TestCase):
                     "source_asset_type": "comment",
                     "target_id": "thread-comment-1",
                     "target_asset_type": "comment",
+                    "root_asset_id": "plan-post-1",
+                    "root_asset_type": "post",
                 },
                 workspace=workspace,
                 planning_enabled=True,
-                resolve_comment_parent=lambda comment_id: (
-                    ("plan-post-1", "post") if comment_id == "thread-comment-1" else (None, None)
-                ),
             )
 
             self.assertTrue(provenance.is_plan_feedback)
