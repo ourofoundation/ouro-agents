@@ -54,7 +54,20 @@ def extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dic
             obs = step.observations or ""
             if len(obs) > max_result_chars:
                 obs = obs[:max_result_chars] + "..."
-            summary.append({"tool": tc.name, "args": tc.arguments, "result": obs})
+            if isinstance(tc, dict):
+                if "function" in tc:
+                    name = tc["function"].get("name", "unknown")
+                    args = tc["function"].get("arguments", {})
+                else:
+                    name = tc.get("name", "unknown")
+                    args = tc.get("arguments", {})
+            elif hasattr(tc, "function") and tc.function is not None:
+                name = getattr(tc.function, "name", "unknown")
+                args = getattr(tc.function, "arguments", {})
+            else:
+                name = getattr(tc, "name", "unknown")
+                args = getattr(tc, "arguments", {})
+            summary.append({"tool": name, "args": args, "result": obs})
     return summary
 
 

@@ -2,9 +2,6 @@
 
 Each run mode has a framing string (injected as ## MODE in the system prompt)
 and an output format section that tells the LLM how to return results.
-
-Framing strings are static.  Output format is *mostly* static per mode,
-except CHAT_REPLY which varies based on whether ``send_message`` is preloaded.
 """
 
 # ---------------------------------------------------------------------------
@@ -14,7 +11,7 @@ except CHAT_REPLY which varies based on whether ``send_message`` is preloaded.
 CHAT_FRAMING = (
     "You are in a conversation. Your primary goal is to help the person you're talking to. "
     "Be conversational, clear, and concise. Ask clarifying questions when a request is ambiguous. "
-    "Use other tools when the request calls for it; when you do, say what you found or did."
+    "Use other tools when the request calls for it."
 )
 
 AUTONOMOUS_FRAMING = (
@@ -52,10 +49,23 @@ REVIEW_FRAMING = (
 # Output format text (one per mode, static portion)
 # ---------------------------------------------------------------------------
 
+EXTENDED_MARKDOWN_INSTRUCTIONS = """
+**Writing Ouro messages** — use extended markdown in your `final_answer`:
+- **Mention users**: @username
+- **Link to assets**: prefer markdown shorthands `[label](asset:<uuid>)` or typed `[label](post:<uuid>)`, `[label](file:<uuid>)`, `[label](dataset:<uuid>)`, `[label](route:<uuid>)`, `[label](service:<uuid>)` — the server resolves these to canonical URLs. If a tool response includes a `url`, you may paste that exact URL; never invent path segments or use placeholders like `entity` in URLs.
+- **Embed assets** (block-level): ```assetComponent
+  {"id": "<uuid>", "assetType": "post"|"file"|"dataset"|"route"|"service", "viewMode": "preview"|"card", "visualizationId": "<uuid>|null"}
+  ``` — use search_assets() or get_asset() for IDs; prefer viewMode "preview" for files/datasets. For datasets, set visualizationId to render a specific saved dataset view. Use the exact keys `id`, `assetType`, and `viewMode` here; do not use legacy embed keys like `asset_id`, `asset_type`, or `type`.
+- **Standard markdown**: headings, **bold**, *italic*, lists, code blocks, tables, links
+- **Math**: $inline$ and $$display$$ LaTeX
+""".strip()
+
 CHAT_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "This is a local/ad-hoc chat run. Respond with `final_answer` only. "
-    "Do not call `send_message` unless the task explicitly tells you to post into an Ouro conversation."
+    "This is a local/ad-hoc chat run. Respond with `final_answer` only.\n"
+    "Never respond with plain text outside a tool call. "
+    "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON.\n\n"
+    f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
 AUTONOMOUS_OUTPUT = (
@@ -63,7 +73,8 @@ AUTONOMOUS_OUTPUT = (
     "For simple replies (greetings, acknowledgments, or when no tools are needed), "
     "call the `final_answer` tool directly with your response. "
     "Never respond with plain text outside a tool call. "
-    "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON."
+    "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON.\n\n"
+    f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
 HEARTBEAT_OUTPUT = AUTONOMOUS_OUTPUT
@@ -80,26 +91,13 @@ REVIEW_OUTPUT = (
     "Do NOT use any tools besides get_comments, create_comment, update_post, and final_answer."
 )
 
-# CHAT_REPLY is dynamic — see build_output_format() below.
-_CHAT_REPLY_PRELOADED = (
+CHAT_REPLY_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "If the task or context includes an Ouro `conversation_id` (or you are clearly in an Ouro chat): "
-    "post your reply by calling `send_message` with the real `conversation_id` and reply text "
-    "(already loaded). "
-    "Then call `final_answer` with the **same** text as `send_message` so streaming and "
-    "local logs match the message you posted. If you should not reply, call `final_answer` with exactly "
-    "NO_ACTION only (do not call `send_message`).\n"
-    "If there is no Ouro conversation_id (e.g. ad-hoc API run), respond with `final_answer` only."
-)
-
-_CHAT_REPLY_NOT_PRELOADED = (
-    "## OUTPUT FORMAT\n"
-    "If the task or context includes an Ouro `conversation_id` (or you are clearly in an Ouro chat): "
-    "load `ouro:send_message`, then call `send_message` with the real `conversation_id` and reply text. "
-    "Then call `final_answer` with the **same** text as `send_message` so streaming and "
-    "local logs match the message you posted. If you should not reply, call `final_answer` with exactly "
-    "NO_ACTION only (do not call `send_message`).\n"
-    "If there is no Ouro conversation_id (e.g. ad-hoc API run), respond with `final_answer` only."
+    "Your reply is posted to the conversation automatically when you call `final_answer`. "
+    "Do NOT call `send_message` — the server persists your response for you.\n"
+    "Never respond with plain text outside a tool call. "
+    "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON.\n\n"
+    f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
 
@@ -108,14 +106,7 @@ def build_output_format(
     mode_name: str,
     preloaded_tool_names: list[str] | None = None,
 ) -> str:
-    """Return the output format section for a mode.
-
-    Most modes use their static ``output_format`` directly.  ``chat-reply``
-    varies based on whether ``send_message`` is already preloaded.
-    """
+    """Return the output format section for a mode."""
     if mode_name == "chat-reply":
-        preloaded = set(preloaded_tool_names or [])
-        if "send_message" in preloaded:
-            return _CHAT_REPLY_PRELOADED
-        return _CHAT_REPLY_NOT_PRELOADED
+        return CHAT_REPLY_OUTPUT
     return output_format

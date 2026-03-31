@@ -83,7 +83,16 @@ def build_step_callback(
             return
         tool_calls = getattr(step, "tool_calls", None) or []
         if tool_calls:
-            tool_name = getattr(tool_calls[0], "name", None) or "a tool"
+            tc = tool_calls[0]
+            if isinstance(tc, dict):
+                if "function" in tc:
+                    tool_name = tc["function"].get("name", "unknown")
+                else:
+                    tool_name = tc.get("name", "unknown")
+            elif hasattr(tc, "function") and tc.function is not None:
+                tool_name = getattr(tc.function, "name", "unknown")
+            else:
+                tool_name = getattr(tc, "name", "unknown")
             _display.tool_call(tool_name)
             if status_callback:
                 msg = tool_activity_message(tool_name)

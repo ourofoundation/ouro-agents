@@ -486,6 +486,7 @@ def _run_agent(
         compactor_model=ctx.compactor_model,
         max_steps=profile.max_steps,
         logger=subagent_logger,
+        is_chat_mode=False,
     )
     agent_ref["agent"] = agent
 

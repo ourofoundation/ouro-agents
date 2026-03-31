@@ -310,10 +310,13 @@ def _message_preview(content: str, max_chars: int = 600) -> str:
 
 
 def _treat_as_reasoning_only(exc: Exception, preview: str) -> bool:
-    return bool(preview) and "does not contain any JSON blob" in str(exc)
+    return bool(preview) and (
+        "does not contain any JSON blob" in str(exc)
+        or "Could not parse tool call" in str(exc)
+    )
 
 
-def _patch_model_for_xml_tool_calls(model):
+def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
     """Wrap model.parse_tool_calls to fall back to salvage parsers."""
     original = model.parse_tool_calls
 
@@ -322,6 +325,15 @@ def _patch_model_for_xml_tool_calls(model):
             return original(message)
         except Exception as exc:
             content = message.content or ""
+            
+            # If the model explicitly output NO_ACTION as raw text, wrap it in a tool call
+            # so the agent doesn't get stuck in a loop.
+            if content.strip() == "NO_ACTION":
+                logger.info("Recovered raw NO_ACTION text as final_answer tool call")
+                message.role = MessageRole.ASSISTANT
+                message.tool_calls = [_make_tool_call("final_answer", {"answer": "NO_ACTION"})]
+                return message
+                
             tool_calls = _parse_xml_tool_calls(content)
             if not tool_calls:
                 tool_calls = _parse_narrated_tool_calls(content)
@@ -329,6 +341,16 @@ def _patch_model_for_xml_tool_calls(model):
                 tool_calls = _parse_structured_tool_calls(content)
             if not tool_calls:
                 tool_calls = _parse_inline_tool_call(content)
+            
+            # If we still don't have tool calls, check if the model just output raw text
+            # that looks like a final answer (no JSON/XML at all).
+            # Only do this in chat mode to avoid swallowing legitimate reasoning in autonomous modes.
+            if is_chat_mode and not tool_calls and content.strip() and "{" not in content and "<" not in content:
+                logger.info("Recovered raw text as final_answer tool call")
+                message.role = MessageRole.ASSISTANT
+                message.tool_calls = [_make_tool_call("final_answer", {"answer": content.strip()})]
+                return message
+
             if not tool_calls:
                 preview = _message_preview(content)
                 if preview:
@@ -367,11 +389,10 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
     transparently when possible.
     """
 
-    def __init__(self, *args, compactor_model=None, reply_message_id=None, **kwargs):
+    def __init__(self, *args, compactor_model=None, is_chat_mode=False, **kwargs):
         self._compactor_model = compactor_model
-        self._reply_message_id = reply_message_id
         super().__init__(*args, **kwargs)
-        _patch_model_for_xml_tool_calls(self.model)
+        _patch_model_for_xml_tool_calls(self.model, is_chat_mode=is_chat_mode)
 
     def execute_tool_call(self, tool_name, arguments):
         if isinstance(arguments, dict):
@@ -397,17 +418,7 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                         continue
                     cleaned[key] = value
                 arguments = cleaned
-        injected_id = None
-        if (
-            self._reply_message_id
-            and tool_name == "send_message"
-            and isinstance(arguments, dict)
-        ):
-            injected_id = self._reply_message_id
-            arguments = {**arguments, "message_id": injected_id}
         result = super().execute_tool_call(tool_name, arguments)
-        if injected_id is not None:
-            self._reply_message_id = None
         if isinstance(result, str) and len(result) > _MAX_TOOL_OUTPUT_CHARS:
             logger.warning(
                 "Tool '%s' returned %d chars (limit %d); compacting...",

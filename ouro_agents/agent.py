@@ -41,6 +41,7 @@ from .memory.reflection import (
 from .memory.tools import make_memory_tools
 from .memory.user_model import load_user_model
 from .modes import ModeProfile, apply_mode_override, resolve_mode_profile
+from .observer import AgentObserver
 from .skills import get_skill_directory, load_startup_skills
 from .soul import build_prompt
 from .subagents.context import SubAgentUsage
@@ -1292,20 +1293,32 @@ class OuroAgent:
         conversation_id: Optional[str] = None,
         mode: RunMode = RunMode.AUTONOMOUS,
         user_id: Optional[str] = None,
-        status_callback: Optional[RunStatusCallback] = None,
-        response_callback: Optional[RunResponseCallback] = None,
         skip_memory: bool = False,
         allowed_servers: Optional[list[str]] = None,
         mode_framing_override: str = "",
         preload_tools: Optional[list[str]] = None,
         prefetch: Optional[PrefetchSpec] = None,
-        reply_message_id: Optional[str] = None,
         debug_markdown_path: Optional[Path] = None,
         extra_tools: Optional[list] = None,
+        observer: Optional[AgentObserver] = None,
     ) -> str:
         run_started_at = time.monotonic()
         self.connect_mcp()
         model = model_override or self.model
+
+        _original_reasoning_cb = None
+        if observer and hasattr(model, "_reasoning_callback"):
+            _original_reasoning_cb = model._reasoning_callback
+
+            def _composed_reasoning(text: str) -> None:
+                if _original_reasoning_cb:
+                    _original_reasoning_cb(text)
+                try:
+                    observer.on_reasoning_persist(text)
+                except Exception:
+                    logger.warning("Failed to persist reasoning message", exc_info=True)
+
+            model._reasoning_callback = _composed_reasoning
 
         self._usage_tracker.reset()
         self.memory.reset_usage()
@@ -1363,6 +1376,10 @@ class OuroAgent:
         display = get_display()
         preflight: Optional[PreflightResult] = None
 
+        def _status_cb(status: str, message: Optional[str], active: bool):
+            if observer:
+                observer.on_activity(status, message, active)
+
         if not is_trivial and not skip_memory and not profile.skip_preflight:
             preflight = self._run_preflight(
                 task,
@@ -1371,7 +1388,7 @@ class OuroAgent:
                 run_id=run_id,
                 asset_refs=prefetch.asset_ids if prefetch else None,
                 display=display,
-                status_callback=status_callback,
+                status_callback=_status_cb,
             )
             logger.info(
                 "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d",
@@ -1403,21 +1420,25 @@ class OuroAgent:
         else:
             effective_task = task
 
-        step_callback = self._build_step_callback(status_callback, display)
+        step_callback = self._build_step_callback(_status_cb, display)
         main_max_steps = profile.max_steps
         compactor_model = self._build_model(
             self.config.heartbeat.model or self.config.agent.model,
             heartbeat=True,
         )
+        step_callbacks = [step_callback]
+        if observer:
+            step_callbacks.append(observer.on_step_persist)
+
         agent = _SanitizedToolCallingAgent(
             tools=all_tools,
             model=model,
             max_steps=main_max_steps,
-            stream_outputs=bool(response_callback),
-            step_callbacks=[step_callback],
+            stream_outputs=bool(observer),
+            step_callbacks=step_callbacks,
             logger=create_logger(display=display),
             compactor_model=compactor_model,
-            reply_message_id=reply_message_id,
+            is_chat_mode=(mode in (RunMode.CHAT, RunMode.CHAT_REPLY)),
         )
         agent_ref["agent"] = agent
 
@@ -1457,14 +1478,14 @@ class OuroAgent:
 
         use_reset = not has_history
 
-        if response_callback:
+        if observer:
             final_result = None
             streamer = FinalAnswerStreamer()
             for event in agent.run(effective_task, stream=True, reset=use_reset):
                 if isinstance(event, ChatMessageStreamDelta):
                     chunk = streamer.consume(event)
                     if chunk:
-                        response_callback(chunk)
+                        observer.on_stream_chunk(chunk)
                 elif isinstance(event, FinalAnswerStep):
                     final_result = event.output
             result = final_result if final_result is not None else ""
@@ -1481,51 +1502,63 @@ class OuroAgent:
 
         tool_summary = extract_tool_summary(agent, for_persistence=True)
 
-        worth_remembering = preflight.worth_remembering if preflight else not is_trivial
-        if not profile.skip_post_reflection and not skip_memory and worth_remembering:
-            self._post_run_reflect(
-                task,
-                str(result),
-                tool_summary,
-                mode=mode,
-                user_id=user_id,
-                run_id=run_id,
-            )
-        if conversation_id and profile.append_conversation_turns:
-            append_conversation_turn(self._workspace, conversation_id, "user", task)
-            append_conversation_turn(
-                self._workspace,
-                conversation_id,
-                "assistant",
-                str(result),
-                tool_summary=tool_summary or None,
-            )
-
-        if profile.update_conversation_state and conversation_id:
+        if observer:
             try:
-                state_model = self._build_model(
-                    self.config.heartbeat.model or self.config.agent.model,
-                    heartbeat=True,
-                )
-                conv_state = update_state(conv_state, task, str(result), state_model)
-                conversations_dir = self.config.agent.workspace / "conversations"
-                save_state(conversations_dir, conversation_id, conv_state)
-                logger.info(
-                    "Updated conversation state for %s: topic=%s, turn=%d",
-                    conversation_id,
-                    conv_state.current_topic,
-                    conv_state.turn_count,
-                )
+                observer.on_result_ready(str(result))
             except Exception as e:
-                logger.warning("Failed to update conversation state: %s", e)
+                logger.warning("observer.on_result_ready failed: %s", e)
 
-            # Mid-session reflection (post-turn): curate memories after responding
-            self._maybe_reflect_post_turn(
-                conv_state=conv_state,
-                conversation_id=conversation_id,
-                user_id=user_id,
-                run_id=run_id,
-            )
+        def _do_post_run():
+            worth_remembering = preflight.worth_remembering if preflight else not is_trivial
+            if not profile.skip_post_reflection and not skip_memory and worth_remembering:
+                self._post_run_reflect(
+                    task,
+                    str(result),
+                    tool_summary,
+                    mode=mode,
+                    user_id=user_id,
+                    run_id=run_id,
+                )
+            if conversation_id and profile.append_conversation_turns:
+                append_conversation_turn(self._workspace, conversation_id, "user", task)
+                append_conversation_turn(
+                    self._workspace,
+                    conversation_id,
+                    "assistant",
+                    str(result),
+                    tool_summary=tool_summary or None,
+                )
+
+            if profile.update_conversation_state and conversation_id:
+                try:
+                    state_model = self._build_model(
+                        self.config.heartbeat.model or self.config.agent.model,
+                        heartbeat=True,
+                    )
+                    new_conv_state = update_state(conv_state, task, str(result), state_model)
+                    conversations_dir = self.config.agent.workspace / "conversations"
+                    save_state(conversations_dir, conversation_id, new_conv_state)
+                    logger.info(
+                        "Updated conversation state for %s: topic=%s, turn=%d",
+                        conversation_id,
+                        new_conv_state.current_topic,
+                        new_conv_state.turn_count,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to update conversation state: %s", e)
+                    new_conv_state = conv_state
+
+                # Mid-session reflection (post-turn): curate memories after responding
+                self._maybe_reflect_post_turn(
+                    conv_state=new_conv_state,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    run_id=run_id,
+                )
+
+        # Run reflection and state updates in a background thread
+        import asyncio
+        asyncio.create_task(asyncio.to_thread(_do_post_run))
 
         usage = collect_run_usage(agent, model, self._usage_tracker)
         memory_ledger = self.memory.usage_ledger() or None
@@ -1549,6 +1582,9 @@ class OuroAgent:
             mode,
             usage=usage,
         )
+
+        if _original_reasoning_cb is not None:
+            model._reasoning_callback = _original_reasoning_cb
 
         return str(result)
 

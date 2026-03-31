@@ -13,8 +13,8 @@ CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
 EVENT_TOOL_PRELOADS: Dict[str, List[str]] = {
     "comment": ["ouro:get_asset", "ouro:create_comment", "ouro:get_comments"],
     "mention": ["ouro:get_asset", "ouro:create_comment", "ouro:get_comments"],
-    "new-message": ["ouro:send_message", "ouro:list_messages"],
-    "new-conversation": ["ouro:send_message"],
+    "new-message": [],
+    "new-conversation": [],
 }
 
 _PLAN_FEEDBACK_PRELOADS: List[str] = [

@@ -8,13 +8,21 @@ import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from ouro.resources.conversations import Messages
+from ouro_mcp.utils import content_from_markdown
+
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
 from .display import get_display
 from .events import EventRunContext, build_event_run_context
 from .logging_config import uvicorn_log_config
+from .observer import AgentObserver
 from .provenance import resolve_event_focus_asset, resolve_event_provenance
 from .publisher import OuroReplyPublisher
+from .utils.message_persistence import (
+    build_persistence_reasoning_callback,
+    build_persistence_step_callback,
+)
 from .uuid_v7 import uuid7_str
 
 if TYPE_CHECKING:
@@ -82,87 +90,100 @@ async def shutdown_event():
         agent_instance.close()
 
 
-def _make_activity_callback(event_run: EventRunContext):
-    if (
-        not reply_publisher
-        or event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
-        or not event_run.conversation_id
-        or not event_run.user_id
+class ServerAgentObserver(AgentObserver):
+    def __init__(
+        self,
+        event_run: EventRunContext,
+        stream_message_id: str,
+        reply_publisher: Optional[OuroReplyPublisher],
     ):
-        return None
+        self.event_run = event_run
+        self.stream_message_id = stream_message_id
+        self.reply_publisher = reply_publisher
+        self.state = {"has_started_typing": False, "has_streamed": False}
+        self.persisted_message_ref = []
 
-    def _callback(status: str, message: Optional[str], active: bool) -> None:
-        reply_publisher.emit_activity(
-            recipient_id=event_run.user_id,
-            conversation_id=event_run.conversation_id,
+        self.persist_step_cb = (
+            build_persistence_step_callback(
+                reply_publisher.client, event_run.conversation_id
+            )
+            if event_run.conversation_id and reply_publisher
+            else None
+        )
+
+        self.persist_reasoning_cb = (
+            build_persistence_reasoning_callback(
+                reply_publisher.client, event_run.conversation_id
+            )
+            if event_run.conversation_id and reply_publisher
+            else None
+        )
+
+    def on_activity(self, status: str, message: Optional[str], active: bool) -> None:
+        if not self.reply_publisher or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES:
+            return
+        if not self.event_run.conversation_id or not self.event_run.user_id:
+            return
+        self.reply_publisher.emit_activity(
+            recipient_id=self.event_run.user_id,
+            conversation_id=self.event_run.conversation_id,
             status=status,
             active=active,
             message=message,
         )
 
-    return _callback
+    def on_stream_chunk(self, chunk: str) -> None:
+        if not self.reply_publisher or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES:
+            return
+        if not self.event_run.conversation_id or not self.event_run.user_id:
+            return
+        self.state["has_streamed"] = True
 
-
-def _make_response_callback(event_run: EventRunContext, message_id: str):
-    if (
-        not reply_publisher
-        or event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
-        or not event_run.conversation_id
-        or not event_run.user_id
-    ):
-        return None
-
-    state = {"has_started_typing": False, "has_streamed": False}
-
-    def _callback(content: str) -> None:
-        state["has_streamed"] = True
-        reply_publisher.emit_llm_response(
-            recipient_id=event_run.user_id,
-            conversation_id=event_run.conversation_id,
-            content=content,
-            message_id=message_id,
-        )
-        if not state["has_started_typing"]:
-            state["has_started_typing"] = True
-            reply_publisher.emit_activity(
-                recipient_id=event_run.user_id,
-                conversation_id=event_run.conversation_id,
+        if not self.state["has_started_typing"]:
+            self.state["has_started_typing"] = True
+            self.reply_publisher.emit_activity(
+                recipient_id=self.event_run.user_id,
+                conversation_id=self.event_run.conversation_id,
                 status="typing",
                 active=True,
             )
 
-    return _callback, state
+        self.reply_publisher.emit_llm_response(
+            recipient_id=self.event_run.user_id,
+            conversation_id=self.event_run.conversation_id,
+            content=chunk,
+            message_id=self.stream_message_id,
+        )
 
+    def on_result_ready(self, result_text: str) -> None:
+        msg = None
+        if self.event_run.conversation_id and self.reply_publisher and result_text and result_text != "NO_ACTION":
+            ouro = self.reply_publisher.client
+            content = content_from_markdown(ouro, result_text)
+            msg = Messages(ouro).create(
+                self.event_run.conversation_id,
+                id=self.stream_message_id,
+                type="message",
+                text=content.text,
+                json=content.json,
+            )
+            self.persisted_message_ref.append(msg)
 
-def _fetch_full_message_for_stream_end(
-    ouro: "Ouro",
-    conversation_id: str,
-    stream_message_id: str,
-) -> Optional[dict]:
-    """Load the persisted assistant message after a chat turn for llm-response-end payloads.
+        if self.reply_publisher and self.event_run.event_type in REALTIME_CHAT_EVENT_TYPES:
+            self.reply_publisher.emit_llm_response_end(
+                recipient_id=self.event_run.user_id,
+                conversation_id=self.event_run.conversation_id,
+                message_id=self.stream_message_id,
+                message=msg,
+            )
 
-    Prefer the row whose id matches ``stream_message_id`` (if the client set it on create);
-    otherwise the latest message authored by the authenticated agent user.
-    """
-    from ouro.resources.conversations import Messages
+    def on_step_persist(self, step: dict) -> None:
+        if self.persist_step_cb:
+            self.persist_step_cb(step)
 
-    try:
-        msgs = Messages(ouro).list(conversation_id=conversation_id)
-    except Exception:
-        logger.exception("Failed to list messages for llm-response-end")
-        return None
-    if not msgs:
-        return None
-    for m in msgs:
-        if str(m.get("id")) == stream_message_id:
-            return m
-    agent_uid = getattr(ouro.user, "id", None) or getattr(ouro.user, "user_id", None)
-    if agent_uid is not None:
-        agent_uid = str(agent_uid)
-        for m in reversed(msgs):
-            if str(m.get("user_id")) == agent_uid:
-                return m
-    return msgs[-1]
+    def on_reasoning_persist(self, content: str) -> None:
+        if self.persist_reasoning_cb:
+            self.persist_reasoning_cb(content)
 
 
 def _resolve_comment_root_asset(comment_id: str) -> tuple[Optional[str], Optional[str]]:
@@ -241,60 +262,39 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         return
 
     stream_message_id = uuid7_str()
-    activity_callback = _make_activity_callback(event_run)
-    response_callback, response_state = (
-        _make_response_callback(event_run, stream_message_id)
-        if (
-            reply_publisher
-            and event_run.event_type in REALTIME_CHAT_EVENT_TYPES
-            and event_run.conversation_id
-            and event_run.user_id
-        )
-        else (None, {"has_streamed": False})
-    )
+    observer = ServerAgentObserver(event_run, stream_message_id, reply_publisher)
 
     try:
         with (
             reply_publisher.realtime_session()
-            if (activity_callback or response_callback) and reply_publisher
+            if reply_publisher and event_run.event_type in REALTIME_CHAT_EVENT_TYPES
             else nullcontext()
         ):
-            if activity_callback:
-                activity_callback("thinking", "is thinking about it...", True)
+            observer.on_activity("thinking", "is thinking about it...", True)
 
-            await agent_instance.run(
+            result = await agent_instance.run(
                 task=event_run.task,
                 conversation_id=event_run.conversation_id,
                 mode=event_run.mode,
                 user_id=event_run.user_id,
-                status_callback=activity_callback,
-                response_callback=response_callback,
                 preload_tools=(
                     list(event_run.preload_tools) if event_run.preload_tools else None
                 ),
                 prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
-                reply_message_id=stream_message_id,
+                observer=observer,
             )
 
-            if response_callback and reply_publisher and response_state["has_streamed"]:
-                full_message = _fetch_full_message_for_stream_end(
-                    reply_publisher.client,
-                    event_run.conversation_id,
-                    stream_message_id,
-                )
-                reply_publisher.emit_llm_response_end(
-                    recipient_id=event_run.user_id,
-                    conversation_id=event_run.conversation_id,
-                    message_id=stream_message_id,
-                    message=full_message,
-                )
-
-            if activity_callback:
-                activity_callback("typing", None, False)
+            observer.on_activity("typing", None, False)
             get_display().flush_pending_run_summary()
     except Exception:
-        if activity_callback:
-            activity_callback("typing", None, False)
+        observer.on_activity("typing", None, False)
+        if reply_publisher and event_run.event_type in REALTIME_CHAT_EVENT_TYPES:
+            reply_publisher.emit_llm_response_end(
+                recipient_id=event_run.user_id,
+                conversation_id=event_run.conversation_id,
+                message_id=stream_message_id,
+                message=None,
+            )
         logger.exception("Failed to process webhook event: %s", event_run.event_type)
 
 

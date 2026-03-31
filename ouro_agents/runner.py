@@ -6,10 +6,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from typing import Optional
+
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
 from .display import OuroDisplay, Verbosity, set_display
 from .modes.planning import PlanStore
+from .observer import AgentObserver
 from .server import start_server
 from .tui.review_picker import choose_review_plan, reviewable_plans
 
@@ -22,6 +25,26 @@ def _resolve_verbosity(args: argparse.Namespace) -> Verbosity:
     return Verbosity.NORMAL
 
 
+class CLIAgentObserver(AgentObserver):
+    def __init__(self, display: OuroDisplay):
+        self.display = display
+
+    def on_activity(self, status: str, message: Optional[str], active: bool) -> None:
+        pass
+
+    def on_stream_chunk(self, chunk: str) -> None:
+        pass
+
+    def on_result_ready(self, result_text: str) -> None:
+        pass
+
+    def on_step_persist(self, step: dict) -> None:
+        pass
+
+    def on_reasoning_persist(self, content: str) -> None:
+        pass
+
+
 def _run_chat(
     config_path: str, conversation_id: str | None, display: OuroDisplay
 ) -> int:
@@ -31,6 +54,7 @@ def _run_chat(
         conversation_id = str(uuid4())
 
     display.chat_header(conversation_id)
+    observer = CLIAgentObserver(display)
 
     with OuroAgent(config) as agent:
         while True:
@@ -63,6 +87,7 @@ def _run_chat(
                     conversation_id=conversation_id,
                     mode=RunMode.CHAT,
                     user_id="creator",
+                    observer=observer,
                 )
             )
             display.chat_response(result)

@@ -95,9 +95,9 @@ CHAT = ModeProfile(
 CHAT_REPLY = ModeProfile(
     name="chat-reply",
     framing=CHAT_FRAMING,
-    output_format="",  # dynamic — see framing.build_output_format()
+    output_format="",  # dynamic — see framing.CHAT_REPLY_OUTPUT
     max_steps=20,
-    preload_tools=["ouro:send_message"],
+    preload_tools=[],
     load_conversation_state=True,
     include_chat_conversation_id=True,
     skip_preflight=True,
@@ -105,7 +105,7 @@ CHAT_REPLY = ModeProfile(
     append_conversation_turns=True,
     update_conversation_state=True,
     conversation_id_annotation=(
-        "use as `conversation_id` in `send_message` when posting"
+        "your reply will be posted automatically — just call `final_answer`"
     ),
 )
 

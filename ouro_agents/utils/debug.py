@@ -40,8 +40,19 @@ def serialize_memory_step_for_debug(step) -> str:
         if tcs:
             parts.append("### Tool calls\n\n")
             for tc in tcs:
-                name = getattr(tc, "name", "?")
-                args = getattr(tc, "arguments", None)
+                if isinstance(tc, dict):
+                    if "function" in tc:
+                        name = tc["function"].get("name", "?")
+                        args = tc["function"].get("arguments", None)
+                    else:
+                        name = tc.get("name", "?")
+                        args = tc.get("arguments", None)
+                elif hasattr(tc, "function") and tc.function is not None:
+                    name = getattr(tc.function, "name", "?")
+                    args = getattr(tc.function, "arguments", None)
+                else:
+                    name = getattr(tc, "name", "?")
+                    args = getattr(tc, "arguments", None)
                 try:
                     args_str = (
                         json.dumps(args, ensure_ascii=False) if args is not None else ""

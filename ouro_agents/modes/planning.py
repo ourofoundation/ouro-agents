@@ -845,6 +845,7 @@ def build_planning_prompt(
         post_parts.append(f"org_id=\"{org_id}\"")
     if team_id:
         post_parts.append(f"team_id=\"{team_id}\"")
+    post_parts.append('visibility="public"')
     post_instructions = f" (use {', '.join(post_parts)})" if post_parts else ""
 
     goal_section = ""
