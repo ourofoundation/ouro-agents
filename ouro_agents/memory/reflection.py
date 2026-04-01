@@ -45,38 +45,24 @@ def write_daily_log(
     doc_store=None,
     agent_name: str = "",
 ) -> None:
-    """Append a timestamped entry to today's daily log.
-
-    Uses doc_store.append() when available (preserves TipTap formatting),
-    falls back to local file.
-    """
+    """Append a timestamped entry to today's daily log via doc_store."""
     today = datetime.now().strftime("%Y-%m-%d")
     ts = datetime.now().strftime("%H:%M")
     entry = f"- {ts} — {entry_text}\n"
-    daily_path = workspace / "memory" / "daily" / f"{today}.md"
+    post_name = f"DAILY:{agent_name}:{today}"
 
-    if doc_store and agent_name:
-        post_name = f"DAILY:{agent_name}:{today}"
-        if doc_store.exists(post_name):
-            current = doc_store.read(post_name)
-            op_ok = doc_store.write(
-                post_name, _append_markdown_list_item(current, entry)
-            )
-        else:
-            op_ok = doc_store.write(post_name, f"# {post_name}\n\n{entry}")
-        if op_ok:
-            return
-        logger.warning(
-            "Failed to write daily log to Ouro post %s; falling back to local file",
-            post_name,
-        )
+    if not doc_store:
+        logger.warning("write_daily_log called without doc_store")
+        return
 
-    daily_path.parent.mkdir(parents=True, exist_ok=True)
-    if not daily_path.exists():
-        daily_path.write_text(f"# {today}\n\n{entry}")
+    if doc_store.exists(post_name):
+        current = doc_store.read(post_name)
+        ok = doc_store.write(post_name, _append_markdown_list_item(current, entry))
     else:
-        with open(daily_path, "a") as f:
-            f.write(entry)
+        ok = doc_store.write(post_name, f"# Daily Log {today}\n\n{entry}")
+
+    if not ok:
+        logger.warning("Failed to write daily log to %s", post_name)
 
 
 def should_reflect(

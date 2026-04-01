@@ -36,11 +36,9 @@ def _user_model_path(workspace: Path, user_id: str) -> Path:
 
 
 def load_user_model(workspace: Path, user_id: str, doc_store=None) -> str:
-    """Load a user model. Tries Ouro first, falls back to local file."""
+    """Load a user model via doc_store (or local file as last resort)."""
     if doc_store:
-        content = doc_store.read(f"USER:{user_id}")
-        if content:
-            return content
+        return doc_store.read(f"USER:{user_id}")
 
     path = _user_model_path(workspace, user_id)
     if not path.exists():
@@ -52,26 +50,14 @@ def load_user_model(workspace: Path, user_id: str, doc_store=None) -> str:
         return ""
 
 
-def ensure_user_model(workspace: Path, user_id: str, doc_store=None) -> Path | None:
-    """Ensure the user model exists. Creates from template if needed.
-
-    Returns the local file path (or None when using doc_store).
-    """
-    if doc_store:
-        name = f"USER:{user_id}"
-        if not doc_store.exists(name):
-            if not doc_store.write(name, _TEMPLATE.format(user_id=user_id)):
-                logger.warning("Failed to create user model post: %s", name)
-                return _user_model_path(workspace, user_id)
-            logger.info("Created user model post: %s", name)
-        return None
-
-    path = _user_model_path(workspace, user_id)
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_TEMPLATE.format(user_id=user_id))
-        logger.info("Created user model file: %s", path)
-    return path
+def ensure_user_model(user_id: str, doc_store) -> None:
+    """Ensure the user model exists. Creates from template if needed."""
+    name = f"USER:{user_id}"
+    if not doc_store.exists(name):
+        if not doc_store.write(name, _TEMPLATE.format(user_id=user_id)):
+            logger.warning("Failed to create user model: %s", name)
+        else:
+            logger.info("Created user model: %s", name)
 
 
 def _insert_entries_into_content(content: str, section: str, entries: list[str]) -> str:
@@ -110,60 +96,28 @@ def append_to_user_model(
 ) -> None:
     """Append entries to a specific section of the user model.
 
-    When doc_store is available: if this agent owns the post, update directly;
-    otherwise contribute via comment so the owner can consolidate.
+    If this agent owns the post, update directly; otherwise contribute
+    via comment so the owner can consolidate.
     """
-    if not entries:
+    if not entries or not doc_store:
         return
 
     name = f"USER:{user_id}"
 
-    if doc_store:
+    if doc_store.is_owner(name):
+        content = doc_store.read(name)
+        if not content:
+            content = _TEMPLATE.format(user_id=user_id)
+        content = _insert_entries_into_content(content, section, entries)
+        if not doc_store.write(name, content):
+            logger.warning("Failed to update user model %s", name)
+            return
+    else:
         formatted = "\n".join(f"- [{section}] {e}" for e in entries)
-        if doc_store.is_owner(name):
-            content = doc_store.read(name)
-            if not content:
-                content = _TEMPLATE.format(user_id=user_id)
-            content = _insert_entries_into_content(content, section, entries)
-            if not doc_store.write(name, content):
-                logger.warning(
-                    "Failed to update user model post %s; falling back to local file",
-                    name,
-                )
-                path = ensure_user_model(workspace, user_id)
-                if path is None:
-                    path = _user_model_path(workspace, user_id)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                if not path.exists():
-                    path.write_text(_TEMPLATE.format(user_id=user_id))
-                local_content = path.read_text()
-                local_content = _insert_entries_into_content(
-                    local_content, section, entries
-                )
-                path.write_text(local_content)
-                logger.info(
-                    "Updated user model for %s locally after Ouro write failure",
-                    user_id,
-                )
-                return
-        else:
-            if not doc_store.comment(name, formatted):
-                logger.warning("Failed to comment on user model post %s", name)
-                return
-        logger.info(
-            "Updated user model for %s via Ouro, section '%s': +%d entries",
-            user_id,
-            section,
-            len(entries),
-        )
-        return
+        if not doc_store.comment(name, formatted):
+            logger.warning("Failed to comment on user model post %s", name)
+            return
 
-    path = ensure_user_model(workspace, user_id)
-    if path is None:
-        return
-    content = path.read_text()
-    content = _insert_entries_into_content(content, section, entries)
-    path.write_text(content)
     logger.info(
         "Updated user model for %s, section '%s': +%d entries",
         user_id,

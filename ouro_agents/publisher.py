@@ -1,11 +1,20 @@
+import logging
+from contextlib import contextmanager
 from functools import cached_property
-from typing import Optional
+from typing import Iterator, Optional
 
 from ouro import Ouro
 
+log = logging.getLogger(__name__)
+
 
 class OuroReplyPublisher:
-    """Emit real-time activity and streaming events to Ouro over the websocket."""
+    """Emit real-time activity and streaming events to Ouro over the websocket.
+
+    Websocket connections are opened lazily per-event via ``realtime_session``
+    and torn down when the context exits.  All emit helpers swallow connection
+    errors so a flaky socket never crashes the event handler.
+    """
 
     def __init__(
         self,
@@ -41,9 +50,23 @@ class OuroReplyPublisher:
     def ensure_ready(self) -> None:
         _ = self.client
 
-    def realtime_session(self):
-        """Return a context manager that keeps the websocket connected."""
-        return self.client.websocket.session()
+    @contextmanager
+    def realtime_session(self) -> Iterator[None]:
+        """Open a websocket for the duration of a block, refreshing the token first."""
+        self.client.ensure_valid_token()
+        try:
+            with self.client.websocket.session():
+                yield
+        except Exception:
+            log.warning("Websocket session failed — falling back to non-realtime", exc_info=True)
+            yield
+
+    def _safe_emit(self, fn, **kwargs) -> None:
+        """Call an emit function, swallowing websocket errors."""
+        try:
+            fn(**kwargs)
+        except Exception:
+            log.warning("Websocket emit failed (%s), skipping", fn.__name__, exc_info=True)
 
     def emit_activity(
         self,
@@ -56,7 +79,8 @@ class OuroReplyPublisher:
     ) -> None:
         if not recipient_id or not conversation_id:
             return
-        self.client.websocket.emit_activity(
+        self._safe_emit(
+            self.client.websocket.emit_activity,
             recipient_id=recipient_id,
             conversation_id=conversation_id,
             status=status,
@@ -74,7 +98,8 @@ class OuroReplyPublisher:
     ) -> None:
         if not recipient_id or not conversation_id or not content:
             return
-        self.client.websocket.emit_llm_response(
+        self._safe_emit(
+            self.client.websocket.emit_llm_response,
             recipient_id=recipient_id,
             conversation_id=conversation_id,
             content=content,
@@ -91,7 +116,8 @@ class OuroReplyPublisher:
     ) -> None:
         if not recipient_id or not conversation_id:
             return
-        self.client.websocket.emit_llm_response_end(
+        self._safe_emit(
+            self.client.websocket.emit_llm_response_end,
             recipient_id=recipient_id,
             conversation_id=conversation_id,
             message_id=message_id,
@@ -108,7 +134,8 @@ class OuroReplyPublisher:
     ) -> None:
         if not recipient_id or not conversation_id or not content:
             return
-        self.client.websocket.emit_reasoning(
+        self._safe_emit(
+            self.client.websocket.emit_reasoning,
             recipient_id=recipient_id,
             conversation_id=conversation_id,
             content=content,
@@ -127,7 +154,8 @@ class OuroReplyPublisher:
     ) -> None:
         if not recipient_id or not conversation_id:
             return
-        self.client.websocket.emit_tool_start(
+        self._safe_emit(
+            self.client.websocket.emit_tool_start,
             recipient_id=recipient_id,
             conversation_id=conversation_id,
             message_id=message_id,
@@ -147,7 +175,8 @@ class OuroReplyPublisher:
     ) -> None:
         if not recipient_id or not conversation_id:
             return
-        self.client.websocket.emit_tool_result(
+        self._safe_emit(
+            self.client.websocket.emit_tool_result,
             recipient_id=recipient_id,
             conversation_id=conversation_id,
             message_id=message_id,

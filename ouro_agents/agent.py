@@ -32,14 +32,14 @@ from .memory.conversation_state import (
     save_state,
     update_state,
 )
-from .memory.ouro_docs import OuroDocStore
+from .memory.ouro_docs import DocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
     apply_reflection,
     should_reflect_for_conversation,
     write_daily_log,
 )
 from .memory.tools import make_memory_tools
-from .memory.user_model import load_user_model
+
 from .modes import ModeProfile, apply_mode_override, resolve_mode_profile
 from .observer import AgentObserver
 from .skills import get_skill_directory, load_startup_skills
@@ -120,7 +120,10 @@ class OuroAgent:
         self._deferred_index: list[dict] = []
         self._mcp_connected = False
 
-        self.doc_store: OuroDocStore | None = None
+        self.doc_store: DocStore = LocalDocStore(
+            workspace=config.agent.workspace,
+            agent_name=config.agent.name,
+        )
 
         from .scheduler import AgentScheduler
 
@@ -226,24 +229,12 @@ class OuroAgent:
         name = self.config.agent.name
         today = date.today().isoformat()
 
-        if self.doc_store:
-            content = self.doc_store.read(f"MEMORY:{name}")
-            if content:
-                parts.append(self._strip_frontmatter(content).strip())
-            daily_content = self.doc_store.read(f"DAILY:{name}:{today}")
-            if daily_content:
-                parts.append(f"## Today's Log ({today})\n{daily_content}")
-        else:
-            memory_md = self._workspace / "MEMORY.md"
-            if memory_md.exists():
-                content = self._strip_frontmatter(memory_md.read_text()).strip()
-                if content:
-                    parts.append(content)
-            daily = self._workspace / "memory" / "daily" / f"{today}.md"
-            if daily.exists():
-                content = self._strip_frontmatter(daily.read_text()).strip()
-                if content:
-                    parts.append(f"## Today's Log ({today})\n{content}")
+        content = self.doc_store.read(f"MEMORY:{name}")
+        if content:
+            parts.append(content)
+        daily_content = self.doc_store.read(f"DAILY:{name}:{today}")
+        if daily_content:
+            parts.append(f"## Today's Log ({today})\n{daily_content}")
 
         return "\n\n".join(parts)
 
@@ -423,11 +414,11 @@ class OuroAgent:
             return f"({len(turns)} earlier messages about: {blob[:200]}...)"
 
     def _init_doc_store(self) -> None:
-        """Initialize the OuroDocStore if agent.org_id and agent.team_id are configured."""
+        """Upgrade to OuroDocStore if agent.org_id and agent.team_id are configured."""
         agent_cfg = self.config.agent
         if not agent_cfg.org_id or not agent_cfg.team_id:
             logger.info(
-                "OuroDocStore: org_id/team_id not configured, using local files only"
+                "OuroDocStore: org_id/team_id not configured, using LocalDocStore"
             )
             return
         self.doc_store = OuroDocStore(
@@ -435,13 +426,14 @@ class OuroAgent:
             org_id=agent_cfg.org_id,
             team_id=agent_cfg.team_id,
             client=self._get_ouro_client(),
+            registry_path=self._workspace / "data" / "doc_registry.json",
         )
         self._sync_workspace_docs()
         self._load_identity_from_ouro()
 
     def _sync_workspace_docs(self) -> None:
         """Bidirectional sync between local workspace files and Ouro posts."""
-        if not self.doc_store:
+        if not isinstance(self.doc_store, OuroDocStore):
             return
         from .memory.workspace_sync import sync_workspace
 
@@ -460,7 +452,7 @@ class OuroAgent:
 
     def _load_identity_from_ouro(self) -> None:
         """Load soul, notes, and heartbeat from Ouro posts (falls back to local files)."""
-        if not self.doc_store:
+        if not isinstance(self.doc_store, OuroDocStore):
             return
         name = self.config.agent.name
         soul = self.doc_store.read(f"SOUL:{name}")
@@ -875,10 +867,7 @@ class OuroAgent:
 
         user_model_text = ""
         if user_id:
-            if self.doc_store:
-                user_model_text = self.doc_store.read(f"USER:{user_id}")
-            if not user_model_text and user_id:
-                user_model_text = load_user_model(self.config.agent.workspace, user_id)
+            user_model_text = self.doc_store.read(f"USER:{user_id}")
 
         from .memory.context_loader import load_entity_context
         from .modes.planning import PlanStore, format_plans_index_for_prompt

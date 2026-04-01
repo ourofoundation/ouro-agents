@@ -296,6 +296,7 @@ def _bootstrap_memory(
             agent_name=config.agent.name,
             org_id=org_id,
             team_id=team_id,
+            registry_path=config.agent.workspace / "data" / "doc_registry.json",
         )
 
         name = config.agent.name

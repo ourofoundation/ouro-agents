@@ -52,15 +52,6 @@ def _estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
 
 
-def _strip_frontmatter(text: str) -> str:
-    if not text.startswith("---"):
-        return text
-    end = text.find("---", 3)
-    if end == -1:
-        return text
-    return text[end + 3:].lstrip("\n")
-
-
 def compact_memory_md(
     workspace: Path,
     config: MemoryConfig,
@@ -69,22 +60,13 @@ def compact_memory_md(
     agent_name: str = "",
 ) -> bool:
     """Rewrite working memory if it exceeds the token budget. Returns True if compacted."""
-    post_name = f"MEMORY:{agent_name}" if agent_name else ""
-
-    if doc_store and post_name:
-        content = doc_store.read(post_name)
-    else:
-        memory_path = workspace / "MEMORY.md"
-        if not memory_path.exists():
-            return False
-        content = memory_path.read_text()
+    post_name = f"MEMORY:{agent_name}"
+    content = doc_store.read(post_name) if doc_store else ""
 
     if not content:
         return False
 
-    body = _strip_frontmatter(content)
-    tokens = _estimate_tokens(body)
-
+    tokens = _estimate_tokens(content)
     if tokens <= config.memory_md_max_tokens:
         logger.debug("Working memory is %d tokens, under %d budget", tokens, config.memory_md_max_tokens)
         return False
@@ -110,13 +92,10 @@ def compact_memory_md(
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
-        if doc_store and post_name:
-            if not doc_store.write(post_name, text):
-                raise RuntimeError(f"Failed to update Ouro post {post_name}")
-        else:
-            (workspace / "MEMORY.md").write_text(text)
+        if not doc_store.write(post_name, text):
+            raise RuntimeError(f"Failed to write {post_name}")
 
-        new_tokens = _estimate_tokens(_strip_frontmatter(text))
+        new_tokens = _estimate_tokens(text)
         logger.info("Compacted working memory: %d -> %d tokens", tokens, new_tokens)
         return True
     except Exception as e:
@@ -131,18 +110,12 @@ def promote_daily_entries(
     agent_name: str = "",
 ) -> int:
     """Promote worthy entries from yesterday's daily log to working memory. Returns count."""
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    if not doc_store:
+        return 0
 
-    if doc_store and agent_name:
-        daily_content = doc_store.read(f"DAILY:{agent_name}:{yesterday}").strip()
-        memory_content = doc_store.read(f"MEMORY:{agent_name}")
-    else:
-        daily_path = workspace / "memory" / "daily" / f"{yesterday}.md"
-        if not daily_path.exists():
-            return 0
-        daily_content = daily_path.read_text().strip()
-        memory_path = workspace / "MEMORY.md"
-        memory_content = memory_path.read_text() if memory_path.exists() else ""
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    daily_content = doc_store.read(f"DAILY:{agent_name}:{yesterday}").strip()
+    memory_content = doc_store.read(f"MEMORY:{agent_name}")
 
     if not daily_content or len(daily_content) < 20:
         return 0
@@ -185,12 +158,8 @@ def promote_daily_entries(
             else:
                 content = content.rstrip() + f"\n\n{header}\n{bullet}"
 
-        if doc_store and agent_name:
-            post_name = f"MEMORY:{agent_name}"
-            if not doc_store.write(post_name, content):
-                raise RuntimeError(f"Failed to update Ouro post {post_name}")
-        else:
-            (workspace / "MEMORY.md").write_text(content)
+        if not doc_store.write(f"MEMORY:{agent_name}", content):
+            raise RuntimeError(f"Failed to write MEMORY:{agent_name}")
 
         logger.info("Promoted %d entries from %s daily log to working memory", len(entries), yesterday)
         return len(entries)

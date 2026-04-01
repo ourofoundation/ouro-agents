@@ -1,16 +1,21 @@
 """Ouro-backed document store for shared agent memory.
 
-Resolves post names (e.g. ``SOUL:research-agent``) to UUIDs via search,
-provides read/write/append/comment primitives.  Uses ouro-py directly
+Resolves post names (e.g. ``SOUL:research-agent``) to UUIDs via a local
+JSON registry, falling back to search when needed.  The registry persists
+across restarts so fuzzy-search flakiness can never create duplicate posts.
+
+Provides read/write/append/comment primitives.  Uses ouro-py directly
 for typed responses and proper Content-level append support.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
     from ouro import Ouro
@@ -53,16 +58,47 @@ class OuroDocStore:
         *,
         api_key: str | None = None,
         base_url: str | None = None,
+        registry_path: Optional[Path] = None,
     ):
         self.agent_name = agent_name
         self.org_id = org_id
         self.team_id = team_id
         self._client = client or _build_client(api_key, base_url)
-        self._uuid_cache: dict[str, str] = {}
         self._owner_cache: dict[str, bool] = {}
 
+        self._registry_path = registry_path
+        self._uuid_cache: dict[str, str] = self._load_registry()
+
+    def _load_registry(self) -> dict[str, str]:
+        """Load the name→UUID registry from disk (or return empty)."""
+        if not self._registry_path or not self._registry_path.exists():
+            return {}
+        try:
+            data = json.loads(self._registry_path.read_text())
+            if isinstance(data, dict):
+                logger.debug("Loaded doc registry with %d entries", len(data))
+                return data
+        except Exception as e:
+            logger.warning("Failed to load doc registry: %s", e)
+        return {}
+
+    def _save_registry(self) -> None:
+        """Persist the name→UUID cache to disk."""
+        if not self._registry_path:
+            return
+        try:
+            self._registry_path.parent.mkdir(parents=True, exist_ok=True)
+            self._registry_path.write_text(json.dumps(self._uuid_cache, indent=2))
+        except Exception as e:
+            logger.warning("Failed to save doc registry: %s", e)
+
     def _resolve(self, name: str) -> Optional[str]:
-        """Resolve a post name to its UUID via search. Caches the result."""
+        """Resolve a post name to its UUID.
+
+        Checks the file-backed registry first (survives restarts), then
+        falls back to search.  Any newly discovered mapping is persisted
+        immediately so duplicates are never created.
+        """
         if name in self._uuid_cache:
             return self._uuid_cache[name]
 
@@ -79,6 +115,7 @@ class OuroDocStore:
                     if item_name == name:
                         uuid = item["id"]
                         self._uuid_cache[name] = uuid
+                        self._save_registry()
                         return uuid
         except Exception as e:
             logger.warning("OuroDocStore._resolve failed for %s: %s", name, e)
@@ -104,6 +141,7 @@ class OuroDocStore:
             uuid = str(post.id)
             self._uuid_cache[name] = uuid
             self._owner_cache[name] = True
+            self._save_registry()
             return uuid
         except Exception as e:
             logger.warning("OuroDocStore._create failed for %s: %s", name, e)
@@ -238,3 +276,98 @@ class OuroDocStore:
     def exists(self, name: str) -> bool:
         """Check whether a named post exists in the team."""
         return self._resolve(name) is not None
+
+
+class LocalDocStore:
+    """File-backed document store mapping post names to local workspace files.
+
+    Provides the same interface as ``OuroDocStore`` so consumers never need
+    to branch on which backend is active.  Used when no Ouro org/team is
+    configured.
+    """
+
+    def __init__(self, workspace: Path, agent_name: str = ""):
+        self._workspace = workspace
+        self.agent_name = agent_name
+
+    @staticmethod
+    def _strip_frontmatter(text: str) -> str:
+        if not text.startswith("---"):
+            return text
+        end = text.find("---", 3)
+        if end == -1:
+            return text
+        return text[end + 3 :].lstrip("\n")
+
+    def _name_to_path(self, name: str) -> Path:
+        """Map a post name like ``MEMORY:agent`` to a local file path."""
+        parts = name.split(":", 2)
+        prefix = parts[0]
+        if prefix in ("SOUL", "NOTES", "HEARTBEAT", "MEMORY"):
+            return self._workspace / f"{prefix}.md"
+        if prefix == "DAILY" and len(parts) >= 3:
+            return self._workspace / "memory" / "daily" / f"{parts[2]}.md"
+        if prefix == "USER" and len(parts) >= 2:
+            return self._workspace / "memory" / "users" / f"{parts[1]}.md"
+        safe = name.replace(":", "_").replace("/", "_")
+        return self._workspace / "data" / "docs" / f"{safe}.md"
+
+    def read(self, name: str) -> str:
+        path = self._name_to_path(name)
+        if not path.exists():
+            return ""
+        try:
+            return self._strip_frontmatter(path.read_text()).strip()
+        except Exception:
+            return ""
+
+    def read_with_meta(self, name: str) -> ReadResult:
+        path = self._name_to_path(name)
+        if not path.exists():
+            return ReadResult(content="")
+        try:
+            raw = path.read_text()
+            content = self._strip_frontmatter(raw).strip()
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            return ReadResult(content=content, last_updated=mtime)
+        except Exception:
+            return ReadResult(content="")
+
+    def write(self, name: str, content_md: str) -> bool:
+        path = self._name_to_path(name)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content_md)
+            return True
+        except Exception as e:
+            logger.warning("LocalDocStore.write failed for %s: %s", name, e)
+            return False
+
+    def append(self, name: str, markdown: str) -> bool:
+        path = self._name_to_path(name)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a") as f:
+                f.write(markdown)
+            return True
+        except Exception as e:
+            logger.warning("LocalDocStore.append failed for %s: %s", name, e)
+            return False
+
+    def exists(self, name: str) -> bool:
+        return self._name_to_path(name).exists()
+
+    def comment(self, name: str, content_md: str) -> bool:
+        return False
+
+    def read_comments(self, name: str) -> list[dict]:
+        return []
+
+    def search(self, query: str) -> list[dict]:
+        return []
+
+    def is_owner(self, name: str) -> bool:
+        return True
+
+
+DocStore = Union[OuroDocStore, LocalDocStore]

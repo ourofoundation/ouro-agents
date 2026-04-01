@@ -106,7 +106,7 @@ def make_memory_tools(
             content = doc_store.read(f"MEMORY:{agent_id}")
             if content:
                 tokens = len(content) // 4
-                lines.append(f"Working memory (MEMORY post): ~{tokens} tokens")
+                lines.append(f"Working memory: ~{tokens} tokens")
 
             daily_content = doc_store.read(f"DAILY:{agent_id}:{today}")
             if daily_content:
@@ -115,21 +115,9 @@ def make_memory_tools(
                 )
                 lines.append(f"Today's log: {entry_count} entries")
 
-            lines.append("Storage: Ouro posts (shared)")
-        elif workspace:
-            memory_md = workspace / "MEMORY.md"
-            if memory_md.exists():
-                content = memory_md.read_text()
-                tokens = len(content) // 4
-                lines.append(f"Working memory (MEMORY.md): ~{tokens} tokens")
-
-            today_log = workspace / "memory" / "daily" / f"{today}.md"
-            if today_log.exists():
-                log_lines = today_log.read_text().strip().split("\n")
-                entry_count = sum(1 for line in log_lines if line.strip().startswith("-"))
-                lines.append(f"Today's log: {entry_count} entries")
-
-            lines.append("Storage: local files")
+            from .ouro_docs import OuroDocStore
+            storage = "Ouro posts (shared)" if isinstance(doc_store, OuroDocStore) else "local files"
+            lines.append(f"Storage: {storage}")
 
         if workspace:
             entities_dir = workspace / "memory" / "entities"

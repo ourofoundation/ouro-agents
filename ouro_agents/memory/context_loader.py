@@ -116,28 +116,22 @@ def _load_file_truncated(path: Path, max_tokens: int) -> str:
 
 def _load_recent_daily_context(
     workspace: Path,
-    doc_store: Optional[OuroDocStore] = None,
+    doc_store: Optional["OuroDocStore"] = None,
     agent_name: str = "",
 ) -> str:
     """Load yesterday's daily log if it exists (today's is already in working memory)."""
+    if not doc_store:
+        return ""
+
     yesterday = (date.today() - timedelta(days=1)).isoformat()
-
-    if doc_store and agent_name:
-        content = doc_store.read(f"DAILY:{agent_name}:{yesterday}")
-        if content:
-            max_chars = 300 * CHARS_PER_TOKEN
-            if len(content) > max_chars:
-                content = content[:max_chars] + "\n[...truncated]"
-            return f"### Yesterday ({yesterday})\n{content}"
+    content = doc_store.read(f"DAILY:{agent_name}:{yesterday}")
+    if not content:
         return ""
 
-    daily_path = workspace / "memory" / "daily" / f"{yesterday}.md"
-    if not daily_path.exists():
-        return ""
-    content = _load_file_truncated(daily_path, 300)
-    if content:
-        return f"### Yesterday ({yesterday})\n{content}"
-    return ""
+    max_chars = 300 * CHARS_PER_TOKEN
+    if len(content) > max_chars:
+        content = content[:max_chars] + "\n[...truncated]"
+    return f"### Yesterday ({yesterday})\n{content}"
 
 
 def load_entity_context(
