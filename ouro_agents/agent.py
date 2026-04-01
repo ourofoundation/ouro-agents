@@ -317,6 +317,13 @@ class OuroAgent:
 
         return body if body else None
 
+    def _default_tool_choice(self, model_id: str) -> Optional[str]:
+        # OpenRouter routes for MiniMax reject smolagents' default
+        # `tool_choice="required"`; fall back to `auto` for compatibility.
+        if model_id.startswith("minimax/"):
+            return "auto"
+        return None
+
     def _build_model(
         self,
         model_id: str,
@@ -337,6 +344,9 @@ class OuroAgent:
         extra_body = self._build_openrouter_extra_body(model_id, resolved)
         if extra_body:
             model_kwargs["extra_body"] = extra_body
+        tool_choice = self._default_tool_choice(model_id)
+        if tool_choice is not None:
+            model_kwargs["tool_choice"] = tool_choice
 
         return TrackedOpenAIModel(
             model_id=model_id,
