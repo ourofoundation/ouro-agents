@@ -163,14 +163,17 @@ def main():
         parser.print_help()
         sys.exit(1)
 
+    config = OuroAgentsConfig.load_from_file(args.config)
     verbosity = _resolve_verbosity(args)
-    display = OuroDisplay(verbosity)
+    display = OuroDisplay(
+        verbosity,
+        show_reasoning_in_summary=config.display.usage_table.show_reasoning,
+    )
     set_display(display)
 
     if args.command == "serve":
         start_server(args.config)
     elif args.command == "run":
-        config = OuroAgentsConfig.load_from_file(args.config)
         display.run_header(args.task)
         debug_md_path = None
         if getattr(args, "debug_md", None) is not None:
@@ -193,17 +196,14 @@ def main():
     elif args.command == "chat":
         sys.exit(_run_chat(args.config, args.conversation_id, display))
     elif args.command == "heartbeat":
-        config = OuroAgentsConfig.load_from_file(args.config)
         with OuroAgent(config) as agent:
             result = asyncio.run(agent.heartbeat())
         display.heartbeat_result(result)
     elif args.command == "plan":
-        config = OuroAgentsConfig.load_from_file(args.config)
         with OuroAgent(config) as agent:
             result = asyncio.run(agent.force_planning_heartbeat(goal=args.prompt))
         display.planning_result(result)
     elif args.command == "review":
-        config = OuroAgentsConfig.load_from_file(args.config)
         plan_store = PlanStore(config.agent.workspace / "plans")
         selected_plan_id = choose_review_plan(
             reviewable_plans(plan_store.load_all_active())
@@ -215,7 +215,6 @@ def main():
             result = asyncio.run(agent.force_review_heartbeat(plan_id=selected_plan_id))
         display.review_result(result)
     elif args.command == "bootstrap-memory":
-        config = OuroAgentsConfig.load_from_file(args.config)
         _bootstrap_memory(config, args, display)
 
 

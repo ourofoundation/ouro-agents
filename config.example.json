@@ -96,5 +96,10 @@
   "prompt_caching": {
     "enabled": true,
     "ttl": "5m"
+  },
+  "display": {
+    "usage_table": {
+      "show_reasoning": false
+    }
   }
 }

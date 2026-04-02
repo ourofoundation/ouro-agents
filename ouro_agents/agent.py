@@ -65,6 +65,7 @@ from .tools.python_tool import make_python_tool
 from .tools.scheduler_tools import make_scheduler_tools
 from .tools.skills_tools import make_load_skill_tool
 from .usage import (
+    MirroredUsageTracker,
     RunUsage,
     TrackedOpenAIModel,
     UsageTracker,
@@ -322,6 +323,7 @@ class OuroAgent:
         reasoning: Optional[ReasoningConfig] = None,
         subagent_profile: Optional[str] = None,
         heartbeat: bool = False,
+        usage_tracker: Optional[UsageTracker] = None,
     ) -> TrackedOpenAIModel:
         model_kwargs = {}
         resolved = (
@@ -343,7 +345,7 @@ class OuroAgent:
             model_id=model_id,
             api_base="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
-            tracker=self._usage_tracker,
+            tracker=usage_tracker or self._usage_tracker,
             reasoning_callback=get_display().reasoning,
             **model_kwargs,
         )
@@ -915,7 +917,12 @@ class OuroAgent:
             plans_index=plans_index_text,
         )
 
-    def _resolve_subagent_model(self, profile) -> "TrackedOpenAIModel":
+    def _resolve_subagent_model(
+        self,
+        profile,
+        *,
+        usage_tracker: Optional[UsageTracker] = None,
+    ) -> "TrackedOpenAIModel":
         """Resolve the model for a subagent profile using the override cascade."""
         override = self.config.subagents.overrides.get(profile.name)
         model_id = (
@@ -924,7 +931,11 @@ class OuroAgent:
             or self.config.subagents.default_model
             or self.config.agent.model
         )
-        return self._build_model(model_id, subagent_profile=profile.name)
+        return self._build_model(
+            model_id,
+            subagent_profile=profile.name,
+            usage_tracker=usage_tracker,
+        )
 
     def _apply_profile_overrides(self, profile):
         """Apply config overrides (max_steps, etc.) to a profile."""
@@ -943,12 +954,14 @@ class OuroAgent:
         user_id: Optional[str] = None,
         run_id: str = "",
         asset_refs: Optional[list[str]] = None,
+        usage_tracker: Optional[UsageTracker] = None,
     ) -> "SubAgentContext":
         from .subagents.context import SubAgentContext
 
         compactor_model = self._build_model(
             self.config.heartbeat.model or self.config.agent.model,
             heartbeat=True,
+            usage_tracker=usage_tracker,
         )
 
         ouro_client = (
@@ -995,8 +1008,15 @@ class OuroAgent:
         """
         from .subagents.runner import run_subagent
 
-        model = self._resolve_subagent_model(profile)
         effective_profile = self._apply_profile_overrides(profile)
+        subagent_usage_tracker = MirroredUsageTracker(
+            UsageTracker(),
+            mirrors=[self._usage_tracker],
+        )
+        model = self._resolve_subagent_model(
+            profile,
+            usage_tracker=subagent_usage_tracker,
+        )
 
         ctx = self._build_subagent_context(
             effective_profile,
@@ -1007,6 +1027,7 @@ class OuroAgent:
             user_id=user_id,
             run_id=run_id,
             asset_refs=asset_refs,
+            usage_tracker=subagent_usage_tracker,
         )
 
         return run_subagent(effective_profile, task, ctx)
@@ -1035,8 +1056,15 @@ class OuroAgent:
             else:
                 profile, task_str, extra = item
 
-            model = self._resolve_subagent_model(profile)
             effective_profile = self._apply_profile_overrides(profile)
+            subagent_usage_tracker = MirroredUsageTracker(
+                UsageTracker(),
+                mirrors=[self._usage_tracker],
+            )
+            model = self._resolve_subagent_model(
+                profile,
+                usage_tracker=subagent_usage_tracker,
+            )
 
             ctx = self._build_subagent_context(
                 effective_profile,
@@ -1047,6 +1075,7 @@ class OuroAgent:
                 user_id=user_id,
                 run_id=run_id,
                 asset_refs=extra.get("asset_refs"),
+                usage_tracker=subagent_usage_tracker,
             )
             dispatch_list.append((effective_profile, task_str, ctx))
 
@@ -1300,6 +1329,7 @@ class OuroAgent:
         debug_markdown_path: Optional[Path] = None,
         extra_tools: Optional[list] = None,
         observer: Optional[AgentObserver] = None,
+        preserve_existing_usage: bool = False,
     ) -> str:
         run_started_at = time.monotonic()
         self.connect_mcp()
@@ -1319,9 +1349,10 @@ class OuroAgent:
 
             model._reasoning_callback = _composed_reasoning
 
-        self._usage_tracker.reset()
-        self.memory.reset_usage()
-        self._subagent_ledger.clear()
+        if not preserve_existing_usage:
+            self._usage_tracker.reset()
+            self.memory.reset_usage()
+            self._subagent_ledger.clear()
         run_id = conversation_id or f"run_{uuid4().hex[:12]}"
 
         # Resolve mode profile and apply user config overrides

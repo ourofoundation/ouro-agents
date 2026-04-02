@@ -497,6 +497,7 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
         allowed_servers=servers,
         extra_tools=extra_tools,
         preload_tools=preload_tools,
+        preserve_existing_usage=True,
     )
 
     try:

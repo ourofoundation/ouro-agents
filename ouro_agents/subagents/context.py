@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 class SubAgentUsage:
     """Token and cost tracking for a single subagent run."""
 
+    model_id: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
@@ -44,6 +45,7 @@ class SubAgentUsage:
 
     def to_dict(self) -> dict:
         d = {
+            "model": self.model_id,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cached_input_tokens": self.cached_input_tokens,

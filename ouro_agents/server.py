@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
-from .display import get_display
+from .display import OuroDisplay, get_display, set_display
 from .events import EventRunContext, build_event_run_context
 from .logging_config import uvicorn_log_config
 from .observer import AgentObserver
@@ -58,6 +58,11 @@ def _get_ouro_client_env(config: OuroAgentsConfig) -> Dict[str, str]:
 async def startup_event():
     global agent_instance, reply_publisher
     config = OuroAgentsConfig.load_from_file("config.json")
+    set_display(
+        OuroDisplay(
+            show_reasoning_in_summary=config.display.usage_table.show_reasoning
+        )
+    )
     agent_instance = OuroAgent(config)
     agent_instance.connect_mcp()
     ouro_client = agent_instance._get_ouro_client()

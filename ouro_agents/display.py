@@ -58,8 +58,14 @@ def _to_log_level(verbosity: Verbosity) -> LogLevel:
 class OuroDisplay:
     """Owns all CLI terminal output formatting."""
 
-    def __init__(self, verbosity: Verbosity = Verbosity.NORMAL):
+    def __init__(
+        self,
+        verbosity: Verbosity = Verbosity.NORMAL,
+        *,
+        show_reasoning_in_summary: bool = False,
+    ):
         self.verbosity = verbosity
+        self.show_reasoning_in_summary = show_reasoning_in_summary
         self._pending_run_summary: (
             tuple[
                 RunUsage,
@@ -237,47 +243,75 @@ class OuroDisplay:
     def _escape_md_cell(value: str) -> str:
         return value.replace("|", "\\|").replace("\n", "<br>")
 
+    def _usage_table_headers(self) -> list[str]:
+        headers = [
+            "Scope",
+            "Model",
+            "Steps",
+            "Input",
+            "Cached",
+            "Uncached",
+            "Output",
+        ]
+        if self.show_reasoning_in_summary:
+            headers.append("Reasoning")
+        headers.extend(["Cost", "Duration"])
+        return headers
+
+    def _usage_table_alignments(self) -> list[str]:
+        alignments = ["---", "---", "---:", "---:", "---:", "---:", "---:"]
+        if self.show_reasoning_in_summary:
+            alignments.append("---:")
+        alignments.extend(["---:", "---:"])
+        return alignments
+
     def _usage_rows(
         self,
         usage: RunUsage,
         duration_s: float | None = None,
         subagent_ledger: Optional[list[tuple[str, SubAgentUsage]]] = None,
         memory_ledger: Optional[list[tuple[str, RunUsage]]] = None,
-    ) -> list[tuple[str, str, str, str, str, str, str, str, str]]:
-        rows: list[tuple[str, str, str, str, str, str, str, str, str]] = []
+    ) -> list[tuple[str, ...]]:
+        rows: list[tuple[str, ...]] = []
 
         def _run_row(
             scope: str,
             row_usage: RunUsage,
             row_duration_s: float | None = None,
-        ) -> tuple[str, str, str, str, str, str, str, str, str]:
-            return (
+        ) -> tuple[str, ...]:
+            values = [
                 self._escape_md_cell(scope),
+                self._escape_md_cell(row_usage.model_id or "-"),
                 self._format_usage_number(row_usage.steps),
                 self._format_usage_number(row_usage.input_tokens),
                 self._format_usage_number(row_usage.cached_input_tokens),
                 self._format_usage_number(row_usage.uncached_input_tokens),
                 self._format_usage_number(row_usage.output_tokens),
-                self._format_usage_number(row_usage.reasoning_tokens),
                 self._format_usage_cost(row_usage.cost_usd),
                 self._format_usage_duration(row_duration_s),
-            )
+            ]
+            if self.show_reasoning_in_summary:
+                values.insert(7, self._format_usage_number(row_usage.reasoning_tokens))
+            return tuple(values)
 
         def _subagent_row(
             scope: str,
             row_usage: SubAgentUsage,
-        ) -> tuple[str, str, str, str, str, str, str, str, str]:
-            return (
+        ) -> tuple[str, ...]:
+            values = [
                 self._escape_md_cell(scope),
+                self._escape_md_cell(row_usage.model_id or "-"),
                 self._format_usage_number(row_usage.steps),
                 self._format_usage_number(row_usage.input_tokens),
                 self._format_usage_number(row_usage.cached_input_tokens),
                 self._format_usage_number(row_usage.uncached_input_tokens),
                 self._format_usage_number(row_usage.output_tokens),
-                self._format_usage_number(row_usage.reasoning_tokens),
                 self._format_usage_cost(row_usage.cost_usd),
                 self._format_usage_duration(row_usage.wall_time_ms / 1000),
-            )
+            ]
+            if self.show_reasoning_in_summary:
+                values.insert(7, self._format_usage_number(row_usage.reasoning_tokens))
+            return tuple(values)
 
         if not subagent_ledger and not memory_ledger:
             return [_run_row("total", usage, duration_s)]
@@ -313,8 +347,8 @@ class OuroDisplay:
 
         md_lines = [
             "",
-            "| Scope | Steps | Input | Cached | Uncached | Output | Reasoning | Cost | Duration |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| " + " | ".join(self._usage_table_headers()) + " |",
+            "| " + " | ".join(self._usage_table_alignments()) + " |",
         ]
         for row in rows:
             md_lines.append("| " + " | ".join(row) + " |")

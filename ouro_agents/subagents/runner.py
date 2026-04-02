@@ -63,9 +63,10 @@ def _snapshot_tracker(model):
 
 def _compute_usage(model, before: Optional[dict], wall_ms: int) -> SubAgentUsage:
     """Compute delta usage for subagent, including cost if available."""
+    model_id = getattr(model, "model_id", str(model))
     tracker = getattr(model, "tracker", None)
     if not tracker or before is None:
-        return SubAgentUsage(wall_time_ms=wall_ms)
+        return SubAgentUsage(model_id=model_id, wall_time_ms=wall_ms)
 
     def _fdelta(after_v, before_v) -> Optional[float]:
         if after_v is None:
@@ -79,6 +80,7 @@ def _compute_usage(model, before: Optional[dict], wall_ms: int) -> SubAgentUsage
     out_cost_delta = _fdelta(tracker.total_output_cost_usd, before["output_cost_usd"])
 
     return SubAgentUsage(
+        model_id=model_id,
         input_tokens=tracker.total_input_tokens - before["input_tokens"],
         output_tokens=tracker.total_output_tokens - before["output_tokens"],
         cached_input_tokens=tracker.total_cached_input_tokens

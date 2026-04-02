@@ -5,7 +5,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from smolagents import OpenAIModel
 
@@ -264,6 +264,112 @@ class UsageTracker:
 
     def reset(self):
         self._generations.clear()
+
+
+class MirroredUsageTracker:
+    """Tracker facade with local totals plus optional mirrored sinks.
+
+    The primary tracker is used for all reads/reset calls so callers can compute
+    isolated deltas. Every recorded generation is also forwarded to the mirror
+    trackers so aggregate run totals still include the same API calls.
+    """
+
+    def __init__(
+        self,
+        primary: Optional[UsageTracker] = None,
+        *,
+        mirrors: Optional[Sequence[UsageTracker]] = None,
+    ):
+        self._primary = primary or UsageTracker()
+        self._mirrors = list(mirrors or [])
+
+    def record(
+        self,
+        gen_id: str,
+        usage: Optional[dict[str, Any]] = None,
+    ):
+        self._primary.record(gen_id, usage)
+        for tracker in self._mirrors:
+            tracker.record(gen_id, usage)
+
+    def reset(self):
+        self._primary.reset()
+
+    @property
+    def generation_ids(self) -> list[str]:
+        return self._primary.generation_ids
+
+    @property
+    def total_input_tokens(self) -> int:
+        return self._primary.total_input_tokens
+
+    @property
+    def total_output_tokens(self) -> int:
+        return self._primary.total_output_tokens
+
+    @property
+    def total_cached_input_tokens(self) -> int:
+        return self._primary.total_cached_input_tokens
+
+    @property
+    def total_uncached_input_tokens(self) -> int:
+        return self._primary.total_uncached_input_tokens
+
+    @property
+    def total_cache_write_tokens(self) -> int:
+        return self._primary.total_cache_write_tokens
+
+    @property
+    def total_input_audio_tokens(self) -> int:
+        return self._primary.total_input_audio_tokens
+
+    @property
+    def total_input_video_tokens(self) -> int:
+        return self._primary.total_input_video_tokens
+
+    @property
+    def total_reasoning_tokens(self) -> int:
+        return self._primary.total_reasoning_tokens
+
+    @property
+    def total_output_audio_tokens(self) -> int:
+        return self._primary.total_output_audio_tokens
+
+    @property
+    def total_output_image_tokens(self) -> int:
+        return self._primary.total_output_image_tokens
+
+    @property
+    def total_accepted_prediction_tokens(self) -> int:
+        return self._primary.total_accepted_prediction_tokens
+
+    @property
+    def total_rejected_prediction_tokens(self) -> int:
+        return self._primary.total_rejected_prediction_tokens
+
+    @property
+    def total_cost_usd(self) -> Optional[float]:
+        return self._primary.total_cost_usd
+
+    @property
+    def total_input_cost_usd(self) -> Optional[float]:
+        return self._primary.total_input_cost_usd
+
+    @property
+    def total_output_cost_usd(self) -> Optional[float]:
+        return self._primary.total_output_cost_usd
+
+    @property
+    def total_upstream_inference_cost_usd(self) -> Optional[float]:
+        return self._primary.total_upstream_inference_cost_usd
+
+    @property
+    def is_byok(self) -> Optional[bool]:
+        return self._primary.is_byok
+
+    @property
+    def num_calls(self) -> int:
+        return self._primary.num_calls
 
 
 # ---------------------------------------------------------------------------

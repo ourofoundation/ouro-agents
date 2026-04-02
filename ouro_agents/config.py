@@ -136,6 +136,14 @@ class ModeConfig(BaseModel):
     overrides: Dict[str, ModeOverride] = Field(default_factory=dict)
 
 
+class UsageTableConfig(BaseModel):
+    show_reasoning: bool = False
+
+
+class DisplayConfig(BaseModel):
+    usage_table: UsageTableConfig = Field(default_factory=UsageTableConfig)
+
+
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
     # OpenRouter: request-level reasoning control (effort / max_tokens / exclude / enabled).
@@ -148,6 +156,7 @@ class OuroAgentsConfig(BaseSettings):
     subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     modes: ModeConfig = Field(default_factory=ModeConfig)
+    display: DisplayConfig = Field(default_factory=DisplayConfig)
 
     @classmethod
     def load_from_file(cls, path: str | Path) -> "OuroAgentsConfig":
