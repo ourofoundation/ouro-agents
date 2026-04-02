@@ -650,15 +650,6 @@ def next_action(
         # Replan when all items are complete
         if current.all_items_complete and current.heartbeats_completed >= min_heartbeats:
             return "plan"
-
-        cadence_secs = parse_cadence_seconds(cadence)
-        if cadence_secs and current.heartbeats_completed >= min_heartbeats:
-            activated = datetime.fromisoformat(current.activated_at or current.created_at)
-            if activated.tzinfo is None:
-                activated = activated.replace(tzinfo=timezone.utc)
-            elapsed = (now - activated).total_seconds()
-            if elapsed >= cadence_secs:
-                return "plan"
         return "execute"
 
     # completed or unknown — start fresh
@@ -1043,6 +1034,7 @@ async def run_planning_heartbeat(
     from .profiles import RunMode
 
     planning_cfg = agent.config.planning
+    plan_model = agent._build_model(planning_cfg.model, heartbeat=True) if planning_cfg.model else hb_model
     previous = plan_store.load_history(limit=1)
     previous_plan = previous[0] if previous else None
 
@@ -1062,7 +1054,7 @@ async def run_planning_heartbeat(
 
     result = await agent.run(
         prompt,
-        model_override=hb_model,
+        model_override=plan_model,
         mode=RunMode.PLAN,
         allowed_servers=servers,
         preload_tools=preload,
@@ -1188,9 +1180,12 @@ async def run_review_heartbeat(
             post_id=current.post_id, plan_text=current.plan_text, current_status=current.status
         )
 
+    planning_cfg = agent.config.planning
+    plan_model = agent._build_model(planning_cfg.model, heartbeat=True) if planning_cfg.model else hb_model
+
     result = await agent.run(
         prompt,
-        model_override=hb_model,
+        model_override=plan_model,
         mode=RunMode.REVIEW,
         allowed_servers=servers,
         preload_tools=review_preload,

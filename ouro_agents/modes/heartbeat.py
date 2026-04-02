@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -105,6 +105,55 @@ def estimate_beats_per_period(config: HeartbeatConfig) -> str:
         return "unknown"
 
 
+def heartbeat_interval_seconds(config: HeartbeatConfig) -> int | None:
+    """Parse the configured heartbeat interval into seconds."""
+    match = re.match(r"(\d+)([smhd])", config.every)
+    if not match:
+        return None
+
+    val = int(match.group(1))
+    unit = match.group(2)
+    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    return val * multipliers[unit]
+
+
+def has_future_heartbeat_in_active_window(
+    config: HeartbeatConfig,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Return True when another scheduled heartbeat still fits in this active window."""
+    interval_secs = heartbeat_interval_seconds(config)
+    if interval_secs is None or not config.active_hours:
+        return True
+
+    start_str = config.active_hours.get("start")
+    end_str = config.active_hours.get("end")
+    tz_str = config.active_hours.get("timezone")
+    if not start_str or not end_str:
+        return True
+
+    try:
+        import zoneinfo
+
+        tz = zoneinfo.ZoneInfo(tz_str) if tz_str else None
+    except (ImportError, KeyError):
+        logger.warning("Invalid timezone %s, assuming future heartbeats remain", tz_str)
+        return True
+
+    current = now or datetime.now(timezone.utc)
+    current = current.astimezone(tz) if tz else current.astimezone()
+
+    start = datetime.strptime(start_str, "%H:%M").time()
+    end = datetime.strptime(end_str, "%H:%M").time()
+    end_dt = datetime.combine(current.date(), end, tzinfo=current.tzinfo)
+
+    if start > end and current.time() >= start:
+        end_dt = end_dt + timedelta(days=1)
+
+    remaining_secs = (end_dt - current).total_seconds()
+    return remaining_secs >= interval_secs
+
+
 def format_active_period_status(config: HeartbeatConfig) -> str:
     """One-line summary for logging: configured window (if any) and whether now is inside it."""
     if not config.active_hours:
@@ -121,6 +170,32 @@ def format_active_period_status(config: HeartbeatConfig) -> str:
     state = "active" if in_window else "inactive"
     beats_est = estimate_beats_per_period(config)
     return f"period={start_str}–{end_str} ({tz_label}); now={state}; {beats_est}"
+
+
+def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str:
+    """Instruction block for working on an active plan during one heartbeat."""
+    guidance = (
+        "Treat this heartbeat as a bounded work session. Make one meaningful slice "
+        "of progress, then stop. Do not try to clear an entire multi-step plan in "
+        "a single tick, and do not feel pressure to use all available steps."
+    )
+    if min_heartbeats > 1:
+        guidance += (
+            f" This planning cycle is expected to unfold across at least "
+            f"{min_heartbeats} heartbeats before replanning, so leave room for "
+            "later heartbeats unless the remaining work is genuinely tiny."
+        )
+
+    return (
+        "You are executing a specific plan during this heartbeat.\n\n"
+        f"{plan_context}\n\n"
+        f"{guidance}\n\n"
+        "Use the update_plan tool to mark items done/in_progress as you complete them.\n"
+        "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
+        "you MUST use the `create_comment` tool to comment on the plan's original post "
+        "(using the post id shown above). Summarize the work you accomplished and include "
+        "links to any posts or assets you created."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +329,19 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
         )
 
         if action == "plan":
+            if not has_future_heartbeat_in_active_window(agent.config.heartbeat):
+                if default_plan and default_plan.status == "active" and default_plan.all_items_complete:
+                    plan_store.archive(
+                        default_plan, ouro_client=agent._get_ouro_client()
+                    )
+                    logger.info(
+                        "Archived completed default plan %s at end of active window",
+                        default_plan.id,
+                    )
+                logger.info(
+                    "Skipping default planning because no future heartbeat remains in the active window"
+                )
+                return None
             if default_plan and default_plan.status == "active":
                 if default_plan.all_items_complete:
                     plan_store.archive(
@@ -395,14 +483,9 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                 target_plan = next((p for p in active_plans if p.id.startswith(preflight.plan_id)), None)
                 if target_plan:
                     logger.info("Heartbeat preflight chose plan %s: %s", target_plan.id[:8], preflight.reasoning)
-                    playbook = (
-                        f"You are executing a specific plan during this heartbeat.\n\n"
-                        f"{render_plan_context(target_plan)}\n\n"
-                        "Use the update_plan tool to mark items done/in_progress as you complete them.\n"
-                        "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
-                        "you MUST use the `create_comment` tool to comment on the plan's original post "
-                        "(using the post id shown above). Summarize the work you accomplished and include "
-                        "links to any posts or assets you created."
+                    playbook = build_plan_execution_playbook(
+                        render_plan_context(target_plan),
+                        planning_cfg.min_heartbeats,
                     )
                     extra_tools = make_plan_tools(plan_store, agent._get_ouro_client())
                     preload_tools = ["ouro:create_comment"]

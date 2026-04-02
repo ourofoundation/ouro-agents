@@ -3,6 +3,7 @@
 import asyncio
 import json
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from ouro_agents.modes.planning import (
     PlanStore,
     PlanItem,
     build_feedback_review_prompt,
+    next_action,
     parse_task_lines_from_markdown,
     rebuild_plan_markdown,
     run_review_heartbeat,
@@ -118,6 +120,29 @@ def test_feedback_review_prompt_mentions_next_status_for_cancellation():
     assert 'set "next_status": "cancelled"' in prompt
 
 
+def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():
+    current = PlanCycle(
+        id="cycle-1",
+        status="active",
+        kind="default",
+        created_at="2026-04-01T09:00:00+00:00",
+        activated_at="2026-04-01T09:00:00+00:00",
+        heartbeats_completed=6,
+        items=[PlanItem(id="task-123", description="Keep going", status="in_progress")],
+    )
+
+    action = next_action(
+        current=current,
+        cadence="4h",
+        min_heartbeats=4,
+        review_window="1h",
+        auto_approve=True,
+        now=datetime.fromisoformat("2026-04-01T18:00:00+00:00"),
+    )
+
+    assert action == "execute"
+
+
 def test_run_review_heartbeat_cancels_without_rewriting_plan():
     class FakePosts:
         def __init__(self):
@@ -133,7 +158,8 @@ def test_run_review_heartbeat_cancels_without_rewriting_plan():
     class FakeAgent:
         def __init__(self, workspace: Path, ouro_client: FakeOuroClient):
             self.config = SimpleNamespace(
-                agent=SimpleNamespace(workspace=workspace, name="hermes")
+                agent=SimpleNamespace(workspace=workspace, name="hermes"),
+                planning=SimpleNamespace(model=None),
             )
             self.doc_store = None
             self._ouro_client = ouro_client

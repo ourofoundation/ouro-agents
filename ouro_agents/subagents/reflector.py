@@ -7,6 +7,21 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_NOISY_REFLECTION_TOOLS = {
+    "load_tool",
+    "load_skill",
+    "memory_recall",
+    "memory_status",
+    "search:tavily_search",
+    "ouro:get_asset",
+    "ouro:get_comments",
+    "ouro:search_assets",
+    "ouro:get_team_feed",
+    "ouro:get_organizations",
+    "ouro:get_teams",
+    "ouro:get_team",
+}
+
 
 REFLECTOR_PROMPT = """\
 You are a memory curator. Given context about recent activity — either a \
@@ -31,6 +46,11 @@ Rules:
   (0.3=minor, 0.5=normal, 0.7=significant, 0.9=critical). \
   If a fact references an Ouro asset, include its UUID in asset_refs AND use \
   [asset name](asset:<uuid>) links in the text so the fact is self-contained. Otherwise omit asset_refs.
+- When a run interacted with an Ouro asset in a way that future heartbeats should \
+  avoid repeating immediately (for example: commenting on it, reviewing it, or \
+  deciding to pass on it for now), prefer storing one concise observation with \
+  the asset ref and the substance of what happened so a later model can infer \
+  "I already touched this recently."
 - user_preferences: Communication style, interests, or workflow patterns observed. \
   Only include clear, repeated signals. Omit for task/run reflection.
 - daily_log_entry: One-line summary of what was accomplished. \
@@ -38,6 +58,9 @@ Rules:
   Use lowercase kebab-case for the activity tag, e.g. [event:comment], [task], [event:mention], [heartbeat]. \
   If the run context says Run mode: heartbeat, use [heartbeat], not [task]. \
   Format: "[tag] brief description with [linked assets](asset:<uuid>)"
+- For heartbeat engagement actions, make the daily_log_entry specific enough to \
+  prevent accidental repetition on the next tick. Include which asset was touched \
+  and the gist of the interaction, not generic text like "engaged with community."
 - If nothing is worth remembering, return empty lists and an empty string.
 - If the run was trivial (e.g. NO_ACTION), return empty list and empty string.
 - Be concise. Each fact/preference should be one sentence.
@@ -63,29 +86,38 @@ def build_run_reflection_task(
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
-    for tc in (tool_summary or []):
+    for tc in tool_summary or []:
         name = tc.get("tool", "")
-        if name == "final_answer":
+        if name in _NOISY_REFLECTION_TOOLS:
             continue
         tc_result = str(tc.get("result", ""))[:300]
         tools_compact.append(f"- {name}: {tc_result}")
-    tools_text = "\n".join(tools_compact[:10]) if tools_compact else "(no tool calls)"
+    tools_text = (
+        "\n".join(tools_compact) if tools_compact else "(no significant tool calls)"
+    )
 
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
         f"Run mode: {run_mode}\n\n"
         f"Task:\n{task[:600]}\n\n"
         f"Result:\n{str(result)[:800]}\n\n"
-        f"Tool calls:\n{tools_text}"
+        f"Tool calls:\n{tools_text}\n\n"
+        "If this run commented on, reviewed, or otherwise interacted with an Ouro "
+        "asset, capture that interaction concretely so the next heartbeat can tell "
+        "the asset was already touched recently and avoid redundant follow-up."
     )
 
 
 def normalize_daily_log_entry(entry: str, run_mode: str = "autonomous") -> str:
     """Normalize reflector daily-log output for the given run mode."""
-    _prefix_overrides = {"heartbeat": "[heartbeat]", "plan": "[planning]", "review": "[review]"}
+    _prefix_overrides = {
+        "heartbeat": "[heartbeat]",
+        "plan": "[planning]",
+        "review": "[review]",
+    }
     override = _prefix_overrides.get(run_mode)
     if override and entry.startswith("[task]"):
-        return override + entry[len("[task]"):]
+        return override + entry[len("[task]") :]
     return entry
 
 

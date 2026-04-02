@@ -103,6 +103,7 @@ class ServerConfig(BaseModel):
 
 class PlanningConfig(BaseModel):
     enabled: bool = False
+    model: Optional[str] = None
     cadence: str = "1d"
     min_heartbeats: int = 4
     review_window: str = "2h"

@@ -55,6 +55,10 @@ Decide whether the agent should:
 
 You may use memory_recall to check recent context or decisions if it helps you decide, but it is not required.
 
+Assume active plans can span multiple heartbeats. If you choose "work_on_plan",
+you are choosing the best next slice of progress for this tick, not asking the
+agent to complete the whole plan right now.
+
 Output ONLY valid JSON matching this schema (no markdown fences, no explanation):
 {
   "action": "work_on_plan" | "general_heartbeat" | "skip",

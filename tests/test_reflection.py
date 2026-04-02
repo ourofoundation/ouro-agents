@@ -49,6 +49,8 @@ def _load_reflection_modules():
 _reflector_module, _reflection_module = _load_reflection_modules()
 ReflectionResult = _reflector_module.ReflectionResult
 parse_reflection_result = _reflector_module.parse_reflection_result
+build_run_reflection_task = _reflector_module.build_run_reflection_task
+REFLECTOR_PROMPT = _reflector_module.REFLECTOR_PROMPT
 apply_reflection = _reflection_module.apply_reflection
 
 
@@ -74,6 +76,10 @@ class _ConversationState:
 
 
 class TestReflectionParsing(unittest.TestCase):
+    def test_reflector_prompt_mentions_recent_asset_interactions(self):
+        self.assertIn("avoid repeating immediately", REFLECTOR_PROMPT)
+        self.assertIn("already touched this recently", REFLECTOR_PROMPT)
+
     def test_returns_none_when_reflector_hits_max_steps(self):
         self.assertIsNone(parse_reflection_result("Reached max steps."))
 
@@ -87,6 +93,61 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertEqual(result.facts_to_store, [])
         self.assertEqual(result.user_preferences, [])
         self.assertEqual(result.daily_log_entry, "")
+
+    def test_build_run_reflection_task_mentions_redundant_follow_up_avoidance(self):
+        task = build_run_reflection_task(
+            task="Comment on a post if useful.",
+            result="Left a comment on asset abc.",
+            tool_summary=[{"tool": "ouro:create_comment", "result": "commented on asset abc"}],
+            run_mode="heartbeat",
+        )
+
+        self.assertIn("already touched recently", task)
+        self.assertIn("avoid redundant follow-up", task)
+
+    def test_build_run_reflection_task_filters_noisy_tools_keeps_order(self):
+        task = build_run_reflection_task(
+            task="Review feed and respond where helpful.",
+            result="Commented twice and updated a post.",
+            tool_summary=[
+                {"tool": "memory_recall", "result": "prior context"},
+                {"tool": "ouro:get_asset", "result": "asset body"},
+                {"tool": "ouro:create_comment", "result": "comment one"},
+                {"tool": "load_tool", "result": "loaded search"},
+                {"tool": "ouro:update_post", "result": "updated plan post"},
+                {"tool": "ouro:create_comment", "result": "comment two"},
+            ],
+            run_mode="heartbeat",
+        )
+
+        self.assertNotIn("memory_recall", task)
+        self.assertNotIn("ouro:get_asset", task)
+        self.assertNotIn("load_tool", task)
+        self.assertIn("- ouro:create_comment: comment one", task)
+        self.assertIn("- ouro:update_post: updated plan post", task)
+        self.assertIn("- ouro:create_comment: comment two", task)
+        self.assertLess(
+            task.index("- ouro:create_comment: comment one"),
+            task.index("- ouro:update_post: updated plan post"),
+        )
+        self.assertLess(
+            task.index("- ouro:update_post: updated plan post"),
+            task.index("- ouro:create_comment: comment two"),
+        )
+
+    def test_build_run_reflection_task_includes_all_non_noisy_tools(self):
+        tool_summary = [
+            {"tool": "ouro:create_comment", "result": f"comment {i}"} for i in range(12)
+        ]
+        task = build_run_reflection_task(
+            task="Comment when appropriate.",
+            result="Left many comments.",
+            tool_summary=tool_summary,
+            run_mode="heartbeat",
+        )
+
+        self.assertIn("- ouro:create_comment: comment 0", task)
+        self.assertIn("- ouro:create_comment: comment 11", task)
 
 
 class TestApplyReflection(unittest.TestCase):

@@ -9,7 +9,7 @@
     "max_steps": {
       "chat": 40,
       "autonomous": 60,
-      "heartbeat": 60
+      "heartbeat": 20
     }
   },
   "subagents": {
@@ -32,6 +32,7 @@
   },
   "planning": {
     "enabled": true,
+    "model": "anthropic/claude-4.6-sonnet",
     "cadence": "4h",
     "min_heartbeats": 4,
     "review_window": "1h",
