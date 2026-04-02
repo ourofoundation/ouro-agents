@@ -12,7 +12,7 @@ class TestModelProviderOverrides(unittest.TestCase):
             reasoning=None,
             prompt_caching=SimpleNamespace(enabled=False, ttl="5m"),
             heartbeat=SimpleNamespace(reasoning=None, model="openai/gpt-4.1-mini"),
-            subagents=SimpleNamespace(overrides={}),
+            subagents=SimpleNamespace(profiles={}),
         )
         agent._usage_tracker = object()
         return agent

@@ -56,28 +56,69 @@ ouro-agents heartbeat
 The main agent can delegate focused work to built-in subagents such as
 `research`, `planner`, `executor`, and `writer`.
 
-You can set a default model for subagents and override individual profiles in
+You can set a default model for subagents and configure individual profiles in
 `config.json`:
 
 ```json
 "subagents": {
   "default_model": "google/gemini-2.5-flash",
-  "overrides": {
-    "writer": {
-      "model": "anthropic/claude-sonnet-4"
-    },
-    "research": {
-      "max_steps": 30
-    }
+  "writer": {
+    "model": "anthropic/claude-sonnet-4"
+  },
+  "research": {
+    "max_steps": 30
   }
 }
 ```
 
 - `subagents.default_model`: fallback model used by subagents when a profile
   does not specify its own override.
-- `subagents.overrides.<name>.model`: choose a model for a specific subagent.
-- `subagents.overrides.<name>.max_steps`: tune the agent loop for agent-mode
+- `subagents.<name>.model`: choose a model for a specific subagent.
+- `subagents.<name>.max_steps`: tune the agent loop for agent-mode
   subagents like `research` and `executor`.
+
+## Run Modes
+
+Main-agent config now lives under `modes.<name>` instead of being split
+between `agent`, `planning`, and `heartbeat`.
+
+```json
+"modes": {
+  "run": {
+    "max_steps": 30
+  },
+  "chat": {
+    "max_steps": 12
+  },
+  "planning": {
+    "enabled": true,
+    "model": "anthropic/claude-4.6-sonnet",
+    "cadence": "4h",
+    "min_heartbeats": 4,
+    "review_window": "1h",
+    "auto_approve": true,
+    "max_steps": 6
+  },
+  "heartbeat": {
+    "enabled": true,
+    "every": "1h",
+    "model": "openai/gpt-4.1-mini",
+    "active_hours": {
+      "start": "09:00",
+      "end": "17:00",
+      "timezone": "America/Chicago"
+    },
+    "max_steps": 8
+  }
+}
+```
+
+- `modes.run`: override the default steps for the main autonomous run mode.
+- `modes.chat`: override the interactive chat loop.
+- `modes.planning`: planning cadence/model settings plus the planning mode loop (`plan` internally).
+- `modes.heartbeat`: heartbeat scheduler/model settings plus the heartbeat mode loop.
+- `modes.chat-reply`: optionally override threaded reply runs separately from `chat`.
+- Legacy top-level `planning` / `heartbeat`, `agent.max_steps`, `modes.overrides`, and `subagents.overrides` still load and are normalized into the flat shape.
 
 ## Prompt caching (OpenRouter + Anthropic)
 

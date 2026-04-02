@@ -284,7 +284,7 @@ class OuroAgent:
         if heartbeat:
             layers.append(self.config.heartbeat.reasoning)
         if subagent_profile:
-            override = self.config.subagents.overrides.get(subagent_profile)
+            override = self.config.subagents.profiles.get(subagent_profile)
             if override and override.reasoning is not None:
                 layers.append(override.reasoning)
         return merge_reasoning(*layers)
@@ -924,7 +924,7 @@ class OuroAgent:
         usage_tracker: Optional[UsageTracker] = None,
     ) -> "TrackedOpenAIModel":
         """Resolve the model for a subagent profile using the override cascade."""
-        override = self.config.subagents.overrides.get(profile.name)
+        override = self.config.subagents.profiles.get(profile.name)
         model_id = (
             profile.model_override
             or (override.model if override else None)
@@ -939,7 +939,7 @@ class OuroAgent:
 
     def _apply_profile_overrides(self, profile):
         """Apply config overrides (max_steps, etc.) to a profile."""
-        override = self.config.subagents.overrides.get(profile.name)
+        override = self.config.subagents.profiles.get(profile.name)
         if override and override.max_steps is not None:
             return profile.model_copy(update={"max_steps": override.max_steps})
         return profile
@@ -1357,7 +1357,7 @@ class OuroAgent:
 
         # Resolve mode profile and apply user config overrides
         profile = resolve_mode_profile(mode)
-        override = self.config.modes.overrides.get(profile.name)
+        override = self.config.modes.profiles.get(profile.name)
         if override:
             profile = apply_mode_override(profile, override)
 

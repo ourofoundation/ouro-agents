@@ -5,51 +5,50 @@
     "reasoning": { "effort": "medium" },
     "workspace": "./workspace",
     "org_id": "00000000-0000-0000-0000-000000000000",
-    "team_id": "00000000-0000-0000-0000-000000000000",
-    "max_steps": {
-      "chat": 40,
-      "autonomous": 60,
-      "heartbeat": 20
-    }
+    "team_id": "00000000-0000-0000-0000-000000000000"
   },
   "subagents": {
-    "overrides": {
-      "preflight": {
-        "model": "xiaomi/mimo-v2-flash",
-        "reasoning": { "effort": "none" },
-        "max_steps": 4
-      },
-      "research": {
-        "model": "xiaomi/mimo-v2-flash",
-        "reasoning": { "effort": "low" },
-        "max_steps": 10
-      },
-      "writer": {
-        "model": "xiaomi/mimo-v2-flash"
-      },
-      "executor": { "max_steps": 24 }
-    }
-  },
-  "planning": {
-    "enabled": true,
-    "model": "anthropic/claude-4.6-sonnet",
-    "cadence": "4h",
-    "min_heartbeats": 4,
-    "review_window": "1h",
-    "auto_approve": true
-  },
-  "heartbeat": {
-    "enabled": true,
-    "every": "1h",
-    "model": "xiaomi/mimo-v2-flash",
-    "active_hours": {
-      "start": "09:00",
-      "end": "17:00",
-      "timezone": "America/Chicago"
+    "preflight": {
+      "model": "xiaomi/mimo-v2-flash",
+      "reasoning": { "effort": "none" },
+      "max_steps": 4
     },
-    "proactive": {
+    "research": {
+      "model": "xiaomi/mimo-v2-flash",
+      "reasoning": { "effort": "low" },
+      "max_steps": 10
+    },
+    "writer": {
+      "model": "xiaomi/mimo-v2-flash"
+    },
+    "executor": { "max_steps": 24 }
+  },
+  "modes": {
+    "chat": { "max_steps": 40 },
+    "run": { "max_steps": 60 },
+    "planning": {
       "enabled": true,
-      "servers": ["ouro", "search"]
+      "model": "anthropic/claude-4.6-sonnet",
+      "cadence": "4h",
+      "min_heartbeats": 4,
+      "review_window": "1h",
+      "auto_approve": true,
+      "max_steps": 6
+    },
+    "heartbeat": {
+      "enabled": true,
+      "every": "1h",
+      "model": "xiaomi/mimo-v2-flash",
+      "active_hours": {
+        "start": "09:00",
+        "end": "17:00",
+        "timezone": "America/Chicago"
+      },
+      "proactive": {
+        "enabled": true,
+        "servers": ["ouro", "search"]
+      },
+      "max_steps": 20
     }
   },
   "memory": {

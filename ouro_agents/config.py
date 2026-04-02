@@ -120,9 +120,95 @@ class SubAgentOverride(BaseModel):
 class SubAgentConfig(BaseModel):
     enabled: bool = True
     default_model: Optional[str] = None
-    overrides: Dict[str, SubAgentOverride] = Field(default_factory=dict)
+    profiles: Dict[str, SubAgentOverride] = Field(default_factory=dict)
     custom_profiles_dir: Optional[str] = None
     parallel_dispatch: bool = True
+
+
+_MODE_OVERRIDE_ALIASES: dict[str, tuple[str, ...]] = {
+    "run": ("autonomous",),
+    "planning": ("plan",),
+    "chat-reply": ("chat-reply",),
+    "reply": ("chat-reply",),
+}
+
+
+def _normalize_mode_name(mode_name: str) -> str:
+    return mode_name.strip().lower().replace("_", "-")
+
+
+def _mode_override_targets(mode_name: str) -> tuple[str, ...]:
+    normalized_name = _normalize_mode_name(mode_name)
+    return _MODE_OVERRIDE_ALIASES.get(normalized_name, (normalized_name,))
+
+
+def _normalize_mode_overrides(overrides: Any) -> Any:
+    """Normalize user-facing mode aliases to the internal mode names."""
+    if not isinstance(overrides, dict):
+        return overrides
+
+    normalized: dict[str, Any] = {}
+    alias_entries: list[tuple[tuple[str, ...], Any]] = []
+    canonical_entries: list[tuple[tuple[str, ...], Any]] = []
+
+    for mode_name, payload in overrides.items():
+        raw_name = _normalize_mode_name(mode_name)
+        targets = _mode_override_targets(mode_name)
+        entry = (targets, payload)
+        if targets == (raw_name,):
+            canonical_entries.append(entry)
+        else:
+            alias_entries.append(entry)
+
+    for entries in (alias_entries, canonical_entries):
+        for targets, payload in entries:
+            for target in targets:
+                existing = normalized.get(target)
+                if isinstance(existing, dict) and isinstance(payload, dict):
+                    normalized[target] = {**existing, **payload}
+                else:
+                    normalized[target] = payload
+
+    return normalized
+
+
+def _merge_named_entries(
+    base: dict[str, Any], additions: Optional[dict[str, Any]]
+) -> dict[str, Any]:
+    if not isinstance(additions, dict):
+        return base
+
+    for name, payload in additions.items():
+        existing = base.get(name)
+        if isinstance(existing, dict) and isinstance(payload, dict):
+            base[name] = {**existing, **payload}
+        else:
+            base[name] = payload
+    return base
+
+
+def _flatten_named_config_entries(
+    section: Any,
+    *,
+    reserved_keys: set[str],
+    container_key: str = "profiles",
+    legacy_container_key: str = "overrides",
+) -> Any:
+    """Collect direct child blocks into a single internal map."""
+    if not isinstance(section, dict):
+        return section
+
+    flattened: dict[str, Any] = {}
+    flattened = _merge_named_entries(flattened, section.pop(legacy_container_key, None))
+    flattened = _merge_named_entries(flattened, section.pop(container_key, None))
+
+    for key in list(section.keys()):
+        if key in reserved_keys:
+            continue
+        flattened = _merge_named_entries(flattened, {key: section.pop(key)})
+
+    section[container_key] = flattened
+    return section
 
 
 class ModeOverride(BaseModel):
@@ -132,8 +218,71 @@ class ModeOverride(BaseModel):
 
 
 class ModeConfig(BaseModel):
-    """User-level mode overrides, keyed by mode name (chat, heartbeat, plan, etc.)."""
-    overrides: Dict[str, ModeOverride] = Field(default_factory=dict)
+    """User-level mode config keyed by mode name or friendly alias."""
+    profiles: Dict[str, ModeOverride] = Field(default_factory=dict)
+
+
+_HEARTBEAT_SECTION_KEYS = {
+    "enabled",
+    "every",
+    "model",
+    "active_hours",
+    "proactive",
+    "reasoning",
+}
+
+_PLANNING_SECTION_KEYS = {
+    "enabled",
+    "model",
+    "cadence",
+    "min_heartbeats",
+    "review_window",
+    "auto_approve",
+}
+
+
+def _split_mode_profile_fields(
+    payload: Any, section_keys: set[str]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return {}, {}
+
+    section_values: dict[str, Any] = {}
+    profile_values: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in section_keys:
+            section_values[key] = value
+        else:
+            profile_values[key] = value
+    return section_values, profile_values
+
+
+def _promote_special_mode_sections(expanded_data: dict[str, Any]) -> None:
+    """Hydrate internal top-level planning/heartbeat config from modes.* blocks."""
+    modes_data = expanded_data.get("modes")
+    if not isinstance(modes_data, dict):
+        return
+
+    profiles = modes_data.get("profiles")
+    if not isinstance(profiles, dict):
+        return
+
+    for mode_name, target_section, section_keys in (
+        ("heartbeat", "heartbeat", _HEARTBEAT_SECTION_KEYS),
+        ("plan", "planning", _PLANNING_SECTION_KEYS),
+    ):
+        payload = profiles.get(mode_name)
+        section_values, profile_values = _split_mode_profile_fields(payload, section_keys)
+        if section_values:
+            section = expanded_data.setdefault(target_section, {})
+            if isinstance(section, dict):
+                section.update(section_values)
+            else:
+                expanded_data[target_section] = section_values
+        if profile_values:
+            profiles[mode_name] = profile_values
+        elif mode_name in profiles:
+            profiles[mode_name] = {}
 
 
 class UsageTableConfig(BaseModel):
@@ -187,27 +336,57 @@ class OuroAgentsConfig(BaseSettings):
 
         expanded_data = replace_env_vars(data)
 
-        # Migrate legacy per-mode config fields into modes.overrides.
-        # The old "chat" key mapped to CHAT_REPLY (CHAT always zeroed preloads)
-        # and max_steps.chat was shared by both CHAT and CHAT_REPLY.
+        # Migrate legacy per-mode config fields into modes.<name>.
+        # The old "chat" key mapped to CHAT_REPLY for preloads (CHAT always
+        # zeroed preloads), and max_steps.chat was shared by both CHAT and
+        # CHAT_REPLY.
         agent_data = expanded_data.get("agent", {})
         legacy_preloads = agent_data.pop("preload_tools", None)
         legacy_max_steps = agent_data.pop("max_steps", None)
         if legacy_preloads or legacy_max_steps:
             modes_data = expanded_data.setdefault("modes", {})
-            overrides = modes_data.setdefault("overrides", {})
+            profiles = modes_data.setdefault("profiles", {})
             if legacy_preloads and isinstance(legacy_preloads, dict):
                 for mode_name, tools in legacy_preloads.items():
-                    targets = ["chat-reply"] if mode_name == "chat" else [mode_name]
+                    normalized_name = _normalize_mode_name(mode_name)
+                    targets = (
+                        ["chat-reply"]
+                        if normalized_name == "chat"
+                        else list(_mode_override_targets(mode_name))
+                    )
                     for target in targets:
-                        entry = overrides.setdefault(target, {})
+                        entry = profiles.setdefault(target, {})
                         entry.setdefault("preload_tools", tools)
             if legacy_max_steps and isinstance(legacy_max_steps, dict):
                 for mode_name, steps in legacy_max_steps.items():
-                    targets = ["chat", "chat-reply"] if mode_name == "chat" else [mode_name]
+                    normalized_name = _normalize_mode_name(mode_name)
+                    targets = (
+                        ["chat", "chat-reply"]
+                        if normalized_name == "chat"
+                        else list(_mode_override_targets(mode_name))
+                    )
                     for target in targets:
-                        entry = overrides.setdefault(target, {})
+                        entry = profiles.setdefault(target, {})
                         entry.setdefault("max_steps", steps)
+
+        modes_data = expanded_data.get("modes")
+        if isinstance(modes_data, dict):
+            _flatten_named_config_entries(modes_data, reserved_keys={"profiles"})
+            modes_data["profiles"] = _normalize_mode_overrides(modes_data.get("profiles"))
+            _promote_special_mode_sections(expanded_data)
+
+        subagents_data = expanded_data.get("subagents")
+        if isinstance(subagents_data, dict):
+            _flatten_named_config_entries(
+                subagents_data,
+                reserved_keys={
+                    "enabled",
+                    "default_model",
+                    "custom_profiles_dir",
+                    "parallel_dispatch",
+                    "profiles",
+                },
+            )
 
         # Migrate legacy per-section org_id/team_id into agent-level fields.
         agent_section = expanded_data.setdefault("agent", {})

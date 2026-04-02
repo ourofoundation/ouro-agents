@@ -59,9 +59,7 @@ async def startup_event():
     global agent_instance, reply_publisher
     config = OuroAgentsConfig.load_from_file("config.json")
     set_display(
-        OuroDisplay(
-            show_reasoning_in_summary=config.display.usage_table.show_reasoning
-        )
+        OuroDisplay(show_reasoning_in_summary=config.display.usage_table.show_reasoning)
     )
     agent_instance = OuroAgent(config)
     agent_instance.connect_mcp()
@@ -395,6 +393,7 @@ def start_server(config_path: str = "config.json"):
     reload_excludes = (
         [
             "workspace/*",
+            "../workspace/*",
             "__pycache__",
         ]
         if reload
