@@ -54,7 +54,7 @@ Thumbs.db
 
 # Environment variables
 .env
-
+.env.*
 
 # Data
 **/*.sqlite3
@@ -64,6 +64,9 @@ Thumbs.db
 
 # Workspace
 workspace/*
+agents/*
 
 # Config file
 config.json
+
+.python-version

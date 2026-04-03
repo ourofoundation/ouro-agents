@@ -309,9 +309,10 @@ class OuroAgentsConfig(BaseSettings):
 
     @classmethod
     def load_from_file(cls, path: str | Path) -> "OuroAgentsConfig":
+        import os
         from dotenv import load_dotenv
 
-        load_dotenv(override=True)  # Load environment variables from .env file
+        load_dotenv(os.environ.get("ENV_FILE", ".env"), override=True)
 
         path = Path(path)
         if not path.exists():

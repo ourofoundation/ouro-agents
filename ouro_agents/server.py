@@ -57,7 +57,7 @@ def _get_ouro_client_env(config: OuroAgentsConfig) -> Dict[str, str]:
 @app.on_event("startup")
 async def startup_event():
     global agent_instance, reply_publisher
-    config = OuroAgentsConfig.load_from_file("config.json")
+    config = OuroAgentsConfig.load_from_file(os.environ.get("CONFIG_FILE", "config.json"))
     set_display(
         OuroDisplay(show_reasoning_in_summary=config.display.usage_table.show_reasoning)
     )
@@ -388,6 +388,7 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
 
 
 def start_server(config_path: str = "config.json"):
+    os.environ["CONFIG_FILE"] = config_path
     config = OuroAgentsConfig.load_from_file(config_path)
     reload = os.getenv("PYTHON_ENV") != "production"
     reload_excludes = (

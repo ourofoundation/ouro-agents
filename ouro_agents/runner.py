@@ -96,6 +96,7 @@ def _run_chat(
 def main():
     parser = argparse.ArgumentParser(description="Ouro Agents CLI")
     parser.add_argument("--config", default="config.json", help="Path to config.json")
+    parser.add_argument("--env-file", default=None, help="Path to .env file (default: .env)")
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose output (show debug info)"
     )
@@ -162,6 +163,11 @@ def main():
     if not args.command:
         parser.print_help()
         sys.exit(1)
+
+    import os
+
+    if args.env_file:
+        os.environ["ENV_FILE"] = args.env_file
 
     config = OuroAgentsConfig.load_from_file(args.config)
     verbosity = _resolve_verbosity(args)

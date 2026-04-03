@@ -1,0 +1,115 @@
+{
+  "agent": {
+    "name": "hermes",
+    "model": "minimax/minimax-m2.7",
+    "reasoning": {
+      "effort": "medium"
+    },
+    "workspace": "./agents/hermes",
+    "org_id": "00000000-0000-0000-0000-000000000000",
+    "team_id": "019d2ad3-5f0a-70f7-af48-a172069fc7e2"
+  },
+  "subagents": {
+    "preflight": {
+      "model": "xiaomi/mimo-v2-flash",
+      "reasoning": {
+        "effort": "none"
+      },
+      "max_steps": 4
+    },
+    "research": {
+      "model": "xiaomi/mimo-v2-flash",
+      "reasoning": {
+        "effort": "low"
+      },
+      "max_steps": 10
+    },
+    "writer": {
+      "model": "anthropic/claude-opus-4.6"
+    },
+    "executor": {
+      "max_steps": 24
+    }
+  },
+  "modes": {
+    "planning": {
+      "enabled": true,
+      "model": "anthropic/claude-opus-4.6",
+      "max_steps": 20,
+      "cadence": "4h",
+      "min_heartbeats": 4,
+      "review_window": "1h",
+      "auto_approve": true
+    },
+    "heartbeat": {
+      "enabled": true,
+      "every": "1h",
+      "model": "minimax/minimax-m2.7",
+      "max_steps": 20,
+      "active_hours": {
+        "start": "09:00",
+        "end": "22:00",
+        "timezone": "America/Chicago"
+      },
+      "proactive": {
+        "enabled": true,
+        "servers": [
+          "ouro",
+          "search"
+        ]
+      }
+    }
+  },
+  "memory": {
+    "provider": "mem0",
+    "path": "./agents/hermes/workspace/memory",
+    "extraction_model": "xiaomi/mimo-v2-flash",
+    "embedder": "openai/text-embedding-3-small",
+    "search_limit": 10,
+    "retrieval_queries": 3,
+    "max_retrieval_tokens": 1500,
+    "consolidation_enabled": true,
+    "memory_md_max_tokens": 1500,
+    "mid_session_reflection_interval": 5,
+    "decay_after_days": 30,
+    "graph": {
+      "enabled": false
+    }
+  },
+  "mcp_servers": [
+    {
+      "name": "ouro",
+      "transport": "stdio",
+      "command": "/home/matt/.pyenv/versions/agents/bin/python",
+      "args": [
+        "-m",
+        "ouro_mcp.server"
+      ],
+      "env": {
+        "OURO_API_KEY": "${OURO_API_KEY}",
+        "OURO_BASE_URL": "${OURO_BASE_URL}"
+      }
+    },
+    {
+      "name": "search",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "tavily-mcp@0.1.4"
+      ],
+      "env": {
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
+    }
+  ],
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8010,
+    "webhook_path": "/ouro-agents/events"
+  },
+  "prompt_caching": {
+    "enabled": true,
+    "ttl": "5m"
+  }
+}
