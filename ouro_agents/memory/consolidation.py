@@ -41,6 +41,7 @@ memory as durable knowledge.
 
 Rules:
 - Only promote facts, patterns, or learnings that will be useful in FUTURE sessions
+- Do NOT promote entries that duplicate or closely overlap with content already in the working memory. Check the existing memory below before deciding what to promote.
 - Do NOT promote one-off task completions ("Published X post") unless they reveal a reusable pattern
 - ALWAYS preserve [label](asset:<uuid>) links from log entries — these are direct references to Ouro assets
 - Output a JSON array of objects: [{"section": "Facts"|"Preferences"|"Learnings", "entry": "text"}]
