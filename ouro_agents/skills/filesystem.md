@@ -21,6 +21,7 @@ Inside any `run_python` call (no import needed):
 - `move_file(src, dst)` — move or rename a file within the workspace
 - `search_files(pattern, path='.')` — find files whose content contains a substring
 - `glob_files(pattern, path='.')` — find files matching a glob pattern (e.g. `*.csv`, `**/*.json`)
+- `extract_zip(zip_path, output_dir=None)` — safely extract a zip archive inside the workspace
 
 These are sandboxed — path traversal outside the workspace is blocked.
 
@@ -29,6 +30,7 @@ These are sandboxed — path traversal outside the workspace is blocked.
 - **Drafting content**: write a draft locally before publishing to Ouro, especially for longer posts or complex datasets.
 - **Scratch work**: store intermediate results, outlines, or collected data while working through a multi-step task.
 - **Persisting artifacts**: save files that need to be uploaded to Ouro via `ouro:create_file`.
+- **Handling downloaded archives**: unpack zip assets after `ouro:download_asset` without leaving the workspace sandbox.
 - **Reading your own notes**: check workspace files for context you may have saved previously.
 
 ## When NOT to Use

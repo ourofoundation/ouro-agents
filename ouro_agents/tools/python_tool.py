@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import fnmatch
 import logging
+import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -57,7 +57,9 @@ def _make_workspace_fs(workspace: Path) -> dict:
                 clean = clean[len(prefix) :]
                 break
         target = (root / clean).resolve()
-        if not str(target).startswith(str(root)):
+        try:
+            target.relative_to(root)
+        except ValueError:
             raise PermissionError(f"Access denied — path escapes workspace: {path}")
         return target
 
@@ -137,6 +139,35 @@ def _make_workspace_fs(workspace: Path) -> dict:
             str(p.relative_to(root)) for p in start.rglob(pattern) if p.is_file()
         )
 
+    def extract_zip(zip_path: str, output_dir: str | None = None) -> dict:
+        """Extract a zip file inside the workspace and return basic metadata."""
+        zip_file = _safe_path(zip_path)
+        destination = _safe_path(output_dir) if output_dir else zip_file.with_suffix("")
+        destination.mkdir(parents=True, exist_ok=True)
+
+        extracted_files = []
+        destination_root = destination.resolve()
+        with zipfile.ZipFile(zip_file) as archive:
+            members = archive.infolist()
+            for member in members:
+                target = (destination_root / member.filename).resolve()
+                try:
+                    target.relative_to(destination_root)
+                except ValueError as exc:
+                    raise PermissionError(
+                        f"Unsafe zip entry would escape destination: {member.filename}"
+                    ) from exc
+
+            archive.extractall(destination_root)
+            extracted_files = [member.filename for member in members if not member.is_dir()]
+
+        return {
+            "zip_path": str(zip_file),
+            "output_dir": str(destination_root),
+            "file_count": len(extracted_files),
+            "files": extracted_files[:200],
+        }
+
     return {
         "read_file": read_file,
         "write_file": write_file,
@@ -148,6 +179,7 @@ def _make_workspace_fs(workspace: Path) -> dict:
         "move_file": move_file,
         "search_files": search_files,
         "glob_files": glob_files,
+        "extract_zip": extract_zip,
     }
 
 
@@ -250,6 +282,7 @@ def make_python_tool(
         - move_file(src, dst) -> str: Move or rename a file within the workspace.
         - search_files(pattern, path='.') -> list[str]: Find files whose content contains a substring.
         - glob_files(pattern, path='.') -> list[str]: Find files matching a glob pattern.
+        - extract_zip(zip_path, output_dir=None) -> dict: Extract a zip archive safely inside the workspace.
 
         Common patterns:
         - Read JSON: data = json.loads(read_file('data.json'))

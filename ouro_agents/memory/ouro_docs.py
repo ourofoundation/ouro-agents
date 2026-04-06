@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,8 @@ def _build_client(api_key: str | None = None, base_url: str | None = None) -> "O
 class OuroDocStore:
     """Thin wrapper over ouro-py for reading/writing named posts."""
 
+    _SINGLETON_PREFIXES = {"SOUL", "NOTES", "HEARTBEAT", "MEMORY", "DAILY", "USER"}
+
     def __init__(
         self,
         agent_name: str,
@@ -65,6 +68,7 @@ class OuroDocStore:
         self.team_id = team_id
         self._client = client or _build_client(api_key, base_url)
         self._owner_cache: dict[str, bool] = {}
+        self._write_lock = threading.RLock()
 
         self._registry_path = registry_path
         self._uuid_cache: dict[str, str] = self._load_registry()
@@ -92,35 +96,100 @@ class OuroDocStore:
         except Exception as e:
             logger.warning("Failed to save doc registry: %s", e)
 
-    def _resolve(self, name: str) -> Optional[str]:
-        """Resolve a post name to its UUID.
+    def _remember_uuid(self, name: str, uuid: str) -> str:
+        """Cache and persist a resolved UUID for future exact lookups."""
+        self._uuid_cache[name] = uuid
+        self._save_registry()
+        return uuid
+
+    @staticmethod
+    def _coerce_timestamp(value) -> Optional[datetime]:
+        """Normalize search result timestamps for duplicate resolution."""
+        if isinstance(value, datetime):
+            return value
+        if not isinstance(value, str) or not value:
+            return None
+        normalized = value.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+
+    def _search_exact_name_matches(self, name: str, *, limit: int = 25) -> list[dict]:
+        """Search for posts with an exact matching name."""
+        results = self._client.assets.search(
+            query=name,
+            asset_type="post",
+            team_id=self.team_id,
+            limit=limit,
+        )
+        if not isinstance(results, list):
+            return []
+        return [item for item in results if item.get("name", "") == name]
+
+    @classmethod
+    def _is_singleton_name(cls, name: str) -> bool:
+        """Return True for registry-first named memory docs."""
+        prefix = name.split(":", 1)[0]
+        return prefix in cls._SINGLETON_PREFIXES
+
+    def _select_exact_match(self, name: str, matches: list[dict]) -> Optional[str]:
+        """Pick the most recent exact match when duplicates already exist."""
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return str(matches[0]["id"])
+
+        def sort_key(item: dict) -> tuple[bool, datetime]:
+            ts = self._coerce_timestamp(
+                item.get("last_updated") or item.get("updated_at") or item.get("created_at")
+            )
+            return (ts is not None, ts or datetime.min.replace(tzinfo=timezone.utc))
+
+        selected = max(matches, key=sort_key)
+        logger.warning(
+            "Multiple exact post matches found for %s; using %s",
+            name,
+            selected.get("id"),
+        )
+        return str(selected["id"])
+
+    def _resolve_name(self, name: str) -> tuple[Optional[str], bool]:
+        """Resolve a post name and report whether recovery was ambiguous.
 
         Checks the file-backed registry first (survives restarts), then
-        falls back to search.  Any newly discovered mapping is persisted
-        immediately so duplicates are never created.
+        does a one-time exact-name recovery search when needed. Singleton
+        memory docs treat the registry as authoritative and refuse to pick a
+        winner from ambiguous exact-name search results.
         """
         if name in self._uuid_cache:
-            return self._uuid_cache[name]
+            return self._uuid_cache[name], False
 
         try:
-            results = self._client.assets.search(
-                query=name,
-                asset_type="post",
-                team_id=self.team_id,
-                limit=5,
-            )
-            if isinstance(results, list):
-                for item in results:
-                    item_name = item.get("name", "")
-                    if item_name == name:
-                        uuid = item["id"]
-                        self._uuid_cache[name] = uuid
-                        self._save_registry()
-                        return uuid
+            matches = self._search_exact_name_matches(name, limit=25)
+            if self._is_singleton_name(name):
+                if not matches:
+                    return None, False
+                if len(matches) > 1:
+                    logger.warning(
+                        "Multiple exact singleton post matches found for %s; refusing recovery",
+                        name,
+                    )
+                    return None, True
+                uuid = str(matches[0]["id"])
+            else:
+                uuid = self._select_exact_match(name, matches)
+            if uuid:
+                return self._remember_uuid(name, uuid), False
         except Exception as e:
             logger.warning("OuroDocStore._resolve failed for %s: %s", name, e)
 
-        return None
+        return None, False
+
+    def _resolve(self, name: str) -> Optional[str]:
+        """Resolve a post name to its UUID."""
+        uuid, _ambiguous = self._resolve_name(name)
+        return uuid
 
     def _make_content(self, markdown: str) -> "Content":
         """Build a Content object from markdown using the SDK's server-side parser."""
@@ -181,10 +250,26 @@ class OuroDocStore:
 
     def write(self, name: str, content_md: str) -> bool:
         """Update a post this agent owns. Creates it if it doesn't exist."""
-        uuid = self._resolve(name)
+        uuid, ambiguous = self._resolve_name(name)
+
+        if uuid is None and ambiguous:
+            logger.warning(
+                "Refusing to create %s because recovery found multiple exact matches",
+                name,
+            )
+            return False
 
         if uuid is None:
-            return self._create(name, content_md) is not None
+            with self._write_lock:
+                uuid, ambiguous = self._resolve_name(name)
+                if uuid is None:
+                    if ambiguous:
+                        logger.warning(
+                            "Refusing to create %s because recovery found multiple exact matches",
+                            name,
+                        )
+                        return False
+                    return self._create(name, content_md) is not None
 
         try:
             content = self._make_content(content_md)
@@ -200,10 +285,26 @@ class OuroDocStore:
         Works at the Content/TipTap level so rich formatting is preserved
         — no read→concat→rewrite lossy round-trip.
         """
-        uuid = self._resolve(name)
+        uuid, ambiguous = self._resolve_name(name)
+
+        if uuid is None and ambiguous:
+            logger.warning(
+                "Refusing to create %s because recovery found multiple exact matches",
+                name,
+            )
+            return False
 
         if uuid is None:
-            return self._create(name, markdown) is not None
+            with self._write_lock:
+                uuid, ambiguous = self._resolve_name(name)
+                if uuid is None:
+                    if ambiguous:
+                        logger.warning(
+                            "Refusing to create %s because recovery found multiple exact matches",
+                            name,
+                        )
+                        return False
+                    return self._create(name, markdown) is not None
 
         try:
             post = self._client.posts.retrieve(uuid)
