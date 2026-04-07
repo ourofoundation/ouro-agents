@@ -102,6 +102,14 @@ class SubAgentContext:
     conversation_id: Optional[str] = None
     run_id: str = ""
 
+    # Shared prompt context inherited from the parent agent.
+    soul: str = ""
+    notes: str = ""
+    platform_context: str = ""
+    working_memory: str = ""
+    user_model: str = ""
+    plans_index: str = ""
+
     # MCP tool access (populated by OuroAgent._run_subagent for agent-mode subagents)
     deferred_tools: dict = field(default_factory=dict)
     deferred_index: list = field(default_factory=list)

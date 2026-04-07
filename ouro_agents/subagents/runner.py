@@ -23,6 +23,7 @@ from ..artifacts import fetch_asset_content, parse_asset_result
 from ..constants import GLOBAL_ORG_UUID
 from ..platform_context_prompt import format_platform_context_for_prompt
 from ..skills import resolve_skills
+from ..soul import build_shared_prompt_sections
 from ..tool_prompt import build_tool_calling_system_prompt
 from ..usage import format_subagent_usage_summary
 from .context import SubAgentContext, SubAgentResult, SubAgentUsage
@@ -349,20 +350,41 @@ def _format_task_context(
     extra_sections: Optional[list[str]] = None,
 ) -> str:
     """Build a context string from SubAgentContext for the agent's task."""
-    parts: list[str] = []
+    shared_sections = build_shared_prompt_sections(
+        soul=ctx.soul,
+        notes=ctx.notes,
+        platform_context=ctx.platform_context,
+        user_model=ctx.user_model,
+        working_memory=ctx.working_memory,
+        conversation_state=(
+            ctx.conversation_state.format_for_prompt() if ctx.conversation_state else ""
+        ),
+        plans_index=ctx.plans_index,
+    )
+    ordered_shared_keys = (
+        "current_datetime",
+        "soul",
+        "platform_context",
+        "user_model",
+        "notes",
+        "conversation_state",
+        "plans_index",
+        "working_memory",
+    )
+    parts: list[str] = [
+        shared_sections[key] for key in ordered_shared_keys if key in shared_sections
+    ]
 
     asset_context = fetch_asset_content(ctx.deferred_tools, ctx.asset_refs)
     if asset_context:
         parts.append(f"## Input Assets\n{asset_context}")
 
-    platform_text = format_platform_context_for_prompt(ctx.workspace)
+    platform_text = ctx.platform_context or format_platform_context_for_prompt(ctx.workspace)
     if platform_text:
         parts.append(
-            "## Platform context\n"
-            f"{platform_text}\n\n"
             "## Ouro asset placement\n"
             "When creating posts, files, or datasets on Ouro, choose the `org_id` and "
-            "`team_id` that best fit each artifact from your organizations and teams above. "
+            "`team_id` that best fit each artifact from the platform context above. "
             "You may publish different outputs to different teams in the same run when appropriate. "
             "If `agent_can_create` is false for a team, do not use it for API creates — pick another team "
             "or call `get_teams` / `get_organizations` to refresh. "
@@ -375,11 +397,6 @@ def _format_task_context(
             "to choose `org_id` and `team_id`. If you need an org id before loading teams, use the "
             f"global organization id `{GLOBAL_ORG_UUID}`. "
             "Default visibility: public unless the user or task requires otherwise."
-        )
-
-    if ctx.conversation_state:
-        parts.append(
-            f"## Conversation State\n{ctx.conversation_state.format_for_prompt()}"
         )
 
     if extra_sections:

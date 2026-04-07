@@ -114,8 +114,8 @@ def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
             )
 
 
-def _current_datetime_section() -> str:
-    """Return a compact current-date section for the system prompt."""
+def current_datetime_section() -> str:
+    """Return a compact current-date section for prompt injection."""
     local_now = datetime.now().astimezone()
     utc_now = local_now.astimezone(timezone.utc)
     return (
@@ -125,6 +125,45 @@ def _current_datetime_section() -> str:
         f"Weekday: {local_now.strftime('%A')}\n"
         f"UTC datetime: {utc_now.isoformat()}"
     )
+
+
+def build_shared_prompt_sections(
+    *,
+    soul: str = "",
+    notes: str = "",
+    platform_context: str = "",
+    user_model: str = "",
+    working_memory: str = "",
+    conversation_state: str = "",
+    plans_index: str = "",
+) -> dict[str, str]:
+    """Build the shared prompt sections used by main and subagent runs."""
+    sections: dict[str, str] = {"current_datetime": current_datetime_section()}
+
+    if soul:
+        sections["soul"] = f"## IDENTITY AND RULES (SOUL)\n{soul}"
+
+    if platform_context:
+        sections["platform_context"] = f"## PLATFORM CONTEXT\n{platform_context}"
+
+    if user_model:
+        sections["user_model"] = f"## USER CONTEXT\n{user_model}"
+
+    if notes:
+        sections["notes"] = f"## DEPLOYMENT CONTEXT (NOTES)\n{notes}"
+
+    if conversation_state:
+        sections["conversation_state"] = (
+            f"## CONVERSATION STATE\n{conversation_state}"
+        )
+
+    if plans_index:
+        sections["plans_index"] = f"## PLAN POST INDEX\n{plans_index}"
+
+    if working_memory:
+        sections["working_memory"] = f"## WORKING MEMORY\n{working_memory}"
+
+    return sections
 
 
 # Sections that change every turn and should live in the task message
@@ -165,7 +204,15 @@ def build_prompt(
     - dynamic_context: per-turn sections to prepend to the task message
     """
 
-    sections: dict[str, str] = {}
+    sections: dict[str, str] = build_shared_prompt_sections(
+        soul=soul,
+        notes=notes,
+        platform_context=platform_context,
+        user_model=user_model,
+        working_memory=working_memory,
+        conversation_state=conversation_state,
+        plans_index=plans_index,
+    )
 
     framing = mode_framing_override or profile.framing
     sections["mode"] = f"## MODE\n{framing}"
@@ -180,20 +227,6 @@ def build_prompt(
             sections[
                 "mode"
             ] += f"\n\n**Conversation id for this run:** `{chat_conversation_id}`"
-    sections["current_datetime"] = _current_datetime_section()
-
-    if soul:
-        sections["soul"] = f"## IDENTITY AND RULES (SOUL)\n{soul}"
-
-    if platform_context:
-        sections["platform_context"] = f"## PLATFORM CONTEXT\n{platform_context}"
-
-    if user_model:
-        sections["user_model"] = f"## USER CONTEXT\n{user_model}"
-
-    if notes:
-        sections["notes"] = f"## DEPLOYMENT CONTEXT (NOTES)\n{notes}"
-
     if skills:
         sections["skills"] = f"## LOADED SKILLS\n{skills}"
 
@@ -205,15 +238,6 @@ def build_prompt(
             "detailed guidance.\n\n"
             f"{skill_directory}"
         )
-
-    if working_memory:
-        sections["working_memory"] = f"## WORKING MEMORY\n{working_memory}"
-
-    if conversation_state:
-        sections["conversation_state"] = f"## CONVERSATION STATE\n{conversation_state}"
-
-    if plans_index:
-        sections["plans_index"] = f"## PLAN POST INDEX\n{plans_index}"
 
     if entity_context:
         sections["entity_context"] = f"## ACTIVE CONTEXT\n{entity_context}"

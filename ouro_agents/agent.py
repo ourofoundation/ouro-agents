@@ -270,6 +270,40 @@ class OuroAgent:
 
         return "\n".join(lines)
 
+    def _load_shared_prompt_context(
+        self,
+        *,
+        user_id: Optional[str] = None,
+        conversation_state: Optional[ConversationState] = None,
+        include_scheduled_tasks: bool = False,
+    ) -> dict[str, str]:
+        """Load the common prompt context shared by main and subagent runs."""
+        working_memory_parts = [self._load_working_memory()]
+        if include_scheduled_tasks:
+            working_memory_parts.append(self._load_scheduled_task_awareness())
+        working_memory = "\n\n".join(part for part in working_memory_parts if part)
+
+        user_model_text = ""
+        if user_id:
+            user_model_text = self.doc_store.read(f"USER:{user_id}")
+
+        from .modes.planning import PlanStore, format_plans_index_for_prompt
+
+        plan_store = PlanStore(self.config.agent.workspace / "plans")
+        plans_index_text = format_plans_index_for_prompt(plan_store.load_all_active())
+
+        return {
+            "soul": self.soul,
+            "notes": self.notes,
+            "platform_context": self._load_platform_context(),
+            "working_memory": working_memory,
+            "user_model": user_model_text,
+            "conversation_state": (
+                conversation_state.format_for_prompt() if conversation_state else ""
+            ),
+            "plans_index": plans_index_text,
+        }
+
     def _is_anthropic_model(self, model_id: str) -> bool:
         return model_id.startswith("anthropic/")
 
@@ -862,17 +896,17 @@ class OuroAgent:
         skills_text = "" if profile.lightweight else self.skills
         skill_directory = "" if profile.lightweight else self.skill_directory
 
-        working_memory_parts = [self._load_working_memory()]
-        if profile.load_scheduled_tasks:
-            working_memory_parts.append(self._load_scheduled_task_awareness())
-        working_memory = "\n\n".join(part for part in working_memory_parts if part)
-
-        user_model_text = ""
-        if user_id:
-            user_model_text = self.doc_store.read(f"USER:{user_id}")
+        shared_context = self._load_shared_prompt_context(
+            user_id=user_id,
+            conversation_state=conversation_state,
+            include_scheduled_tasks=profile.load_scheduled_tasks,
+        )
+        working_memory = shared_context["working_memory"]
+        user_model_text = shared_context["user_model"]
+        if profile.load_conversation_state:
+            conversation_state_text = shared_context["conversation_state"]
 
         from .memory.context_loader import load_entity_context
-        from .modes.planning import PlanStore, format_plans_index_for_prompt
 
         entity_context_text = load_entity_context(
             self.config.agent.workspace,
@@ -881,9 +915,7 @@ class OuroAgent:
             doc_store=self.doc_store,
             agent_name=self.config.agent.name,
         )
-
-        plan_store = PlanStore(self.config.agent.workspace / "plans")
-        plans_index_text = format_plans_index_for_prompt(plan_store.load_all_active())
+        plans_index_text = shared_context["plans_index"]
 
         from .subagents.profiles import DELEGATABLE_PROFILES
 
@@ -896,8 +928,8 @@ class OuroAgent:
             subagent_directory = ""
 
         return build_prompt(
-            soul=self.soul,
-            notes=self.notes,
+            soul=shared_context["soul"],
+            notes=shared_context["notes"],
             skills=skills_text,
             profile=profile,
             skill_directory=skill_directory,
@@ -909,7 +941,7 @@ class OuroAgent:
             deferred_tool_directory=deferred_tool_directory,
             subagent_directory=subagent_directory,
             mode_framing_override=mode_framing_override,
-            platform_context=self._load_platform_context(),
+            platform_context=shared_context["platform_context"],
             chat_conversation_id=(
                 conversation_id if profile.include_chat_conversation_id else None
             ),
@@ -970,6 +1002,12 @@ class OuroAgent:
             else None
         )
 
+        shared_context = self._load_shared_prompt_context(
+            user_id=user_id,
+            conversation_state=conversation_state,
+            include_scheduled_tasks=False,
+        )
+
         return SubAgentContext(
             workspace=self._workspace,
             backend=self.memory,
@@ -983,6 +1021,12 @@ class OuroAgent:
             deferred_tools=self._deferred_tools,
             deferred_index=self._deferred_index,
             run_id=run_id,
+            soul=shared_context["soul"],
+            notes=shared_context["notes"],
+            platform_context=shared_context["platform_context"],
+            working_memory=shared_context["working_memory"],
+            user_model=shared_context["user_model"],
+            plans_index=shared_context["plans_index"],
             asset_refs=list(asset_refs or []),
             memory_scopes=getattr(profile, "memory_scopes", []) or [],
             ouro_client=ouro_client,
