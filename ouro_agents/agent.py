@@ -552,6 +552,14 @@ class OuroAgent:
 
                 env = dict(server.env or {})
                 env.setdefault("WORKSPACE_ROOT", str(self._workspace.resolve()))
+                if server.name == "ouro":
+                    agent_tz = (
+                        (self.config.heartbeat.active_hours or {}).get("timezone")
+                        if self.config.heartbeat.active_hours
+                        else None
+                    )
+                    if agent_tz:
+                        env.setdefault("OURO_MCP_TIMEZONE", agent_tz)
                 server_params = StdioServerParameters(
                     command=server.command, args=server.args or [], env=env
                 )
