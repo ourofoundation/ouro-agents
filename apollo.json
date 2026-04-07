@@ -1,11 +1,12 @@
 {
+  "env_file": ".env.apollo",
   "agent": {
     "name": "apollo",
     "model": "minimax/minimax-m2.7",
     "reasoning": {
       "effort": "medium"
     },
-    "workspace": "./agents/apollo/workspace",
+    "workspace": "./agents/apollo",
     "org_id": "00000000-0000-0000-0000-000000000000",
     "team_id": "019d2ad3-5f0a-70f7-af48-a172069fc7e2"
   },
@@ -62,7 +63,7 @@
   },
   "memory": {
     "provider": "mem0",
-    "path": "./agents/apollo/workspace/memory",
+    "path": "./agents/apollo/memory",
     "extraction_model": "xiaomi/mimo-v2-flash",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,

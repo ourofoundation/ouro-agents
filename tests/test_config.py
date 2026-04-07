@@ -1,7 +1,9 @@
 import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from ouro_agents.config import OuroAgentsConfig
 
@@ -142,6 +144,63 @@ class TestConfigModeOverrides(unittest.TestCase):
         self.assertTrue(config.heartbeat.enabled)
         self.assertTrue(config.planning.enabled)
         self.assertEqual(config.planning.cadence, "6h")
+
+    def test_loads_env_file_declared_in_config(self):
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            env_path = tmp_path / ".env.agent"
+            env_path.write_text("TEST_API_KEY=from-config\n")
+
+            data = _base_config()
+            data["env_file"] = ".env.agent"
+            data["mcp_servers"] = [
+                {
+                    "name": "test",
+                    "transport": "stdio",
+                    "command": "echo",
+                    "env": {"API_KEY": "${TEST_API_KEY}"},
+                }
+            ]
+
+            config_path = tmp_path / "config.json"
+            config_path.write_text(json.dumps(data))
+
+            with patch.dict(os.environ, {"TEST_API_KEY": ""}, clear=False):
+                config = OuroAgentsConfig.load_from_file(config_path)
+
+            self.assertEqual(config.env_file, env_path)
+            self.assertEqual(config.mcp_servers[0].env["API_KEY"], "from-config")
+
+    def test_env_file_override_takes_priority_over_config_value(self):
+        with TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            (tmp_path / ".env.config").write_text("TEST_API_KEY=from-config\n")
+            override_env = tmp_path / ".env.override"
+            override_env.write_text("TEST_API_KEY=from-override\n")
+
+            data = _base_config()
+            data["env_file"] = ".env.config"
+            data["mcp_servers"] = [
+                {
+                    "name": "test",
+                    "transport": "stdio",
+                    "command": "echo",
+                    "env": {"API_KEY": "${TEST_API_KEY}"},
+                }
+            ]
+
+            config_path = tmp_path / "config.json"
+            config_path.write_text(json.dumps(data))
+
+            with patch.dict(
+                os.environ,
+                {"ENV_FILE": str(override_env), "TEST_API_KEY": ""},
+                clear=False,
+            ):
+                config = OuroAgentsConfig.load_from_file(config_path)
+
+            self.assertEqual(config.env_file, Path(".env.config"))
+            self.assertEqual(config.mcp_servers[0].env["API_KEY"], "from-override")
 
 
 if __name__ == "__main__":

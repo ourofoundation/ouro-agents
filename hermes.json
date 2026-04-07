@@ -1,4 +1,5 @@
 {
+  "env_file": ".env.hermes",
   "agent": {
     "name": "hermes",
     "model": "minimax/minimax-m2.7",

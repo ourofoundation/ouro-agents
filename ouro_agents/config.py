@@ -306,13 +306,12 @@ class OuroAgentsConfig(BaseSettings):
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     modes: ModeConfig = Field(default_factory=ModeConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
+    env_file: Optional[Path] = None
 
     @classmethod
     def load_from_file(cls, path: str | Path) -> "OuroAgentsConfig":
         import os
         from dotenv import load_dotenv
-
-        load_dotenv(os.environ.get("ENV_FILE", ".env"), override=True)
 
         path = Path(path)
         if not path.exists():
@@ -320,6 +319,17 @@ class OuroAgentsConfig(BaseSettings):
 
         with open(path, "r") as f:
             data = json.load(f)
+
+        configured_env_file = data.get("env_file") if isinstance(data, dict) else None
+        env_file = os.environ.get("ENV_FILE")
+        if not env_file and configured_env_file:
+            candidate = Path(configured_env_file).expanduser()
+            if not candidate.is_absolute():
+                candidate = path.parent / candidate
+            env_file = str(candidate)
+            data["env_file"] = env_file
+
+        load_dotenv(env_file or ".env", override=True)
 
         import os
         import re
