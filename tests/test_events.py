@@ -154,6 +154,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.reply_parent_id, "comment-456")
         self.assertEqual(event_run.thread_parent_id, "asset-123")
         self.assertEqual(event_run.feedback_text, "What do you think?")
+        self.assertEqual(event_run.actor_user_id, "actor-1")
 
     def test_thread_reply_prefetches_post_comments_and_thread(self):
         """Thread reply: load the post, all top-level comments, AND the thread."""
@@ -178,10 +179,73 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.prefetch.comment_parent_ids, ["plan-post-1"])
         self.assertEqual(event_run.prefetch.thread_comment_parent_ids, ["thread-123"])
         self.assertIn("post (id: plan-post-1)", event_run.task)
-        self.assertIn("create_comment on `comment-789`", event_run.task)
+        self.assertIn("`create_comment` on `comment-789`", event_run.task)
         self.assertEqual(event_run.reply_parent_id, "comment-789")
         self.assertEqual(event_run.thread_parent_id, "thread-123")
         self.assertEqual(event_run.feedback_text, "Can we tighten the scope?")
+        self.assertEqual(event_run.actor_user_id, "actor-1")
+
+    def test_comment_task_includes_no_action_guidance(self):
+        """Comment tasks should include strong NO_ACTION decision framing."""
+        event_run = build_event_run_context(
+            {
+                "event": "comment",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "source_id": "comment-100",
+                    "source_asset_type": "comment",
+                    "target_id": "post-1",
+                    "target_asset_type": "post",
+                    "text": "Looks good!",
+                },
+            }
+        )
+
+        self.assertIn("Decision: Respond or Do Nothing", event_run.task)
+        self.assertIn("NO_ACTION", event_run.task)
+        self.assertIn("acknowledgment", event_run.task)
+
+    def test_thread_reply_includes_thread_caution(self):
+        """Thread replies should include extra caution about back-and-forth."""
+        event_run = build_event_run_context(
+            {
+                "event": "comment",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "source_id": "comment-200",
+                    "source_asset_type": "comment",
+                    "target_id": "comment-100",
+                    "target_asset_type": "comment",
+                    "focus_asset_id": "post-1",
+                    "focus_asset_type": "post",
+                    "text": "Agreed, that makes sense.",
+                },
+            }
+        )
+
+        self.assertIn("Thread reply caution", event_run.task)
+        self.assertIn("let the thread end", event_run.task)
+
+    def test_top_level_comment_omits_thread_caution(self):
+        """Top-level comments should NOT have thread-specific caution."""
+        event_run = build_event_run_context(
+            {
+                "event": "comment",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "source_id": "comment-300",
+                    "source_asset_type": "comment",
+                    "target_id": "post-1",
+                    "target_asset_type": "post",
+                    "text": "What about X?",
+                },
+            }
+        )
+
+        self.assertNotIn("Thread reply caution", event_run.task)
 
 
 if __name__ == "__main__":

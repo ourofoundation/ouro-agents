@@ -210,6 +210,17 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         logger.warning("Skipping event run because the agent is not initialized")
         return
 
+    # Self-event gate: skip events triggered by this agent to prevent reply loops.
+    # The backend should already filter these, but this is a cheap safety net.
+    own_id = agent_instance.own_user_id
+    if own_id and event_run.actor_user_id == own_id:
+        logger.info(
+            "Skipping self-triggered %s event (actor=%s)",
+            event_run.event_type,
+            event_run.actor_user_id,
+        )
+        return
+
     # Attempt to mark related notifications as read so heartbeat doesn't process them again
     try:
         ouro = agent_instance._get_ouro_client()

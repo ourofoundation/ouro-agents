@@ -11,6 +11,36 @@ from .provenance import AssetProvenance
 
 CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
 
+# Shared guidance injected into comment tasks so agents default to silence
+# unless a reply genuinely adds value.
+_COMMENT_ENGAGEMENT_GUIDANCE = """\
+## Decision: Respond or Do Nothing
+
+First, decide whether a reply adds value. Doing nothing is a valid \
+and often correct outcome. Return `NO_ACTION` unless your reply would \
+meaningfully advance the conversation.
+
+**Do nothing (`NO_ACTION`) when:**
+- The comment is an acknowledgment, agreement, or thanks with no question
+- You have nothing substantive to add beyond what's already been said
+- The thread is a back-and-forth that has reached a natural conclusion
+- Replying would just be restating your earlier point
+- The comment is from another agent and doesn't ask you anything directly
+
+**Respond when:**
+- Someone asks you a direct question
+- You have new information, evidence, or a correction to offer
+- The comment misunderstands something you said and clarification matters
+- You're the author of the asset and the commenter needs a response"""
+
+_THREAD_REPLY_CAUTION = (
+    "**Thread reply caution:** This is a reply within an existing thread. "
+    "Threads that go back and forth too many times become noise. "
+    "Check the thread context below — if you've already made your point "
+    "or the other person is wrapping up, let the thread end. "
+    "Prefer silence over a redundant reply."
+)
+
 EVENT_TOOL_PRELOADS: Dict[str, List[str]] = {
     "comment": ["ouro:get_asset", "ouro:create_comment", "ouro:get_comments"],
     "mention": ["ouro:get_asset", "ouro:create_comment", "ouro:get_comments"],
@@ -169,7 +199,8 @@ def _planning_space_task(
         f"Focus asset id: {ctx.focus_asset_id}\n"
         f"Event data:\n{json.dumps(raw_data, indent=2, sort_keys=True)}\n\n"
         f"Consider whether this is relevant to your current plan. "
-        f"Reply on Ouro if appropriate.\n\n"
+        f"Reply on Ouro only if you have something substantive to add. "
+        f"If not, return exactly `NO_ACTION`.\n\n"
         f"{_ready_hint(preload_names)}"
     )
 
@@ -180,35 +211,42 @@ def _default_comment_task(
     provenance: Optional[AssetProvenance],
     preload_names: list[str],
 ) -> str:
-    if ctx.is_thread_reply:
-        context_hint = (
-            "The full post content, all top-level comments, and the "
-            "current thread are provided below as pre-loaded context — "
-            "no need to call get_asset or get_comments."
-        )
-    else:
-        context_hint = (
-            "The full post content and all comments are provided below "
-            "as pre-loaded context — no need to call get_asset or get_comments."
-        )
-    task = (
+    context_hint = (
+        "The full post content, all top-level comments, and the "
+        "current thread are provided below as pre-loaded context — "
+        "no need to call get_asset or get_comments."
+        if ctx.is_thread_reply
+        else "The full post content and all comments are provided below "
+        "as pre-loaded context — no need to call get_asset or get_comments."
+    )
+
+    parts = [
         f"Received a {event_type} on a {ctx.focus_asset_type} (id: {ctx.focus_asset_id}).\n\n"
         f"**@{ctx.commenter}** wrote:\n> {ctx.comment_text}\n\n"
-        f"{context_hint}\n\n"
-    )
+        f"{context_hint}",
+    ]
+
     hint = _ready_hint(preload_names)
     if hint:
-        task += f"{hint}\n"
+        parts.append(hint)
+
+    parts.append(_COMMENT_ENGAGEMENT_GUIDANCE)
+
+    if ctx.is_thread_reply:
+        parts.append(_THREAD_REPLY_CAUTION)
+
     if provenance and provenance.is_own_asset:
-        task += (
-            "This is your asset. Respond as the author — with context "
-            "about what you created and why. "
+        parts.append(
+            "This is your asset — you have extra context as the author. But even "
+            "authors don't need to reply to every comment. Respond only if the "
+            "commenter needs something from you."
         )
-    task += (
-        f"Reply on Ouro (create_comment on `{ctx.reply_parent_id}`). "
-        "If no reply or other action is needed, return exactly NO_ACTION."
+
+    parts.append(
+        f"If you decide to reply, use `create_comment` on `{ctx.reply_parent_id}`. "
+        "If no reply is warranted, return exactly `NO_ACTION`."
     )
-    return task
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +270,7 @@ class EventRunContext:
     reply_parent_id: Optional[str] = None
     thread_parent_id: Optional[str] = None
     feedback_text: Optional[str] = None
+    actor_user_id: Optional[str] = None
 
 
 def _build_event_task(
@@ -283,8 +322,9 @@ def _build_event_task(
     task = (
         f"Received event from Ouro: {event_type}\n\n"
         f"Event data:\n{json.dumps(data, indent=2, sort_keys=True)}\n\n"
-        "Use MCP tools to act or reply on Ouro when appropriate. "
-        "If nothing is needed, return exactly NO_ACTION."
+        "Decide whether this event requires action from you. "
+        "Most events do not — return `NO_ACTION` unless you have a clear, "
+        "specific reason to act. If action is needed, use MCP tools to respond."
     )
     return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 
@@ -318,4 +358,5 @@ def build_event_run_context(
         reply_parent_id=event.source_id if is_comment else None,
         thread_parent_id=comment_ctx.target_id if comment_ctx else None,
         feedback_text=comment_ctx.comment_text if comment_ctx else None,
+        actor_user_id=event.actor_user_id,
     )

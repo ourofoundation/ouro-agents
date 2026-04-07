@@ -120,6 +120,7 @@ class OuroAgent:
         self._deferred_tools_by_raw_name: dict = {}
         self._deferred_index: list[dict] = []
         self._mcp_connected = False
+        self._own_user_id: Optional[str] = None
 
         self.doc_store: DocStore = LocalDocStore(
             workspace=config.agent.workspace,
@@ -156,6 +157,11 @@ class OuroAgent:
                 len(DELEGATABLE_PROFILES),
                 ", ".join(DELEGATABLE_PROFILES.keys()),
             )
+
+    @property
+    def own_user_id(self) -> Optional[str]:
+        """The agent's platform user ID, populated after MCP connect."""
+        return self._own_user_id
 
     @staticmethod
     def _strip_frontmatter(text: str) -> str:
@@ -212,6 +218,9 @@ class OuroAgent:
         cache_path = self._workspace / "data" / "platform_context.json"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(context, indent=2))
+
+        self._own_user_id = (context.get("profile") or {}).get("id")
+
         logger.info(
             "Refreshed platform context: %d orgs, %d teams",
             len(context["organizations"]),
