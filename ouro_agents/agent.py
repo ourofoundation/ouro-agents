@@ -134,6 +134,23 @@ class OuroAgent:
         )
 
         self._load_custom_profiles()
+        self._python_package_versions = self._validate_python_packages()
+
+    def _validate_python_packages(self) -> dict[str, str | None]:
+        """Validate configured python_packages at startup and return version map."""
+        packages = self.config.agent.python_packages
+        if not packages:
+            return {}
+        from .tools.python_tool import validate_python_packages
+
+        versions = validate_python_packages(packages)
+        missing = [p for p, v in versions.items() if v is None]
+        if missing:
+            logger.warning(
+                "Missing python packages: %s — install them to enable in the sandbox",
+                ", ".join(missing),
+            )
+        return versions
 
     def _load_custom_profiles(self) -> None:
         """Load custom subagent profiles from workspace or config path."""
@@ -708,6 +725,8 @@ class OuroAgent:
         python_tool, _executor = make_python_tool(
             workspace=self.config.agent.workspace,
             ouro_client=ouro_client,
+            python_packages=self.config.agent.python_packages or None,
+            package_versions=self._python_package_versions or None,
         )
         load_skill = make_load_skill_tool(self.config.agent.workspace)
         scheduler_tools = (
@@ -1047,6 +1066,8 @@ class OuroAgent:
             asset_refs=list(asset_refs or []),
             memory_scopes=getattr(profile, "memory_scopes", []) or [],
             ouro_client=ouro_client,
+            python_packages=self.config.agent.python_packages or [],
+            python_package_versions=self._python_package_versions or {},
             record_subagent_usage=self._record_subagent_usage,
         )
 

@@ -48,7 +48,10 @@ Keep the workspace tidy:
 
 ## Upload Pattern
 
-To share a local file on Ouro:
-1. Write or generate the file locally (e.g., `data/results.csv`) using `write_file`.
-2. `load_tool("ouro:create_file")` and pass the absolute local path.
-3. The file is uploaded as an asset on Ouro with the org/team you specify.
+`ouro-agents` sets **`WORKSPACE_ROOT`** on the Ouro MCP process to the **same resolved directory** as the `run_python` workspace. Relative `file_path` values in `ouro:create_file` are joined to that root (`resolve_local_path` in ouro-mcp), so a file written with `write_file('data/out.cif', ...)` is uploaded with **`file_path='data/out.cif'`** (or the absolute path under that workspace).
+
+Steps:
+
+1. Write the artifact with `write_file` (path relative to workspace root).
+2. `load_tool("ouro:create_file")` and pass **`file_path`** using that same relative path. Alternatively, use **`file_content_text` + `file_name`** or **`file_content_base64` + `file_name`** when inline payload is preferable.
+3. Include `org_id`, `team_id`, `name`, and optional `description` / `visibility`.

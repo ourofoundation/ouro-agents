@@ -478,6 +478,8 @@ def _run_agent(
         python_tool, _executor = make_python_tool(
             workspace=ctx.workspace,
             ouro_client=ctx.ouro_client,
+            python_packages=ctx.python_packages or None,
+            package_versions=ctx.python_package_versions or None,
         )
         tools.append(python_tool)
 

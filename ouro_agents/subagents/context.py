@@ -125,6 +125,10 @@ class SubAgentContext:
     # with direct platform access (e.g. the developer subagent).
     ouro_client: Any = None
 
+    # Extra Python packages authorized in the sandbox (from config.agent.python_packages).
+    python_packages: list[str] = field(default_factory=list)
+    python_package_versions: dict = field(default_factory=dict)
+
     # When set (by OuroAgent), every completed subagent run records usage here
     # (top-level and nested delegate chains share the same ledger).
     record_subagent_usage: Optional[Callable[[str, SubAgentUsage], None]] = None

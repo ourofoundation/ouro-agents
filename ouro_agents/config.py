@@ -41,6 +41,7 @@ class AgentConfig(BaseModel):
     workspace: Path = Path("./workspace")
     org_id: Optional[str] = None
     team_id: Optional[str] = None
+    python_packages: List[str] = Field(default_factory=list)
 
 
 class PromptCachingConfig(BaseModel):

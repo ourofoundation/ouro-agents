@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 import zipfile
 from pathlib import Path
@@ -14,6 +15,37 @@ if TYPE_CHECKING:
     from ouro.client import Ouro
 
 logger = logging.getLogger(__name__)
+
+
+def validate_python_packages(packages: list[str]) -> dict[str, str | None]:
+    """Import each package and return {name: version_or_None}.
+
+    Logs a warning for any package that cannot be imported.
+    """
+    results: dict[str, str | None] = {}
+    for pkg in packages:
+        top_level = pkg.split(".")[0]
+        try:
+            mod = importlib.import_module(top_level)
+            version = getattr(mod, "__version__", None)
+            if version is None:
+                try:
+                    from importlib.metadata import version as _meta_version
+
+                    version = _meta_version(top_level)
+                except Exception:
+                    pass
+            results[pkg] = version
+            logger.info("Python package validated: %s==%s", pkg, version or "unknown")
+        except ImportError:
+            results[pkg] = None
+            logger.warning(
+                "Python package '%s' is configured but not importable — "
+                "install it in the agent's Python environment to enable it",
+                pkg,
+            )
+    return results
+
 
 DEFAULT_AUTHORIZED_IMPORTS = [
     "json",
@@ -31,6 +63,8 @@ DEFAULT_AUTHORIZED_IMPORTS = [
     "base64",
     "glob",
     "urllib.parse",
+    "urllib.request",
+    "urllib",
     # "open",
 ]
 
@@ -159,7 +193,9 @@ def _make_workspace_fs(workspace: Path) -> dict:
                     ) from exc
 
             archive.extractall(destination_root)
-            extracted_files = [member.filename for member in members if not member.is_dir()]
+            extracted_files = [
+                member.filename for member in members if not member.is_dir()
+            ]
 
         return {
             "zip_path": str(zip_file),
@@ -211,8 +247,13 @@ def make_python_tool(
     additional_authorized_imports: list[str] | None = None,
     max_print_outputs_length: int = 50_000,
     ouro_client: Optional["Ouro"] = None,
+    python_packages: list[str] | None = None,
+    package_versions: dict[str, str | None] | None = None,
 ):
     authorized = DEFAULT_AUTHORIZED_IMPORTS + (additional_authorized_imports or [])
+
+    if python_packages:
+        authorized += python_packages
 
     if ouro_client is not None:
         authorized += OURO_AUTHORIZED_IMPORTS
@@ -251,7 +292,8 @@ def make_python_tool(
             post = ouro.posts.create(name="My Post", content_markdown="...", org_id="...", team_id="...")
             ds = ouro.datasets.get("<uuid>")
             rows = ouro.datasets.query("<uuid>", query="SELECT * FROM data LIMIT 10")
-            ouro.files.upload(file_path="report.pdf", org_id="...", team_id="...")"""
+        - To publish a workspace file: use MCP `ouro:create_file` with `file_path` equal to the same
+          relative path you passed to `write_file` (WORKSPACE_ROOT matches the run_python workspace)."""
 
     @tool
     def run_python(code: str) -> str:
@@ -306,5 +348,15 @@ def make_python_tool(
 
     if ouro_docs:
         run_python.description += ouro_docs
+
+    if package_versions:
+        available = {k: v for k, v in package_versions.items() if v is not None}
+        if available:
+            lines = [f"        - {pkg} {ver}" for pkg, ver in available.items()]
+            pkg_docs = (
+                "\n\n        Additional installed packages (import these directly):\n"
+                + "\n".join(lines)
+            )
+            run_python.description += pkg_docs
 
     return run_python, executor
