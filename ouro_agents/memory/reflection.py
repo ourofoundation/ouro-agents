@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from ..subagents.reflector import ReflectionResult
+from ..subagents.reflector import ReflectionResult, normalize_daily_log_entry
 from .conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
@@ -170,13 +170,14 @@ def apply_reflection(
             logger.warning("Failed to update user model: %s", e)
 
     if result.daily_log_entry:
+        entry = normalize_daily_log_entry(result.daily_log_entry, run_mode="chat")
         write_daily_log(
             workspace,
-            result.daily_log_entry,
+            entry,
             doc_store=doc_store,
             agent_name=agent_id,
         )
-        logger.info("Reflection logged to daily: %s", result.daily_log_entry[:80])
+        logger.info("Reflection logged to daily: %s", entry[:80])
 
     turn_count = conversation_state.turn_count if conversation_state else 0
     _save_reflected_turn(conversations_dir, conversation_id, turn_count)

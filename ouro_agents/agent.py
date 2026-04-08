@@ -1313,6 +1313,7 @@ class OuroAgent:
         mode: RunMode = RunMode.AUTONOMOUS,
         user_id: Optional[str] = None,
         run_id: str = "",
+        event_type: Optional[str] = None,
     ) -> None:
         """Run reflection after an autonomous/event run via the reflector subagent.
 
@@ -1325,6 +1326,7 @@ class OuroAgent:
             result=str(result),
             tool_summary=tool_summary,
             run_mode=mode.value,
+            event_type=event_type,
         )
 
         try:
@@ -1362,7 +1364,11 @@ class OuroAgent:
             if reflection.daily_log_entry:
                 write_daily_log(
                     self.config.agent.workspace,
-                    normalize_daily_log_entry(reflection.daily_log_entry, mode.value),
+                    normalize_daily_log_entry(
+                        reflection.daily_log_entry,
+                        mode.value,
+                        event_type=event_type,
+                    ),
                     doc_store=self.doc_store,
                     agent_name=self.config.agent.name,
                 )
@@ -1391,6 +1397,7 @@ class OuroAgent:
         extra_tools: Optional[list] = None,
         observer: Optional[AgentObserver] = None,
         preserve_existing_usage: bool = False,
+        event_type: Optional[str] = None,
     ) -> str:
         run_started_at = time.monotonic()
         self.connect_mcp()
@@ -1609,6 +1616,7 @@ class OuroAgent:
                     mode=mode,
                     user_id=user_id,
                     run_id=run_id,
+                    event_type=event_type,
                 )
             if conversation_id and profile.append_conversation_turns:
                 append_conversation_turn(self._workspace, conversation_id, "user", task)

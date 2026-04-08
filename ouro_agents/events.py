@@ -67,6 +67,33 @@ def _ready_hint(preload_names: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _team_context_hint(ctx: "CommentContext") -> Optional[str]:
+    """Build a team-scoping instruction from a CommentContext, if available."""
+    if not ctx.team:
+        return None
+    team_label = ctx.team.get("name") or ctx.team["id"]
+    team_id = ctx.team["id"]
+    parts = [
+        f'**Team context:** This {ctx.root_asset_type} is in the "{team_label}" team'
+        f" (team_id: `{team_id}`"
+    ]
+    if ctx.organization:
+        org_label = ctx.organization.get("name") or ctx.organization["id"]
+        parts.append(f', org: "{org_label}"')
+    parts.append(
+        "). When searching for or browsing content related to this "
+        "conversation (e.g. \"what's the latest\"), pass this `team_id` "
+        "to `search_assets` so results are scoped to this team. "
+        "Only search more broadly if the user explicitly asks."
+    )
+    return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # CommentContext — parsed once from event data, used by all comment handlers
 # ---------------------------------------------------------------------------
 
@@ -77,56 +104,52 @@ class CommentContext:
 
     source_id: str
     source_asset_type: str
-    focus_asset_id: str
-    focus_asset_type: str
+    root_asset_id: str
+    root_asset_type: str
     target_id: Optional[str]
     target_asset_type: Optional[str]
     is_thread_reply: bool
     reply_parent_id: str
     comment_text: str
-    commenter: str
+    user: Optional[Dict[str, Any]] = None
+    team: Optional[Dict[str, str]] = None
+    organization: Optional[Dict[str, str]] = None
+
+    @property
+    def commenter(self) -> str:
+        if self.user:
+            return self.user.get("username", "someone")
+        return "someone"
 
     @classmethod
     def from_event(cls, event: WebhookEvent) -> "CommentContext":
         data = event.data
-        source_id = data.get("source_id", "unknown")
-        source_asset_type = data.get("source_asset_type", "unknown")
-        target_id = data.get("target_id")
-        target_asset_type = data.get("target_asset_type")
-        focus_asset_id = data.get("focus_asset_id") or target_id or source_id
-        focus_asset_type = (
-            data.get("focus_asset_type") or target_asset_type or source_asset_type
-        )
+        sender = data.get("sender") or data.get("user")
         return cls(
-            source_id=source_id,
-            source_asset_type=source_asset_type,
-            focus_asset_id=focus_asset_id,
-            focus_asset_type=focus_asset_type,
-            target_id=target_id,
-            target_asset_type=target_asset_type,
-            is_thread_reply=target_asset_type == "comment",
-            reply_parent_id=source_id,
-            comment_text=(
-                data.get("text") or data.get("content") or data.get("body") or ""
-            ),
-            commenter=(
-                data.get("sender_username")
-                or data.get("sender")
-                or data.get("username")
-                or "someone"
-            ),
+            source_id=data.get("source_id", "unknown"),
+            source_asset_type=data.get("source_asset_type", "unknown"),
+            root_asset_id=data.get("root_asset_id") or data.get("target_id") or data.get("source_id") or "unknown",
+            root_asset_type=data.get("root_asset_type") or data.get("target_asset_type") or data.get("source_asset_type") or "unknown",
+            target_id=data.get("target_id"),
+            target_asset_type=data.get("target_asset_type"),
+            is_thread_reply=data.get("target_asset_type") == "comment",
+            reply_parent_id=data.get("source_id", "unknown"),
+            comment_text=data.get("text", ""),
+            user=sender if isinstance(sender, dict) else None,
+            team=data.get("team"),
+            organization=data.get("organization"),
         )
 
     def build_prefetch(self) -> PrefetchSpec:
         can_fetch = (
-            self.focus_asset_id
-            and self.focus_asset_id != "unknown"
-            and self.focus_asset_type in FETCHABLE_ASSET_TYPES
+            self.root_asset_id
+            and self.root_asset_id != "unknown"
+            and self.root_asset_type in FETCHABLE_ASSET_TYPES
         )
-        asset_ids = [self.focus_asset_id] if can_fetch else []
+        asset_ids = [self.root_asset_id] if can_fetch else []
         comment_parent_ids = (
-            [self.focus_asset_id]
-            if self.focus_asset_id and self.focus_asset_id != "unknown"
+            [self.root_asset_id]
+            if self.root_asset_id and self.root_asset_id != "unknown"
             else []
         )
 
@@ -157,7 +180,7 @@ def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str
     return (
         f"You received feedback on your current plan "
         f"(cycle {pc.cycle_id[:8]}, status: {pc.status}, "
-        f"post id: {pc.post_id or ctx.focus_asset_id}).\n\n"
+        f"post id: {pc.post_id or ctx.root_asset_id}).\n\n"
         f"## Feedback\n{ctx.comment_text}\n\n"
         f"## Your Current Plan\n{pc.plan_text}\n\n"
         f"Review the feedback, revise your plan if needed, and update "
@@ -177,7 +200,7 @@ def _historical_feedback_task(
     pc = provenance.plan_cycle
     return (
         f"You received feedback on a completed plan "
-        f"(cycle {pc.cycle_id[:8]}, post id: {pc.post_id or ctx.focus_asset_id}).\n\n"
+        f"(cycle {pc.cycle_id[:8]}, post id: {pc.post_id or ctx.root_asset_id}).\n\n"
         f"## Feedback\n{ctx.comment_text}\n\n"
         f"This plan has already been executed. Acknowledge the feedback "
         f"and note any insights that should inform future planning.\n\n"
@@ -191,18 +214,24 @@ def _planning_space_task(
     preload_names: list[str],
     event_type: str,
 ) -> str:
-    return (
+    parts = [
         f"Received a {event_type} in your planning space.\n\n"
         f"Source asset type: {ctx.source_asset_type}\n"
         f"Source asset id: {ctx.source_id}\n"
-        f"Focus asset type: {ctx.focus_asset_type}\n"
-        f"Focus asset id: {ctx.focus_asset_id}\n"
+        f"Root asset type: {ctx.root_asset_type}\n"
+        f"Root asset id: {ctx.root_asset_id}\n"
         f"Event data:\n{json.dumps(raw_data, indent=2, sort_keys=True)}\n\n"
         f"Consider whether this is relevant to your current plan. "
         f"Reply on Ouro only if you have something substantive to add. "
-        f"If not, return exactly `NO_ACTION`.\n\n"
-        f"{_ready_hint(preload_names)}"
-    )
+        f"If not, return exactly `NO_ACTION`."
+    ]
+    team_hint = _team_context_hint(ctx)
+    if team_hint:
+        parts.append(team_hint)
+    hint = _ready_hint(preload_names)
+    if hint:
+        parts.append(hint)
+    return "\n\n".join(parts)
 
 
 def _default_comment_task(
@@ -221,10 +250,14 @@ def _default_comment_task(
     )
 
     parts = [
-        f"Received a {event_type} on a {ctx.focus_asset_type} (id: {ctx.focus_asset_id}).\n\n"
+        f"Received a {event_type} on a {ctx.root_asset_type} (id: {ctx.root_asset_id}).\n\n"
         f"**@{ctx.commenter}** wrote:\n> {ctx.comment_text}\n\n"
         f"{context_hint}",
     ]
+
+    team_hint = _team_context_hint(ctx)
+    if team_hint:
+        parts.append(team_hint)
 
     hint = _ready_hint(preload_names)
     if hint:
@@ -265,8 +298,8 @@ class EventRunContext:
     prefetch: PrefetchSpec = field(default_factory=PrefetchSpec)
     provenance: Optional[AssetProvenance] = None
     source_id: Optional[str] = None
-    focus_asset_id: Optional[str] = None
-    focus_asset_type: Optional[str] = None
+    root_asset_id: Optional[str] = None
+    root_asset_type: Optional[str] = None
     reply_parent_id: Optional[str] = None
     thread_parent_id: Optional[str] = None
     feedback_text: Optional[str] = None
@@ -285,9 +318,11 @@ def _build_event_task(
     prefetch = PrefetchSpec()
 
     if event_type == "new-message":
-        sender = event.sender_username or event.actor_user_id or "Unknown"
-        content = data.get("text") or data.get("content") or ""
-        conv = event.conversation_id or "unknown"
+        user_obj = data.get("sender") or data.get("user") or {}
+        sender = user_obj.get("username") if isinstance(user_obj, dict) else None
+        sender = sender or event.sender_username or "Unknown"
+        content = data.get("text", "")
+        conv = data.get("conversation_id") or event.conversation_id or "unknown"
         task = (
             f"New conversation message from {sender} (conversation_id: {conv}).\n\n"
             f"{content}"
@@ -343,6 +378,8 @@ def build_event_run_context(
         comment_ctx=comment_ctx,
     )
 
+    data = event.data or {}
+
     return EventRunContext(
         event_type=event.event_type,
         task=task,
@@ -353,8 +390,8 @@ def build_event_run_context(
         prefetch=prefetch,
         provenance=provenance,
         source_id=event.source_id,
-        focus_asset_id=(event.data or {}).get("focus_asset_id"),
-        focus_asset_type=(event.data or {}).get("focus_asset_type"),
+        root_asset_id=data.get("root_asset_id"),
+        root_asset_type=data.get("root_asset_type"),
         reply_parent_id=event.source_id if is_comment else None,
         thread_parent_id=comment_ctx.target_id if comment_ctx else None,
         feedback_text=comment_ctx.comment_text if comment_ctx else None,

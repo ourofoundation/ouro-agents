@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -55,8 +56,9 @@ Rules:
   Only include clear, repeated signals. Omit for task/run reflection.
 - daily_log_entry: One-line summary of what was accomplished. \
   Link any Ouro assets created or referenced using markdown: [asset name](asset:<uuid>). \
-  Use lowercase kebab-case for the activity tag, e.g. [event:comment], [task], [event:mention], [heartbeat]. \
-  If the run context says Run mode: heartbeat, use [heartbeat], not [task]. \
+  If the run context includes "Daily log tag: [tag]", use that exact tag as the prefix. \
+  Otherwise use [chat] for conversation reflections. Never invent tags like [heartbeat] \
+  or [event:comment] yourself — the system determines the correct tag. \
   Format: "[tag] brief description with [linked assets](asset:<uuid>)"
 - For heartbeat engagement actions, make the daily_log_entry specific enough to \
   prevent accidental repetition on the next tick. Include which asset was touched \
@@ -78,11 +80,29 @@ class ReflectionResult:
     daily_log_entry: str = ""
 
 
+_CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
+
+
+def resolve_daily_log_tag(run_mode: str, event_type: Optional[str] = None) -> str:
+    """Compute the deterministic daily-log tag from the run mode and event type."""
+    if event_type and event_type not in _CHAT_EVENT_TYPES:
+        return f"[event:{event_type}]"
+    _mode_tags = {
+        "heartbeat": "[heartbeat]",
+        "plan": "[planning]",
+        "review": "[review]",
+        "chat": "[chat]",
+        "chat-reply": "[chat]",
+    }
+    return _mode_tags.get(run_mode, "[task]")
+
+
 def build_run_reflection_task(
     task: str,
     result: str,
     tool_summary: list[dict] | None = None,
     run_mode: str = "autonomous",
+    event_type: Optional[str] = None,
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
@@ -96,9 +116,12 @@ def build_run_reflection_task(
         "\n".join(tools_compact) if tools_compact else "(no significant tool calls)"
     )
 
+    tag = resolve_daily_log_tag(run_mode, event_type)
+
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
-        f"Run mode: {run_mode}\n\n"
+        f"Run mode: {run_mode}\n"
+        f"Daily log tag: {tag}\n\n"
         f"Task:\n{task[:600]}\n\n"
         f"Result:\n{str(result)[:800]}\n\n"
         f"Tool calls:\n{tools_text}\n\n"
@@ -108,17 +131,20 @@ def build_run_reflection_task(
     )
 
 
-def normalize_daily_log_entry(entry: str, run_mode: str = "autonomous") -> str:
-    """Normalize reflector daily-log output for the given run mode."""
-    _prefix_overrides = {
-        "heartbeat": "[heartbeat]",
-        "plan": "[planning]",
-        "review": "[review]",
-    }
-    override = _prefix_overrides.get(run_mode)
-    if override and entry.startswith("[task]"):
-        return override + entry[len("[task]") :]
-    return entry
+_TAG_RE = re.compile(r"^\[[\w:.-]+\]\s*")
+
+
+def normalize_daily_log_entry(
+    entry: str,
+    run_mode: str = "autonomous",
+    event_type: Optional[str] = None,
+) -> str:
+    """Enforce the correct daily-log tag regardless of what the LLM emitted."""
+    expected = resolve_daily_log_tag(run_mode, event_type)
+    body = _TAG_RE.sub("", entry).strip()
+    if not body:
+        return entry
+    return f"{expected} {body}"
 
 
 def parse_reflection_result(text: str) -> Optional[ReflectionResult]:

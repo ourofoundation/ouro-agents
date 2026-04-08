@@ -39,14 +39,21 @@ def _load_events_module():
     def parse_webhook_event(body):
         data = body.get("data", {})
         event_type = body["event"].strip().lower().replace("_", "-")
+        sender = data.get("sender") if isinstance(data.get("sender"), dict) else {}
+        user = data.get("user") if isinstance(data.get("user"), dict) else {}
         return WebhookEvent(
             event_type=event_type,
             data=data,
             timestamp=body.get("timestamp"),
             recipient_user_id=body.get("user_id"),
             conversation_id=data.get("conversation_id"),
-            actor_user_id=data.get("user_id"),
-            sender_username=data.get("sender_username") or data.get("sender"),
+            actor_user_id=data.get("user_id") or sender.get("id") or user.get("id"),
+            sender_username=(
+                data.get("sender_username")
+                or sender.get("username")
+                or (data.get("sender") if isinstance(data.get("sender"), str) else None)
+                or user.get("username")
+            ),
             source_id=data.get("source_id"),
             source_asset_type=data.get("source_asset_type"),
         )
@@ -131,6 +138,73 @@ build_event_run_context = _load_events_module().build_event_run_context
 
 
 class TestBuildEventRunContext(unittest.TestCase):
+    def test_new_message_uses_top_level_user_id(self):
+        event_run = build_event_run_context(
+            {
+                "event": "new-message",
+                "user_id": "agent-recipient",
+                "data": {
+                    "user_id": "human-actor",
+                    "user": {
+                        "id": "human-actor",
+                        "username": "alice",
+                        "is_agent": False,
+                    },
+                    "conversation_id": "conv-1",
+                    "text": "Hello",
+                    "type": "message",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.user_id, "human-actor")
+        self.assertEqual(event_run.actor_user_id, "human-actor")
+        self.assertIn("New conversation message from alice", event_run.task)
+
+    def test_new_message_falls_back_to_nested_user(self):
+        event_run = build_event_run_context(
+            {
+                "event": "new-message",
+                "user_id": "agent-recipient",
+                "data": {
+                    "user": {
+                        "id": "human-actor",
+                        "username": "alice",
+                        "is_agent": False,
+                    },
+                    "conversation_id": "conv-1",
+                    "text": "Hello",
+                    "type": "message",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.user_id, "human-actor")
+        self.assertEqual(event_run.actor_user_id, "human-actor")
+        self.assertIn("New conversation message from alice", event_run.task)
+
+    def test_new_message_uses_sender_object(self):
+        event_run = build_event_run_context(
+            {
+                "event": "new-message",
+                "user_id": "agent-recipient",
+                "data": {
+                    "sender": {
+                        "id": "human-actor",
+                        "username": "alice",
+                        "is_agent": False,
+                    },
+                    "conversation_id": "conv-1",
+                    "text": "Hello",
+                    "type": "message",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.user_id, "human-actor")
+        self.assertEqual(event_run.actor_user_id, "human-actor")
+        self.assertIn("New conversation message from alice", event_run.task)
+
     def test_top_level_comment_prefetches_post_and_all_comments(self):
         """Top-level comment on a post: load the post + all top-level comments."""
         event_run = build_event_run_context(
@@ -139,11 +213,16 @@ class TestBuildEventRunContext(unittest.TestCase):
                 "user_id": "recipient-1",
                 "data": {
                     "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "alice", "is_agent": False},
                     "source_id": "comment-456",
                     "source_asset_type": "comment",
                     "target_id": "asset-123",
                     "target_asset_type": "post",
+                    "root_asset_id": "asset-123",
+                    "root_asset_type": "post",
                     "text": "What do you think?",
+                    "team": {"id": "team-1", "name": "research"},
+                    "organization": {"id": "org-1", "name": "Acme"},
                 },
             }
         )
@@ -155,6 +234,8 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.thread_parent_id, "asset-123")
         self.assertEqual(event_run.feedback_text, "What do you think?")
         self.assertEqual(event_run.actor_user_id, "actor-1")
+        self.assertEqual(event_run.root_asset_id, "asset-123")
+        self.assertEqual(event_run.root_asset_type, "post")
 
     def test_thread_reply_prefetches_post_comments_and_thread(self):
         """Thread reply: load the post, all top-level comments, AND the thread."""
@@ -164,13 +245,16 @@ class TestBuildEventRunContext(unittest.TestCase):
                 "user_id": "recipient-1",
                 "data": {
                     "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "alice", "is_agent": False},
                     "source_id": "comment-789",
                     "source_asset_type": "comment",
                     "target_id": "thread-123",
                     "target_asset_type": "comment",
-                    "focus_asset_id": "plan-post-1",
-                    "focus_asset_type": "post",
+                    "root_asset_id": "plan-post-1",
+                    "root_asset_type": "post",
                     "text": "Can we tighten the scope?",
+                    "team": None,
+                    "organization": None,
                 },
             }
         )
@@ -184,6 +268,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.thread_parent_id, "thread-123")
         self.assertEqual(event_run.feedback_text, "Can we tighten the scope?")
         self.assertEqual(event_run.actor_user_id, "actor-1")
+        self.assertEqual(event_run.root_asset_id, "plan-post-1")
 
     def test_comment_task_includes_no_action_guidance(self):
         """Comment tasks should include strong NO_ACTION decision framing."""
@@ -193,10 +278,13 @@ class TestBuildEventRunContext(unittest.TestCase):
                 "user_id": "recipient-1",
                 "data": {
                     "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "bob", "is_agent": False},
                     "source_id": "comment-100",
                     "source_asset_type": "comment",
                     "target_id": "post-1",
                     "target_asset_type": "post",
+                    "root_asset_id": "post-1",
+                    "root_asset_type": "post",
                     "text": "Looks good!",
                 },
             }
@@ -214,12 +302,13 @@ class TestBuildEventRunContext(unittest.TestCase):
                 "user_id": "recipient-1",
                 "data": {
                     "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "carol", "is_agent": False},
                     "source_id": "comment-200",
                     "source_asset_type": "comment",
                     "target_id": "comment-100",
                     "target_asset_type": "comment",
-                    "focus_asset_id": "post-1",
-                    "focus_asset_type": "post",
+                    "root_asset_id": "post-1",
+                    "root_asset_type": "post",
                     "text": "Agreed, that makes sense.",
                 },
             }
@@ -236,10 +325,13 @@ class TestBuildEventRunContext(unittest.TestCase):
                 "user_id": "recipient-1",
                 "data": {
                     "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "dave", "is_agent": False},
                     "source_id": "comment-300",
                     "source_asset_type": "comment",
                     "target_id": "post-1",
                     "target_asset_type": "post",
+                    "root_asset_id": "post-1",
+                    "root_asset_type": "post",
                     "text": "What about X?",
                 },
             }

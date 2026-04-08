@@ -13,8 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .constants import FETCHABLE_ASSET_TYPES
-
 logger = logging.getLogger(__name__)
 
 
@@ -62,79 +60,50 @@ def _load_agent_user_id(workspace: Path) -> Optional[str]:
         return None
 
 
-def resolve_event_focus_asset(
-    source_id: Optional[str],
-    event_data: Dict[str, Any],
-) -> tuple[Optional[str], Optional[str]]:
-    """Return the root asset an event is effectively about.
-
-    The backend enriches comment/mention webhook payloads with
-    ``root_asset_id`` / ``root_asset_type`` — the page-level asset
-    (file, post, dataset, etc.) that the comment lives on.
-    """
-    focus_id = event_data.get("focus_asset_id")
-    focus_type = event_data.get("focus_asset_type")
-    if focus_id:
-        return focus_id, focus_type
-
-    root_id = event_data.get("root_asset_id")
-    root_type = event_data.get("root_asset_type")
-    if root_id:
-        return root_id, root_type
-
-    target_id = event_data.get("target_id")
-    target_type = event_data.get("target_asset_type")
-    if target_id and target_type in FETCHABLE_ASSET_TYPES:
-        return target_id, target_type
-
-    return source_id, event_data.get("source_asset_type")
-
-
 def resolve_event_provenance(
-    source_id: Optional[str],
     event_data: Dict[str, Any],
     workspace: Path,
     planning_team_id: Optional[str] = None,
     planning_org_id: Optional[str] = None,
     planning_enabled: bool = False,
 ) -> AssetProvenance:
-    """Resolve provenance for an event using local state."""
-    focus_asset_id, _focus_asset_type = resolve_event_focus_asset(
-        source_id,
-        event_data,
-    )
+    """Resolve provenance for an event using local state.
 
-    if not focus_asset_id:
+    Reads ``root_asset_id``, ``team``, and ``organization`` directly from
+    the enriched event payload — no fallback chains.
+    """
+    root_asset_id = event_data.get("root_asset_id")
+    if not root_asset_id:
         return AssetProvenance()
 
     is_own = False
     in_planning_space = False
     plan_cycle: Optional[PlanCycleRef] = None
 
-    # Identity match: does the event say who authored the source asset?
     asset_author = event_data.get("source_user_id") or event_data.get("asset_user_id")
     if asset_author:
         agent_uid = _load_agent_user_id(workspace)
         if agent_uid and asset_author == agent_uid:
             is_own = True
 
-    # Team/org match: is the event in the agent's planning space?
     if planning_enabled:
-        event_team = event_data.get("team_id")
-        event_org = event_data.get("org_id") or event_data.get("organization_id")
+        team = event_data.get("team")
+        org = event_data.get("organization")
+        event_team = team["id"] if isinstance(team, dict) and "id" in team else None
+        event_org = org["id"] if isinstance(org, dict) and "id" in org else None
+
         if planning_team_id and event_team == planning_team_id:
             in_planning_space = True
         elif planning_org_id and event_org == planning_org_id and not planning_team_id:
             in_planning_space = True
 
-    # Plan store match: is the effective event asset a known plan post?
     if planning_enabled:
         from .modes.planning import PlanStore
 
         store = PlanStore(workspace / "plans")
 
         for active in store.load_all_active():
-            if active.post_id == focus_asset_id:
+            if active.post_id == root_asset_id:
                 is_own = True
                 in_planning_space = True
                 plan_cycle = PlanCycleRef(
@@ -147,7 +116,7 @@ def resolve_event_provenance(
 
         if not plan_cycle:
             for hist in store.load_history():
-                if hist.post_id == focus_asset_id:
+                if hist.post_id == root_asset_id:
                     is_own = True
                     in_planning_space = True
                     plan_cycle = PlanCycleRef(

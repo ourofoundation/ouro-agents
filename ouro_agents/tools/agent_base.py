@@ -310,11 +310,42 @@ def _message_preview(content: str, max_chars: int = 600) -> str:
     return preview
 
 
+def _extract_terminal_no_action(content: str) -> str | None:
+    stripped = content.strip()
+    if stripped == "NO_ACTION":
+        return "NO_ACTION"
+
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if not lines:
+        return None
+
+    last_line = lines[-1]
+    if last_line in {"NO_ACTION", "`NO_ACTION`"}:
+        return "NO_ACTION"
+    return None
+
+
 def _treat_as_reasoning_only(exc: Exception, preview: str) -> bool:
     return bool(preview) and (
         "does not contain any JSON blob" in str(exc)
         or "Could not parse tool call" in str(exc)
     )
+
+
+def _recover_chat_final_answer(content: str, tool_calls) -> str | None:
+    """Treat raw chat text as a final answer after all tool-call salvage fails.
+
+    In chat/chat-reply modes, plain assistant text is usually the intended user-
+    facing reply. If we fail to parse any tool calls after all recovery attempts,
+    returning that text as ``final_answer`` is safer than handing smolagents an
+    empty tool-call list, which causes another step and can spiral into loops.
+    """
+    if tool_calls:
+        return None
+    answer = content.strip()
+    if not answer:
+        return None
+    return answer
 
 
 def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
@@ -326,15 +357,19 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
             return original(message)
         except Exception as exc:
             content = message.content or ""
-            
-            # If the model explicitly output NO_ACTION as raw text, wrap it in a tool call
-            # so the agent doesn't get stuck in a loop.
-            if content.strip() == "NO_ACTION":
+
+            # If the model explicitly ends with a standalone NO_ACTION marker,
+            # treat it as a terminal answer so autonomous comment runs can exit
+            # cleanly even when the model includes reasoning before the marker.
+            no_action_answer = _extract_terminal_no_action(content)
+            if no_action_answer is not None:
                 logger.info("Recovered raw NO_ACTION text as final_answer tool call")
                 message.role = MessageRole.ASSISTANT
-                message.tool_calls = [_make_tool_call("final_answer", {"answer": "NO_ACTION"})]
+                message.tool_calls = [
+                    _make_tool_call("final_answer", {"answer": no_action_answer})
+                ]
                 return message
-                
+
             tool_calls = _parse_xml_tool_calls(content)
             if not tool_calls:
                 tool_calls = _parse_narrated_tool_calls(content)
@@ -342,14 +377,19 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                 tool_calls = _parse_structured_tool_calls(content)
             if not tool_calls:
                 tool_calls = _parse_inline_tool_call(content)
-            
-            # If we still don't have tool calls, check if the model just output raw text
-            # that looks like a final answer (no JSON/XML at all).
-            # Only do this in chat mode to avoid swallowing legitimate reasoning in autonomous modes.
-            if is_chat_mode and not tool_calls and content.strip() and "{" not in content and "<" not in content:
-                logger.info("Recovered raw text as final_answer tool call")
+
+            # In chat modes, if all salvage parsers fail and the model emitted
+            # plain text, treat it as the intended assistant reply instead of
+            # continuing with an empty tool-call list.
+            chat_final_answer = None
+            if is_chat_mode:
+                chat_final_answer = _recover_chat_final_answer(content, tool_calls)
+            if chat_final_answer is not None:
+                logger.info("Recovered raw chat text as final_answer tool call")
                 message.role = MessageRole.ASSISTANT
-                message.tool_calls = [_make_tool_call("final_answer", {"answer": content.strip()})]
+                message.tool_calls = [
+                    _make_tool_call("final_answer", {"answer": chat_final_answer})
+                ]
                 return message
 
             if not tool_calls:

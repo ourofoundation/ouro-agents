@@ -16,7 +16,7 @@ from .display import OuroDisplay, get_display, set_display
 from .events import EventRunContext, build_event_run_context
 from .logging_config import uvicorn_log_config
 from .observer import AgentObserver
-from .provenance import resolve_event_focus_asset, resolve_event_provenance
+from .provenance import resolve_event_provenance
 from .publisher import OuroReplyPublisher
 from .utils.message_persistence import (
     build_persistence_reasoning_callback,
@@ -127,10 +127,9 @@ class ServerAgentObserver(AgentObserver):
             or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
         ):
             return
-        if not self.event_run.conversation_id or not self.event_run.user_id:
+        if not self.event_run.conversation_id:
             return
         self.reply_publisher.emit_activity(
-            recipient_id=self.event_run.user_id,
             conversation_id=self.event_run.conversation_id,
             status=status,
             active=active,
@@ -143,21 +142,19 @@ class ServerAgentObserver(AgentObserver):
             or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
         ):
             return
-        if not self.event_run.conversation_id or not self.event_run.user_id:
+        if not self.event_run.conversation_id:
             return
         self.state["has_streamed"] = True
 
         if not self.state["has_started_typing"]:
             self.state["has_started_typing"] = True
             self.reply_publisher.emit_activity(
-                recipient_id=self.event_run.user_id,
                 conversation_id=self.event_run.conversation_id,
                 status="typing",
                 active=True,
             )
 
         self.reply_publisher.emit_llm_response(
-            recipient_id=self.event_run.user_id,
             conversation_id=self.event_run.conversation_id,
             content=chunk,
             message_id=self.stream_message_id,
@@ -187,7 +184,6 @@ class ServerAgentObserver(AgentObserver):
             and self.event_run.event_type in REALTIME_CHAT_EVENT_TYPES
         ):
             self.reply_publisher.emit_llm_response_end(
-                recipient_id=self.event_run.user_id,
                 conversation_id=self.event_run.conversation_id,
                 message_id=self.stream_message_id,
                 message=msg,
@@ -279,6 +275,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 ),
                 prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
                 observer=observer,
+                event_type=event_run.event_type,
             )
 
             observer.on_activity("typing", None, False)
@@ -287,7 +284,6 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         observer.on_activity("typing", None, False)
         if reply_publisher and event_run.event_type in REALTIME_CHAT_EVENT_TYPES:
             reply_publisher.emit_llm_response_end(
-                recipient_id=event_run.user_id,
                 conversation_id=event_run.conversation_id,
                 message_id=stream_message_id,
                 message=None,
@@ -354,25 +350,11 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         raise HTTPException(status_code=503, detail="Agent not initialized")
 
     try:
-        # Resolve provenance before building the event context so task
-        # framing can be plan-aware from the start.
-        event_data = dict(body.get("data", {}) or {})
-        body = dict(body)
-        body["data"] = event_data
-        source_id = event_data.get("source_id")
-        focus_asset_id, focus_asset_type = resolve_event_focus_asset(
-            source_id=source_id,
-            event_data=event_data,
-        )
-        if focus_asset_id:
-            event_data["focus_asset_id"] = focus_asset_id
-        if focus_asset_type:
-            event_data["focus_asset_type"] = focus_asset_type
+        event_data = body.get("data", {}) or {}
         planning_cfg = agent_instance.config.planning
         agent_cfg = agent_instance.config.agent
 
         provenance = resolve_event_provenance(
-            source_id=focus_asset_id or source_id,
             event_data=event_data,
             workspace=agent_cfg.workspace,
             planning_team_id=agent_cfg.team_id,
