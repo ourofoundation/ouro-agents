@@ -356,12 +356,23 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                 workspace / "teams" / tid / "plans", team_id=tid,
             )
 
-        # Migrate: if old flat workspace/plans/ exists, move to first team
+        # Migrate: if old flat workspace/plans/ exists, only auto-move when there
+        # is a single team — otherwise the first sorted id is arbitrary and pins
+        # plans to the wrong team.
         legacy_plans = workspace / "plans"
+        sorted_team_ids = _sorted_team_ids(agent)
         if legacy_plans.exists() and (legacy_plans / "active").exists():
-            first_tid = next(iter(_sorted_team_ids(agent)), None)
-            if first_tid:
+            if len(sorted_team_ids) != 1:
+                logger.warning(
+                    "Legacy workspace/plans/ exists but agent has %d teams; "
+                    "skipping auto-migration. Move contents to teams/<team_id>/plans/ "
+                    "manually or remove legacy plans/.",
+                    len(sorted_team_ids),
+                )
+            else:
+                first_tid = sorted_team_ids[0]
                 import shutil
+
                 dest = workspace / "teams" / first_tid / "plans"
                 if not dest.exists():
                     dest.mkdir(parents=True, exist_ok=True)
@@ -400,19 +411,39 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
         if action == "plan":
             future_hb = has_future_heartbeat_in_active_window(agent.config.heartbeat)
             if not future_hb:
-                if default_plan and default_plan.status == "active" and default_plan.all_items_complete:
-                    plan_store.archive(
-                        default_plan, ouro_client=agent._get_ouro_client()
-                    )
-                    logger.info(
-                        "Archived completed default plan %s at end of active window",
-                        default_plan.id,
-                    )
+                if default_plan and default_plan.status == "active":
+                    if default_plan.needs_replan_stale_active or default_plan.all_items_complete:
+                        stale_window = default_plan.needs_replan_stale_active
+                        plan_store.archive(
+                            default_plan, ouro_client=agent._get_ouro_client()
+                        )
+                        reason = (
+                            "stale (no quest/items)"
+                            if stale_window
+                            else "complete"
+                        )
+                        logger.info(
+                            "Archived default plan %s at end of active window (%s)",
+                            default_plan.id[:8],
+                            reason,
+                        )
                 logger.info(
                     "Skipping planning: no future heartbeat remains in active window"
                 )
                 return None
             if default_plan and default_plan.status == "active":
+                if default_plan.needs_replan_stale_active:
+                    logger.info(
+                        "Archiving defunct active plan %s (no quest, no items); "
+                        "starting fresh planning cycle",
+                        default_plan.id[:8],
+                    )
+                    plan_store.archive(
+                        default_plan, ouro_client=agent._get_ouro_client()
+                    )
+                    return await run_planning_heartbeat(
+                        agent, hb_model, plan_store, servers
+                    )
                 if default_plan.all_items_complete:
                     logger.info(
                         "Plan %s complete; archiving and starting fresh planning cycle",
@@ -424,16 +455,15 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                     return await run_planning_heartbeat(
                         agent, hb_model, plan_store, servers
                     )
-                else:
-                    logger.info(
-                        "Continuing planning for active plan %s (%d/%d items done)",
-                        default_plan.id[:8],
-                        default_plan.items_done,
-                        len(default_plan.items),
-                    )
-                    return await run_planning_heartbeat(
-                        agent, hb_model, plan_store, servers, continuation=default_plan
-                    )
+                logger.info(
+                    "Continuing planning for active plan %s (%d/%d items done)",
+                    default_plan.id[:8],
+                    default_plan.items_done,
+                    len(default_plan.items),
+                )
+                return await run_planning_heartbeat(
+                    agent, hb_model, plan_store, servers, continuation=default_plan
+                )
             logger.info("No existing plan; starting fresh planning cycle")
             return await run_planning_heartbeat(agent, hb_model, plan_store, servers)
 

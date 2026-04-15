@@ -170,6 +170,58 @@ def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():
     assert action == "execute"
 
 
+def test_next_action_replans_stale_active_without_quest_or_items():
+    """Active + empty items + no quest_id cannot become all_items_complete."""
+    current = PlanCycle(
+        id="cycle-stale",
+        status="active",
+        kind="default",
+        created_at="2026-04-08T15:00:00+00:00",
+        activated_at="2026-04-08T16:00:00+00:00",
+        heartbeats_completed=40,
+        items=[],
+        quest_id=None,
+        plan_text="corrupted tool output",
+    )
+
+    assert current.needs_replan_stale_active is True
+
+    action = next_action(
+        current=current,
+        cadence="4h",
+        min_heartbeats=4,
+        review_window="1h",
+        auto_approve=True,
+    )
+
+    assert action == "plan"
+
+
+def test_next_action_active_with_quest_but_no_local_items_still_executes():
+    current = PlanCycle(
+        id="cycle-quest",
+        status="active",
+        kind="default",
+        created_at="2026-04-01T09:00:00+00:00",
+        activated_at="2026-04-01T09:00:00+00:00",
+        heartbeats_completed=2,
+        items=[],
+        quest_id="01900000-0000-7000-8000-000000000001",
+    )
+
+    assert current.needs_replan_stale_active is False
+
+    action = next_action(
+        current=current,
+        cadence="4h",
+        min_heartbeats=4,
+        review_window="1h",
+        auto_approve=True,
+    )
+
+    assert action == "execute"
+
+
 def test_run_review_heartbeat_cancels_without_rewriting_plan():
     class FakeQuests:
         def __init__(self):

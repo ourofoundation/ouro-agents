@@ -92,6 +92,19 @@ class PlanCycle(BaseModel):
             i.status in ("done", "skipped") for i in self.items
         )
 
+    @property
+    def needs_replan_stale_active(self) -> bool:
+        """Active default plan with no platform quest and no structured items.
+
+        ``all_items_complete`` is false when ``items`` is empty, so this state
+        would otherwise never trigger a replanning heartbeat.
+        """
+        return (
+            self.status == "active"
+            and not self.quest_id
+            and not self.items
+        )
+
 
 # ---------------------------------------------------------------------------
 # Persistence
@@ -484,6 +497,8 @@ def next_action(
         return "check_review"
 
     if current.status == "active":
+        if current.needs_replan_stale_active:
+            return "plan"
         # Replan when all items are complete
         if (
             current.all_items_complete

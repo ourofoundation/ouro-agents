@@ -1,5 +1,8 @@
 {
   "env_file": ".env.athena",
+  "controller": {
+    "username": "mmoderwell"
+  },
   "agent": {
     "name": "athena",
     "model": "minimax/minimax-m2.7",
@@ -7,12 +10,11 @@
       "effort": "medium"
     },
     "workspace": "./agents/athena",
-    "org_id": "00000000-0000-0000-0000-000000000000",
-    "team_id": "019d2ad3-5f0a-70f7-af48-a172069fc7e2"
+    "org_id": "00000000-0000-0000-0000-000000000000"
   },
   "subagents": {
     "preflight": {
-      "model": "xiaomi/mimo-v2-flash",
+      "model": "minimax/minimax-m2.7",
       "reasoning": {
         "effort": "none"
       },
@@ -26,7 +28,7 @@
       "max_steps": 10
     },
     "writer": {
-      "model": "anthropic/claude-opus-4.6"
+      "model": "minimax/minimax-m2.7"
     },
     "executor": {
       "max_steps": 24
@@ -35,7 +37,7 @@
   "modes": {
     "planning": {
       "enabled": true,
-      "model": "anthropic/claude-opus-4.6",
+      "model": "minimax/minimax-m2.7",
       "max_steps": 20,
       "cadence": "4h",
       "min_heartbeats": 4,
