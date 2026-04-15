@@ -44,6 +44,42 @@ class TestFetchAssetContent(unittest.TestCase):
         self.assertIn("Short summary", result)
         self.assertIn("Full body from asset", result)
 
+    def test_includes_creation_provenance_and_input_asset_context(self):
+        calls = []
+
+        def get_asset(**kwargs):
+            calls.append(kwargs)
+            asset_id = kwargs["id"]
+            if asset_id == "output-asset":
+                return (
+                    '{"name":"Generated Post","asset_type":"post","description":"AI summary",'
+                    '"content_text":"Output body",'
+                    '"creation_action":{"id":"action-1","status":"completed",'
+                    '"route":{"id":"route-1","name":"Summarize Dataset"},'
+                    '"input_asset_id":"input-asset"}}'
+                )
+            if asset_id == "input-asset":
+                return (
+                    '{"name":"Source Dataset","asset_type":"dataset","description":"Original rows",'
+                    '"preview":[{"formula":"Fe2O3","band_gap":2.1}]}'
+                )
+            raise AssertionError(f"Unexpected asset id {asset_id}")
+
+        result = fetch_asset_content({"ouro:get_asset": get_asset}, ["output-asset"])
+
+        self.assertEqual(
+            calls,
+            [
+                {"id": "output-asset", "detail": "full"},
+                {"id": "input-asset", "detail": "full"},
+            ],
+        )
+        self.assertIn("provenance: created by route Summarize Dataset (route-1)", result)
+        self.assertIn("action id: action-1", result)
+        self.assertIn("Action Input Asset", result)
+        self.assertIn("Source Dataset", result)
+        self.assertIn('"formula": "Fe2O3"', result)
+
 
 if __name__ == "__main__":
     unittest.main()
