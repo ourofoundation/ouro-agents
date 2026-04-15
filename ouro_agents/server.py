@@ -1,7 +1,8 @@
+import asyncio
 import logging
 import os
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import uvicorn
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 agent_instance: Optional[OuroAgent] = None
 reply_publisher: Optional[OuroReplyPublisher] = None
 last_heartbeat: Optional[datetime] = None
-start_time: datetime = datetime.utcnow()
+start_time: datetime = datetime.now(timezone.utc)
 session_threads: Dict[str, str] = {}
 REALTIME_CHAT_EVENT_TYPES = {"new-message"}
 
@@ -198,9 +199,6 @@ class ServerAgentObserver(AgentObserver):
             self.persist_reasoning_cb(content)
 
 
-import asyncio
-
-
 async def _run_event_task(event_run: EventRunContext) -> None:
     if not agent_instance:
         logger.warning("Skipping event run because the agent is not initialized")
@@ -270,6 +268,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 conversation_id=event_run.conversation_id,
                 mode=event_run.mode,
                 user_id=event_run.user_id,
+                team_id=event_run.team_id,
                 preload_tools=(
                     list(event_run.preload_tools) if event_run.preload_tools else None
                 ),
@@ -296,7 +295,7 @@ async def health_check():
     scheduled_tasks = agent_instance.scheduler.list_tasks() if agent_instance else []
     return {
         "status": "ok",
-        "uptime_seconds": (datetime.utcnow() - start_time).total_seconds(),
+        "uptime_seconds": (datetime.now(timezone.utc) - start_time).total_seconds(),
         "last_heartbeat": last_heartbeat.isoformat() if last_heartbeat else None,
         "agent_name": agent_instance.config.agent.name if agent_instance else None,
         "scheduled_tasks": len(scheduled_tasks),
@@ -357,8 +356,6 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         provenance = resolve_event_provenance(
             event_data=event_data,
             workspace=agent_cfg.workspace,
-            planning_team_id=agent_cfg.team_id,
-            planning_org_id=agent_cfg.org_id,
             planning_enabled=planning_cfg.enabled,
         )
 
@@ -367,12 +364,12 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         logger.warning("Invalid webhook payload: %s", body)
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}")
 
-    if provenance and (provenance.is_plan_feedback or provenance.in_planning_space):
+    if provenance and provenance.is_plan_feedback:
         logger.info(
-            "Event provenance: plan_feedback=%s historical=%s planning_space=%s",
+            "Event provenance: plan_feedback=%s historical=%s team_id=%s",
             provenance.is_plan_feedback,
             provenance.is_historical_plan_feedback,
-            provenance.in_planning_space,
+            provenance.team_id,
         )
 
     background_tasks.add_task(_run_event_task, event_run)

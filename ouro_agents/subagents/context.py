@@ -109,6 +109,8 @@ class SubAgentContext:
     working_memory: str = ""
     user_model: str = ""
     plans_index: str = ""
+    doc_store: Any = None
+    team_id: Optional[str] = None
 
     # MCP tool access (populated by OuroAgent._run_subagent for agent-mode subagents)
     deferred_tools: dict = field(default_factory=dict)

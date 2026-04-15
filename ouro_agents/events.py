@@ -51,7 +51,11 @@ EVENT_TOOL_PRELOADS: Dict[str, List[str]] = {
 _PLAN_FEEDBACK_PRELOADS: List[str] = [
     "ouro:get_comments",
     "ouro:create_comment",
-    "ouro:update_post",
+    "ouro:update_quest",
+    "ouro:list_quest_items",
+    "ouro:create_quest_items",
+    "ouro:update_quest_item",
+    "ouro:delete_quest_item",
     "ouro:get_asset",
 ]
 
@@ -174,17 +178,17 @@ def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str
     reply_instruction = (
         f"Reply in the same thread by calling create_comment with parent_id "
         f"`{ctx.reply_parent_id}`."
-        if ctx.reply_parent_id and ctx.reply_parent_id != pc.post_id
-        else "Reply on the plan post with create_comment."
+        if ctx.reply_parent_id and ctx.reply_parent_id != pc.quest_id
+        else "Reply on the plan quest with create_comment."
     )
     return (
         f"You received feedback on your current plan "
         f"(cycle {pc.cycle_id[:8]}, status: {pc.status}, "
-        f"post id: {pc.post_id or ctx.root_asset_id}).\n\n"
+        f"quest id: {pc.quest_id or ctx.root_asset_id}).\n\n"
         f"## Feedback\n{ctx.comment_text}\n\n"
         f"## Your Current Plan\n{pc.plan_text}\n\n"
         f"Review the feedback, revise your plan if needed, and update "
-        f"the post (update_post). {reply_instruction}\n\n"
+        f"the quest (update_quest). {reply_instruction}\n\n"
         f"Return a JSON summary:\n"
         f'```json\n{{"revised_plan": "<updated plan text>", '
         f'"feedback_summary": "<brief summary of changes>"}}\n```\n\n'
@@ -200,38 +204,12 @@ def _historical_feedback_task(
     pc = provenance.plan_cycle
     return (
         f"You received feedback on a completed plan "
-        f"(cycle {pc.cycle_id[:8]}, post id: {pc.post_id or ctx.root_asset_id}).\n\n"
+        f"(cycle {pc.cycle_id[:8]}, quest id: {pc.quest_id or ctx.root_asset_id}).\n\n"
         f"## Feedback\n{ctx.comment_text}\n\n"
         f"This plan has already been executed. Acknowledge the feedback "
         f"and note any insights that should inform future planning.\n\n"
         f"{_ready_hint(preload_names)}"
     )
-
-
-def _planning_space_task(
-    ctx: CommentContext,
-    raw_data: dict,
-    preload_names: list[str],
-    event_type: str,
-) -> str:
-    parts = [
-        f"Received a {event_type} in your planning space.\n\n"
-        f"Source asset type: {ctx.source_asset_type}\n"
-        f"Source asset id: {ctx.source_id}\n"
-        f"Root asset type: {ctx.root_asset_type}\n"
-        f"Root asset id: {ctx.root_asset_id}\n"
-        f"Event data:\n{json.dumps(raw_data, indent=2, sort_keys=True)}\n\n"
-        f"Consider whether this is relevant to your current plan. "
-        f"Reply on Ouro only if you have something substantive to add. "
-        f"If not, return exactly `NO_ACTION`."
-    ]
-    team_hint = _team_context_hint(ctx)
-    if team_hint:
-        parts.append(team_hint)
-    hint = _ready_hint(preload_names)
-    if hint:
-        parts.append(hint)
-    return "\n\n".join(parts)
 
 
 def _default_comment_task(
@@ -304,6 +282,7 @@ class EventRunContext:
     thread_parent_id: Optional[str] = None
     feedback_text: Optional[str] = None
     actor_user_id: Optional[str] = None
+    team_id: Optional[str] = None
 
 
 def _build_event_task(
@@ -347,10 +326,6 @@ def _build_event_task(
             task = _historical_feedback_task(ctx, provenance, preload_names)
             return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 
-        if provenance and provenance.in_planning_space:
-            task = _planning_space_task(ctx, data, preload_names, event_type)
-            return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
-
         task = _default_comment_task(ctx, event_type, provenance, preload_names)
         return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 
@@ -380,6 +355,8 @@ def build_event_run_context(
 
     data = event.data or {}
 
+    event_team_id = provenance.team_id if provenance else None
+
     return EventRunContext(
         event_type=event.event_type,
         task=task,
@@ -396,4 +373,5 @@ def build_event_run_context(
         thread_parent_id=comment_ctx.target_id if comment_ctx else None,
         feedback_text=comment_ctx.comment_text if comment_ctx else None,
         actor_user_id=event.actor_user_id,
+        team_id=event_team_id,
     )

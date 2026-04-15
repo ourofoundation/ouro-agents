@@ -83,18 +83,30 @@ class ReflectionResult:
 _CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
 
 
-def resolve_daily_log_tag(run_mode: str, event_type: Optional[str] = None) -> str:
-    """Compute the deterministic daily-log tag from the run mode and event type."""
+def resolve_daily_log_tag(
+    run_mode: str,
+    event_type: Optional[str] = None,
+    team_name: str = "",
+) -> str:
+    """Compute the deterministic daily-log tag from the run mode and event type.
+
+    When *team_name* is provided the tag is suffixed: ``[heartbeat:research]``.
+    """
     if event_type and event_type not in _CHAT_EVENT_TYPES:
-        return f"[event:{event_type}]"
-    _mode_tags = {
-        "heartbeat": "[heartbeat]",
-        "plan": "[planning]",
-        "review": "[review]",
-        "chat": "[chat]",
-        "chat-reply": "[chat]",
-    }
-    return _mode_tags.get(run_mode, "[task]")
+        base = f"event:{event_type}"
+    else:
+        _mode_tags = {
+            "heartbeat": "heartbeat",
+            "plan": "planning",
+            "review": "review",
+            "chat": "chat",
+            "chat-reply": "chat",
+        }
+        base = _mode_tags.get(run_mode, "task")
+
+    if team_name:
+        return f"[{base}:{team_name}]"
+    return f"[{base}]"
 
 
 def build_run_reflection_task(
@@ -103,6 +115,7 @@ def build_run_reflection_task(
     tool_summary: list[dict] | None = None,
     run_mode: str = "autonomous",
     event_type: Optional[str] = None,
+    team_name: str = "",
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
@@ -116,7 +129,7 @@ def build_run_reflection_task(
         "\n".join(tools_compact) if tools_compact else "(no significant tool calls)"
     )
 
-    tag = resolve_daily_log_tag(run_mode, event_type)
+    tag = resolve_daily_log_tag(run_mode, event_type, team_name=team_name)
 
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
@@ -138,9 +151,10 @@ def normalize_daily_log_entry(
     entry: str,
     run_mode: str = "autonomous",
     event_type: Optional[str] = None,
+    team_name: str = "",
 ) -> str:
     """Enforce the correct daily-log tag regardless of what the LLM emitted."""
-    expected = resolve_daily_log_tag(run_mode, event_type)
+    expected = resolve_daily_log_tag(run_mode, event_type, team_name=team_name)
     body = _TAG_RE.sub("", entry).strip()
     if not body:
         return entry

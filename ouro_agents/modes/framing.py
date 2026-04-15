@@ -35,14 +35,16 @@ PLANNING_FRAMING = (
     "You are entering a planning phase. Review recent activity, your memory, "
     "and ongoing work, then create or revise your plan for the upcoming period. "
     "Be thoughtful and realistic. Use checklist format ([] / [x]) for actionable items. "
-    "If updating an existing plan, revise the post in place rather than creating a new one. "
+    "If updating an existing plan, revise the quest in place rather than creating a new one. "
+    "When revising a plan, manage quest items directly with the quest item tools "
+    "(create/update/delete) instead of rewriting them in prose. "
     "Do NOT execute any plan items or do actual work — your only job is to write "
-    "the plan and publish it as a post."
+    "the plan and publish it as a quest."
 )
 
 REVIEW_FRAMING = (
     "You have a pending plan that may have received human feedback. "
-    "Check for comments on the plan post, incorporate any feedback, "
+    "Check for comments on the plan quest, incorporate any feedback, "
     "and finalize the plan. "
     "Do NOT execute plan items — only check for feedback, revise if needed, and report."
 )
@@ -83,14 +85,15 @@ HEARTBEAT_OUTPUT = AUTONOMOUS_OUTPUT
 
 PLAN_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Create or update your plan post, then call `final_answer` with structured JSON. "
-    "Do NOT use any other tools — only create_post (or update_post) and final_answer."
+    "Create or update your plan quest, then call `final_answer` with structured JSON. "
+    "In fresh planning runs, use `create_quest`. In continuation/review runs, you may use "
+    "`update_quest`, `list_quest_items`, `create_quest_items`, `update_quest_item`, and "
+    "`delete_quest_item` as needed before `final_answer`."
 )
 
 REVIEW_OUTPUT = (
     "## OUTPUT FORMAT\n"
     "Check for feedback, revise the plan if needed, then call `final_answer` with structured JSON. "
-    "Do NOT use any tools besides get_comments, create_comment, update_post, and final_answer."
 )
 
 CHAT_REPLY_OUTPUT = (

@@ -16,6 +16,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from ..config import HeartbeatConfig
+from ..constants import parse_interval_seconds, parse_json_from_llm
 
 if TYPE_CHECKING:
     from ..agent import OuroAgent
@@ -66,39 +67,23 @@ def is_within_active_hours(config: HeartbeatConfig) -> bool:
 def estimate_beats_per_period(config: HeartbeatConfig) -> str:
     if not config.active_hours or "start" not in config.active_hours or "end" not in config.active_hours:
         return "continuous"
-    
+
     try:
         start = datetime.strptime(config.active_hours["start"], "%H:%M").time()
         end = datetime.strptime(config.active_hours["end"], "%H:%M").time()
-        
+
         start_secs = start.hour * 3600 + start.minute * 60
         end_secs = end.hour * 3600 + end.minute * 60
-        
+
         if end_secs < start_secs:
             duration_secs = (24 * 3600 - start_secs) + end_secs
         else:
             duration_secs = end_secs - start_secs
-            
-        match = re.match(r"(\d+)([smhd])", config.every)
-        if not match:
+
+        interval_secs = parse_interval_seconds(config.every)
+        if not interval_secs:
             return "unknown"
-            
-        val = int(match.group(1))
-        unit = match.group(2)
-        
-        interval_secs = 0
-        if unit == "s":
-            interval_secs = val
-        elif unit == "m":
-            interval_secs = val * 60
-        elif unit == "h":
-            interval_secs = val * 3600
-        elif unit == "d":
-            interval_secs = val * 86400
-            
-        if interval_secs == 0:
-            return "unknown"
-            
+
         beats = max(1, int(duration_secs / interval_secs) + 1)
         return f"~{beats} beats/period"
     except Exception:
@@ -107,14 +92,7 @@ def estimate_beats_per_period(config: HeartbeatConfig) -> str:
 
 def heartbeat_interval_seconds(config: HeartbeatConfig) -> int | None:
     """Parse the configured heartbeat interval into seconds."""
-    match = re.match(r"(\d+)([smhd])", config.every)
-    if not match:
-        return None
-
-    val = int(match.group(1))
-    unit = match.group(2)
-    multipliers = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-    return val * multipliers[unit]
+    return parse_interval_seconds(config.every)
 
 
 def has_future_heartbeat_in_active_window(
@@ -192,10 +170,57 @@ def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str
         f"{guidance}\n\n"
         "Use the update_plan tool to mark items done/in_progress as you complete them.\n"
         "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
-        "you MUST use the `create_comment` tool to comment on the plan's original post "
-        "(using the post id shown above). Summarize the work you accomplished and include "
+        "you MUST use the `create_comment` tool to comment on the plan's original quest "
+        "(using the quest id shown above). Summarize the work you accomplished and include "
         "links to any posts or assets you created."
     )
+
+
+def _load_playbook(agent: "OuroAgent", heartbeat_doc_store) -> str | None:
+    """Load the heartbeat playbook: team doc store → global doc store → local file."""
+    playbook = None
+    if heartbeat_doc_store:
+        playbook = (
+            heartbeat_doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
+        )
+    if not playbook and heartbeat_doc_store is not agent.doc_store and agent.doc_store:
+        playbook = (
+            agent.doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
+        )
+    if not playbook:
+        heartbeat_path = agent.config.agent.workspace / "HEARTBEAT.md"
+        if heartbeat_path.exists():
+            playbook = heartbeat_path.read_text()
+    return playbook
+
+
+def _sorted_team_ids(agent: "OuroAgent") -> list[str]:
+    if not agent.team_registry:
+        return []
+    return sorted(agent.team_registry.team_ids())
+
+
+def _select_heartbeat_team_id(team_plan_stores: dict[str, object]) -> str | None:
+    ranked: list[tuple[int, str]] = []
+    priorities = {"active": 0, "pending_review": 1, "planning": 2}
+    for team_id, store in team_plan_stores.items():
+        default_plan = store.load_default()
+        if default_plan:
+            ranked.append((priorities.get(default_plan.status, 3), team_id))
+    if ranked:
+        ranked.sort()
+        selected = ranked[0][1]
+        logger.info(
+            "Selected heartbeat team %s (plan status=%s, %d teams with plans)",
+            selected[:8], ranked[0][0], len(ranked),
+        )
+        return selected
+    fallback = next(iter(team_plan_stores), None)
+    logger.info(
+        "No teams have active plans; defaulting to team %s (%d teams total)",
+        fallback[:8] if fallback else "none", len(team_plan_stores),
+    )
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +285,7 @@ def start_scheduler(agent, config: HeartbeatConfig):
             logger.info("Running heartbeat...")
             import ouro_agents.server as server_module
 
-            server_module.last_heartbeat = datetime.utcnow()
+            server_module.last_heartbeat = datetime.now(timezone.utc)
 
             await agent.heartbeat()
             if job and hasattr(job, "next_run_time") and job.next_run_time:
@@ -297,7 +322,7 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
         render_all_plans_context,
         run_planning_heartbeat,
         run_review_heartbeat,
-        update_post_status,
+        update_quest_status,
     )
     from .profiles import RunMode
 
@@ -311,14 +336,57 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
 
     proactive_cfg = agent.config.heartbeat.proactive
     servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+    heartbeat_team_id: str | None = None
+    heartbeat_doc_store = agent.doc_store
+    team_plan_stores: dict[str, PlanStore] = {}
+    plan_store: Optional[PlanStore] = None
+    planning_cfg = agent.config.planning
 
     # --- Planning cycle integration ---
-    if agent.config.planning.enabled:
-        plan_store = PlanStore(agent.config.agent.workspace / "plans")
-        planning_cfg = agent.config.planning
+    if planning_cfg.enabled:
+        logger.info(
+            "Planning enabled: cadence=%s, min_heartbeats=%d, auto_approve=%s",
+            planning_cfg.cadence, planning_cfg.min_heartbeats, planning_cfg.auto_approve,
+        )
+        workspace = agent.config.agent.workspace
 
-        # --- Default plan: cadence-driven lifecycle ---
+        # Build per-team PlanStores and choose one team context for this tick.
+        for tid in _sorted_team_ids(agent):
+            team_plan_stores[tid] = PlanStore(
+                workspace / "teams" / tid / "plans", team_id=tid,
+            )
+
+        # Migrate: if old flat workspace/plans/ exists, move to first team
+        legacy_plans = workspace / "plans"
+        if legacy_plans.exists() and (legacy_plans / "active").exists():
+            first_tid = next(iter(_sorted_team_ids(agent)), None)
+            if first_tid:
+                import shutil
+                dest = workspace / "teams" / first_tid / "plans"
+                if not dest.exists():
+                    dest.mkdir(parents=True, exist_ok=True)
+                    for child in legacy_plans.iterdir():
+                        if child.name in ("active", "history"):
+                            shutil.copytree(child, dest / child.name, dirs_exist_ok=True)
+                    shutil.rmtree(legacy_plans, ignore_errors=True)
+                    logger.info("Migrated legacy plans/ → teams/%s/plans/", first_tid)
+                    team_plan_stores[first_tid] = PlanStore(dest, team_id=first_tid)
+
+        if not team_plan_stores:
+            logger.warning("No teams discovered — cannot run planning without a team")
+            return None
+
+        heartbeat_team_id = _select_heartbeat_team_id(team_plan_stores)
+        plan_store = team_plan_stores[heartbeat_team_id]
         default_plan = plan_store.load_default()
+        heartbeat_doc_store = agent.doc_store_for(heartbeat_team_id)
+
+        logger.info(
+            "Default plan for team %s: %s",
+            heartbeat_team_id[:8] if heartbeat_team_id else "none",
+            f"id={default_plan.id[:8]} status={default_plan.status} items={len(default_plan.items)}"
+            if default_plan else "none",
+        )
 
         action = next_action(
             current=default_plan,
@@ -327,9 +395,11 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             review_window=planning_cfg.review_window,
             auto_approve=planning_cfg.auto_approve,
         )
+        logger.info("Planning next_action=%s", action)
 
         if action == "plan":
-            if not has_future_heartbeat_in_active_window(agent.config.heartbeat):
+            future_hb = has_future_heartbeat_in_active_window(agent.config.heartbeat)
+            if not future_hb:
                 if default_plan and default_plan.status == "active" and default_plan.all_items_complete:
                     plan_store.archive(
                         default_plan, ouro_client=agent._get_ouro_client()
@@ -339,11 +409,15 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                         default_plan.id,
                     )
                 logger.info(
-                    "Skipping default planning because no future heartbeat remains in the active window"
+                    "Skipping planning: no future heartbeat remains in active window"
                 )
                 return None
             if default_plan and default_plan.status == "active":
                 if default_plan.all_items_complete:
+                    logger.info(
+                        "Plan %s complete; archiving and starting fresh planning cycle",
+                        default_plan.id[:8],
+                    )
                     plan_store.archive(
                         default_plan, ouro_client=agent._get_ouro_client()
                     )
@@ -351,16 +425,26 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                         agent, hb_model, plan_store, servers
                     )
                 else:
+                    logger.info(
+                        "Continuing planning for active plan %s (%d/%d items done)",
+                        default_plan.id[:8],
+                        default_plan.items_done,
+                        len(default_plan.items),
+                    )
                     return await run_planning_heartbeat(
                         agent, hb_model, plan_store, servers, continuation=default_plan
                     )
+            logger.info("No existing plan; starting fresh planning cycle")
             return await run_planning_heartbeat(agent, hb_model, plan_store, servers)
 
         if action == "check_review":
+            logger.info("Checking for review feedback on plan %s",
+                        default_plan.id[:8] if default_plan else "none")
             reviewed = await run_review_heartbeat(
                 agent, hb_model, plan_store, default_plan, servers
             )
             if reviewed:
+                logger.info("Plan %s approved after review", reviewed.id[:8])
                 default_plan = reviewed
 
         if (
@@ -371,30 +455,34 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             default_plan.status = "active"
             default_plan.activated_at = datetime.now(timezone.utc).isoformat()
             plan_store.save(default_plan)
-            update_post_status(agent._get_ouro_client(), default_plan)
+            update_quest_status(agent._get_ouro_client(), default_plan)
             comment_on_plan(
                 agent._get_ouro_client(),
-                default_plan.post_id,
+                default_plan.quest_id,
                 "Review window elapsed with no feedback — plan auto-activated.",
             )
             logger.info(
-                "Plan cycle %s auto-approved (review window elapsed)", default_plan.id
+                "Plan %s auto-approved (review window elapsed)", default_plan.id[:8]
             )
-            post_link = (
-                f" [plan](asset:{default_plan.post_id})" if default_plan.post_id else ""
+            quest_link = (
+                f" [plan](asset:{default_plan.quest_id})" if default_plan.quest_id else ""
             )
             write_daily_log(
                 agent.config.agent.workspace,
-                f"[planning:auto-approved]{post_link} Plan activated without feedback",
-                doc_store=agent.doc_store,
+                f"[planning:auto-approved]{quest_link} Plan activated without feedback",
+                doc_store=heartbeat_doc_store,
                 agent_name=agent.config.agent.name,
             )
 
         if default_plan and default_plan.status == "active":
             default_plan.heartbeats_completed += 1
             plan_store.save(default_plan)
+            logger.info(
+                "Plan %s: heartbeats_completed=%d",
+                default_plan.id[:8], default_plan.heartbeats_completed,
+            )
 
-        # --- Goal plans: auto-approve / auto-complete ---
+        # --- Goal plans: auto-approve / auto-complete (selected team only) ---
         now_utc = datetime.now(timezone.utc)
         review_secs = parse_cadence_seconds(planning_cfg.review_window)
         for gp in plan_store.load_all_active():
@@ -412,30 +500,111 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                     gp.status = "active"
                     gp.activated_at = now_utc.isoformat()
                     plan_store.save(gp)
-                    update_post_status(agent._get_ouro_client(), gp)
+                    update_quest_status(agent._get_ouro_client(), gp)
                     comment_on_plan(
                         agent._get_ouro_client(),
-                        gp.post_id,
+                        gp.quest_id,
                         "Review window elapsed — goal plan auto-activated.",
                     )
-                    logger.info("Goal plan %s auto-approved", gp.id)
+                    logger.info("Goal plan %s auto-approved", gp.id[:8])
             if gp.status == "active":
                 gp.heartbeats_completed += 1
                 if gp.all_items_complete:
                     plan_store.archive(gp, ouro_client=agent._get_ouro_client())
-                    logger.info("Goal plan %s completed (all items done)", gp.id)
+                    logger.info("Goal plan %s completed (all items done)", gp.id[:8])
                 else:
                     plan_store.save(gp)
+    else:
+        logger.info("Planning disabled; skipping planning cycle")
 
-    # Load the autonomous playbook (Ouro first, local fallback)
+    # --- Check for active plans that need execution ---
+    extra_tools = []
+    preload_tools = []
     playbook = None
-    if agent.doc_store:
-        playbook = agent.doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
+    heartbeat_source = "none"
+
+    if planning_cfg.enabled and plan_store:
+        scoped_store = team_plan_stores.get(heartbeat_team_id, plan_store)
+        active_plans = [
+            p for p in scoped_store.load_all_active() if p.status == "active"
+        ]
+        logger.info(
+            "Active plans for execution: %d",
+            len(active_plans),
+        )
+        if active_plans:
+            from ..subagents.profiles import HEARTBEAT_PREFLIGHT
+            from ..subagents.preflight import parse_heartbeat_preflight_result
+            from .planning import render_plan_context
+
+            playbook_for_preflight = _load_playbook(agent, heartbeat_doc_store)
+
+            preflight_context = f"## Active Plans\n{render_all_plans_context(active_plans)}"
+            if playbook_for_preflight:
+                preflight_context = f"## Playbook\n{playbook_for_preflight}\n\n{preflight_context}"
+
+            logger.info("Running heartbeat preflight with %d active plan(s)...", len(active_plans))
+            preflight_result = agent._run_subagent(
+                HEARTBEAT_PREFLIGHT,
+                preflight_context,
+                run_id=getattr(agent, "_current_run_id", ""),
+                team_id=heartbeat_team_id,
+                doc_store=heartbeat_doc_store,
+            )
+
+            preflight = parse_heartbeat_preflight_result(preflight_result.text)
+            logger.info(
+                "Preflight decision: action=%s plan_id=%s reasoning=%s",
+                preflight.action, preflight.plan_id, preflight.reasoning,
+            )
+
+            if preflight.action == "skip":
+                logger.info("Heartbeat skipped by preflight: %s", preflight.reasoning)
+                return None
+
+            if preflight.action == "work_on_plan" and preflight.plan_id:
+                target_plan = next(
+                    (p for p in active_plans if p.id.startswith(preflight.plan_id)),
+                    None,
+                )
+                if target_plan:
+                    logger.info(
+                        "Executing plan %s (%d items, %d done)",
+                        target_plan.id[:8],
+                        len(target_plan.items),
+                        target_plan.items_done,
+                    )
+                    playbook = build_plan_execution_playbook(
+                        render_plan_context(target_plan),
+                        planning_cfg.min_heartbeats,
+                    )
+                    heartbeat_source = f"plan:{target_plan.id[:8]}"
+                    target_store = (
+                        team_plan_stores.get(target_plan.team_id, plan_store)
+                        if target_plan.team_id
+                        else plan_store
+                    )
+                    extra_tools = make_plan_tools(
+                        target_store, agent._get_ouro_client()
+                    )
+                    preload_tools = ["ouro:create_comment"]
+                else:
+                    logger.warning(
+                        "Preflight chose plan_id=%s but no matching active plan found",
+                        preflight.plan_id,
+                    )
+
+    # If no plan was selected, load the general playbook
     if not playbook:
-        heartbeat_path = agent.config.agent.workspace / "HEARTBEAT.md"
-        if not heartbeat_path.exists():
-            return None
-        playbook = heartbeat_path.read_text()
+        playbook = _load_playbook(agent, heartbeat_doc_store)
+        if playbook:
+            heartbeat_source = "playbook"
+    if not playbook:
+        logger.info(
+            "No heartbeat playbook found and no active plan to execute "
+            "(checked team doc store, global doc store, and local HEARTBEAT.md)"
+        )
+        return None
 
     if not is_within_active_hours(agent.config.heartbeat):
         playbook += (
@@ -443,52 +612,12 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             "Only check notifications unless something is urgent.**"
         )
 
-    extra_tools = []
-    preload_tools = []
-    if agent.config.planning.enabled:
-        all_active = plan_store.load_all_active()
-        active_plans = [p for p in all_active if p.status == "active"]
-        if active_plans:
-            from ..subagents.profiles import HEARTBEAT_PREFLIGHT
-            from ..subagents.preflight import parse_heartbeat_preflight_result
-            from .planning import render_plan_context
-
-            preflight_task = (
-                f"## Playbook\n{playbook}\n\n"
-                f"## Active Plans\n{render_all_plans_context(active_plans)}"
-            )
-
-            preflight_result = agent._run_subagent(
-                HEARTBEAT_PREFLIGHT,
-                preflight_task,
-                run_id=getattr(agent, "_current_run_id", ""),
-            )
-            
-            logger.info("Raw heartbeat preflight result text: %s", preflight_result.text)
-            
-            preflight = parse_heartbeat_preflight_result(preflight_result.text)
-            
-            logger.info(
-                "Heartbeat preflight result: action=%s plan_id=%s reasoning=%s", 
-                preflight.action, 
-                preflight.plan_id, 
-                preflight.reasoning
-            )
-
-            if preflight.action == "skip":
-                logger.info("Heartbeat preflight chose to skip: %s", preflight.reasoning)
-                return None
-
-            if preflight.action == "work_on_plan" and preflight.plan_id:
-                target_plan = next((p for p in active_plans if p.id.startswith(preflight.plan_id)), None)
-                if target_plan:
-                    logger.info("Heartbeat preflight chose plan %s: %s", target_plan.id[:8], preflight.reasoning)
-                    playbook = build_plan_execution_playbook(
-                        render_plan_context(target_plan),
-                        planning_cfg.min_heartbeats,
-                    )
-                    extra_tools = make_plan_tools(plan_store, agent._get_ouro_client())
-                    preload_tools = ["ouro:create_comment"]
+    logger.info(
+        "Running heartbeat: source=%s, team=%s, servers=%s",
+        heartbeat_source,
+        heartbeat_team_id[:8] if heartbeat_team_id else "none",
+        servers,
+    )
 
     result = await agent.run(
         playbook,
@@ -498,17 +627,18 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
         extra_tools=extra_tools,
         preload_tools=preload_tools,
         preserve_existing_usage=True,
+        team_id=heartbeat_team_id,
     )
 
-    try:
-        json_match = re.search(r"```json\n(.*?)\n```", result, re.DOTALL)
-        parsed = json.loads(json_match.group(1) if json_match else result)
-        if parsed.get("action") == "none":
-            logger.info("Heartbeat: no action taken")
+    parsed = parse_json_from_llm(result)
+    if parsed:
+        action_taken = parsed.get("action", "unknown")
+        if action_taken == "none":
+            logger.info("Heartbeat completed: no action taken")
             return None
-        logger.info("Heartbeat action: %s", parsed.get("action", "unknown"))
-    except (json.JSONDecodeError, AttributeError):
-        pass
+        logger.info("Heartbeat completed: action=%s", action_taken)
+    else:
+        logger.info("Heartbeat completed (no structured result)")
 
     return result
 
@@ -518,7 +648,11 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-async def force_planning_heartbeat(agent: OuroAgent, goal: str = "") -> Optional[str]:
+async def force_planning_heartbeat(
+    agent: OuroAgent,
+    goal: str = "",
+    team_id: str | None = None,
+) -> Optional[str]:
     """Force a planning cycle regardless of cadence/timing (CLI entry point).
 
     When *goal* is provided the plan is framed around achieving it.
@@ -536,7 +670,18 @@ async def force_planning_heartbeat(agent: OuroAgent, goal: str = "") -> Optional
     proactive_cfg = agent.config.heartbeat.proactive
     servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
 
-    plan_store = PlanStore(agent.config.agent.workspace / "plans")
+    available_team_ids = _sorted_team_ids(agent)
+    selected_team_id = team_id or next(iter(available_team_ids), None)
+    if team_id and available_team_ids and team_id not in available_team_ids:
+        logger.info("Requested planning team %s was not found", team_id)
+        return None
+    if not selected_team_id:
+        logger.info("No team-scoped plan store available for forced planning heartbeat")
+        return None
+    plan_store = PlanStore(
+        agent.config.agent.workspace / "teams" / selected_team_id / "plans",
+        team_id=selected_team_id,
+    )
 
     if goal:
         return await run_planning_heartbeat(
@@ -560,8 +705,17 @@ async def force_review_heartbeat(
     """Force a review check on a selected plan (CLI entry point)."""
     from .planning import PlanStore, run_review_heartbeat
 
-    plan_store = PlanStore(agent.config.agent.workspace / "plans")
-    current = plan_store.load_by_id(plan_id) if plan_id else plan_store.load_default()
+    workspace = agent.config.agent.workspace
+    plan_store: PlanStore | None = None
+    current = None
+
+    for tid in _sorted_team_ids(agent):
+        ps = PlanStore(workspace / "teams" / tid / "plans", team_id=tid)
+        match = ps.load_by_id(plan_id) if plan_id else ps.load_default()
+        if match:
+            plan_store = ps
+            current = match
+            break
 
     if not current or current.status not in ("pending_review", "active"):
         logger.info("No plan cycle to review")

@@ -15,7 +15,7 @@ from ..constants import CHARS_PER_TOKEN
 from .conversation_state import ConversationState
 
 if TYPE_CHECKING:
-    from .ouro_docs import OuroDocStore
+    from . import DocStore
 
 logger = logging.getLogger(__name__)
 MAX_ENTITY_CONTEXT_TOKENS = 4000
@@ -27,12 +27,22 @@ def _slugify(name: str) -> str:
     return name.lower().replace(" ", "-").replace("_", "-")
 
 
-def _find_entity_files(workspace: Path, key_entities: list[str]) -> list[tuple[str, Path]]:
+def _team_memory_dir(workspace: Path, team_id: str | None, leaf: str) -> Path:
+    if team_id:
+        return workspace / "teams" / team_id / "memory" / leaf
+    return workspace / "memory" / leaf
+
+
+def _find_entity_files(
+    workspace: Path,
+    key_entities: list[str],
+    team_id: str | None = None,
+) -> list[tuple[str, Path]]:
     """Match key_entities to files in memory/entities/.
 
     Returns (entity_name, path) tuples preserving the original entity names.
     """
-    entities_dir = workspace / "memory" / "entities"
+    entities_dir = _team_memory_dir(workspace, team_id, "entities")
     if not entities_dir.exists():
         return []
 
@@ -56,6 +66,7 @@ def load_entity_files(
     workspace: Path,
     conversation_state: Optional[ConversationState] = None,
     max_tokens: int = 4000,
+    team_id: str | None = None,
 ) -> str:
     """Load entity files matching conversation key_entities into a formatted string.
 
@@ -65,7 +76,7 @@ def load_entity_files(
     if not conversation_state or not conversation_state.key_entities:
         return ""
 
-    matched = _find_entity_files(workspace, conversation_state.key_entities)
+    matched = _find_entity_files(workspace, conversation_state.key_entities, team_id)
     if not matched:
         return ""
 
@@ -84,9 +95,9 @@ def load_entity_files(
     return "\n\n".join(parts)
 
 
-def _find_active_task_files(workspace: Path) -> list[Path]:
+def _find_active_task_files(workspace: Path, team_id: str | None = None) -> list[Path]:
     """Find task files that appear to be in-progress."""
-    tasks_dir = workspace / "memory" / "tasks"
+    tasks_dir = _team_memory_dir(workspace, team_id, "tasks")
     if not tasks_dir.exists():
         return []
 
@@ -116,7 +127,7 @@ def _load_file_truncated(path: Path, max_tokens: int) -> str:
 
 def _load_recent_daily_context(
     workspace: Path,
-    doc_store: Optional["OuroDocStore"] = None,
+    doc_store: Optional["DocStore"] = None,
     agent_name: str = "",
 ) -> str:
     """Load yesterday's daily log if it exists (today's is already in working memory)."""
@@ -124,7 +135,8 @@ def _load_recent_daily_context(
         return ""
 
     yesterday = (date.today() - timedelta(days=1)).isoformat()
-    content = doc_store.read(f"DAILY:{agent_name}:{yesterday}")
+    daily_name = doc_store.daily_name(agent_name, yesterday)
+    content = doc_store.read(daily_name)
     if not content:
         return ""
 
@@ -138,8 +150,9 @@ def load_entity_context(
     workspace: Path,
     conversation_state: Optional[ConversationState] = None,
     task: str = "",
-    doc_store: Optional[OuroDocStore] = None,
+    doc_store: Optional["DocStore"] = None,
     agent_name: str = "",
+    team_id: str | None = None,
 ) -> str:
     """Load relevant entity files, task files, and recent daily context.
 
@@ -150,23 +163,31 @@ def load_entity_context(
     total_tokens = 0
 
     # 1. Entity files matching conversation key_entities (always local)
-    entity_text = load_entity_files(workspace, conversation_state, max_tokens=MAX_ENTITY_CONTEXT_TOKENS)
+    entity_text = load_entity_files(
+        workspace,
+        conversation_state,
+        max_tokens=MAX_ENTITY_CONTEXT_TOKENS,
+        team_id=team_id,
+    )
     if entity_text:
         sections.append(entity_text)
         total_tokens += len(entity_text) // CHARS_PER_TOKEN
 
     # 2. Active task files (always local)
-    task_files = _find_active_task_files(workspace)
+    task_budget_used = 0
+    task_files = _find_active_task_files(workspace, team_id=team_id)
     if task_files:
         task_parts: list[str] = []
         for path in task_files[:2]:
-            remaining = MAX_TASK_CONTEXT_TOKENS - (total_tokens - MAX_ENTITY_CONTEXT_TOKENS)
+            remaining = MAX_TASK_CONTEXT_TOKENS - task_budget_used
             if remaining < 100:
                 break
             content = _load_file_truncated(path, min(remaining, 200))
             if content:
                 task_parts.append(f"**{path.stem}**\n{content}")
-                total_tokens += len(content) // CHARS_PER_TOKEN
+                tokens = len(content) // CHARS_PER_TOKEN
+                task_budget_used += tokens
+                total_tokens += tokens
         if task_parts:
             sections.append("### Active Tasks\n" + "\n\n".join(task_parts))
 

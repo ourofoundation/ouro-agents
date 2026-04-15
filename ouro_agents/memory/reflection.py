@@ -45,24 +45,23 @@ def write_daily_log(
     doc_store=None,
     agent_name: str = "",
 ) -> None:
-    """Append a timestamped entry to today's daily log via doc_store."""
+    """Append a timestamped entry to today's daily log."""
+    if not doc_store:
+        logger.warning("write_daily_log called without a doc_store")
+        return
+
     today = datetime.now().strftime("%Y-%m-%d")
     ts = datetime.now().strftime("%H:%M")
     entry = f"- {ts} — {entry_text}\n"
-    post_name = f"DAILY:{agent_name}:{today}"
 
-    if not doc_store:
-        logger.warning("write_daily_log called without doc_store")
-        return
-
+    post_name = doc_store.daily_name(agent_name, today)
     if doc_store.exists(post_name):
         current = doc_store.read(post_name)
         ok = doc_store.write(post_name, _append_markdown_list_item(current, entry))
     else:
         ok = doc_store.write(post_name, f"# Daily Log {today}\n\n{entry}")
-
     if not ok:
-        logger.warning("Failed to write daily log to %s", post_name)
+        logger.warning("Failed to write daily log to %s via %s", post_name, type(doc_store).__name__)
 
 
 def should_reflect(
@@ -125,10 +124,9 @@ def apply_reflection(
     conversations_dir: Path,
     conversation_state: Optional[ConversationState] = None,
     doc_store=None,
+    team_id: Optional[str] = None,
 ) -> None:
     """Apply reflection results: store facts, update user model, write daily log."""
-    # TODO: Support reflector-driven updates/merges for existing memories once
-    # memory IDs and end-to-end update semantics are exposed to the reflector.
     for fact in result.facts_to_store:
         text = fact.get("text", "")
         if not text:
@@ -148,6 +146,7 @@ def apply_reflection(
                 user_id=user_id,
                 run_id=conversation_id,
                 metadata=metadata,
+                team_id=team_id,
             )
             logger.info(
                 "Reflection stored fact [%s]: %s", fact.get("category"), text[:80]

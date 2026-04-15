@@ -80,7 +80,7 @@ def _load_events_module():
     @dataclass(frozen=True)
     class AssetProvenance:
         is_own_asset: bool = False
-        in_planning_space: bool = False
+        team_id: str | None = None
         plan_cycle: object | None = None
 
         @property

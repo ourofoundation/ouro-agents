@@ -12,7 +12,7 @@ class TestReviewPicker(unittest.TestCase):
                 kind="default",
                 status="pending_review",
                 items=[PlanItem(description="Ship it")],
-                post_id="post-default",
+                quest_id="quest-default",
             ),
             PlanCycle(
                 id="goal-12345678",
@@ -23,7 +23,7 @@ class TestReviewPicker(unittest.TestCase):
                     PlanItem(description="A", status="done"),
                     PlanItem(description="B"),
                 ],
-                post_id="post-goal",
+                quest_id="quest-goal",
             ),
             PlanCycle(
                 id="completed-1",

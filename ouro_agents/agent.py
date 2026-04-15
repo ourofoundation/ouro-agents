@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -32,13 +33,15 @@ from .memory.conversation_state import (
     save_state,
     update_state,
 )
-from .memory.ouro_docs import DocStore, LocalDocStore, OuroDocStore
+from .memory import DocStore
+from .memory.ouro_docs import LocalDocStore, OuroDocStore
 from .memory.reflection import (
     apply_reflection,
     should_reflect_for_conversation,
     write_daily_log,
 )
 from .memory.tools import make_memory_tools
+from .teams import TeamContext, TeamRegistry
 
 from .modes import ModeProfile, apply_mode_override, resolve_mode_profile
 from .observer import AgentObserver
@@ -122,6 +125,11 @@ class OuroAgent:
         self._mcp_connected = False
         self._own_user_id: Optional[str] = None
 
+        self.team_registry: TeamRegistry = TeamRegistry.from_platform_context(
+            self._workspace, config.agent.org_id,
+        )
+        self._team_doc_stores: dict[str, OuroDocStore] = {}
+
         self.doc_store: DocStore = LocalDocStore(
             workspace=config.agent.workspace,
             agent_name=config.agent.name,
@@ -180,16 +188,6 @@ class OuroAgent:
         """The agent's platform user ID, populated after MCP connect."""
         return self._own_user_id
 
-    @staticmethod
-    def _strip_frontmatter(text: str) -> str:
-        """Remove YAML frontmatter (---...---) from markdown text."""
-        if not text.startswith("---"):
-            return text
-        end = text.find("---", 3)
-        if end == -1:
-            return text
-        return text[end + 3 :].lstrip("\n")
-
     def _refresh_platform_context(self) -> None:
         """Fetch profile, org, and team info from the Ouro MCP server and cache it.
 
@@ -238,10 +236,11 @@ class OuroAgent:
 
         self._own_user_id = (context.get("profile") or {}).get("id")
 
+        self.team_registry.refresh(context, self.config.agent.org_id)
         logger.info(
             "Refreshed platform context: %d orgs, %d teams",
             len(context["organizations"]),
-            len(context["teams"]),
+            len(self.team_registry.team_ids()),
         )
 
     def _load_platform_context(self) -> str:
@@ -250,20 +249,64 @@ class OuroAgent:
 
         return format_platform_context_for_prompt(self._workspace)
 
-    def _load_working_memory(self) -> str:
-        """Load working memory and today's daily log for the system prompt."""
+    def _sorted_team_ids(self) -> list[str]:
+        if not self.team_registry:
+            return []
+        return sorted(self.team_registry.team_ids())
+
+    def _resolve_doc_store(
+        self,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
+    ) -> DocStore:
+        if doc_store is not None:
+            return doc_store
+        if team_id:
+            return self.doc_store_for(team_id)
+        return self.doc_store
+
+    def _load_working_memory(
+        self,
+        *,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
+    ) -> str:
+        """Load working memory and today's daily log for the system prompt.
+
+        When running in a team-scoped context, also loads the root-level
+        MEMORY.md as shared cross-team knowledge.
+        """
+        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         parts: list[str] = []
         name = self.config.agent.name
         today = date.today().isoformat()
+        memory_name = active_doc_store.memory_name(name)
+        daily_name = active_doc_store.daily_name(name, today)
 
-        content = self.doc_store.read(f"MEMORY:{name}")
+        content = active_doc_store.read(memory_name)
         if content:
             parts.append(content)
-        daily_content = self.doc_store.read(f"DAILY:{name}:{today}")
+        daily_content = active_doc_store.read(daily_name)
         if daily_content:
             parts.append(f"## Today's Log ({today})\n{daily_content}")
 
+        if team_id:
+            shared_memory = self._load_shared_memory()
+            if shared_memory:
+                parts.append(f"## Shared Memory (cross-team)\n{shared_memory}")
+
         return "\n\n".join(parts)
+
+    def _load_shared_memory(self) -> str:
+        """Load the root-level MEMORY.md for cross-team shared knowledge."""
+        shared_path = self._workspace / "MEMORY.md"
+        if not shared_path.exists():
+            return ""
+        try:
+            from .memory.workspace_sync import strip_frontmatter
+            return strip_frontmatter(shared_path.read_text()).strip()
+        except Exception:
+            return ""
 
     def _load_scheduled_task_awareness(self) -> str:
         """Return a compact, read-only summary of scheduled tasks."""
@@ -302,25 +345,41 @@ class OuroAgent:
         user_id: Optional[str] = None,
         conversation_state: Optional[ConversationState] = None,
         include_scheduled_tasks: bool = False,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> dict[str, str]:
         """Load the common prompt context shared by main and subagent runs."""
-        working_memory_parts = [self._load_working_memory()]
+        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
+        working_memory_parts = [
+            self._load_working_memory(team_id=team_id, doc_store=active_doc_store)
+        ]
         if include_scheduled_tasks:
             working_memory_parts.append(self._load_scheduled_task_awareness())
         working_memory = "\n\n".join(part for part in working_memory_parts if part)
 
         user_model_text = ""
         if user_id:
-            user_model_text = self.doc_store.read(f"USER:{user_id}")
+            user_model_text = active_doc_store.read(f"USER:{user_id}")
+        notes_name = f"NOTES:{self.config.agent.name}"
+        notes_text = active_doc_store.read(notes_name)
+        if not notes_text and not team_id:
+            notes_text = self.notes
 
         from .modes.planning import PlanStore, format_plans_index_for_prompt
 
-        plan_store = PlanStore(self.config.agent.workspace / "plans")
-        plans_index_text = format_plans_index_for_prompt(plan_store.load_all_active())
+        all_active_plans = []
+        if team_id:
+            store = PlanStore(self._workspace / "teams" / team_id / "plans", team_id=team_id)
+            all_active_plans.extend(store.load_all_active())
+        else:
+            for tid in self._sorted_team_ids():
+                store = PlanStore(self._workspace / "teams" / tid / "plans", team_id=tid)
+                all_active_plans.extend(store.load_all_active())
+        plans_index_text = format_plans_index_for_prompt(all_active_plans)
 
         return {
             "soul": self.soul,
-            "notes": self.notes,
+            "notes": notes_text,
             "platform_context": self._load_platform_context(),
             "working_memory": working_memory,
             "user_model": user_model_text,
@@ -476,32 +535,70 @@ class OuroAgent:
             return f"({len(turns)} earlier messages about: {blob[:200]}...)"
 
     def _init_doc_store(self) -> None:
-        """Upgrade to OuroDocStore if agent.org_id and agent.team_id are configured."""
+        """Upgrade to OuroDocStore when org_id is configured and teams are known.
+
+        Creates per-team OuroDocStore instances lazily.  The first team
+        discovered becomes the initial default for backward-compatible
+        callers that still read ``agent.doc_store`` directly.
+        """
         agent_cfg = self.config.agent
-        if not agent_cfg.org_id or not agent_cfg.team_id:
-            logger.info(
-                "OuroDocStore: org_id/team_id not configured, using LocalDocStore"
-            )
+        if not agent_cfg.org_id:
+            logger.warning("OuroDocStore: org_id not configured — teams require org_id")
             return
-        self.doc_store = OuroDocStore(
+
+        team_ids = self._sorted_team_ids()
+        if not team_ids:
+            logger.warning("OuroDocStore: no teams discovered from platform — check network and org membership")
+            return
+
+        client = self._get_ouro_client()
+        for tid in team_ids:
+            team_info = self.team_registry.get_team(tid)
+            self._team_doc_stores[tid] = OuroDocStore(
+                agent_name=agent_cfg.name,
+                org_id=agent_cfg.org_id,
+                team_id=tid,
+                client=client,
+                registry_path=self._workspace / "teams" / tid / "state.json",
+                workspace=self._workspace,
+                team_slug=team_info.slug if team_info else None,
+                team_name=team_info.name if team_info else None,
+            )
+
+        first_team = team_ids[0]
+        self.doc_store = self._team_doc_stores[first_team]
+        self._sync_workspace_docs()
+
+    def doc_store_for(self, team_id: str) -> DocStore:
+        """Return the OuroDocStore for *team_id*, creating it lazily."""
+        if team_id in self._team_doc_stores:
+            return self._team_doc_stores[team_id]
+        agent_cfg = self.config.agent
+        if not agent_cfg.org_id:
+            return self.doc_store
+        team_info = self.team_registry.get_team(team_id)
+        store = OuroDocStore(
             agent_name=agent_cfg.name,
             org_id=agent_cfg.org_id,
-            team_id=agent_cfg.team_id,
+            team_id=team_id,
             client=self._get_ouro_client(),
-            registry_path=self._workspace / "data" / "doc_registry.json",
+            registry_path=self._workspace / "teams" / team_id / "state.json",
+            workspace=self._workspace,
+            team_slug=team_info.slug if team_info else None,
+            team_name=team_info.name if team_info else None,
         )
-        self._sync_workspace_docs()
-        self._load_identity_from_ouro()
+        self._team_doc_stores[team_id] = store
+        return store
 
     def _sync_workspace_docs(self) -> None:
-        """Bidirectional sync between local workspace files and Ouro posts."""
-        if not isinstance(self.doc_store, OuroDocStore):
+        """Bidirectional sync between local team docs and Ouro posts."""
+        if not self._team_doc_stores:
             return
         from .memory.workspace_sync import sync_workspace
 
         result = sync_workspace(
             workspace=self._workspace,
-            doc_store=self.doc_store,
+            team_doc_stores=self._team_doc_stores,
             agent_name=self.config.agent.name,
         )
         if result.pushed:
@@ -511,18 +608,6 @@ class OuroAgent:
         if result.errors:
             for err in result.errors:
                 logger.warning("Workspace sync error: %s", err)
-
-    def _load_identity_from_ouro(self) -> None:
-        """Load soul, notes, and heartbeat from Ouro posts (falls back to local files)."""
-        if not isinstance(self.doc_store, OuroDocStore):
-            return
-        name = self.config.agent.name
-        soul = self.doc_store.read(f"SOUL:{name}")
-        if soul:
-            self.soul = soul
-        notes = self.doc_store.read(f"NOTES:{name}")
-        if notes:
-            self.notes = notes
 
     def connect_mcp(self) -> None:
         """Connect to all configured MCP servers once. Safe to call multiple times."""
@@ -673,6 +758,8 @@ class OuroAgent:
         conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         run_id: str = "",
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ):
         """Build the tool list and directory string for a single run.
 
@@ -710,12 +797,14 @@ class OuroAgent:
             resolve_fn=agent_self._resolve_tool_name,
         )
 
+        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         memory_tools = make_memory_tools(
             self.memory,
             self.config.agent.name,
             user_id=user_id,
             workspace=self.config.agent.workspace,
-            doc_store=self.doc_store,
+            doc_store=active_doc_store,
+            team_id=team_id,
         )
         if profile.memory_tool_filter is not None:
             allowed = set(profile.memory_tool_filter)
@@ -760,6 +849,8 @@ class OuroAgent:
                 user_id=user_id,
                 run_id=run_id,
                 asset_refs=asset_refs or [],
+                team_id=team_id,
+                doc_store=active_doc_store,
             )
             return result, profile
 
@@ -913,6 +1004,8 @@ class OuroAgent:
         conversation_state: Optional[ConversationState] = None,
         mode_framing_override: str = "",
         preloaded_tool_names: Optional[list[str]] = None,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> tuple[str, str]:
         """Build the system prompt and dynamic context.
 
@@ -932,10 +1025,13 @@ class OuroAgent:
         skills_text = "" if profile.lightweight else self.skills
         skill_directory = "" if profile.lightweight else self.skill_directory
 
+        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         shared_context = self._load_shared_prompt_context(
             user_id=user_id,
             conversation_state=conversation_state,
             include_scheduled_tasks=profile.load_scheduled_tasks,
+            team_id=team_id,
+            doc_store=active_doc_store,
         )
         working_memory = shared_context["working_memory"]
         user_model_text = shared_context["user_model"]
@@ -948,8 +1044,9 @@ class OuroAgent:
             self.config.agent.workspace,
             conversation_state=conversation_state,
             task=task,
-            doc_store=self.doc_store,
+            doc_store=active_doc_store,
             agent_name=self.config.agent.name,
+            team_id=team_id,
         )
         plans_index_text = shared_context["plans_index"]
 
@@ -1023,6 +1120,8 @@ class OuroAgent:
         run_id: str = "",
         asset_refs: Optional[list[str]] = None,
         usage_tracker: Optional[UsageTracker] = None,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> "SubAgentContext":
         from .subagents.context import SubAgentContext
 
@@ -1038,10 +1137,13 @@ class OuroAgent:
             else None
         )
 
+        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         shared_context = self._load_shared_prompt_context(
             user_id=user_id,
             conversation_state=conversation_state,
             include_scheduled_tasks=False,
+            team_id=team_id,
+            doc_store=active_doc_store,
         )
 
         return SubAgentContext(
@@ -1063,6 +1165,8 @@ class OuroAgent:
             working_memory=shared_context["working_memory"],
             user_model=shared_context["user_model"],
             plans_index=shared_context["plans_index"],
+            doc_store=active_doc_store,
+            team_id=team_id,
             asset_refs=list(asset_refs or []),
             memory_scopes=getattr(profile, "memory_scopes", []) or [],
             ouro_client=ouro_client,
@@ -1083,6 +1187,8 @@ class OuroAgent:
         user_id: Optional[str] = None,
         run_id: str = "",
         asset_refs: Optional[list[str]] = None,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ):
         """Build context and dispatch a subagent through the unified runner.
 
@@ -1110,6 +1216,8 @@ class OuroAgent:
             run_id=run_id,
             asset_refs=asset_refs,
             usage_tracker=subagent_usage_tracker,
+            team_id=team_id,
+            doc_store=doc_store,
         )
 
         return run_subagent(effective_profile, task, ctx)
@@ -1121,6 +1229,8 @@ class OuroAgent:
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         run_id: str = "",
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> list:
         """Run multiple subagents in parallel.
 
@@ -1158,6 +1268,8 @@ class OuroAgent:
                 run_id=run_id,
                 asset_refs=extra.get("asset_refs"),
                 usage_tracker=subagent_usage_tracker,
+                team_id=team_id,
+                doc_store=doc_store,
             )
             dispatch_list.append((effective_profile, task_str, ctx))
 
@@ -1183,6 +1295,8 @@ class OuroAgent:
         asset_refs: Optional[list[str]] = None,
         display: Optional[OuroDisplay] = None,
         status_callback: Optional[RunStatusCallback] = None,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> PreflightResult:
         """Run the preflight subagent as a visible step 0.
 
@@ -1207,6 +1321,8 @@ class OuroAgent:
             user_id=user_id,
             run_id=run_id,
             asset_refs=asset_refs,
+            team_id=team_id,
+            doc_store=doc_store,
         )
         duration_s = time.monotonic() - t0
 
@@ -1234,6 +1350,8 @@ class OuroAgent:
         run_id: str = "",
         display: Optional[OuroDisplay] = None,
         status_callback: Optional[RunStatusCallback] = None,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> Optional[ReflectionResult]:
         """Run the reflector subagent as a visible step.
 
@@ -1259,6 +1377,8 @@ class OuroAgent:
             conversation_id=conversation_id,
             user_id=user_id,
             run_id=run_id,
+            team_id=team_id,
+            doc_store=doc_store,
         )
         duration_s = time.monotonic() - t0
 
@@ -1282,6 +1402,8 @@ class OuroAgent:
         conversation_id: Optional[str],
         user_id: Optional[str] = None,
         run_id: str = "",
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> None:
         """Run mid-session reflection after the turn if enough turns have passed."""
         if not conversation_id:
@@ -1302,6 +1424,8 @@ class OuroAgent:
                 conversation_id=conversation_id,
                 user_id=user_id,
                 run_id=run_id,
+                team_id=team_id,
+                doc_store=doc_store,
             )
             if not reflection_result:
                 return
@@ -1314,7 +1438,8 @@ class OuroAgent:
                 workspace=self.config.agent.workspace,
                 conversations_dir=conversations_dir,
                 conversation_state=conv_state,
-                doc_store=self.doc_store,
+                doc_store=self._resolve_doc_store(team_id=team_id, doc_store=doc_store),
+                team_id=team_id,
             )
             logger.info(
                 "Post-turn reflection for %s (turn %d): %d facts, %d prefs",
@@ -1335,6 +1460,8 @@ class OuroAgent:
         user_id: Optional[str] = None,
         run_id: str = "",
         event_type: Optional[str] = None,
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
     ) -> None:
         """Run reflection after an autonomous/event run via the reflector subagent.
 
@@ -1350,11 +1477,14 @@ class OuroAgent:
             event_type=event_type,
         )
 
+        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         try:
             reflection = self._run_reflection(
                 reflection_task,
                 user_id=user_id,
                 run_id=run_id,
+                team_id=team_id,
+                doc_store=active_doc_store,
             )
             if not reflection:
                 return
@@ -1378,6 +1508,7 @@ class OuroAgent:
                         user_id=user_id,
                         run_id=run_id,
                         metadata=metadata,
+                        team_id=team_id,
                     )
                 except Exception as e:
                     logger.warning("Failed to store run-reflection fact: %s", e)
@@ -1390,7 +1521,7 @@ class OuroAgent:
                         mode.value,
                         event_type=event_type,
                     ),
-                    doc_store=self.doc_store,
+                    doc_store=active_doc_store,
                     agent_name=self.config.agent.name,
                 )
 
@@ -1419,10 +1550,12 @@ class OuroAgent:
         observer: Optional[AgentObserver] = None,
         preserve_existing_usage: bool = False,
         event_type: Optional[str] = None,
+        team_id: Optional[str] = None,
     ) -> str:
         run_started_at = time.monotonic()
         self.connect_mcp()
         model = model_override or self.model
+        active_doc_store = self._resolve_doc_store(team_id=team_id)
 
         _original_reasoning_cb = None
         if observer and hasattr(model, "_reasoning_callback"):
@@ -1474,6 +1607,8 @@ class OuroAgent:
                 conversation_state=conv_state,
                 conversation_id=conversation_id,
                 run_id=run_id,
+                team_id=team_id,
+                doc_store=active_doc_store,
             )
         )
         if extra_tools:
@@ -1489,6 +1624,8 @@ class OuroAgent:
             conversation_state=conv_state,
             mode_framing_override=mode_framing_override,
             preloaded_tool_names=preloaded_names,
+            team_id=team_id,
+            doc_store=active_doc_store,
         )
 
         # --- Step 0: Preflight subagent (visible) ---
@@ -1508,6 +1645,8 @@ class OuroAgent:
                 asset_refs=prefetch.asset_ids if prefetch else None,
                 display=display,
                 status_callback=_status_cb,
+                team_id=team_id,
+                doc_store=active_doc_store,
             )
             logger.info(
                 "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d",
@@ -1638,6 +1777,8 @@ class OuroAgent:
                     user_id=user_id,
                     run_id=run_id,
                     event_type=event_type,
+                    team_id=team_id,
+                    doc_store=active_doc_store,
                 )
             if conversation_id and profile.append_conversation_turns:
                 append_conversation_turn(self._workspace, conversation_id, "user", task)
@@ -1674,11 +1815,20 @@ class OuroAgent:
                     conversation_id=conversation_id,
                     user_id=user_id,
                     run_id=run_id,
+                    team_id=team_id,
+                    doc_store=active_doc_store,
                 )
 
-        # Run reflection and state updates in a background thread
-        import asyncio
-        asyncio.create_task(asyncio.to_thread(_do_post_run))
+        def _on_post_run_done(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.warning("Post-run background task failed", exc_info=True)
+
+        bg_task = asyncio.create_task(asyncio.to_thread(_do_post_run))
+        bg_task.add_done_callback(_on_post_run_done)
 
         usage = collect_run_usage(agent, model, self._usage_tracker)
         memory_ledger = self.memory.usage_ledger() or None
@@ -1713,10 +1863,12 @@ class OuroAgent:
 
         return await run_heartbeat(self)
 
-    async def force_planning_heartbeat(self, goal: str = "") -> Optional[str]:
+    async def force_planning_heartbeat(
+        self, goal: str = "", team_id: str | None = None
+    ) -> Optional[str]:
         from .modes.heartbeat import force_planning_heartbeat
 
-        return await force_planning_heartbeat(self, goal=goal)
+        return await force_planning_heartbeat(self, goal=goal, team_id=team_id)
 
     async def force_review_heartbeat(self, plan_id: str | None = None) -> Optional[str]:
         from .modes.heartbeat import force_review_heartbeat
@@ -1724,15 +1876,25 @@ class OuroAgent:
         return await force_review_heartbeat(self, plan_id=plan_id)
 
     async def handle_plan_feedback(self, event_run) -> Optional[str]:
-        """Handle feedback on a plan post from an incoming event."""
+        """Handle feedback on a plan quest from an incoming event."""
         from .modes.planning import PlanStore, run_review_heartbeat
 
         prov = event_run.provenance
         if not prov or not prov.plan_cycle:
             return None
 
-        plan_store = PlanStore(self.config.agent.workspace / "plans")
-        matched = plan_store.load_by_post_id(prov.plan_cycle.post_id)
+        event_team_id = getattr(event_run, "team_id", None)
+        plan_store: PlanStore | None = None
+        matched = None
+
+        search_teams = [event_team_id] if event_team_id else self._sorted_team_ids()
+        for tid in search_teams:
+            ps = PlanStore(self._workspace / "teams" / tid / "plans", team_id=tid)
+            m = ps.load_by_quest_id(prov.plan_cycle.quest_id)
+            if m:
+                plan_store = ps
+                matched = m
+                break
 
         if matched and matched.status in ("pending_review", "active"):
             hb_model_id = self.config.heartbeat.model or self.config.agent.model
@@ -1762,6 +1924,7 @@ class OuroAgent:
             preload_tools=(
                 list(event_run.preload_tools) if event_run.preload_tools else None
             ),
+            team_id=event_run.team_id,
         )
 
     def _log_run(

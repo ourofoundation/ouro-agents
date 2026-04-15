@@ -158,7 +158,7 @@ def build_shared_prompt_sections(
         )
 
     if plans_index:
-        sections["plans_index"] = f"## PLAN POST INDEX\n{plans_index}"
+        sections["plans_index"] = f"## PLAN QUEST INDEX\n{plans_index}"
 
     if working_memory:
         sections["working_memory"] = f"## WORKING MEMORY\n{working_memory}"

@@ -16,13 +16,17 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Union
+import re
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from ouro import Ouro
     from ouro.resources.content import Content
 
 logger = logging.getLogger(__name__)
+
+
+_TEAM_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
 @dataclass
@@ -47,10 +51,64 @@ def _build_client(api_key: str | None = None, base_url: str | None = None) -> "O
     return Ouro(api_key=key, base_url=url)
 
 
+def slugify_team_key(value: str) -> str:
+    """Normalize a team label for use in canonical doc names."""
+    lowered = value.strip().lower()
+    if not lowered:
+        return ""
+    return _TEAM_SLUG_RE.sub("-", lowered).strip("-")
+
+
+def team_doc_key(
+    *,
+    team_slug: str | None = None,
+    team_name: str | None = None,
+    team_id: str | None = None,
+) -> str:
+    """Resolve the canonical team qualifier used in MEMORY/DAILY names."""
+    for candidate in (team_slug, team_name, team_id):
+        if not candidate:
+            continue
+        normalized = slugify_team_key(candidate)
+        if normalized:
+            return normalized
+    return ""
+
+
+def memory_doc_name(
+    agent_name: str,
+    *,
+    team_slug: str | None = None,
+    team_name: str | None = None,
+    team_id: str | None = None,
+) -> str:
+    """Build the canonical working-memory doc name."""
+    qualifier = team_doc_key(team_slug=team_slug, team_name=team_name, team_id=team_id)
+    if qualifier:
+        return f"MEMORY:{agent_name}:{qualifier}"
+    return f"MEMORY:{agent_name}"
+
+
+def daily_doc_name(
+    agent_name: str,
+    day: str,
+    *,
+    team_slug: str | None = None,
+    team_name: str | None = None,
+    team_id: str | None = None,
+) -> str:
+    """Build the canonical daily-log doc name."""
+    qualifier = team_doc_key(team_slug=team_slug, team_name=team_name, team_id=team_id)
+    if qualifier:
+        return f"DAILY:{agent_name}:{qualifier}:{day}"
+    return f"DAILY:{agent_name}:{day}"
+
+
 class OuroDocStore:
     """Thin wrapper over ouro-py for reading/writing named posts."""
 
     _SINGLETON_PREFIXES = {"SOUL", "NOTES", "HEARTBEAT", "MEMORY", "DAILY", "USER"}
+    _IDENTITY_PREFIXES = {"SOUL", "HEARTBEAT", "NOTES"}
 
     def __init__(
         self,
@@ -62,26 +120,124 @@ class OuroDocStore:
         api_key: str | None = None,
         base_url: str | None = None,
         registry_path: Optional[Path] = None,
+        workspace: Optional[Path] = None,
+        team_slug: str | None = None,
+        team_name: str | None = None,
     ):
         self.agent_name = agent_name
         self.org_id = org_id
         self.team_id = team_id
+        self.team_name = team_name or ""
+        self.team_slug = team_doc_key(team_slug=team_slug, team_id=team_id)
         self._client = client or _build_client(api_key, base_url)
         self._owner_cache: dict[str, bool] = {}
         self._write_lock = threading.RLock()
 
         self._registry_path = registry_path
+        self._legacy_registry_path = self._derive_legacy_registry_path(registry_path)
         self._uuid_cache: dict[str, str] = self._load_registry()
+
+        self._local: Optional[LocalDocStore] = None
+        if workspace:
+            self._local = LocalDocStore(
+                workspace,
+                agent_name=agent_name,
+                team_id=team_id,
+                team_slug=self.team_slug,
+            )
+
+    def memory_name(self, agent_name: str | None = None) -> str:
+        """Canonical MEMORY name for this store's scope."""
+        return memory_doc_name(
+            agent_name or self.agent_name,
+            team_slug=self.team_slug,
+            team_id=self.team_id,
+        )
+
+    def daily_name(self, agent_name: str | None, day: str) -> str:
+        """Canonical DAILY name for this store's scope."""
+        return daily_doc_name(
+            agent_name or self.agent_name,
+            day,
+            team_slug=self.team_slug,
+            team_id=self.team_id,
+        )
+
+    def _canonicalize_name(self, name: str) -> str:
+        """Map legacy team-scoped names to canonical team-qualified names."""
+        parts = name.split(":")
+        prefix = parts[0]
+        if prefix == "MEMORY" and len(parts) == 2:
+            return self.memory_name(parts[1])
+        if prefix == "DAILY" and len(parts) == 3:
+            return self.daily_name(parts[1], parts[2])
+        return name
+
+    def _legacy_aliases(self, canonical_name: str) -> list[str]:
+        """Legacy aliases that may still exist for canonical team-scoped docs."""
+        parts = canonical_name.split(":")
+        prefix = parts[0]
+        if prefix == "DAILY" and len(parts) == 4:
+            return [f"DAILY:{parts[1]}:{parts[3]}"]
+        return []
+
+    def _candidate_names(self, name: str) -> tuple[str, list[str]]:
+        canonical = self._canonicalize_name(name)
+        candidates = [canonical]
+        for alias in self._legacy_aliases(canonical):
+            if alias not in candidates:
+                candidates.append(alias)
+        return canonical, candidates
+
+    def _is_identity_name(self, name: str) -> bool:
+        """True for docs that must stay local (never written to Ouro)."""
+        return name.split(":", 1)[0] in self._IDENTITY_PREFIXES
+
+    @staticmethod
+    def _derive_legacy_registry_path(registry_path: Path | None) -> Path | None:
+        """Return the old registry filename for backward compatibility."""
+        if not registry_path:
+            return None
+        if registry_path.name == "state.json":
+            return registry_path.with_name("doc_registry.json")
+        return None
+
+    def _registry_read_path(self) -> Path | None:
+        """Prefer the new state file, but fall back to the legacy registry file."""
+        if self._registry_path and self._registry_path.exists():
+            return self._registry_path
+        if self._legacy_registry_path and self._legacy_registry_path.exists():
+            return self._legacy_registry_path
+        return self._registry_path
 
     def _load_registry(self) -> dict[str, str]:
         """Load the name→UUID registry from disk (or return empty)."""
-        if not self._registry_path or not self._registry_path.exists():
+        load_path = self._registry_read_path()
+        if not load_path or not load_path.exists():
             return {}
         try:
-            data = json.loads(self._registry_path.read_text())
+            data = json.loads(load_path.read_text())
+            if isinstance(data, dict) and isinstance(data.get("docs"), dict):
+                docs = data.get("docs", {})
+                if all(isinstance(k, str) and isinstance(v, str) for k, v in docs.items()):
+                    team = data.get("team")
+                    if isinstance(team, dict):
+                        self.team_name = str(team.get("name") or self.team_name or "")
+                        self.team_slug = team_doc_key(
+                            team_slug=str(team.get("slug") or ""),
+                            team_name=self.team_name,
+                            team_id=str(team.get("id") or self.team_id),
+                        )
+                    logger.debug("Loaded doc registry with %d entries", len(docs))
+                    return docs
             if isinstance(data, dict):
-                logger.debug("Loaded doc registry with %d entries", len(data))
-                return data
+                docs = {
+                    key: value
+                    for key, value in data.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+                logger.debug("Loaded legacy doc registry with %d entries", len(docs))
+                return docs
         except Exception as e:
             logger.warning("Failed to load doc registry: %s", e)
         return {}
@@ -92,7 +248,16 @@ class OuroDocStore:
             return
         try:
             self._registry_path.parent.mkdir(parents=True, exist_ok=True)
-            self._registry_path.write_text(json.dumps(self._uuid_cache, indent=2))
+            payload = {
+                "team": {
+                    "id": self.team_id,
+                    "name": self.team_name,
+                    "slug": self.team_slug,
+                    "org_id": self.org_id,
+                },
+                "docs": self._uuid_cache,
+            }
+            self._registry_path.write_text(json.dumps(payload, indent=2))
         except Exception as e:
             logger.warning("Failed to save doc registry: %s", e)
 
@@ -154,7 +319,7 @@ class OuroDocStore:
         )
         return str(selected["id"])
 
-    def _resolve_name(self, name: str) -> tuple[Optional[str], bool]:
+    def _resolve_name(self, name: str) -> tuple[Optional[str], bool, str]:
         """Resolve a post name and report whether recovery was ambiguous.
 
         Checks the file-backed registry first (survives restarts), then
@@ -162,34 +327,66 @@ class OuroDocStore:
         memory docs treat the registry as authoritative and refuse to pick a
         winner from ambiguous exact-name search results.
         """
-        if name in self._uuid_cache:
-            return self._uuid_cache[name], False
+        canonical, candidates = self._candidate_names(name)
+
+        for candidate in candidates:
+            if candidate in self._uuid_cache:
+                uuid = self._uuid_cache[candidate]
+                self._remember_uuid(canonical, uuid)
+                return uuid, False, candidate
 
         try:
-            matches = self._search_exact_name_matches(name, limit=25)
-            if self._is_singleton_name(name):
-                if not matches:
-                    return None, False
-                if len(matches) > 1:
-                    logger.warning(
-                        "Multiple exact singleton post matches found for %s; refusing recovery",
-                        name,
-                    )
-                    return None, True
-                uuid = str(matches[0]["id"])
-            else:
-                uuid = self._select_exact_match(name, matches)
-            if uuid:
-                return self._remember_uuid(name, uuid), False
+            for candidate in candidates:
+                matches = self._search_exact_name_matches(candidate, limit=25)
+                if self._is_singleton_name(candidate):
+                    if not matches:
+                        continue
+                    if len(matches) > 1:
+                        logger.warning(
+                            "Multiple exact singleton post matches found for %s; refusing recovery",
+                            candidate,
+                        )
+                        return None, True, canonical
+                    uuid = str(matches[0]["id"])
+                else:
+                    uuid = self._select_exact_match(candidate, matches)
+                if uuid:
+                    self._remember_uuid(canonical, uuid)
+                    if candidate != canonical:
+                        self._uuid_cache.pop(candidate, None)
+                        self._save_registry()
+                    return uuid, False, candidate
         except Exception as e:
-            logger.warning("OuroDocStore._resolve failed for %s: %s", name, e)
+            logger.warning("OuroDocStore._resolve failed for %s: %s", canonical, e)
 
-        return None, False
+        return None, False, canonical
 
     def _resolve(self, name: str) -> Optional[str]:
         """Resolve a post name to its UUID."""
-        uuid, _ambiguous = self._resolve_name(name)
+        uuid, _ambiguous, _matched = self._resolve_name(name)
         return uuid
+
+    def _ensure_canonical_remote_name(
+        self,
+        uuid: str,
+        *,
+        canonical_name: str,
+        matched_name: str,
+    ) -> None:
+        """Rename legacy team-scoped posts to the canonical team-qualified title."""
+        if matched_name == canonical_name:
+            return
+        try:
+            self._client.posts.update(uuid, name=canonical_name)
+            self._uuid_cache.pop(matched_name, None)
+            self._remember_uuid(canonical_name, uuid)
+        except Exception as e:
+            logger.warning(
+                "Failed to rename legacy doc %s -> %s: %s",
+                matched_name,
+                canonical_name,
+                e,
+            )
 
     def _make_content(self, markdown: str) -> "Content":
         """Build a Content object from markdown using the SDK's server-side parser."""
@@ -199,6 +396,7 @@ class OuroDocStore:
 
     def _create(self, name: str, content_md: str) -> Optional[str]:
         """Create a new post and return its UUID."""
+        name = self._canonicalize_name(name)
         try:
             post = self._client.posts.create(
                 name=name,
@@ -211,6 +409,8 @@ class OuroDocStore:
             self._uuid_cache[name] = uuid
             self._owner_cache[name] = True
             self._save_registry()
+            if self._local:
+                self._local.write(name, content_md)
             return uuid
         except Exception as e:
             logger.warning("OuroDocStore._create failed for %s: %s", name, e)
@@ -218,12 +418,17 @@ class OuroDocStore:
 
     def read(self, name: str) -> str:
         """Read a post by name. Returns empty string if not found."""
+        if self._is_identity_name(name) and self._local:
+            return self._local.read(name)
         result = self.read_with_meta(name)
         return result.content
 
     def read_with_meta(self, name: str) -> ReadResult:
         """Read a post by name, returning content and metadata."""
-        uuid = self._resolve(name)
+        if self._is_identity_name(name) and self._local:
+            return self._local.read_with_meta(name)
+        canonical_name = self._canonicalize_name(name)
+        uuid = self._resolve(canonical_name)
         if not uuid:
             return ReadResult(content="")
 
@@ -250,7 +455,12 @@ class OuroDocStore:
 
     def write(self, name: str, content_md: str) -> bool:
         """Update a post this agent owns. Creates it if it doesn't exist."""
-        uuid, ambiguous = self._resolve_name(name)
+        name = self._canonicalize_name(name)
+        if self._is_identity_name(name):
+            if self._local:
+                return self._local.write(name, content_md)
+            return False
+        uuid, ambiguous, matched_name = self._resolve_name(name)
 
         if uuid is None and ambiguous:
             logger.warning(
@@ -261,7 +471,7 @@ class OuroDocStore:
 
         if uuid is None:
             with self._write_lock:
-                uuid, ambiguous = self._resolve_name(name)
+                uuid, ambiguous, matched_name = self._resolve_name(name)
                 if uuid is None:
                     if ambiguous:
                         logger.warning(
@@ -272,8 +482,15 @@ class OuroDocStore:
                     return self._create(name, content_md) is not None
 
         try:
+            self._ensure_canonical_remote_name(
+                uuid,
+                canonical_name=name,
+                matched_name=matched_name,
+            )
             content = self._make_content(content_md)
             self._client.posts.update(id=uuid, content=content)
+            if self._local:
+                self._local.write(name, content_md)
             return True
         except Exception as e:
             logger.warning("OuroDocStore.write failed for %s: %s", name, e)
@@ -285,7 +502,12 @@ class OuroDocStore:
         Works at the Content/TipTap level so rich formatting is preserved
         — no read→concat→rewrite lossy round-trip.
         """
-        uuid, ambiguous = self._resolve_name(name)
+        name = self._canonicalize_name(name)
+        if self._is_identity_name(name):
+            if self._local:
+                return self._local.append(name, markdown)
+            return False
+        uuid, ambiguous, matched_name = self._resolve_name(name)
 
         if uuid is None and ambiguous:
             logger.warning(
@@ -296,7 +518,7 @@ class OuroDocStore:
 
         if uuid is None:
             with self._write_lock:
-                uuid, ambiguous = self._resolve_name(name)
+                uuid, ambiguous, matched_name = self._resolve_name(name)
                 if uuid is None:
                     if ambiguous:
                         logger.warning(
@@ -307,6 +529,11 @@ class OuroDocStore:
                     return self._create(name, markdown) is not None
 
         try:
+            self._ensure_canonical_remote_name(
+                uuid,
+                canonical_name=name,
+                matched_name=matched_name,
+            )
             post = self._client.posts.retrieve(uuid)
             if post.content:
                 from ouro.resources.content import Content
@@ -322,6 +549,8 @@ class OuroDocStore:
             new_block = self._make_content(markdown)
             existing.append(new_block)
             self._client.posts.update(id=uuid, content=existing)
+            if self._local:
+                self._local.append(name, markdown)
             return True
         except Exception as e:
             logger.warning("OuroDocStore.append failed for %s: %s", name, e)
@@ -329,7 +558,7 @@ class OuroDocStore:
 
     def comment(self, name: str, content_md: str) -> bool:
         """Add a comment to a post (typically one this agent does NOT own)."""
-        uuid = self._resolve(name)
+        uuid = self._resolve(self._canonicalize_name(name))
         if not uuid:
             return False
 
@@ -343,7 +572,7 @@ class OuroDocStore:
 
     def read_comments(self, name: str) -> list[dict]:
         """Read comments on a post (for consolidation)."""
-        uuid = self._resolve(name)
+        uuid = self._resolve(self._canonicalize_name(name))
         if not uuid:
             return []
 
@@ -376,7 +605,9 @@ class OuroDocStore:
 
     def exists(self, name: str) -> bool:
         """Check whether a named post exists in the team."""
-        return self._resolve(name) is not None
+        if self._is_identity_name(name):
+            return self._local.exists(name) if self._local else False
+        return self._resolve(self._canonicalize_name(name)) is not None
 
 
 class LocalDocStore:
@@ -385,31 +616,95 @@ class LocalDocStore:
     Provides the same interface as ``OuroDocStore`` so consumers never need
     to branch on which backend is active.  Used when no Ouro org/team is
     configured.
+
+    When *team_id* is set, MEMORY, DAILY, HEARTBEAT, and NOTES route to
+    ``teams/{team_id}/`` instead of shared workspace paths, isolating
+    working state per team while ``SOUL`` stays global.
     """
 
-    def __init__(self, workspace: Path, agent_name: str = ""):
+    def __init__(
+        self,
+        workspace: Path,
+        agent_name: str = "",
+        team_id: str | None = None,
+        team_slug: str | None = None,
+    ):
         self._workspace = workspace
         self.agent_name = agent_name
+        self.team_id = team_id
+        self.team_slug = team_doc_key(team_slug=team_slug, team_id=team_id)
+
+    def memory_name(self, agent_name: str | None = None) -> str:
+        """Canonical MEMORY name for this store's scope."""
+        return memory_doc_name(
+            agent_name or self.agent_name,
+            team_slug=self.team_slug if self.team_id else None,
+            team_id=self.team_id if self.team_id else None,
+        )
+
+    def daily_name(self, agent_name: str | None, day: str) -> str:
+        """Canonical DAILY name for this store's scope."""
+        return daily_doc_name(
+            agent_name or self.agent_name,
+            day,
+            team_slug=self.team_slug if self.team_id else None,
+            team_id=self.team_id if self.team_id else None,
+        )
 
     @staticmethod
     def _strip_frontmatter(text: str) -> str:
-        if not text.startswith("---"):
-            return text
-        end = text.find("---", 3)
-        if end == -1:
-            return text
-        return text[end + 3 :].lstrip("\n")
+        from .workspace_sync import strip_frontmatter
+        return strip_frontmatter(text)
 
     def _name_to_path(self, name: str) -> Path:
-        """Map a post name like ``MEMORY:agent`` to a local file path."""
-        parts = name.split(":", 2)
+        """Map a post name like ``MEMORY:agent`` to a local file path.
+
+        Routing depends on whether a team_id is set:
+
+        **Identity (always workspace root):** SOUL
+
+        **Team-scoped (under teams/{team_id}/ when team_id set):**
+        MEMORY, DAILY, HEARTBEAT, NOTES
+
+        **Shared (under shared/ when no team_id):**
+        DAILY → shared/daily/, MEMORY → shared/memory/, USER → shared/users/
+        """
+        parts = name.split(":")
         prefix = parts[0]
-        if prefix in ("SOUL", "NOTES", "HEARTBEAT", "MEMORY"):
+
+        if prefix == "SOUL":
+            return self._workspace / "SOUL.md"
+
+        if self.team_id:
+            team_dir = self._workspace / "teams" / self.team_id
+            if prefix == "MEMORY":
+                return team_dir / "MEMORY.md"
+            if prefix == "DAILY" and len(parts) >= 3:
+                return team_dir / "daily" / f"{parts[-1]}.md"
+            if prefix in ("HEARTBEAT", "NOTES"):
+                return team_dir / f"{prefix}.md"
+
+        if prefix in ("NOTES", "HEARTBEAT"):
             return self._workspace / f"{prefix}.md"
+
+        if prefix == "MEMORY":
+            legacy = self._workspace / "MEMORY.md"
+            if legacy.exists():
+                return legacy
+            return self._workspace / "shared" / "memory" / "MEMORY.md"
         if prefix == "DAILY" and len(parts) >= 3:
-            return self._workspace / "memory" / "daily" / f"{parts[2]}.md"
+            legacy = self._workspace / "memory" / "daily" / f"{parts[-1]}.md"
+            shared = self._workspace / "shared" / "daily" / f"{parts[-1]}.md"
+            if legacy.exists() and not shared.exists():
+                return legacy
+            return shared
         if prefix == "USER" and len(parts) >= 2:
-            return self._workspace / "memory" / "users" / f"{parts[1]}.md"
+            legacy = self._workspace / "memory" / "users" / f"{parts[1]}.md"
+            shared = self._workspace / "shared" / "users" / f"{parts[1]}.md"
+            if legacy.exists() and not shared.exists():
+                return legacy
+            return shared
+
         safe = name.replace(":", "_").replace("/", "_")
         return self._workspace / "data" / "docs" / f"{safe}.md"
 
@@ -471,4 +766,5 @@ class LocalDocStore:
         return True
 
 
-DocStore = Union[OuroDocStore, LocalDocStore]
+# Re-export the DocStore Protocol from the package root for backward compatibility.
+from . import DocStore as DocStore  # noqa: F811

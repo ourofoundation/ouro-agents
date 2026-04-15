@@ -77,6 +77,17 @@ You can set a default model for subagents and configure individual profiles in
 - `subagents.<name>.max_steps`: tune the agent loop for agent-mode
   subagents like `research` and `executor`.
 
+You can also configure the human account that controls the agent:
+
+```json
+"controller": {
+  "username": "your-handle"
+}
+```
+
+- `controller.username`: the human Ouro username to mention as `{@username}` when a new plan
+  enters review, so the quest is clearly flagged as ready for review.
+
 ## Run Modes
 
 Main-agent config now lives under `modes.<name>` instead of being split

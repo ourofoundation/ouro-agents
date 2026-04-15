@@ -145,6 +145,14 @@ class TestConfigModeOverrides(unittest.TestCase):
         self.assertTrue(config.planning.enabled)
         self.assertEqual(config.planning.cadence, "6h")
 
+    def test_loads_controller_username(self):
+        data = _base_config()
+        data["controller"] = {"username": "mmoderwell"}
+
+        config = self._load_config(data)
+
+        self.assertEqual(config.controller.username, "mmoderwell")
+
     def test_loads_env_file_declared_in_config(self):
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)

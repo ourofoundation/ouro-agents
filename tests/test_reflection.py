@@ -58,7 +58,7 @@ class _FakeMemoryBackend:
     def __init__(self):
         self.items = []
 
-    def add(self, text, agent_id=None, user_id=None, run_id=None, metadata=None):
+    def add(self, text, agent_id=None, user_id=None, run_id=None, metadata=None, team_id=None):
         self.items.append(
             {
                 "text": text,
@@ -66,6 +66,7 @@ class _FakeMemoryBackend:
                 "user_id": user_id,
                 "run_id": run_id,
                 "metadata": metadata or {},
+                "team_id": team_id,
             }
         )
 
@@ -185,6 +186,37 @@ class TestApplyReflection(unittest.TestCase):
                 (conversations_dir / "conv-1.reflected").read_text(),
                 "12",
             )
+
+    def test_valid_reflection_preserves_team_id_on_memory_writes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            conversations_dir = workspace / "conversations"
+            backend = _FakeMemoryBackend()
+            result = ReflectionResult(
+                facts_to_store=[
+                    {
+                        "text": "Team-specific preference.",
+                        "category": "observation",
+                        "importance": 0.8,
+                    }
+                ],
+                user_preferences=[],
+                daily_log_entry="",
+            )
+
+            apply_reflection(
+                result,
+                backend,
+                agent_id="hermes",
+                user_id="user-1",
+                conversation_id="conv-1",
+                workspace=workspace,
+                conversations_dir=conversations_dir,
+                conversation_state=_ConversationState(turn_count=5),
+                team_id="team-42",
+            )
+
+            self.assertEqual(backend.items[0]["team_id"], "team-42")
 
 
 if __name__ == "__main__":

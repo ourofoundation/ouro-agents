@@ -40,7 +40,6 @@ class AgentConfig(BaseModel):
     model: str
     workspace: Path = Path("./workspace")
     org_id: Optional[str] = None
-    team_id: Optional[str] = None
     python_packages: List[str] = Field(default_factory=list)
 
 
@@ -109,6 +108,10 @@ class PlanningConfig(BaseModel):
     min_heartbeats: int = 4
     review_window: str = "2h"
     auto_approve: bool = True
+
+
+class ControllerConfig(BaseModel):
+    username: Optional[str] = None
 
 
 class SubAgentOverride(BaseModel):
@@ -305,6 +308,7 @@ class OuroAgentsConfig(BaseSettings):
     server: ServerConfig = Field(default_factory=ServerConfig)
     subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
+    controller: ControllerConfig = Field(default_factory=ControllerConfig)
     modes: ModeConfig = Field(default_factory=ModeConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     env_file: Optional[Path] = None
@@ -400,13 +404,20 @@ class OuroAgentsConfig(BaseSettings):
                 },
             )
 
-        # Migrate legacy per-section org_id/team_id into agent-level fields.
+        # Migrate legacy per-section org_id into the agent-level field.
         agent_section = expanded_data.setdefault("agent", {})
         for section_key in ("memory", "planning"):
             section = expanded_data.get(section_key, {})
-            for field in ("org_id", "team_id"):
-                val = section.pop(field, None)
-                if val and not agent_section.get(field):
-                    agent_section[field] = val
+            section.pop("team_id", None)
+            val = section.pop("org_id", None)
+            if val and not agent_section.get("org_id"):
+                agent_section["org_id"] = val
+
+        if agent_section.pop("team_id", None):
+            raise ValueError(
+                "agent.team_id is no longer supported — teams are discovered "
+                "at runtime from the platform. Remove the team_id field from "
+                "your config.json."
+            )
 
         return cls(**expanded_data)

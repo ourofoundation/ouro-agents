@@ -15,6 +15,7 @@ from ouro_agents.modes.planning import (
     next_action,
     parse_task_lines_from_markdown,
     rebuild_plan_markdown,
+    run_planning_heartbeat,
     run_review_heartbeat,
     sync_plan_items_from_markdown,
 )
@@ -80,8 +81,9 @@ def test_rebuild_no_longer_appends_stale_items_after_sync():
 
 def test_feedback_review_prompt_targets_same_thread_reply():
     prompt = build_feedback_review_prompt(
-        post_id="plan-post-1",
+        quest_id="plan-quest-1",
         plan_text="# Plan",
+        current_items_section="[ ] Do first thing (item_id: item-1)",
         feedback_text="Please narrow scope.",
         current_status="pending_review",
         reply_parent_id="comment-123",
@@ -95,8 +97,9 @@ def test_feedback_review_prompt_targets_same_thread_reply():
 
 def test_feedback_review_prompt_for_active_plan_preserves_active_state():
     prompt = build_feedback_review_prompt(
-        post_id="plan-post-1",
+        quest_id="plan-quest-1",
         plan_text="# Plan",
+        current_items_section="[ ] Do first thing (item_id: item-1)",
         feedback_text="Tighten task 2 and keep going.",
         current_status="active",
         reply_parent_id="comment-123",
@@ -110,14 +113,38 @@ def test_feedback_review_prompt_for_active_plan_preserves_active_state():
 
 def test_feedback_review_prompt_mentions_next_status_for_cancellation():
     prompt = build_feedback_review_prompt(
-        post_id="plan-post-1",
+        quest_id="plan-quest-1",
         plan_text="# Plan",
+        current_items_section="[ ] Keep body (item_id: item-1)",
         feedback_text="Please deactivate this plan.",
         current_status="active",
     )
 
     assert '"next_status": "active|pending_review|cancelled"' in prompt
     assert 'set "next_status": "cancelled"' in prompt
+
+
+def test_feedback_review_prompt_uses_structured_item_numbering_and_sort_order():
+    prompt = build_feedback_review_prompt(
+        quest_id="plan-quest-1",
+        plan_text="# Plan",
+        current_items_section="\n".join(
+            [
+                "[ ] First task (item_id: item-1)",
+                "[ ] Explore XRD route status (item_id: item-2)",
+            ]
+        ),
+        feedback_text="Please remove item 2.",
+        current_status="active",
+    )
+
+    assert "frontend numbering is 1-indexed" in prompt
+    assert "1. [ ] First task (item_id: item-1)" in prompt
+    assert "2. [ ] Explore XRD route status (item_id: item-2)" in prompt
+    assert "Do NOT infer item numbers from prose headings" in prompt
+    assert "update_quest_item(quest_id, item_id, ...): change description, notes, status," in prompt
+    assert "or sort_order" in prompt
+    assert "normalize sort_order to match the frontend's 1-indexed numbering" in prompt
 
 
 def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():
@@ -144,16 +171,16 @@ def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():
 
 
 def test_run_review_heartbeat_cancels_without_rewriting_plan():
-    class FakePosts:
+    class FakeQuests:
         def __init__(self):
             self.updates = []
 
-        def update(self, post_id, **kwargs):
-            self.updates.append((post_id, kwargs))
+        def update(self, quest_id, **kwargs):
+            self.updates.append((quest_id, kwargs))
 
     class FakeOuroClient:
         def __init__(self):
-            self.posts = FakePosts()
+            self.quests = FakeQuests()
 
     class FakeAgent:
         def __init__(self, workspace: Path, ouro_client: FakeOuroClient):
@@ -186,7 +213,7 @@ def test_run_review_heartbeat_cancels_without_rewriting_plan():
                 kind="default",
                 plan_text="# Original Plan\n\n## Tasks\n- [ ] Keep body",
                 items=[PlanItem(id="keepbody", description="Keep body", status="pending")],
-                post_id="plan-post-1",
+                quest_id="plan-quest-1",
             )
             plan_store.save(current)
             ouro_client = FakeOuroClient()
@@ -205,9 +232,87 @@ def test_run_review_heartbeat_cancels_without_rewriting_plan():
             assert archived.status == "cancelled"
             assert archived.plan_text == "# Original Plan\n\n## Tasks\n- [ ] Keep body"
             assert not (workspace / "plans" / "active" / "default.json").exists()
-            assert ouro_client.posts.updates
-            _, kwargs = ouro_client.posts.updates[-1]
-            assert kwargs["description"] == "[cancelled]"
-            assert "content" not in kwargs
+            assert ouro_client.quests.updates
+            _, kwargs = ouro_client.quests.updates[-1]
+            assert kwargs["status"] == "closed"
+
+    asyncio.run(_exercise())
+
+
+def test_run_planning_heartbeat_mentions_controller_when_plan_needs_review():
+    class FakeContent:
+        def __init__(self):
+            self.markdown = None
+
+        def from_markdown(self, markdown: str) -> None:
+            self.markdown = markdown
+
+    class FakeComments:
+        def __init__(self):
+            self.created = []
+
+        def create(self, *, content, parent_id):
+            self.created.append((parent_id, content.markdown))
+
+    class FakeQuests:
+        @staticmethod
+        def Content():
+            return FakeContent()
+
+        def list_items(self, quest_id):
+            assert quest_id == "plan-quest-1"
+            return []
+
+    class FakeOuroClient:
+        def __init__(self):
+            self.comments = FakeComments()
+            self.quests = FakeQuests()
+
+    class FakeAgent:
+        def __init__(self, workspace: Path, ouro_client: FakeOuroClient):
+            self.config = SimpleNamespace(
+                agent=SimpleNamespace(
+                    workspace=workspace,
+                    name="hermes",
+                    org_id="org-1",
+                ),
+                planning=SimpleNamespace(
+                    cadence="4h",
+                    model=None,
+                ),
+                controller=SimpleNamespace(username="@reviewer"),
+            )
+            self.doc_store = None
+            self._ouro_client = ouro_client
+
+        async def run(self, *args, **kwargs):
+            return json.dumps({"quest_id": "plan-quest-1", "plan": "# New Plan"})
+
+        def _build_model(self, model_id, heartbeat=False):
+            return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
+
+        def _get_ouro_client(self):
+            return self._ouro_client
+
+    async def _exercise():
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            plan_store = PlanStore(workspace / "plans")
+            ouro_client = FakeOuroClient()
+            agent = FakeAgent(workspace, ouro_client)
+
+            await run_planning_heartbeat(
+                agent,
+                hb_model=SimpleNamespace(model_id="heartbeat-model"),
+                plan_store=plan_store,
+                servers=["ouro"],
+            )
+
+            current = plan_store.load_default()
+            assert current is not None
+            assert current.status == "pending_review"
+            assert ouro_client.comments.created == [
+                ("plan-quest-1", "{@reviewer} this quest is ready for review.")
+            ]
 
     asyncio.run(_exercise())

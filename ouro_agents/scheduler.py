@@ -284,8 +284,6 @@ class AgentScheduler:
         logger.info("Registered scheduled task: %s (%s)", task.name, task.schedule)
 
     def _register_heartbeat(self, heartbeat_config) -> None:
-        from datetime import datetime
-
         from apscheduler.triggers.cron import CronTrigger
         from apscheduler.triggers.interval import IntervalTrigger
 
@@ -371,7 +369,7 @@ class AgentScheduler:
             import ouro_agents.server as server_module
             from .display import get_display
 
-            server_module.last_heartbeat = datetime.utcnow()
+            server_module.last_heartbeat = datetime.now(timezone.utc)
             await self._agent.heartbeat()
             get_display().flush_pending_run_summary()
             

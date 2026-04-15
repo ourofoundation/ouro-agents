@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, List, Optional
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from .conversation_state import ConversationState
+
+
+class DocStore(Protocol):
+    """Interface for document stores (Ouro-backed or local filesystem)."""
+
+    def read(self, name: str) -> str: ...
+    def write(self, name: str, content_md: str) -> bool: ...
+    def append(self, name: str, markdown: str) -> bool: ...
+    def exists(self, name: str) -> bool: ...
+    def comment(self, name: str, content_md: str) -> bool: ...
+    def read_comments(self, name: str) -> list[dict]: ...
+    def search(self, query: str) -> list[dict]: ...
+    def is_owner(self, name: str) -> bool: ...
+    def memory_name(self, agent_name: str | None = None) -> str: ...
+    def daily_name(self, agent_name: str | None, day: str) -> str: ...
 
 
 class MemoryResult(BaseModel):
@@ -22,16 +38,20 @@ class MemoryBackend(Protocol):
     """Interface all memory backends must implement."""
 
     def search(self, query: str, agent_id: str,
-               user_id: Optional[str] = None, limit: int = 10) -> List[MemoryResult]:
+               user_id: Optional[str] = None, limit: int = 10,
+               team_id: Optional[str] = None,
+               scope: str = "team") -> List[MemoryResult]:
         ...
 
     def add(self, content: str | list[dict], agent_id: str,
             user_id: Optional[str] = None, run_id: Optional[str] = None,
-            metadata: Optional[dict] = None) -> None:
+            metadata: Optional[dict] = None,
+            team_id: Optional[str] = None) -> None:
         ...
 
     def get_all(self, agent_id: str, user_id: Optional[str] = None,
-                limit: int = 100) -> List[MemoryResult]:
+                limit: int = 100,
+                team_id: Optional[str] = None) -> List[MemoryResult]:
         ...
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:

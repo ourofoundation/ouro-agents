@@ -35,8 +35,8 @@ def build_review_plan_options(plans: list["PlanCycle"]) -> list[ReviewPlanOption
             f"{plan.items_done}/{total} complete" if total else "no checklist items"
         )
         status = plan.status.replace("_", " ")
-        post = plan.post_id or "no post"
-        subtitle = f"{status} | {progress} | {post} | {plan.id[:8]}"
+        quest = plan.quest_id or "no quest"
+        subtitle = f"{status} | {progress} | {quest} | {plan.id[:8]}"
         options.append(
             ReviewPlanOption(
                 cycle_id=plan.id,

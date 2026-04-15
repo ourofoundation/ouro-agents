@@ -10,7 +10,7 @@ from smolagents import tool
 from . import MemoryBackend
 
 if TYPE_CHECKING:
-    from .ouro_docs import OuroDocStore
+    from . import DocStore
 
 
 def make_memory_tools(
@@ -18,7 +18,8 @@ def make_memory_tools(
     agent_id: str,
     user_id: Optional[str] = None,
     workspace: Optional[Path] = None,
-    doc_store: Optional[OuroDocStore] = None,
+    doc_store: Optional["DocStore"] = None,
+    team_id: Optional[str] = None,
 ) -> list:
 
     @tool
@@ -30,6 +31,7 @@ def make_memory_tools(
                 - query (str, required): What to search for
                 - category (str, optional): Filter — one of: fact, preference, learning, decision, observation, general. Omit for all.
                 - limit (int, optional): Max results per query (default: 5)
+                - scope (str, optional): "team" (default, only this team's memories) | "org" (all teams) | "global" (everything)
 
         Example single:  [{"query": "user's favorite language"}]
         Example multi:   [{"query": "API preferences"}, {"query": "past decisions about auth", "category": "decision"}]
@@ -43,9 +45,11 @@ def make_memory_tools(
             query = spec.get("query", "")
             category = spec.get("category", "")
             limit = int(spec.get("limit", 5))
+            scope = spec.get("scope", "team")
 
             results = backend.search(
                 query=query, agent_id=agent_id, user_id=user_id, limit=limit,
+                team_id=team_id, scope=scope,
             )
             if category:
                 results = [r for r in results if r.category == category]
@@ -103,12 +107,14 @@ def make_memory_tools(
         today = date.today().isoformat()
 
         if doc_store:
-            content = doc_store.read(f"MEMORY:{agent_id}")
+            memory_name = doc_store.memory_name(agent_id)
+            daily_name = doc_store.daily_name(agent_id, today)
+            content = doc_store.read(memory_name)
             if content:
                 tokens = len(content) // 4
                 lines.append(f"Working memory: ~{tokens} tokens")
 
-            daily_content = doc_store.read(f"DAILY:{agent_id}:{today}")
+            daily_content = doc_store.read(daily_name)
             if daily_content:
                 entry_count = sum(
                     1 for line in daily_content.split("\n") if line.strip().startswith("-")

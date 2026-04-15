@@ -26,6 +26,7 @@ ouro = get_ouro_client()
 - `download(id, output_path=None, asset_type=None)` → dict with `id`, `path`, `filename`, `content_type`, `bytes`
 
 ### Posts (ouro.posts)
+- `list(query="", limit=20, offset=0, scope=None, org_id=None, team_id=None, **kwargs)` → list[Post]
 - `create(name, content=None, content_markdown=None, content_path=None, description=None, visibility=None, **kwargs)` → Post
   - `name` is the post title (there is no `title` parameter)
   - Body: use exactly one of `content` (Content object), `content_markdown`, or `content_path` — omit `content` when using markdown or a path
@@ -33,9 +34,9 @@ ouro = get_ouro_client()
 - `retrieve(id)` → Post
 - `update(id, name=None, content=None, description=None, visibility=None, **kwargs)` → Post
 - `delete(id)` → None
-- Note: There is no `posts.list()` — use `assets.search(asset_type="post")` instead
 
 ### Datasets (ouro.datasets)
+- `list(query="", limit=20, offset=0, scope=None, org_id=None, team_id=None, **kwargs)` → list[Dataset]
 - `create(name, visibility, data=None, description=None, **kwargs)` → Dataset
   - `data`: DataFrame, list[dict], or dict (must have ≥1 row, ≥1 column)
   - Pass `org_id` and `team_id` in kwargs
@@ -53,6 +54,7 @@ ouro = get_ouro_client()
 - `delete(id)` → None
 
 ### Files (ouro.files)
+- `list(query="", limit=20, offset=0, scope=None, org_id=None, team_id=None, **kwargs)` → list[File]
 - `create(name, visibility, file_path=None, file_content=None, file_name=None, description=None, **kwargs)` → File
   - Use `file_path` for local files or `file_content` (bytes) + `file_name` for in-memory
   - Pass `org_id` and `team_id` in kwargs

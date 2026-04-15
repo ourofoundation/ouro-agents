@@ -165,10 +165,16 @@ class Mem0Backend:
         agent_id: str,
         user_id: Optional[str] = None,
         limit: int = 10,
+        team_id: Optional[str] = None,
+        scope: str = "team",
     ) -> List[MemoryResult]:
         kwargs: dict = {"query": query, "agent_id": agent_id, "limit": limit}
         if user_id:
             kwargs["user_id"] = user_id
+
+        if team_id and scope == "team":
+            kwargs.setdefault("filters", {})["team_id"] = team_id
+
         results = self._mem.search(**kwargs)
         res_list = results.get("results", []) if isinstance(results, dict) else results
 
@@ -191,11 +197,15 @@ class Mem0Backend:
         user_id: Optional[str] = None,
         run_id: Optional[str] = None,
         metadata: Optional[dict] = None,
+        team_id: Optional[str] = None,
     ) -> None:
         meta = dict(metadata or {})
         meta.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         meta.setdefault("category", "general")
         meta.setdefault("importance", 0.5)
+
+        if team_id:
+            meta["team_id"] = team_id
 
         kwargs: dict = {"agent_id": agent_id, "metadata": meta}
         if user_id:
@@ -209,10 +219,13 @@ class Mem0Backend:
         agent_id: str,
         user_id: Optional[str] = None,
         limit: int = 100,
+        team_id: Optional[str] = None,
     ) -> List[MemoryResult]:
         kwargs: dict = {"agent_id": agent_id, "limit": limit}
         if user_id:
             kwargs["user_id"] = user_id
+        if team_id:
+            kwargs.setdefault("filters", {})["team_id"] = team_id
         results = self._mem.get_all(**kwargs)
         res_list = results.get("results", []) if isinstance(results, dict) else results
         out: list[MemoryResult] = []

@@ -61,8 +61,10 @@ def compact_memory_md(
     agent_name: str = "",
 ) -> bool:
     """Rewrite working memory if it exceeds the token budget. Returns True if compacted."""
-    post_name = f"MEMORY:{agent_name}"
-    content = doc_store.read(post_name) if doc_store else ""
+    if not doc_store:
+        return False
+    post_name = doc_store.memory_name(agent_name)
+    content = doc_store.read(post_name)
 
     if not content:
         return False
@@ -115,8 +117,10 @@ def promote_daily_entries(
         return 0
 
     yesterday = (date.today() - timedelta(days=1)).isoformat()
-    daily_content = doc_store.read(f"DAILY:{agent_name}:{yesterday}").strip()
-    memory_content = doc_store.read(f"MEMORY:{agent_name}")
+    daily_name = doc_store.daily_name(agent_name, yesterday)
+    memory_name = doc_store.memory_name(agent_name)
+    daily_content = doc_store.read(daily_name).strip()
+    memory_content = doc_store.read(memory_name)
 
     if not daily_content or len(daily_content) < 20:
         return 0
@@ -159,8 +163,8 @@ def promote_daily_entries(
             else:
                 content = content.rstrip() + f"\n\n{header}\n{bullet}"
 
-        if not doc_store.write(f"MEMORY:{agent_name}", content):
-            raise RuntimeError(f"Failed to write MEMORY:{agent_name}")
+        if not doc_store.write(memory_name, content):
+            raise RuntimeError(f"Failed to write {memory_name}")
 
         logger.info("Promoted %d entries from %s daily log to working memory", len(entries), yesterday)
         return len(entries)
