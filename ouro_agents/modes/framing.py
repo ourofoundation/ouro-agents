@@ -58,8 +58,8 @@ EXTENDED_MARKDOWN_INSTRUCTIONS = """
 - **Mention users**: @username
 - **Link to assets**: prefer markdown shorthands `[label](asset:<uuid>)` or typed `[label](post:<uuid>)`, `[label](file:<uuid>)`, `[label](dataset:<uuid>)`, `[label](route:<uuid>)`, `[label](service:<uuid>)` — the server resolves these to canonical URLs. If a tool response includes a `url`, you may paste that exact URL; never invent path segments or use placeholders like `entity` in URLs.
 - **Embed assets** (block-level): ```assetComponent
-  {"id": "<uuid>", "assetType": "post"|"file"|"dataset"|"route"|"service", "viewMode": "preview"|"card", "visualizationId": "<uuid>|null"}
-  ``` — use search_assets() or get_asset() for IDs; prefer viewMode "preview" for files/datasets. For datasets, set visualizationId to render a specific saved dataset view. Use the exact keys `id`, `assetType`, and `viewMode` here; do not use legacy embed keys like `asset_id`, `asset_type`, or `type`.
+  {"id": "<uuid>", "assetType": "post"|"file"|"dataset"|"route"|"service", "viewMode": "preview"|"card", "displayConfig": {"visualizationId": "<uuid>|null", "actionId": "<uuid>|null"}}
+  ``` — use search_assets() or get_asset() for IDs; prefer viewMode "preview" for files/datasets. For datasets, set `displayConfig.visualizationId` to render a specific saved view. For routes, when you're writing about an action you just ran (or referencing a specific past action), use viewMode "preview" with `displayConfig.actionId` set to that action's id — this renders status, logs, and any side-effect asset inline. `execute_route` returns `action_id` in its response; pass that through. Use the exact keys `id`, `assetType`, `viewMode`, and `displayConfig` here; do not use legacy embed keys like `asset_id`, `asset_type`, `type`, or top-level `visualizationId`/`actionId`.
 - **Standard markdown**: headings, **bold**, *italic*, lists, code blocks, tables, links
 - **Math**: $inline$ and $$display$$ LaTeX
 """.strip()

@@ -1,22 +1,26 @@
 """Skill loading and resolution for the Ouro agent framework.
 
-Skills are reusable knowledge/instruction fragments stored as markdown files.
-Built-in skills ship with the package (this directory). Workspace skills
-live in ``workspace/skills/`` and override built-in skills of the same name.
+Skills are reusable knowledge/instruction fragments stored as markdown files
+with optional YAML frontmatter. Built-in skills ship with the package (this
+directory). Workspace skills live in ``workspace/skills/`` and override
+built-in skills of the same name.
 
 Two consumption patterns share the same underlying index:
 
-1. **Main agent** — ``load_all_skills(config)`` builds a prompt section with
-   full content for ``load: always`` skills and one-line stubs for the rest.
+1. **Main agent** — ``load_startup_skills(config)`` inlines the body of every
+   skill tagged ``load: always`` into the system prompt.
+   ``get_skill_directory(config)`` produces a one-line-per-skill listing so
+   the agent knows what else is available to read on demand.
 
 2. **Subagents** — ``resolve_skills(names, workspace)`` returns the body text
    for an explicit list of skill names referenced by a SubAgentProfile.
 """
 
-import copy
 import logging
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from ..config import OuroAgentsConfig
 
@@ -35,24 +39,25 @@ _index_cache: dict[str, "dict[str, SkillEntry]"] = {}
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     """Split optional YAML frontmatter from markdown body.
 
-    Returns (metadata_dict, body_text). If no frontmatter is found,
-    metadata is empty and body is the full text.
+    Returns ``(metadata_dict, body_text)``. If no frontmatter is found or the
+    block fails to parse as YAML, metadata is empty and body is the full text.
     """
     if not text.startswith("---"):
         return {}, text
 
-    end = text.find("---", 3)
+    end = text.find("\n---", 3)
     if end == -1:
         return {}, text
 
     raw = text[3:end].strip()
-    meta: dict = {}
-    for line in raw.splitlines():
-        if ":" in line:
-            key, _, value = line.partition(":")
-            meta[key.strip()] = value.strip()
+    try:
+        parsed = yaml.safe_load(raw) if raw else {}
+    except yaml.YAMLError as exc:
+        logger.warning("Failed to parse skill frontmatter as YAML: %s", exc)
+        return {}, text
 
-    body = text[end + 3 :].lstrip("\n")
+    meta = parsed if isinstance(parsed, dict) else {}
+    body = text[end + 4 :].lstrip("\n")
     return meta, body
 
 
@@ -73,11 +78,11 @@ class SkillEntry:
 
     @property
     def description(self) -> str:
-        return self.meta.get("description", "")
+        return str(self.meta.get("description", "") or "")
 
     @property
     def load(self) -> str:
-        return self.meta.get("load", "stub")
+        return str(self.meta.get("load", "stub") or "stub")
 
 
 # ---------------------------------------------------------------------------
@@ -111,61 +116,19 @@ def _build_index(workspace: Optional[Path] = None) -> dict[str, SkillEntry]:
 
 
 # ---------------------------------------------------------------------------
-# Main-agent API (renders full index into prompt text)
+# Main-agent API
 # ---------------------------------------------------------------------------
 
 
-def load_all_skills(config: OuroAgentsConfig) -> str:
-    """Build prompt text: full content for ``load: always`` skills,
-    one-line stubs for everything else."""
-    index = _build_index(config.agent.workspace)
-    return _render_skills(index)
-
-
 def load_startup_skills(config: OuroAgentsConfig) -> str:
-    """Build prompt text for skills that should be loaded by default."""
+    """Build prompt text for skills tagged ``load: always``.
+
+    Everything else stays stub-only; the agent can pull a specific skill on
+    demand via :func:`resolve_skill` / the ``load_skill`` tool.
+    """
     index = _build_index(config.agent.workspace)
     always_parts = [entry.body for entry in index.values() if entry.load == "always"]
     return "\n\n---\n\n".join(always_parts)
-
-
-def load_relevant_skills(
-    config: OuroAgentsConfig,
-    relevant_names: Optional[list[str]] = None,
-) -> str:
-    """Load skills matching the given names at full content,
-    everything else as stubs."""
-    index = _build_index(config.agent.workspace)
-    working = copy.deepcopy(index)
-
-    if relevant_names:
-        for name in relevant_names:
-            if name in working:
-                working[name].meta["load"] = "always"
-
-    return _render_skills(working)
-
-
-def _render_skills(index: dict[str, SkillEntry]) -> str:
-    """Render skills into prompt text respecting load behavior."""
-    always_parts: list[str] = []
-    stub_lines: list[str] = []
-
-    for name, entry in index.items():
-        if entry.load == "always":
-            always_parts.append(entry.body)
-        else:
-            desc = entry.description or name
-            stub_lines.append(f"- {name}: {desc}")
-
-    sections: list[str] = []
-    if always_parts:
-        sections.append("\n\n---\n\n".join(always_parts))
-    if stub_lines:
-        header = "Available skills (read the full file with filesystem tools if needed):"
-        sections.append(f"{header}\n" + "\n".join(stub_lines))
-
-    return "\n\n---\n\n".join(sections)
 
 
 def get_skill_directory(

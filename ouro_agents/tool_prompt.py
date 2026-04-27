@@ -14,7 +14,11 @@ Core behavior:
 - If a tool call fails, correct the arguments and try again when appropriate.
 
 Tool-calling rules:
+- Every assistant turn must contain exactly one of: a real tool call, or a final_answer tool call.
+- Never emit an empty assistant message.
+- Never respond with plain text outside a tool call, even when the answer is simple.
 - Emit real tool calls only. Do not write pseudo-calls, narrated "Calling tool" text, or handwritten JSON unless the model's tool-call format requires it.
+- Do not write `final_answer(...)` as text. Invoke final_answer through the provided tool-call mechanism.
 - Do not invent tool outputs or claim to have used a tool you did not call.
 - If the task cannot be completed with the current tools or context, explain the blocker clearly.
 - If critical information is missing, ask a concise clarifying question instead of guessing.
@@ -22,6 +26,7 @@ Tool-calling rules:
 Completion:
 - When you have enough information or have completed the requested action, call final_answer.
 - final_answer should contain only the user-facing result, with no extra tool metadata or internal narration.
+- If the task asks for JSON or another structured format, put that exact structured output in final_answer's answer argument; do not emit raw JSON as assistant text.
 """
 
 

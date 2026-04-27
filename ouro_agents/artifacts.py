@@ -74,10 +74,10 @@ def _format_route_label(action: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _format_creation_action_lines(action: Any) -> tuple[list[str], Optional[str]]:
+def _format_creation_action_lines(action: Any) -> tuple[list[str], list[str]]:
     """Summarize how an asset was created and expose any upstream input asset."""
     if not isinstance(action, dict):
-        return [], None
+        return [], []
 
     lines: list[str] = []
     route_label = _format_route_label(action)
@@ -91,6 +91,26 @@ def _format_creation_action_lines(action: Any) -> tuple[list[str], Optional[str]
     status = action.get("status")
     if status:
         lines.append(f"- action status: {status}")
+
+    input_asset_ids: list[str] = []
+    input_assets = action.get("input_assets")
+    if isinstance(input_assets, list):
+        for item in input_assets:
+            if not isinstance(item, dict):
+                continue
+            asset = item.get("asset") if isinstance(item.get("asset"), dict) else item
+            resolved_input_id = asset.get("id") or item.get("asset_id")
+            input_name = asset.get("name") or resolved_input_id or "unknown"
+            input_type = asset.get("asset_type") or item.get("asset_type")
+            input_key = item.get("name")
+            extra = [str(value) for value in (input_type, resolved_input_id) if value]
+            label = f"{input_key}: {input_name}" if input_key else input_name
+            lines.append(
+                f"- input asset: {label}"
+                + (f" ({', '.join(extra)})" if extra else "")
+            )
+            if resolved_input_id:
+                input_asset_ids.append(str(resolved_input_id))
 
     input_asset = action.get("input_asset")
     input_asset_id = action.get("input_asset_id")
@@ -108,10 +128,13 @@ def _format_creation_action_lines(action: Any) -> tuple[list[str], Optional[str]
         else:
             lines.append(f"- input asset: {input_name}")
         input_asset_id = resolved_input_id
+        if resolved_input_id and str(resolved_input_id) not in input_asset_ids:
+            input_asset_ids.append(str(resolved_input_id))
     elif input_asset_id:
         lines.append(f"- input asset id: {input_asset_id}")
+        input_asset_ids.append(str(input_asset_id))
 
-    return lines, str(input_asset_id) if input_asset_id else None
+    return lines, input_asset_ids
 
 
 def _format_related_asset_block(title: str, ref: str, data: dict[str, Any]) -> str:
@@ -210,7 +233,7 @@ def fetch_asset_content(
             description = data.get("description", "")
             asset_type = data.get("asset_type", data.get("type", "unknown"))
             content = _extract_asset_body(data)
-            creation_lines, input_asset_id = _format_creation_action_lines(
+            creation_lines, input_asset_ids = _format_creation_action_lines(
                 data.get("creation_action")
             )
         else:
@@ -218,7 +241,7 @@ def fetch_asset_content(
             description = ""
             asset_type = "unknown"
             content = str(data)
-            creation_lines, input_asset_id = [], None
+            creation_lines, input_asset_ids = [], []
 
         header_lines = [
             f"### {name}",
@@ -240,7 +263,9 @@ def fetch_asset_content(
         if body:
             body_sections.append(body)
 
-        if input_asset_id and input_asset_id != ref and input_asset_id not in refs:
+        for input_asset_id in input_asset_ids:
+            if input_asset_id == ref or input_asset_id in refs:
+                continue
             try:
                 input_data = load_asset(input_asset_id)
                 if isinstance(input_data, dict):

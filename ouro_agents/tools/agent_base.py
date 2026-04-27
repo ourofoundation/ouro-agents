@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 
 from smolagents import ToolCallingAgent
 from smolagents.models import (
@@ -29,6 +30,11 @@ A tool returned output that is too large to include verbatim in context.
 Compress it into a concise but faithful summary. Preserve all specific facts, numbers, \
 names, URLs, code snippets, error messages, and structured data. Omit filler, repetition, \
 and boilerplate. Do not add commentary — output only the compressed content."""
+
+_EMPTY_MODEL_RESPONSE_ANSWER = (
+    "MODEL_EMPTY_RESPONSE: model returned no content and no tool calls."
+)
+_RAW_DEBUG_MAX_CHARS = 4_000
 
 
 def _compact_tool_output(
@@ -74,11 +80,29 @@ _NULL_STRINGS = {"null", "None", "none", "undefined"}
 _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _FUNCTION_RE = re.compile(r"<function=([^>]+)>", re.DOTALL)
 _PARAMETER_RE = re.compile(r"<parameter=([^>]+)>(.*?)</parameter>", re.DOTALL)
+_KIMI_TOOL_CALLS_SECTION_RE = re.compile(
+    r"<\|tool_calls_section_begin\|>(.*?)<\|tool_calls_section_end\|>",
+    re.DOTALL,
+)
+_KIMI_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call_begin\|>\s*"
+    r"(?P<tool_call_id>[\w.:-]+)\s*"
+    r"<\|tool_call_argument_begin\|>\s*"
+    r"(?P<function_arguments>.*?)\s*"
+    r"<\|tool_call_end\|>",
+    re.DOTALL,
+)
 _CALLING_TOOLS_RE = re.compile(r"Calling tools:\s*", re.IGNORECASE)
 _INLINE_TOOL_CALL_RE = re.compile(
     r"(?:^|[\n\r`:]|\btool\s+)\s*(?P<name>[a-z][a-z0-9_:-]*)\s*\(",
     re.IGNORECASE,
 )
+
+
+@dataclass
+class _ToolCallRecovery:
+    tool_calls: list[ChatMessageToolCall]
+    thought_text: str = ""
 
 
 def _make_tool_call(
@@ -97,10 +121,45 @@ def _make_tool_call(
     )
 
 
-def _extract_tool_call_fields(item: dict) -> tuple[str | None, object]:
+def _format_recovered_thought(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return str(value).strip()
+
+
+def _coerce_tool_arguments(func_name: str, arguments) -> tuple[dict | None, str]:
+    if isinstance(arguments, str):
+        parsed = parse_json_if_needed(arguments)
+        arguments = parsed if isinstance(parsed, (dict, list)) else arguments
+
+    if isinstance(arguments, dict):
+        return arguments, ""
+
+    if isinstance(arguments, list):
+        dict_items = [item for item in arguments if isinstance(item, dict)]
+        noise = [item for item in arguments if not isinstance(item, dict)]
+
+        if func_name == "memory_recall" and dict_items:
+            if len(dict_items) == 1 and "queries" in dict_items[0]:
+                return dict_items[0], _format_recovered_thought(noise)
+            if all(isinstance(item.get("query"), str) for item in dict_items):
+                return {"queries": dict_items}, _format_recovered_thought(noise)
+
+        if len(dict_items) == 1:
+            return dict_items[0], _format_recovered_thought(noise)
+
+        return None, _format_recovered_thought(arguments)
+
+    return None, _format_recovered_thought(arguments)
+
+
+def _extract_tool_call_fields(item: dict) -> tuple[str | None, dict | None, str]:
     function = item.get("function", item)
     if not isinstance(function, dict):
-        return None, {}
+        return None, None, ""
 
     func_name = function.get("name")
     arguments = function.get("arguments", {})
@@ -111,26 +170,47 @@ def _extract_tool_call_fields(item: dict) -> tuple[str | None, object]:
     if arguments == {}:
         arguments = function.get("args", function.get("parameters", {}))
 
-    return func_name, arguments
+    if not func_name:
+        return None, None, ""
+
+    coerced, thought_text = _coerce_tool_arguments(func_name, arguments)
+    if coerced is None:
+        return None, None, thought_text
+
+    return func_name, coerced, thought_text
 
 
-def _tool_calls_from_data(data) -> list[ChatMessageToolCall] | None:
+def _tool_call_recovery_from_data(data) -> _ToolCallRecovery | None:
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list):
         return None
 
     result = []
+    thought_parts: list[str] = []
     for item in data:
         if not isinstance(item, dict):
+            thought = _format_recovered_thought(item)
+            if thought:
+                thought_parts.append(thought)
             continue
-        func_name, arguments = _extract_tool_call_fields(item)
+        func_name, arguments, thought = _extract_tool_call_fields(item)
+        if thought:
+            thought_parts.append(thought)
         if not func_name:
             continue
 
         result.append(_make_tool_call(func_name, arguments, tool_id=item.get("id")))
 
-    return result or None
+    if not result:
+        return None
+    thought_text = "\n".join(part for part in thought_parts if part)
+    return _ToolCallRecovery(tool_calls=result, thought_text=thought_text)
+
+
+def _tool_calls_from_data(data) -> list[ChatMessageToolCall] | None:
+    recovery = _tool_call_recovery_from_data(data)
+    return recovery.tool_calls if recovery else None
 
 
 def _extract_balanced_block(
@@ -176,7 +256,57 @@ def _extract_balanced_block(
     return None
 
 
-def _parse_xml_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+def _function_name_from_kimi_id(tool_call_id: str) -> str | None:
+    # Kimi documents IDs as functions.{func_name}:{idx}. Be a little tolerant
+    # of provider variants while still requiring a real function name.
+    if tool_call_id.startswith("functions."):
+        remainder = tool_call_id[len("functions.") :]
+    else:
+        remainder = tool_call_id
+    func_name = remainder.rsplit(":", 1)[0].strip()
+    return func_name or None
+
+
+def _parse_kimi_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
+    """Parse Kimi K2 raw special-token tool calls when provider parsing fails."""
+
+    sections = _KIMI_TOOL_CALLS_SECTION_RE.findall(content)
+    if not sections:
+        return None
+
+    result: list[ChatMessageToolCall] = []
+    thought_parts: list[str] = []
+    for section in sections:
+        for match in _KIMI_TOOL_CALL_RE.finditer(section):
+            tool_call_id = match.group("tool_call_id").strip()
+            func_name = _function_name_from_kimi_id(tool_call_id)
+            if not func_name:
+                continue
+
+            arguments, thought = _coerce_tool_arguments(
+                func_name,
+                match.group("function_arguments").strip(),
+            )
+            if thought:
+                thought_parts.append(thought)
+            if arguments is None:
+                continue
+
+            result.append(
+                _make_tool_call(func_name, arguments, tool_id=tool_call_id)
+            )
+
+    if not result:
+        return None
+    return _ToolCallRecovery(result, "\n".join(thought_parts))
+
+
+def _parse_kimi_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+    recovery = _parse_kimi_tool_call_recovery(content)
+    return recovery.tool_calls if recovery else None
+
+
+def _parse_xml_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
     """Parse XML-style tool calls emitted by models that don't use native function calling.
 
     Format:
@@ -211,14 +341,19 @@ def _parse_xml_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
                 ),
             )
         )
-    return result or None
+    return _ToolCallRecovery(result) if result else None
+
+
+def _parse_xml_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+    recovery = _parse_xml_tool_call_recovery(content)
+    return recovery.tool_calls if recovery else None
 
 
 def _extract_bracketed_block(content: str, start_idx: int) -> str | None:
     return _extract_balanced_block(content, start_idx, "[", "]")
 
 
-def _parse_narrated_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+def _parse_narrated_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
     match = _CALLING_TOOLS_RE.search(content)
     if not match:
         return None
@@ -233,10 +368,15 @@ def _parse_narrated_tool_calls(content: str) -> list[ChatMessageToolCall] | None
     except Exception:
         return None
 
-    return _tool_calls_from_data(parsed)
+    return _tool_call_recovery_from_data(parsed)
 
 
-def _parse_structured_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+def _parse_narrated_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+    recovery = _parse_narrated_tool_call_recovery(content)
+    return recovery.tool_calls if recovery else None
+
+
+def _parse_structured_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
     seen_blocks: set[str] = set()
 
     for idx, ch in enumerate(content):
@@ -252,18 +392,23 @@ def _parse_structured_tool_calls(content: str) -> list[ChatMessageToolCall] | No
                 parsed = parser(block)
             except Exception:
                 continue
-            tool_calls = _tool_calls_from_data(parsed)
-            if tool_calls:
-                return tool_calls
+            recovery = _tool_call_recovery_from_data(parsed)
+            if recovery:
+                return recovery
 
     return None
+
+
+def _parse_structured_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+    recovery = _parse_structured_tool_call_recovery(content)
+    return recovery.tool_calls if recovery else None
 
 
 def _python_literal(node: ast.AST):
     return ast.literal_eval(node)
 
 
-def _parse_inline_tool_call(content: str) -> list[ChatMessageToolCall] | None:
+def _parse_inline_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
     for match in _INLINE_TOOL_CALL_RE.finditer(content):
         func_name = match.group("name").strip()
         open_idx = content.find("(", match.start("name"))
@@ -298,9 +443,14 @@ def _parse_inline_tool_call(content: str) -> list[ChatMessageToolCall] | None:
         except Exception:
             continue
 
-        return [_make_tool_call(func_name, arguments)]
+        return _ToolCallRecovery([_make_tool_call(func_name, arguments)])
 
     return None
+
+
+def _parse_inline_tool_call(content: str) -> list[ChatMessageToolCall] | None:
+    recovery = _parse_inline_tool_call_recovery(content)
+    return recovery.tool_calls if recovery else None
 
 
 def _message_preview(content: str, max_chars: int = 600) -> str:
@@ -308,6 +458,80 @@ def _message_preview(content: str, max_chars: int = 600) -> str:
     if len(preview) > max_chars:
         preview = preview[:max_chars] + "..."
     return preview
+
+
+def _object_field(obj, name: str):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _serialize_debug_value(value, max_chars: int = _RAW_DEBUG_MAX_CHARS) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            if hasattr(value, "model_dump_json"):
+                text = value.model_dump_json()
+            elif hasattr(value, "model_dump"):
+                text = json.dumps(value.model_dump(mode="json"), ensure_ascii=False)
+            elif hasattr(value, "dict"):
+                text = json.dumps(value.dict(), ensure_ascii=False, default=str)
+            else:
+                text = json.dumps(value, ensure_ascii=False, default=str)
+        except Exception:
+            text = repr(value)
+    if len(text) > max_chars:
+        return text[:max_chars] + "...[truncated]"
+    return text
+
+
+def _raw_choice_message(chat_message):
+    raw = getattr(chat_message, "raw", None)
+    choices = _object_field(raw, "choices")
+    if not choices:
+        return None
+    first_choice = choices[0]
+    return _object_field(first_choice, "message")
+
+
+def _extract_raw_reasoning_text(chat_message) -> str:
+    raw_message = _raw_choice_message(chat_message)
+    if raw_message is None:
+        return ""
+
+    parts: list[str] = []
+    for field in ("reasoning", "reasoning_details", "reasoning_content", "thinking"):
+        value = _object_field(raw_message, field)
+        if value:
+            parts.append(f"{field}: {_serialize_debug_value(value, 1_200)}")
+    return "\n".join(parts)
+
+
+def _debug_empty_model_response(chat_message, exc: Exception) -> None:
+    raw = getattr(chat_message, "raw", None)
+    raw_message = _raw_choice_message(chat_message)
+    choices = _object_field(raw, "choices")
+    first_choice = choices[0] if choices else None
+    snapshot = {
+        "error": str(exc),
+        "parsed_content": getattr(chat_message, "content", None),
+        "parsed_tool_calls": _serialize_debug_value(
+            getattr(chat_message, "tool_calls", None),
+            1_000,
+        ),
+        "finish_reason": _object_field(first_choice, "finish_reason"),
+        "raw_message": _serialize_debug_value(raw_message),
+        "raw_response": _serialize_debug_value(raw),
+    }
+    logger.warning(
+        "Empty model response parse failure debug snapshot: %s",
+        json.dumps(snapshot, ensure_ascii=False),
+    )
 
 
 def _extract_terminal_no_action(content: str) -> str | None:
@@ -329,6 +553,13 @@ def _treat_as_reasoning_only(exc: Exception, preview: str) -> bool:
     return bool(preview) and (
         "does not contain any JSON blob" in str(exc)
         or "Could not parse tool call" in str(exc)
+    )
+
+
+def _is_empty_model_response(exc: Exception, content: str) -> bool:
+    return (
+        not content.strip()
+        and "Message contains no content and no tool calls" in str(exc)
     )
 
 
@@ -358,6 +589,23 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
         except Exception as exc:
             content = message.content or ""
 
+            if _is_empty_model_response(exc, content):
+                _debug_empty_model_response(message, exc)
+                raw_reasoning = _extract_raw_reasoning_text(message)
+                if raw_reasoning:
+                    get_display().thought(_message_preview(raw_reasoning))
+                logger.warning(
+                    "Model returned no content and no tool calls; terminating agent loop."
+                )
+                message.role = MessageRole.ASSISTANT
+                message.tool_calls = [
+                    _make_tool_call(
+                        "final_answer",
+                        {"answer": _EMPTY_MODEL_RESPONSE_ANSWER},
+                    )
+                ]
+                return message
+
             # If the model explicitly ends with a standalone NO_ACTION marker,
             # treat it as a terminal answer so autonomous comment runs can exit
             # cleanly even when the model includes reasoning before the marker.
@@ -370,13 +618,17 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                 ]
                 return message
 
-            tool_calls = _parse_xml_tool_calls(content)
-            if not tool_calls:
-                tool_calls = _parse_narrated_tool_calls(content)
-            if not tool_calls:
-                tool_calls = _parse_structured_tool_calls(content)
-            if not tool_calls:
-                tool_calls = _parse_inline_tool_call(content)
+            recovery = _parse_kimi_tool_call_recovery(content)
+            if not recovery:
+                recovery = _parse_xml_tool_call_recovery(content)
+            if not recovery:
+                recovery = _parse_narrated_tool_call_recovery(content)
+            if not recovery:
+                recovery = _parse_structured_tool_call_recovery(content)
+            if not recovery:
+                recovery = _parse_inline_tool_call_recovery(content)
+
+            tool_calls = recovery.tool_calls if recovery else None
 
             # In chat modes, if all salvage parsers fail and the model emitted
             # plain text, treat it as the intended assistant reply instead of
@@ -404,6 +656,8 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                     message.tool_calls = []
                     return message
                 raise
+            if recovery and recovery.thought_text:
+                get_display().thought(_message_preview(recovery.thought_text))
             logger.info(
                 "Recovered tool call via fallback parser: %s",
                 [tc.function.name for tc in tool_calls],

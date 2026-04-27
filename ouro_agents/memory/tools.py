@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from smolagents import tool
 
@@ -11,6 +11,49 @@ from . import MemoryBackend
 
 if TYPE_CHECKING:
     from . import DocStore
+
+
+def _normalize_memory_queries(raw_queries: Any) -> list[dict]:
+    """Accept common near-miss shapes without letting malformed specs crash."""
+
+    if isinstance(raw_queries, dict):
+        nested = raw_queries.get("queries")
+        if isinstance(nested, list):
+            raw_queries = nested
+        elif isinstance(nested, str):
+            raw_queries = [nested]
+        elif isinstance(raw_queries.get("query"), str):
+            raw_queries = [raw_queries]
+        else:
+            return []
+
+    if isinstance(raw_queries, str):
+        raw_queries = [raw_queries]
+
+    if not isinstance(raw_queries, list):
+        return []
+
+    queries: list[dict] = []
+    for spec in raw_queries:
+        if isinstance(spec, str):
+            text = spec.strip()
+            if text:
+                queries.append({"query": text})
+            continue
+
+        if not isinstance(spec, dict):
+            continue
+
+        nested = spec.get("queries")
+        if isinstance(nested, list):
+            queries.extend(_normalize_memory_queries(nested))
+            continue
+
+        query = spec.get("query", "")
+        if isinstance(query, str) and query.strip():
+            queries.append(spec)
+
+    return queries
 
 
 def make_memory_tools(
@@ -36,12 +79,11 @@ def make_memory_tools(
         Example single:  [{"query": "user's favorite language"}]
         Example multi:   [{"query": "API preferences"}, {"query": "past decisions about auth", "category": "decision"}]
         """
+        queries = _normalize_memory_queries(queries)
         if not queries:
             return "No queries provided."
 
         def _search_one(spec: dict) -> tuple[str, list[str]]:
-            if isinstance(spec, str):
-                spec = {"query": spec}
             query = spec.get("query", "")
             category = spec.get("category", "")
             limit = int(spec.get("limit", 5))
@@ -73,7 +115,7 @@ def make_memory_tools(
             future_to_idx = {
                 pool.submit(_search_one, spec): i for i, spec in enumerate(queries)
             }
-            ordered: list[tuple[str, list[str]]] = [("", [])] * len(queries)
+            ordered: list[tuple[str, list[str]]] = [("", []) for _ in queries]
             for future in as_completed(future_to_idx):
                 idx = future_to_idx[future]
                 ordered[idx] = future.result()

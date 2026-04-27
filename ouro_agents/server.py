@@ -1,9 +1,9 @@
 import asyncio
 import logging
 import os
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Optional
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -28,10 +28,10 @@ from .uuid_v7 import uuid7_str
 if TYPE_CHECKING:
     from ouro.client import Ouro
 
-app = FastAPI(title="Ouro Agents Server")
 logger = logging.getLogger(__name__)
 
-# Global state
+# Global state (still module-scoped for now; see P2 "server globals + session map"
+# in SDK_IMPROVEMENTS.md for the planned move to request-scoped state).
 agent_instance: Optional[OuroAgent] = None
 reply_publisher: Optional[OuroReplyPublisher] = None
 last_heartbeat: Optional[datetime] = None
@@ -55,10 +55,16 @@ def _get_ouro_client_env(config: OuroAgentsConfig) -> Dict[str, str]:
     return {}
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Initialize the agent + reply publisher on startup and tear down on shutdown.
+
+    Replaces the deprecated ``@app.on_event("startup" | "shutdown")`` decorators.
+    """
     global agent_instance, reply_publisher
-    config = OuroAgentsConfig.load_from_file(os.environ.get("CONFIG_FILE", "config.json"))
+    config = OuroAgentsConfig.load_from_file(
+        os.environ.get("CONFIG_FILE", "config.json")
+    )
     set_display(
         OuroDisplay(show_reasoning_in_summary=config.display.usage_table.show_reasoning)
     )
@@ -85,12 +91,15 @@ async def startup_event():
 
     await agent_instance.scheduler.start(agent_instance)
 
+    try:
+        yield
+    finally:
+        if agent_instance:
+            agent_instance.scheduler.stop()
+            agent_instance.close()
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    if agent_instance:
-        agent_instance.scheduler.stop()
-        agent_instance.close()
+
+app = FastAPI(title="Ouro Agents Server", lifespan=lifespan)
 
 
 class ServerAgentObserver(AgentObserver):

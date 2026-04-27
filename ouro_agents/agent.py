@@ -161,8 +161,15 @@ class OuroAgent:
         return versions
 
     def _load_custom_profiles(self) -> None:
-        """Load custom subagent profiles from workspace or config path."""
-        from .subagents.profiles import DELEGATABLE_PROFILES, build_profile_registry
+        """Build this instance's delegatable profile registry.
+
+        Starts from the built-in set and layers workspace / configured custom
+        profiles on top. The registry lives on ``self.delegatable_profiles``
+        (no module-level mutation) so multiple ``OuroAgent`` instances in the
+        same process don't leak profiles into each other — matters for tests
+        and for future multi-tenant servers.
+        """
+        from .subagents.profiles import build_profile_registry
 
         custom_dir = None
         if self.config.subagents.custom_profiles_dir:
@@ -174,14 +181,12 @@ class OuroAgent:
             if default_dir.exists():
                 custom_dir = default_dir
 
-        if custom_dir:
-            merged = build_profile_registry(custom_dir)
-            DELEGATABLE_PROFILES.update(merged)
-            logger.info(
-                "Profile registry: %d delegatable profiles (%s)",
-                len(DELEGATABLE_PROFILES),
-                ", ".join(DELEGATABLE_PROFILES.keys()),
-            )
+        self.delegatable_profiles = build_profile_registry(custom_dir)
+        logger.info(
+            "Profile registry: %d delegatable profiles (%s)",
+            len(self.delegatable_profiles),
+            ", ".join(self.delegatable_profiles.keys()),
+        )
 
     @property
     def own_user_id(self) -> Optional[str]:
@@ -825,9 +830,8 @@ class OuroAgent:
         )
 
         # Build the delegate tool for subagent dispatch
-        from .subagents.profiles import DELEGATABLE_PROFILES
-
-        subagent_names = list(DELEGATABLE_PROFILES.keys())
+        delegatable_profiles = agent_self.delegatable_profiles
+        subagent_names = list(delegatable_profiles.keys())
 
         _subagent_names_str = ", ".join(subagent_names)
 
@@ -837,7 +841,7 @@ class OuroAgent:
             asset_refs: Optional[list[str]] = None,
         ) -> tuple:
             """Shared delegation logic. Returns (result, profile) or (None, None)."""
-            profile = DELEGATABLE_PROFILES.get(subagent)
+            profile = delegatable_profiles.get(subagent)
             if not profile:
                 return None, None
 
@@ -1050,12 +1054,11 @@ class OuroAgent:
         )
         plans_index_text = shared_context["plans_index"]
 
-        from .subagents.profiles import DELEGATABLE_PROFILES
-
-        if not profile.lightweight and DELEGATABLE_PROFILES:
+        delegatable_profiles = self.delegatable_profiles
+        if not profile.lightweight and delegatable_profiles:
             subagent_directory = "\n".join(
                 f"- **{p.name}**: {p.description}"
-                for p in DELEGATABLE_PROFILES.values()
+                for p in delegatable_profiles.values()
             )
         else:
             subagent_directory = ""
@@ -1173,6 +1176,7 @@ class OuroAgent:
             python_packages=self.config.agent.python_packages or [],
             python_package_versions=self._python_package_versions or {},
             record_subagent_usage=self._record_subagent_usage,
+            delegatable_profiles=self.delegatable_profiles,
         )
 
     def _record_subagent_usage(self, name: str, usage: SubAgentUsage) -> None:
@@ -1583,10 +1587,12 @@ class OuroAgent:
         if override:
             profile = apply_mode_override(profile, override)
 
-        # Merge profile preload tools with any explicit preload_tools
+        # Merge profile preload tools with any explicit preload_tools.
+        # Use dict.fromkeys for stable, first-seen dedup so order is
+        # deterministic across runs (explicit preloads take precedence).
         mode_preloads = list(profile.preload_tools)
         if mode_preloads:
-            preload_tools = list(set((preload_tools or []) + mode_preloads))
+            preload_tools = list(dict.fromkeys((preload_tools or []) + mode_preloads))
 
         # --- Conversation state ---
         conv_state: Optional[ConversationState] = None

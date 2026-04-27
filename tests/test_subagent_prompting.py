@@ -1,5 +1,6 @@
 from ouro_agents.soul import build_shared_prompt_sections, current_datetime_section
 from ouro_agents.subagents.context import SubAgentContext
+from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
 from ouro_agents.subagents.runner import _format_task_context
 
 
@@ -45,7 +46,7 @@ def test_build_shared_prompt_sections_formats_core_sections():
     assert sections["user_model"] == "## USER CONTEXT\nPrefers concise updates."
     assert sections["working_memory"] == "## WORKING MEMORY\nRecent anchor post: Day 9."
     assert sections["conversation_state"] == "## CONVERSATION STATE\nCurrent topic: Iran-US conflict"
-    assert sections["plans_index"] == "## PLAN POST INDEX\n- PLAN:athena:2026-04-06"
+    assert sections["plans_index"] == "## PLAN QUEST INDEX\n- PLAN:athena:2026-04-06"
 
 
 def test_subagent_task_context_includes_shared_core_sections(tmp_path):
@@ -69,6 +70,23 @@ def test_subagent_task_context_includes_shared_core_sections(tmp_path):
     assert "## DEPLOYMENT CONTEXT (NOTES)\nDeployment note." in prompt
     assert "## PLATFORM CONTEXT\nYou are @athena." in prompt
     assert "## USER CONTEXT\nPrefers concise updates." in prompt
-    assert "## PLAN POST INDEX\n- PLAN:athena:2026-04-06" in prompt
+    assert "## PLAN QUEST INDEX\n- PLAN:athena:2026-04-06" in prompt
     assert "## WORKING MEMORY\nRecent anchor post: Day 9." in prompt
     assert "## Ouro asset placement" in prompt
+
+
+def test_preflight_prompts_require_final_answer_json():
+    for prompt in (PREFLIGHT_PROMPT, HEARTBEAT_PREFLIGHT_PROMPT):
+        assert "Finish by calling final_answer exactly once" in prompt
+        assert "Return the JSON only inside final_answer" in prompt
+
+
+def test_preflight_prompts_limit_tool_use_and_recover():
+    assert "simple or conversational, do not call tools" in PREFLIGHT_PROMPT
+    assert "call memory_recall exactly once" in PREFLIGHT_PROMPT
+    assert "memory_recall returns no useful context" in PREFLIGHT_PROMPT
+    assert "previous response failed or was not accepted" in PREFLIGHT_PROMPT
+
+    assert "call memory_recall at most once" in HEARTBEAT_PREFLIGHT_PROMPT
+    assert "memory_recall returns no useful context" in HEARTBEAT_PREFLIGHT_PROMPT
+    assert "previous response failed or was not accepted" in HEARTBEAT_PREFLIGHT_PROMPT

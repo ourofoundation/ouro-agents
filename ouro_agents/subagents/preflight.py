@@ -14,12 +14,14 @@ context from memory so the agent can start with a clear picture.
 
 Strategy:
 - First, classify the intent and complexity of the request.
-- Use memory_recall with 1-3 queries (in a single call) depending on complexity.
-  Try different angles: the direct topic, related entities, and past decisions/preferences.
+- If the request is simple or conversational, do not call tools; immediately call final_answer with valid JSON.
+- Otherwise, call memory_recall exactly once with 1-3 batched queries. Try different angles: the direct topic, related entities, and past decisions/preferences.
+- If memory_recall returns no useful context, still call final_answer with briefing="" and a plan based on the request.
 - For moderate or complex tasks, synthesize a briefing and sketch a short execution plan.
-- For simple tasks, a quick classification and brief memory check is enough.
+- If a previous response failed or was not accepted, immediately call final_answer with the best valid JSON you can produce.
 
-Output ONLY valid JSON matching this schema (no markdown fences, no explanation):
+Finish by calling final_answer exactly once. The final_answer answer must be \
+ONLY valid JSON matching this schema (no markdown fences, no explanation):
 {
   "intent": "question" | "create" | "analyze" | "research" | "manage" | "converse",
   "complexity": "simple" | "moderate" | "complex",
@@ -38,9 +40,8 @@ Rules:
 and decisions. Drop anything irrelevant. Empty string if no useful memories found.
 - plan: Concrete steps the agent can take. Reference specific tools or actions. \
 One line per step. Empty string if the task is simple enough to not need a plan.
-- Be efficient with memory_recall — batch multiple queries in one call, and don't search if the request is clearly simple/conversational.
-
-When finished, call final_answer with ONLY the JSON."""
+- Be efficient with memory_recall — at most one call, with multiple queries batched into that call.
+- Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
 
 
 HEARTBEAT_PREFLIGHT_PROMPT = """\
@@ -53,20 +54,23 @@ Decide whether the agent should:
 2. Execute the general playbook ("general_heartbeat").
 3. Do nothing / skip this heartbeat ("skip").
 
-You may use memory_recall to check recent context or decisions if it helps you decide, but it is not required.
+For active plans or ambiguous choices, call memory_recall at most once with batched queries if recent context would materially improve the decision. Otherwise, do not call tools.
+If memory_recall returns no useful context, still choose an action and call final_answer with valid JSON.
 
 Assume active plans can span multiple heartbeats. If you choose "work_on_plan",
 you are choosing the best next slice of progress for this tick, not asking the
 agent to complete the whole plan right now.
 
-Output ONLY valid JSON matching this schema (no markdown fences, no explanation):
+Finish by calling final_answer exactly once. The final_answer answer must be \
+ONLY valid JSON matching this schema (no markdown fences, no explanation):
 {
   "action": "work_on_plan" | "general_heartbeat" | "skip",
   "plan_id": "8-char plan ID if action is work_on_plan, else null",
   "reasoning": "Brief explanation of why you chose this action."
 }
 
-When finished, call final_answer with ONLY the JSON."""
+If a previous response failed or was not accepted, immediately call final_answer with the best valid JSON you can produce.
+Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
 
 
 @dataclass

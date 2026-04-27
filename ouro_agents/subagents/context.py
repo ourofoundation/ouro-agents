@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..config import MemoryConfig
     from ..memory import MemoryBackend
     from ..memory.conversation_state import ConversationState
+    from .profiles import SubAgentProfile
 
 
 @dataclass
@@ -134,3 +135,8 @@ class SubAgentContext:
     # When set (by OuroAgent), every completed subagent run records usage here
     # (top-level and nested delegate chains share the same ledger).
     record_subagent_usage: Optional[Callable[[str, SubAgentUsage], None]] = None
+
+    # Delegatable profile registry for this run. Passed explicitly so nested
+    # subagent chains (``profile.can_delegate_to``) resolve against the
+    # parent agent's instance registry rather than a mutable module global.
+    delegatable_profiles: dict[str, "SubAgentProfile"] = field(default_factory=dict)

@@ -14,11 +14,33 @@ beyond standard markdown:
 Use a fenced code block with the `assetComponent` language tag:
 
 ```assetComponent
-{"id": "<uuid>", "assetType": "post"|"file"|"dataset"|"route"|"service", "viewMode": "preview"|"card"}
+{"id": "<uuid>", "assetType": "post"|"file"|"dataset"|"route"|"service", "viewMode": "preview"|"card", "displayConfig": {"visualizationId": "<uuid>|null", "actionId": "<uuid>|null"}}
 ```
 
-- `viewMode: "preview"` renders a rich inline preview (best for files/datasets)
+- `viewMode: "preview"` renders a rich inline preview (best for files, datasets, and routes with a pinned action)
 - `viewMode: "card"` renders a compact link card
+- `displayConfig` is optional and asset-specific:
+  - Dataset → `visualizationId` picks a saved chart
+  - Route → `actionId` pins a specific action; the preview then shows its status, logs, and any side-effect asset (the output created by the route)
+
+### Referencing route executions
+
+Whenever you've just executed a route (or are writing about a specific past
+action) in a surface that renders Ouro markdown — posts, comments,
+conversation replies, chat `final_answer` content — prefer embedding the
+route with the action pinned instead of describing the result in prose alone:
+
+```assetComponent
+{"id": "<route-uuid>", "assetType": "route", "viewMode": "preview", "displayConfig": {"actionId": "<action-uuid>"}}
+```
+
+`execute_route` returns `action_id` in its response — pass that through. If
+the route created an asset, it also returns `output_asset_id` / `output_asset_type`
+so you can reference the output directly (e.g. `[label](dataset:<uuid>)`) in
+the surrounding copy.
+
+Skip the embed when the output will not be rendered as markdown (structured
+`final_answer` JSON payloads, quest items, tool call arguments, etc.).
 
 ### Inline asset links
 

@@ -24,6 +24,7 @@ Posts use extended markdown: @username mentions, `assetComponent` embeds (get ID
 - `get_teams(discover=true)` — browse teams by topic, then `get_team_feed(id=...)` or scoped `search_assets`.
 
 ## Routes, Data & Conversations
-- Routes: inspect schema with `get_asset(id)` first, then `execute_route(name_or_id=...)`.
+- Routes: inspect schema with `get_asset(id)` first, then `execute_route(name_or_id=...)`. When reporting on an action in a markdown surface (post, comment, conversation reply), embed the route with `viewMode: "preview"` and `displayConfig.actionId` set to the `action_id` returned by `execute_route` — the reader sees status, logs, and any side-effect asset inline.
+- **Async actions**: if `execute_route` returns `{"status": "pending", "action_id": ...}`, the action is still running server-side — do NOT re-execute (creates a duplicate). Call `get_action(action_id)` to check status, or `get_action(action_id, wait=true, timeout=...)` to block until it completes. For routes known to take a while, pass a larger `timeout=` on the initial `execute_route` call. Errored actions come back as `{"action_status": "error", "error": ...}` with the `action_id` preserved — you can still embed a preview of the failure.
 - Datasets: prefer `query_dataset` over downloading.
 - Conversations: `send_message` to reply. Check `get_notifications(unread_only=true)` for mentions.

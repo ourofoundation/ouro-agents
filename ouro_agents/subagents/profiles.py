@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 from typing import Literal, Optional
 
+import yaml
 from pydantic import BaseModel, Field
 
 from .preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
@@ -85,7 +86,7 @@ PREFLIGHT = SubAgentProfile(
     description="Classify task, gather relevant memory context, and optionally sketch an execution plan.",
     system_prompt=PREFLIGHT_PROMPT,
     allowed_tools=["memory_recall", "ouro:get_asset"],
-    max_steps=20,
+    max_steps=4,
     memory_scopes=[],
     subagent_log_level="info",
 )
@@ -208,7 +209,10 @@ PROFILES = [
 # All built-in profiles by name (for merging with custom)
 _BUILTIN_PROFILES: dict[str, SubAgentProfile] = {p.name: p for p in PROFILES}
 
-# Registry of profiles the main agent can delegate to at runtime.
+# Built-in delegatable profiles. Treat as immutable — each ``OuroAgent``
+# instance owns its own merged registry (``self.delegatable_profiles``) built
+# via :func:`build_profile_registry`. Exposed here for introspection and as a
+# default for tools that need a built-ins-only view.
 DELEGATABLE_PROFILES: dict[str, SubAgentProfile] = {
     p.name: p for p in PROFILES if p.delegatable
 }
@@ -219,22 +223,11 @@ DELEGATABLE_PROFILES: dict[str, SubAgentProfile] = {
 # ---------------------------------------------------------------------------
 
 
-def _try_load_yaml(path: Path) -> dict:
-    """Attempt to parse a YAML file. Falls back to JSON if pyyaml unavailable."""
-    try:
-        import yaml
-
-        return yaml.safe_load(path.read_text()) or {}
-    except ImportError:
-        logger.warning("pyyaml not installed — cannot load %s; use JSON instead", path)
-        return {}
-
-
 def _load_profile_file(path: Path) -> Optional[SubAgentProfile]:
     """Load a single profile from a JSON or YAML file."""
     try:
         if path.suffix in (".yaml", ".yml"):
-            data = _try_load_yaml(path)
+            data = yaml.safe_load(path.read_text()) or {}
         elif path.suffix == ".json":
             data = json.loads(path.read_text())
         else:

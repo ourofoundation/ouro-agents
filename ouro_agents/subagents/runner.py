@@ -242,12 +242,9 @@ def _build_chain_delegate(
 
     from smolagents import tool
 
-    from .profiles import DELEGATABLE_PROFILES
-
+    registry = ctx.delegatable_profiles
     allowed = {
-        name: DELEGATABLE_PROFILES[name]
-        for name in profile.can_delegate_to
-        if name in DELEGATABLE_PROFILES
+        name: registry[name] for name in profile.can_delegate_to if name in registry
     }
     if not allowed:
         return None
@@ -285,6 +282,7 @@ def _build_chain_delegate(
             memory_scopes=child_profile.memory_scopes or ctx.memory_scopes,
             ouro_client=ctx.ouro_client,
             record_subagent_usage=ctx.record_subagent_usage,
+            delegatable_profiles=ctx.delegatable_profiles,
         )
         result = run_subagent(child_profile, task_str, child_ctx)
         payload = _format_delegate_payload(
