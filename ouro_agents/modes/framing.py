@@ -34,7 +34,8 @@ HEARTBEAT_FRAMING = (
 PLANNING_FRAMING = (
     "You are entering a planning phase. Review recent activity, your memory, "
     "and ongoing work, then create or revise your plan for the upcoming period. "
-    "Be thoughtful and realistic. Use checklist format ([] / [x]) for actionable items. "
+    "Be thoughtful and realistic. Put actionable work in quest task items, not "
+    "markdown checklists in the plan description. "
     "If updating an existing plan, revise the quest in place rather than creating a new one. "
     "When revising a plan, manage quest items directly with the quest item tools "
     "(create/update/delete) instead of rewriting them in prose. "

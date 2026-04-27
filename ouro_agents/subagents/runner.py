@@ -426,6 +426,7 @@ def _run_agent(
             workspace=ctx.workspace,
             doc_store=ctx.doc_store,
             team_id=ctx.team_id,
+            memory_categories=ctx.memory_scopes,
         )
         allowed = set(profile.allowed_tools)
         tools.extend(t for t in mem_tools if t.name in allowed)

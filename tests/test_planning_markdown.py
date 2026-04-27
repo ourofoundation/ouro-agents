@@ -1,4 +1,4 @@
-"""Tests for plan markdown task parsing, item sync, and review prompts."""
+"""Tests for plan task items and review prompts."""
 
 import asyncio
 import json
@@ -13,70 +13,9 @@ from ouro_agents.modes.planning import (
     PlanItem,
     build_feedback_review_prompt,
     next_action,
-    parse_task_lines_from_markdown,
-    rebuild_plan_markdown,
     run_planning_heartbeat,
     run_review_heartbeat,
-    sync_plan_items_from_markdown,
 )
-
-
-def test_parse_task_lines_basic():
-    md = """## Tasks
-- [ ] First task
-- [x] Done task
-* [ ] Star bullet
-"""
-    rows = parse_task_lines_from_markdown(md)
-    assert rows == [
-        ("First task", False, ""),
-        ("Done task", True, ""),
-        ("Star bullet", False, ""),
-    ]
-
-
-def test_parse_task_lines_with_notes_and_id():
-    md = "- [ ] (a1b2c3d4) Do thing — some note\n"
-    rows = parse_task_lines_from_markdown(md)
-    assert len(rows) == 1
-    desc, done, notes = rows[0]
-    assert desc == "Do thing"
-    assert done is False
-    assert notes == "some note"
-
-
-def test_sync_drops_removed_tasks_and_adds_new():
-    existing = [
-        PlanItem(id="aaaaaaaa", description="Old Iran task", status="pending"),
-        PlanItem(id="bbbbbbbb", description="Keep me", status="in_progress"),
-    ]
-    md = "## Tasks\n- [ ] Keep me\n- [ ] Brand new item\n"
-    out = sync_plan_items_from_markdown(md, existing)
-    assert len(out) == 2
-    assert out[0].id == "bbbbbbbb"
-    assert out[0].status == "in_progress"
-    assert out[1].description == "Brand new item"
-    assert out[1].status == "pending"
-    assert len(out[1].id) == 8
-
-
-def test_sync_marks_done_from_checkbox():
-    existing = [PlanItem(id="cccccccc", description="Ship it", status="pending")]
-    md = "- [x] Ship it\n"
-    out = sync_plan_items_from_markdown(md, existing)
-    assert out[0].status == "done"
-
-
-def test_rebuild_no_longer_appends_stale_items_after_sync():
-    plan_md = """## Tasks
-- [ ] One
-- [ ] Two
-"""
-    items = sync_plan_items_from_markdown(plan_md, [])
-    rebuilt = rebuild_plan_markdown(plan_md, items)
-    assert "One" in rebuilt
-    assert "Two" in rebuilt
-    assert rebuilt.count("One") == 1
 
 
 def test_feedback_review_prompt_targets_same_thread_reply():
@@ -155,6 +94,7 @@ def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():
         created_at="2026-04-01T09:00:00+00:00",
         activated_at="2026-04-01T09:00:00+00:00",
         heartbeats_completed=6,
+        quest_id="quest-1",
         items=[PlanItem(id="task-123", description="Keep going", status="in_progress")],
     )
 
@@ -170,8 +110,8 @@ def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():
     assert action == "execute"
 
 
-def test_next_action_replans_stale_active_without_quest_or_items():
-    """Active + empty items + no quest_id cannot become all_items_complete."""
+def test_next_action_replans_stale_active_without_quest():
+    """Active plans without quest-backed task items should be replaced."""
     current = PlanCycle(
         id="cycle-stale",
         status="active",
@@ -195,6 +135,21 @@ def test_next_action_replans_stale_active_without_quest_or_items():
     )
 
     assert action == "plan"
+
+
+def test_legacy_post_id_does_not_become_plan_quest_id():
+    current = PlanCycle(
+        id="cycle-post-backed",
+        status="active",
+        kind="default",
+        created_at="2026-04-08T15:00:00+00:00",
+        activated_at="2026-04-08T16:00:00+00:00",
+        items=[PlanItem(description="Legacy local item")],
+        post_id="legacy-plan-post",
+    )
+
+    assert current.quest_id is None
+    assert current.needs_replan_stale_active is True
 
 
 def test_next_action_active_with_quest_but_no_local_items_still_executes():

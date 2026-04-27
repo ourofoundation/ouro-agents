@@ -168,7 +168,10 @@ def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str
         "You are executing a specific plan during this heartbeat.\n\n"
         f"{plan_context}\n\n"
         f"{guidance}\n\n"
-        "Use the update_plan tool to mark items done/in_progress as you complete them.\n"
+        "Use `update_quest_item` to mark an item `in_progress` before working on it. "
+        "When you complete an item, use `complete_quest_item` with a substantive "
+        "completion note and any produced asset id. Use `list_quest_items` if the "
+        "local item context seems stale.\n"
         "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
         "you MUST use the `create_comment` tool to comment on the plan's original quest "
         "(using the quest id shown above). Summarize the work you accomplished and include "
@@ -316,7 +319,6 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
     from .planning import (
         PlanStore,
         comment_on_plan,
-        make_plan_tools,
         next_action,
         parse_cadence_seconds,
         render_all_plans_context,
@@ -609,15 +611,12 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                         planning_cfg.min_heartbeats,
                     )
                     heartbeat_source = f"plan:{target_plan.id[:8]}"
-                    target_store = (
-                        team_plan_stores.get(target_plan.team_id, plan_store)
-                        if target_plan.team_id
-                        else plan_store
-                    )
-                    extra_tools = make_plan_tools(
-                        target_store, agent._get_ouro_client()
-                    )
-                    preload_tools = ["ouro:create_comment"]
+                    preload_tools = [
+                        "ouro:list_quest_items",
+                        "ouro:update_quest_item",
+                        "ouro:complete_quest_item",
+                        "ouro:create_comment",
+                    ]
                 else:
                     logger.warning(
                         "Preflight chose plan_id=%s but no matching active plan found",

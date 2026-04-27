@@ -29,6 +29,8 @@ def test_plan_execution_playbook_mentions_multi_heartbeat_expectation():
     assert "one meaningful slice of progress" in playbook
     assert "do not feel pressure to use all available steps" in playbook
     assert "at least 4 heartbeats before replanning" in playbook
+    assert "`update_quest_item`" in playbook
+    assert "`complete_quest_item`" in playbook
     assert "`create_comment`" in playbook
 
 
@@ -170,7 +172,9 @@ def test_run_heartbeat_scopes_preflight_and_run_to_selected_team(tmp_path):
             captured["preflight_task"] = task
             captured["preflight_kwargs"] = kwargs
             return SimpleNamespace(
-                text='{"action":"general_heartbeat","plan_id":null,"reasoning":"stay scoped"}'
+                text='{"action":"work_on_plan","plan_id":"'
+                + store_a.load_default().id[:8]
+                + '","reasoning":"stay scoped"}'
             )
 
         def _get_ouro_client(self):
@@ -190,6 +194,12 @@ def test_run_heartbeat_scopes_preflight_and_run_to_selected_team(tmp_path):
     assert "Do B" not in captured["preflight_task"]
     assert captured["preflight_kwargs"]["team_id"] == "team-a"
     assert captured["kwargs"]["team_id"] == "team-a"
+    assert captured["kwargs"]["preload_tools"] == [
+        "ouro:list_quest_items",
+        "ouro:update_quest_item",
+        "ouro:complete_quest_item",
+        "ouro:create_comment",
+    ]
 
 
 def test_run_heartbeat_does_not_fallback_to_root_playbook_for_team_runs(tmp_path):

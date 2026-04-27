@@ -25,13 +25,14 @@ def _get_openrouter_base_url() -> str:
 def _extract_metadata(raw: dict) -> dict:
     """Pull our custom fields out of a mem0 result's metadata."""
     meta = raw.get("metadata", {}) or {}
-    return {
-        "category": meta.get("category", "general"),
-        "importance": meta.get("importance", 0.5),
-        "created_at": meta.get("created_at", ""),
-        "source": meta.get("source", ""),
-        "last_accessed": meta.get("last_accessed", ""),
-    }
+    extracted = dict(meta)
+    extracted.setdefault("category", "general")
+    extracted.setdefault("importance", 0.5)
+    extracted.setdefault("created_at", "")
+    extracted.setdefault("source", "")
+    extracted.setdefault("last_accessed", "")
+    extracted.setdefault("team_id", "")
+    return extracted
 
 
 class Mem0Backend:
@@ -183,9 +184,16 @@ class Mem0Backend:
             meta = _extract_metadata(r)
             out.append(
                 MemoryResult(
+                    id=str(r.get("id") or ""),
                     text=r["memory"],
                     score=r.get("score", 0),
-                    **meta,
+                    category=meta.get("category", "general"),
+                    importance=meta.get("importance", 0.5),
+                    created_at=meta.get("created_at", ""),
+                    source=meta.get("source", ""),
+                    last_accessed=meta.get("last_accessed", ""),
+                    team_id=meta.get("team_id", ""),
+                    metadata=meta,
                 )
             )
         return out
@@ -231,7 +239,20 @@ class Mem0Backend:
         out: list[MemoryResult] = []
         for r in res_list:
             meta = _extract_metadata(r)
-            out.append(MemoryResult(text=r["memory"], score=0, **meta))
+            out.append(
+                MemoryResult(
+                    id=str(r.get("id") or ""),
+                    text=r["memory"],
+                    score=0,
+                    category=meta.get("category", "general"),
+                    importance=meta.get("importance", 0.5),
+                    created_at=meta.get("created_at", ""),
+                    source=meta.get("source", ""),
+                    last_accessed=meta.get("last_accessed", ""),
+                    team_id=meta.get("team_id", ""),
+                    metadata=meta,
+                )
+            )
         return out
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:

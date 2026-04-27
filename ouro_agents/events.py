@@ -188,7 +188,10 @@ def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str
         f"## Feedback\n{ctx.comment_text}\n\n"
         f"## Your Current Plan\n{pc.plan_text}\n\n"
         f"Review the feedback, revise your plan if needed, and update "
-        f"the quest (update_quest). {reply_instruction}\n\n"
+        f"the quest (update_quest). Manage task items directly with "
+        f"list_quest_items, update_quest_item, create_quest_items, or "
+        f"delete_quest_item as needed; do not rewrite task progress as a "
+        f"markdown checklist. {reply_instruction}\n\n"
         f"Return a JSON summary:\n"
         f'```json\n{{"revised_plan": "<updated plan text>", '
         f'"feedback_summary": "<brief summary of changes>"}}\n```\n\n'
@@ -356,6 +359,14 @@ def build_event_run_context(
     data = event.data or {}
 
     event_team_id = provenance.team_id if provenance else None
+    if not event_team_id and comment_ctx and comment_ctx.team:
+        event_team_id = comment_ctx.team.get("id")
+    if not event_team_id:
+        team = data.get("team")
+        if isinstance(team, dict):
+            event_team_id = team.get("id")
+        elif isinstance(data.get("team_id"), str):
+            event_team_id = data.get("team_id")
 
     return EventRunContext(
         event_type=event.event_type,

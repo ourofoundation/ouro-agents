@@ -10,7 +10,7 @@ from smolagents import tool
 from ..scheduler import AgentScheduler, ScheduledTask, SYSTEM_PROTECTED_IDS
 
 
-def make_scheduler_tools(scheduler: AgentScheduler) -> list:
+def make_scheduler_tools(scheduler: AgentScheduler, team_id: str | None = None) -> list:
     """Create the CRUD tools the agent uses to manage its own schedule."""
 
     @tool
@@ -19,6 +19,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
         prompt: str,
         schedule: str,
         timezone: str = "UTC",
+        task_team_id: Optional[str] = None,
     ) -> str:
         """Create a new recurring scheduled task that will run automatically.
 
@@ -27,6 +28,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
             prompt: The full instruction to execute each time the task runs
             schedule: Cron expression (e.g. "0 9 * * *" for daily at 9am) or interval (e.g. "4h", "30m", "1d")
             timezone: IANA timezone for cron schedules (default UTC). Use e.g. "America/New_York", "Europe/London"
+            task_team_id: Optional team id. Defaults to the current run's team.
         """
         try:
             task = ScheduledTask(
@@ -34,6 +36,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
                 prompt=prompt,
                 schedule=schedule,
                 timezone=timezone,
+                team_id=task_team_id or team_id,
             )
             created = scheduler.add_task(task)
             return json.dumps({
@@ -42,6 +45,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
                 "name": created.name,
                 "schedule": created.schedule,
                 "timezone": created.timezone,
+                "team_id": created.team_id,
                 "next_hint": "The task is now active and will run on its schedule.",
             })
         except ValueError as e:
@@ -67,6 +71,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
                     "last_run_at": t.last_run_at,
                     "last_run_status": t.last_run_status,
                     "run_count": t.run_count,
+                    "team_id": t.team_id,
                     "learnings_count": len(t.learnings),
                     "learnings": t.learnings,
                     "prompt": t.prompt[:100] + ("..." if len(t.prompt) > 100 else ""),
@@ -83,6 +88,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
         schedule: Optional[str] = None,
         enabled: Optional[bool] = None,
         timezone: Optional[str] = None,
+        task_team_id: Optional[str] = None,
     ) -> str:
         """Update an existing scheduled task.
 
@@ -93,6 +99,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
             schedule: New schedule - cron expression or interval (optional)
             enabled: Set to false to pause, true to resume (optional)
             timezone: New timezone (optional)
+            task_team_id: New team id for future runs (optional)
         """
         kwargs = {}
         if name is not None:
@@ -105,6 +112,8 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
             kwargs["enabled"] = enabled
         if timezone is not None:
             kwargs["timezone"] = timezone
+        if task_team_id is not None:
+            kwargs["team_id"] = task_team_id
 
         if not kwargs:
             return json.dumps({"error": "No fields to update."})
@@ -119,6 +128,7 @@ def make_scheduler_tools(scheduler: AgentScheduler) -> list:
                 "name": updated.name,
                 "schedule": updated.schedule,
                 "enabled": updated.enabled,
+                "team_id": updated.team_id,
             })
         except ValueError as e:
             return json.dumps({"error": str(e)})

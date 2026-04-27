@@ -32,7 +32,7 @@ def build_review_plan_options(plans: list["PlanCycle"]) -> list[ReviewPlanOption
 
         total = len(plan.items)
         progress = (
-            f"{plan.items_done}/{total} complete" if total else "no checklist items"
+            f"{plan.items_done}/{total} complete" if total else "no task items"
         )
         status = plan.status.replace("_", " ")
         quest = plan.quest_id or "no quest"

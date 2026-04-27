@@ -177,13 +177,18 @@ def decay_old_memories(
     backend: MemoryBackend,
     agent_id: str,
     config: MemoryConfig,
+    team_id: str | None = None,
 ) -> int:
     """Halve the importance of memories older than decay_after_days. Returns count."""
     if not config.decay_after_days:
         return 0
+    if not team_id:
+        # Vector memories are team-owned. Avoid touching every team's memories
+        # from an unscoped/shared consolidation pass.
+        return 0
 
     try:
-        all_memories = backend.get_all(agent_id=agent_id, limit=200)
+        all_memories = backend.get_all(agent_id=agent_id, limit=200, team_id=team_id)
     except Exception as e:
         logger.warning("Failed to load memories for decay: %s", e)
         return 0
@@ -204,7 +209,8 @@ def decay_old_memories(
         if created < cutoff and mem.importance > 0.1:
             new_importance = max(0.1, mem.importance * 0.5)
             try:
-                backend.update_metadata(mem.source, {"importance": new_importance})
+                memory_id = getattr(mem, "id", "") or mem.source
+                backend.update_metadata(memory_id, {"importance": new_importance})
                 decayed += 1
             except Exception:
                 pass
@@ -258,6 +264,7 @@ def run_consolidation(
     config: MemoryConfig,
     model,
     doc_store=None,
+    team_id: str | None = None,
 ) -> dict:
     """Run all consolidation tasks. Returns a summary dict."""
     results = {
@@ -278,7 +285,7 @@ def run_consolidation(
         workspace, model,
         doc_store=doc_store, agent_name=agent_id,
     )
-    results["decayed"] = decay_old_memories(backend, agent_id, config)
+    results["decayed"] = decay_old_memories(backend, agent_id, config, team_id=team_id)
     results["comments_merged"] = _consolidate_user_comments(doc_store, agent_id, model)
 
     logger.info("Consolidation complete: %s", results)

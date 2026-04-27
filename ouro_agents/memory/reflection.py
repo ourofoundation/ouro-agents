@@ -9,7 +9,6 @@ integrates naturally with the conversation state tracker.
 """
 
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -18,25 +17,6 @@ from ..subagents.reflector import ReflectionResult, normalize_daily_log_entry
 from .conversation_state import ConversationState
 
 logger = logging.getLogger(__name__)
-
-
-_LIST_ITEM_RE = re.compile(r"^\s*[-*] ")
-
-
-def _append_markdown_list_item(existing: str, addition: str) -> str:
-    """Merge a markdown list item into the current trailing list."""
-    existing = existing.rstrip()
-    addition = addition.strip()
-    if not existing:
-        return addition
-    if not addition:
-        return existing
-
-    separator = "\n"
-    if not _LIST_ITEM_RE.match(addition):
-        separator = "\n\n"
-
-    return f"{existing}{separator}{addition}"
 
 
 def write_daily_log(
@@ -56,8 +36,7 @@ def write_daily_log(
 
     post_name = doc_store.daily_name(agent_name, today)
     if doc_store.exists(post_name):
-        current = doc_store.read(post_name)
-        ok = doc_store.write(post_name, _append_markdown_list_item(current, entry))
+        ok = doc_store.append_list_item(post_name, entry)
     else:
         ok = doc_store.write(post_name, f"# Daily Log {today}\n\n{entry}")
     if not ok:

@@ -51,6 +51,7 @@ class ScheduledTask(BaseModel):
     last_error: Optional[str] = None
     run_count: int = 0
     learnings: list[str] = Field(default_factory=list)
+    team_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -230,14 +231,12 @@ class AgentScheduler:
         return task
 
     def update_task(self, task_id: str, **kwargs: Any) -> Optional[ScheduledTask]:
+        existing_task = self.store.get(task_id)
+        if not existing_task:
+            return None
         # If schedule changes, validate the new one first
         if "schedule" in kwargs:
-            tz = (
-                kwargs.get("timezone")
-                or (
-                    self.store.get(task_id) or ScheduledTask(name="", prompt="")
-                ).timezone
-            )
+            tz = kwargs.get("timezone") or existing_task.timezone
             parse_trigger(kwargs["schedule"], tz)
 
         updated = self.store.update(task_id, **kwargs)
@@ -414,7 +413,8 @@ class AgentScheduler:
                 agent.config.heartbeat.model or agent.config.agent.model,
                 heartbeat=True,
             )
-            results = run_consolidation(
+            results_by_scope: dict[str, dict] = {}
+            results_by_scope["shared"] = run_consolidation(
                 workspace=agent.config.agent.workspace,
                 backend=agent.memory,
                 agent_id=agent.config.agent.name,
@@ -422,7 +422,17 @@ class AgentScheduler:
                 model=hb_model,
                 doc_store=agent.doc_store,
             )
-            logger.info("Memory consolidation complete: %s", results)
+            for team_id, doc_store in sorted(agent._team_doc_stores.items()):
+                results_by_scope[team_id] = run_consolidation(
+                    workspace=agent.config.agent.workspace,
+                    backend=agent.memory,
+                    agent_id=agent.config.agent.name,
+                    config=agent.config.memory,
+                    model=hb_model,
+                    doc_store=doc_store,
+                    team_id=team_id,
+                )
+            logger.info("Memory consolidation complete: %s", results_by_scope)
         except Exception:
             logger.exception("Memory consolidation failed")
 
@@ -455,7 +465,8 @@ class AgentScheduler:
                 task=effective_prompt,
                 conversation_id=conversation_id,
                 mode=RunMode.AUTONOMOUS,
-                skip_memory=True,
+                skip_memory=False,
+                team_id=task.team_id,
             )
             get_display().flush_pending_run_summary()
             self.store.update(

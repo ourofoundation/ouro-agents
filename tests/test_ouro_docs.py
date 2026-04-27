@@ -18,9 +18,15 @@ def _load_ouro_docs_module():
         sys.modules["ouro_agents"] = package
 
     if "ouro_agents.memory" not in sys.modules:
-        memory_package = types.ModuleType("ouro_agents.memory")
-        memory_package.__path__ = [str(package_dir / "memory")]
+        memory_spec = importlib.util.spec_from_file_location(
+            "ouro_agents.memory",
+            package_dir / "memory" / "__init__.py",
+            submodule_search_locations=[str(package_dir / "memory")],
+        )
+        memory_package = importlib.util.module_from_spec(memory_spec)
         sys.modules["ouro_agents.memory"] = memory_package
+        assert memory_spec and memory_spec.loader
+        memory_spec.loader.exec_module(memory_package)
 
     spec = importlib.util.spec_from_file_location(
         "ouro_agents.memory.ouro_docs",
@@ -309,6 +315,20 @@ class TestLocalDocStore(unittest.TestCase):
             self.assertEqual(
                 store._name_to_path("HEARTBEAT:hermes"),
                 Path(tmpdir) / "teams" / "team-1" / "HEARTBEAT.md",
+            )
+
+    def test_append_list_item_merges_into_existing_list(self):
+        with TemporaryDirectory() as tmpdir:
+            store = LocalDocStore(Path(tmpdir), agent_name="hermes")
+            name = store.daily_name("hermes", "2026-04-05")
+            store.write(name, "# Daily Log 2026-04-05\n\n- 10:00 — first\n")
+
+            ok = store.append_list_item(name, "- 10:05 — second\n")
+
+            self.assertTrue(ok)
+            self.assertEqual(
+                store.read(name),
+                "# Daily Log 2026-04-05\n\n- 10:00 — first\n- 10:05 — second",
             )
 
 

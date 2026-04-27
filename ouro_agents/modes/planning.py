@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,10 +75,10 @@ class PlanCycle(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_post_id(cls, values):
-        """Accept legacy ``post_id`` from persisted JSON and map it to ``quest_id``."""
+    def _discard_legacy_post_id(cls, values):
+        """Ignore legacy post-backed plan ids so stale plans replan as quests."""
         if isinstance(values, dict) and "post_id" in values:
-            values.setdefault("quest_id", values.pop("post_id"))
+            values.pop("post_id", None)
         return values
 
     @property
@@ -94,16 +93,12 @@ class PlanCycle(BaseModel):
 
     @property
     def needs_replan_stale_active(self) -> bool:
-        """Active default plan with no platform quest and no structured items.
+        """Active plan without a platform quest should be replaced.
 
-        ``all_items_complete`` is false when ``items`` is empty, so this state
-        would otherwise never trigger a replanning heartbeat.
+        Quest items are the source of truth for plan progress. Old post-backed
+        plans cannot be safely updated by execution heartbeats.
         """
-        return (
-            self.status == "active"
-            and not self.quest_id
-            and not self.items
-        )
+        return self.status == "active" and not self.quest_id
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +402,7 @@ def update_quest_status(ouro_client, cycle: PlanCycle, **kwargs) -> None:
         elif cycle.status == "completed":
             update_kw["status"] = "closed"
         elif cycle.status == "cancelled":
-            update_kw["status"] = "cancelled"
+            update_kw["status"] = "closed"
         if update_kw:
             ouro_client.quests.update(cycle.quest_id, **update_kw)
     except Exception as e:
@@ -438,19 +433,8 @@ def notify_controller_plan_ready(
     comment_on_plan(
         ouro_client,
         quest_id,
-        f"{{@{username}}} this plan is ready for review.",
+        f"{{@{username}}} this quest is ready for review.",
     )
-
-
-# ---------------------------------------------------------------------------
-# Agent-facing tool
-# ---------------------------------------------------------------------------
-
-
-def make_plan_tools(plan_store: "PlanStore", ouro_client=None) -> list:
-    """Deprecated: plan updates now use MCP quest item tools
-    (complete_quest_item, update_quest_item, etc.)."""
-    return []
 
 
 # ---------------------------------------------------------------------------
@@ -761,16 +745,15 @@ Feedback received:
 
 Steps:
 1. First interpret any "item N" references against the structured quest item list
-   above, using its 1-indexed numbering. Do NOT infer item numbers from prose
-   headings, markdown bullets, or the plan body.
+   above, using its 1-indexed numbering. Do NOT infer item numbers from prose headings,
+   markdown bullets, or the plan body.
 2. Revise your plan to incorporate this feedback (if changes are needed).
 3. Manage structured quest items directly as needed:
    - Use the item_id values shown above when calling item tools.
    - update_quest_item(quest_id, item_id, ...): change description, notes, status,
      or sort_order
    - delete_quest_item(quest_id, item_id): remove irrelevant items (only if no entries)
-   - If you remove or reorder items, normalize sort_order to match the frontend's
-     1-indexed numbering (1, 2, 3, ...).
+   - If you remove or reorder items, normalize sort_order to match the frontend's 1-indexed numbering (1, 2, 3, ...).
    - If the list above seems stale, call list_quest_items(quest_id) before editing.
 4. If you revised the prose plan body, update the quest (update_quest).
 5. {reply_instruction} Summarize what you changed, and if the plan is not yet
@@ -830,6 +813,18 @@ def build_feedback_review_prompt(
     else:
         thread_context = ""
 
+    normalized_items_section = current_items_section or "(no quest items)"
+    if normalized_items_section != "(no quest items)":
+        item_lines = [
+            line.strip()
+            for line in normalized_items_section.splitlines()
+            if line.strip()
+        ]
+        if item_lines and not item_lines[0].startswith("1. "):
+            normalized_items_section = "\n".join(
+                f"{idx}. {line}" for idx, line in enumerate(item_lines, start=1)
+            )
+
     if current_status == "active":
         approval_guidance = (
             "This plan is already active, which means it has already been approved. "
@@ -850,7 +845,7 @@ def build_feedback_review_prompt(
     return FEEDBACK_REVIEW_PROMPT_TEMPLATE.format(
         quest_id=quest_id,
         current_status=current_status,
-        current_items_section=current_items_section or "(no quest items)",
+        current_items_section=normalized_items_section,
         plan_text=plan_text,
         feedback_text=feedback_text,
         reply_instruction=reply_instruction,
@@ -943,7 +938,7 @@ async def run_planning_heartbeat(
     if parsed:
         cycle.plan_text = parsed.get("plan", cycle.plan_text or "")
         if not is_continuation:
-            cycle.quest_id = parsed.get("quest_id") or parsed.get("post_id")
+            cycle.quest_id = parsed.get("quest_id")
     else:
         logger.warning("Could not parse planning result as JSON, storing raw result")
         cycle.plan_text = result

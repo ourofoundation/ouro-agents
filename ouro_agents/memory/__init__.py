@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from .conversation_state import ConversationState
@@ -15,6 +15,7 @@ class DocStore(Protocol):
     def read(self, name: str) -> str: ...
     def write(self, name: str, content_md: str) -> bool: ...
     def append(self, name: str, markdown: str) -> bool: ...
+    def append_list_item(self, name: str, markdown_item: str) -> bool: ...
     def exists(self, name: str) -> bool: ...
     def comment(self, name: str, content_md: str) -> bool: ...
     def read_comments(self, name: str) -> list[dict]: ...
@@ -25,6 +26,7 @@ class DocStore(Protocol):
 
 
 class MemoryResult(BaseModel):
+    id: str = ""
     text: str
     score: float = 0.0
     category: str = "general"
@@ -32,6 +34,8 @@ class MemoryResult(BaseModel):
     created_at: str = ""
     source: str = ""
     last_accessed: str = ""
+    team_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryBackend(Protocol):

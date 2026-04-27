@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Protocol
 
 if TYPE_CHECKING:
     from ouro import Ouro
@@ -27,6 +27,20 @@ logger = logging.getLogger(__name__)
 
 
 _TEAM_SLUG_RE = re.compile(r"[^a-z0-9]+")
+_LIST_ITEM_RE = re.compile(r"^\s*[-*] ")
+
+
+def _append_markdown_list_item(existing: str, addition: str) -> str:
+    """Merge a markdown list item into the current trailing list."""
+    existing = existing.rstrip()
+    addition = addition.strip()
+    if not existing:
+        return addition
+    if not addition:
+        return existing
+
+    separator = "\n" if _LIST_ITEM_RE.match(addition) else "\n\n"
+    return f"{existing}{separator}{addition}"
 
 
 @dataclass
@@ -556,6 +570,14 @@ class OuroDocStore:
             logger.warning("OuroDocStore.append failed for %s: %s", name, e)
             return False
 
+    def append_list_item(self, name: str, markdown_item: str) -> bool:
+        """Append a markdown list item into the existing list structure."""
+        name = self._canonicalize_name(name)
+        if not self.exists(name):
+            return self.write(name, markdown_item)
+        current = self.read(name)
+        return self.write(name, _append_markdown_list_item(current, markdown_item))
+
     def comment(self, name: str, content_md: str) -> bool:
         """Add a comment to a post (typically one this agent does NOT own)."""
         uuid = self._resolve(self._canonicalize_name(name))
@@ -750,6 +772,10 @@ class LocalDocStore:
             logger.warning("LocalDocStore.append failed for %s: %s", name, e)
             return False
 
+    def append_list_item(self, name: str, markdown_item: str) -> bool:
+        current = self.read(name)
+        return self.write(name, _append_markdown_list_item(current, markdown_item))
+
     def exists(self, name: str) -> bool:
         return self._name_to_path(name).exists()
 
@@ -767,4 +793,10 @@ class LocalDocStore:
 
 
 # Re-export the DocStore Protocol from the package root for backward compatibility.
-from . import DocStore as DocStore  # noqa: F811
+# Some focused tests load this module with a lightweight package stub, so keep a
+# small fallback for that import-only path.
+try:
+    from . import DocStore as DocStore  # noqa: F811
+except ImportError:
+    class DocStore(Protocol):  # type: ignore[no-redef]
+        pass

@@ -128,7 +128,7 @@ class OuroAgent:
         self.team_registry: TeamRegistry = TeamRegistry.from_platform_context(
             self._workspace, config.agent.org_id,
         )
-        self._team_doc_stores: dict[str, OuroDocStore] = {}
+        self._team_doc_stores: dict[str, DocStore] = {}
 
         self.doc_store: DocStore = LocalDocStore(
             workspace=config.agent.workspace,
@@ -247,6 +247,8 @@ class OuroAgent:
             len(context["organizations"]),
             len(self.team_registry.team_ids()),
         )
+        if self._mcp_connected:
+            self._init_doc_store()
 
     def _load_platform_context(self) -> str:
         """Load cached platform context for inclusion in the system prompt."""
@@ -330,8 +332,9 @@ class OuroAgent:
         if enabled_tasks:
             for task in enabled_tasks[:8]:
                 status = task.last_run_status or "never-run"
+                scope = f" team={task.team_id}" if task.team_id else " shared"
                 lines.append(
-                    f"- {task.name} [{task.schedule} {task.timezone}] status={status} runs={task.run_count}"
+                    f"- {task.name} [{task.schedule} {task.timezone}] status={status} runs={task.run_count}{scope}"
                 )
             remaining = len(enabled_tasks) - min(len(enabled_tasks), 8)
             if remaining > 0:
@@ -540,11 +543,10 @@ class OuroAgent:
             return f"({len(turns)} earlier messages about: {blob[:200]}...)"
 
     def _init_doc_store(self) -> None:
-        """Upgrade to OuroDocStore when org_id is configured and teams are known.
+        """Initialize or refresh per-team OuroDocStore instances.
 
-        Creates per-team OuroDocStore instances lazily.  The first team
-        discovered becomes the initial default for backward-compatible
-        callers that still read ``agent.doc_store`` directly.
+        ``self.doc_store`` remains the local shared-memory store. Team-specific
+        runs must pass ``team_id`` and resolve through ``doc_store_for``.
         """
         agent_cfg = self.config.agent
         if not agent_cfg.org_id:
@@ -557,8 +559,27 @@ class OuroAgent:
             return
 
         client = self._get_ouro_client()
+        stale_team_ids = set(self._team_doc_stores) - set(team_ids)
+        for tid in stale_team_ids:
+            self._team_doc_stores.pop(tid, None)
+
         for tid in team_ids:
+            if tid in self._team_doc_stores:
+                continue
             team_info = self.team_registry.get_team(tid)
+            if team_info and not team_info.agent_can_create:
+                logger.warning(
+                    "Team %s is not writable by agents (source_policy=%s); using local team docs",
+                    tid,
+                    team_info.source_policy,
+                )
+                self._team_doc_stores[tid] = LocalDocStore(
+                    self._workspace,
+                    agent_name=agent_cfg.name,
+                    team_id=tid,
+                    team_slug=team_info.slug,
+                )
+                continue
             self._team_doc_stores[tid] = OuroDocStore(
                 agent_name=agent_cfg.name,
                 org_id=agent_cfg.org_id,
@@ -570,8 +591,6 @@ class OuroAgent:
                 team_name=team_info.name if team_info else None,
             )
 
-        first_team = team_ids[0]
-        self.doc_store = self._team_doc_stores[first_team]
         self._sync_workspace_docs()
 
     def doc_store_for(self, team_id: str) -> DocStore:
@@ -582,6 +601,20 @@ class OuroAgent:
         if not agent_cfg.org_id:
             return self.doc_store
         team_info = self.team_registry.get_team(team_id)
+        if team_info and not team_info.agent_can_create:
+            logger.warning(
+                "Team %s is not writable by agents (source_policy=%s); using local team docs",
+                team_id,
+                team_info.source_policy,
+            )
+            store = LocalDocStore(
+                self._workspace,
+                agent_name=agent_cfg.name,
+                team_id=team_id,
+                team_slug=team_info.slug,
+            )
+            self._team_doc_stores[team_id] = store
+            return store
         store = OuroDocStore(
             agent_name=agent_cfg.name,
             org_id=agent_cfg.org_id,
@@ -601,9 +634,16 @@ class OuroAgent:
             return
         from .memory.workspace_sync import sync_workspace
 
+        ouro_doc_stores = {
+            tid: store
+            for tid, store in self._team_doc_stores.items()
+            if isinstance(store, OuroDocStore)
+        }
+        if not ouro_doc_stores:
+            return
         result = sync_workspace(
             workspace=self._workspace,
-            team_doc_stores=self._team_doc_stores,
+            team_doc_stores=ouro_doc_stores,
             agent_name=self.config.agent.name,
         )
         if result.pushed:
@@ -622,11 +662,6 @@ class OuroAgent:
         for server in self.config.mcp_servers:
             self._connect_one_server(server)
         self._mcp_connected = True
-
-        try:
-            self._init_doc_store()
-        except Exception as e:
-            logger.warning("Failed to initialize OuroDocStore: %s", e)
 
         try:
             self._refresh_platform_context()
@@ -810,6 +845,7 @@ class OuroAgent:
             workspace=self.config.agent.workspace,
             doc_store=active_doc_store,
             team_id=team_id,
+            memory_categories=getattr(profile, "memory_scopes", []) or [],
         )
         if profile.memory_tool_filter is not None:
             allowed = set(profile.memory_tool_filter)
@@ -824,7 +860,7 @@ class OuroAgent:
         )
         load_skill = make_load_skill_tool(self.config.agent.workspace)
         scheduler_tools = (
-            make_scheduler_tools(self.scheduler)
+            make_scheduler_tools(self.scheduler, team_id=team_id)
             if not profile.restricted_servers
             else []
         )

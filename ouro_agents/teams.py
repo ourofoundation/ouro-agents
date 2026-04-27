@@ -33,6 +33,8 @@ class TeamInfo:
     name: str
     org_id: str
     slug: str = ""
+    agent_can_create: bool = True
+    source_policy: str = "any"
 
 
 class TeamRegistry:
@@ -67,6 +69,8 @@ class TeamRegistry:
                 name=team.get("name", ""),
                 org_id=team_org or "",
                 slug=team.get("slug", team.get("name", "")),
+                agent_can_create=bool(team.get("agent_can_create", True)),
+                source_policy=team.get("source_policy", "any") or "any",
             )
 
     def get_team(self, team_id: str) -> Optional[TeamInfo]:

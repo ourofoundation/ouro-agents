@@ -21,9 +21,15 @@ def _load_reflection_modules():
         sys.modules["ouro_agents.subagents"] = subagents_package
 
     if "ouro_agents.memory" not in sys.modules:
-        memory_package = types.ModuleType("ouro_agents.memory")
-        memory_package.__path__ = [str(package_dir / "memory")]
+        memory_spec = importlib.util.spec_from_file_location(
+            "ouro_agents.memory",
+            package_dir / "memory" / "__init__.py",
+            submodule_search_locations=[str(package_dir / "memory")],
+        )
+        memory_package = importlib.util.module_from_spec(memory_spec)
         sys.modules["ouro_agents.memory"] = memory_package
+        assert memory_spec and memory_spec.loader
+        memory_spec.loader.exec_module(memory_package)
 
     reflector_spec = importlib.util.spec_from_file_location(
         "ouro_agents.subagents.reflector",

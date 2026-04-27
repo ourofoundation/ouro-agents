@@ -63,7 +63,9 @@ def make_memory_tools(
     workspace: Optional[Path] = None,
     doc_store: Optional["DocStore"] = None,
     team_id: Optional[str] = None,
+    memory_categories: Optional[list[str]] = None,
 ) -> list:
+    allowed_categories = set(memory_categories or [])
 
     @tool
     def memory_recall(queries: list) -> str:
@@ -95,6 +97,8 @@ def make_memory_tools(
             )
             if category:
                 results = [r for r in results if r.category == category]
+            if allowed_categories:
+                results = [r for r in results if r.category in allowed_categories]
 
             lines: list[str] = []
             for r in results:
@@ -134,7 +138,12 @@ def make_memory_tools(
         lines: list[str] = ["## Memory Status"]
 
         try:
-            all_mems = backend.get_all(agent_id=agent_id, user_id=user_id, limit=200)
+            all_mems = backend.get_all(
+                agent_id=agent_id,
+                user_id=user_id,
+                limit=200,
+                team_id=team_id,
+            )
             lines.append(f"Total memories in vector store: {len(all_mems)}")
 
             cat_counts: dict[str, int] = {}
