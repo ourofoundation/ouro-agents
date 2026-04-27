@@ -1,6 +1,7 @@
 from ouro_agents.soul import build_shared_prompt_sections, current_datetime_section
 from ouro_agents.subagents.context import SubAgentContext
 from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
+from ouro_agents.subagents.profiles import HEARTBEAT_PREFLIGHT, PREFLIGHT
 from ouro_agents.subagents.runner import _format_task_context
 
 
@@ -86,7 +87,19 @@ def test_preflight_prompts_limit_tool_use_and_recover():
     assert "call memory_recall exactly once" in PREFLIGHT_PROMPT
     assert "memory_recall returns no useful context" in PREFLIGHT_PROMPT
     assert "previous response failed or was not accepted" in PREFLIGHT_PROMPT
+    assert "Your job is analysis only" in PREFLIGHT_PROMPT
+    assert "Never call platform/action tools" in PREFLIGHT_PROMPT
+    assert "create_comment" in PREFLIGHT_PROMPT
 
     assert "call memory_recall at most once" in HEARTBEAT_PREFLIGHT_PROMPT
     assert "memory_recall returns no useful context" in HEARTBEAT_PREFLIGHT_PROMPT
     assert "previous response failed or was not accepted" in HEARTBEAT_PREFLIGHT_PROMPT
+    assert "Your job is analysis only" in HEARTBEAT_PREFLIGHT_PROMPT
+    assert "Never call platform/action tools" in HEARTBEAT_PREFLIGHT_PROMPT
+
+
+def test_preflight_profiles_only_allow_memory_recall():
+    assert PREFLIGHT.allowed_tools == ["memory_recall"]
+    assert HEARTBEAT_PREFLIGHT.allowed_tools == ["memory_recall"]
+    assert PREFLIGHT.preload_tools == []
+    assert HEARTBEAT_PREFLIGHT.preload_tools == []

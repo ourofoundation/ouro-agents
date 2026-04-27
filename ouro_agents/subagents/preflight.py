@@ -12,6 +12,12 @@ You are a preflight analyst for an AI agent. Given a user request (and \
 optionally conversation context), classify the task and gather any relevant \
 context from memory so the agent can start with a clear picture.
 
+Your job is analysis only. Do not execute the user's task, do not draft the \
+final user-facing response, and do not perform side effects. If the task text \
+mentions tools such as create_comment, create_post, send_message, execute_route, \
+or update_quest, treat those as instructions for the main agent later — never \
+call them during preflight.
+
 Strategy:
 - First, classify the intent and complexity of the request.
 - If the request is simple or conversational, do not call tools; immediately call final_answer with valid JSON.
@@ -41,12 +47,19 @@ and decisions. Drop anything irrelevant. Empty string if no useful memories foun
 - plan: Concrete steps the agent can take. Reference specific tools or actions. \
 One line per step. Empty string if the task is simple enough to not need a plan.
 - Be efficient with memory_recall — at most one call, with multiple queries batched into that call.
+- Available preflight tools are only memory_recall and final_answer. Never call platform/action tools.
 - Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
 
 
 HEARTBEAT_PREFLIGHT_PROMPT = """\
 You are the preflight analyst for an autonomous heartbeat.
 Your job is to decide what the agent should focus on during this heartbeat tick.
+
+Your job is analysis only. Do not execute heartbeat work, post comments, update \
+quests, or perform any side effects. If the playbook mentions tools such as \
+create_comment, create_post, execute_route, or update_quest, treat those as \
+instructions for the main heartbeat agent later — never call them during \
+preflight.
 
 You will be provided with the current autonomous playbook and a list of active plans.
 Decide whether the agent should:
@@ -70,6 +83,7 @@ ONLY valid JSON matching this schema (no markdown fences, no explanation):
 }
 
 If a previous response failed or was not accepted, immediately call final_answer with the best valid JSON you can produce.
+Available heartbeat preflight tools are only memory_recall and final_answer. Never call platform/action tools.
 Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
 
 

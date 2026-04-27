@@ -1603,7 +1603,38 @@ class OuroAgent:
         # --- Trivial message fast path (regex only, no LLM) ---
         is_trivial = is_trivial_message(task)
 
+        # --- Step 0: Preflight subagent (visible) ---
+        display = get_display()
+        preflight: Optional[PreflightResult] = None
+
+        def _status_cb(status: str, message: Optional[str], active: bool):
+            if observer:
+                observer.on_activity(status, message, active)
+
+        if not is_trivial and not skip_memory and not profile.skip_preflight:
+            preflight = self._run_preflight(
+                task,
+                conv_state=conv_state,
+                user_id=user_id,
+                run_id=run_id,
+                asset_refs=prefetch.asset_ids if prefetch else None,
+                display=display,
+                status_callback=_status_cb,
+                team_id=team_id,
+                doc_store=active_doc_store,
+            )
+            logger.info(
+                "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d",
+                preflight.intent,
+                preflight.complexity,
+                preflight.worth_remembering,
+                len(preflight.briefing),
+                len(preflight.plan),
+            )
+
         # --- Build tools ---
+        # Do this after preflight so parent-run preloads do not appear to be
+        # part of the preflight step in logs or side effects.
         all_tools, deferred_tool_directory, agent_ref, preloaded_names = (
             self._build_agent_tools(
                 profile,
@@ -1633,35 +1664,6 @@ class OuroAgent:
             team_id=team_id,
             doc_store=active_doc_store,
         )
-
-        # --- Step 0: Preflight subagent (visible) ---
-        display = get_display()
-        preflight: Optional[PreflightResult] = None
-
-        def _status_cb(status: str, message: Optional[str], active: bool):
-            if observer:
-                observer.on_activity(status, message, active)
-
-        if not is_trivial and not skip_memory and not profile.skip_preflight:
-            preflight = self._run_preflight(
-                task,
-                conv_state=conv_state,
-                user_id=user_id,
-                run_id=run_id,
-                asset_refs=prefetch.asset_ids if prefetch else None,
-                display=display,
-                status_callback=_status_cb,
-                team_id=team_id,
-                doc_store=active_doc_store,
-            )
-            logger.info(
-                "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d",
-                preflight.intent,
-                preflight.complexity,
-                preflight.worth_remembering,
-                len(preflight.briefing),
-                len(preflight.plan),
-            )
 
         # Assemble the effective task: dynamic context + prefetched data + preflight + request
         context_parts: list[str] = []
