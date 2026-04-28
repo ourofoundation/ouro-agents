@@ -1,28 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, List, Optional
 
 from pydantic import BaseModel, Field
+
+from .ouro_docs import DocStore
 
 if TYPE_CHECKING:
     from .conversation_state import ConversationState
 
 
-class DocStore(Protocol):
-    """Interface for document stores (Ouro-backed or local filesystem)."""
-
-    def read(self, name: str) -> str: ...
-    def write(self, name: str, content_md: str) -> bool: ...
-    def append(self, name: str, markdown: str) -> bool: ...
-    def append_list_item(self, name: str, markdown_item: str) -> bool: ...
-    def exists(self, name: str) -> bool: ...
-    def comment(self, name: str, content_md: str) -> bool: ...
-    def read_comments(self, name: str) -> list[dict]: ...
-    def search(self, query: str) -> list[dict]: ...
-    def is_owner(self, name: str) -> bool: ...
-    def memory_name(self, agent_name: str | None = None) -> str: ...
-    def daily_name(self, agent_name: str | None, day: str) -> str: ...
+__all__ = [
+    "DocStore",
+    "MemoryResult",
+    "MemoryBackend",
+    "CATEGORY_LABELS",
+    "format_memories",
+    "expand_query",
+    "create_memory_backend",
+]
 
 
 class MemoryResult(BaseModel):

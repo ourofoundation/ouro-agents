@@ -35,12 +35,14 @@ def write_daily_log(
     entry = f"- {ts} — {entry_text}\n"
 
     post_name = doc_store.daily_name(agent_name, today)
-    if doc_store.exists(post_name):
-        ok = doc_store.append_list_item(post_name, entry)
-    else:
-        ok = doc_store.write(post_name, f"# Daily Log {today}\n\n{entry}")
+    initial_content = f"# Daily Log {today}\n\n{entry}"
+    ok = doc_store.append_list_item(post_name, entry, initial_md=initial_content)
     if not ok:
-        logger.warning("Failed to write daily log to %s via %s", post_name, type(doc_store).__name__)
+        logger.warning(
+            "Failed to write daily log to %s via %s",
+            post_name,
+            type(doc_store).__name__,
+        )
 
 
 def should_reflect(

@@ -7,17 +7,21 @@ load: stub
 
 You have a persistent working memory system backed by Ouro posts in a shared agent team. Memory is shared across agents — each agent owns its own posts and can read or comment on others'. Local file fallbacks exist when the Ouro doc store is not configured.
 
-## Post Naming Convention
+## Logical Keys And Post Titles
 
-| Post Name | Purpose | Owner |
-|-----------|---------|-------|
-| `MEMORY:{agent_name}` | Durable facts, preferences, learnings — your long-term brain | Each agent owns its own |
-| `DAILY:{agent_name}:{YYYY-MM-DD}` | What happened today — decisions, tasks, observations | Each agent owns its own |
-| `SOUL:{agent_name}` | Agent identity and rules | Each agent owns its own |
-| `HEARTBEAT:{agent_name}` | Autonomous playbook | Each agent owns its own |
-| `NOTES:{agent_name}` | Deployment-specific notes | Each agent owns its own |
-| `USER:{user_id}` | Shared user profile: style, interests, preferences | First agent creates, others comment |
-| `PLAN:{agent_name}:{YYYY-MM-DD}` | Plan cycle quest for review | Each agent owns its own |
+The agent keeps colon-delimited logical keys internally for stable lookup, while
+new platform-facing posts use more readable asset titles when available.
+
+| Logical Key | Platform Title | Purpose | Owner |
+|-----------|---------|---------|-------|
+| `MEMORY:{agent_name}` | `MEMORY:{agent_name}` | Durable facts, preferences, learnings — your long-term brain | Each agent owns its own |
+| `DAILY:{agent_name}:{YYYY-MM-DD}` | `{agent_name} daily log {YYYY-MM-DD}` | What happened today — decisions, tasks, observations | Each agent owns its own |
+| `DAILY:{agent_name}:{team}:{YYYY-MM-DD}` | `#{team} daily log {YYYY-MM-DD}` | Team-scoped daily activity | Each agent owns its own |
+| `SOUL:{agent_name}` | local only | Agent identity and rules | Each agent owns its own |
+| `HEARTBEAT:{agent_name}` | local only | Autonomous playbook | Each agent owns its own |
+| `NOTES:{agent_name}` | local only | Deployment-specific notes | Each agent owns its own |
+| `USER:{user_id}` | `USER:{user_id}` | Shared user profile: style, interests, preferences | First agent creates, others comment |
+| Plan quest | A concise natural goal/focus title chosen by the agent | Plan cycle quest for review | Each agent owns its own |
 
 ## Collaboration Model
 

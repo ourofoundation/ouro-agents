@@ -34,7 +34,7 @@ from .memory.conversation_state import (
     update_state,
 )
 from .memory import DocStore
-from .memory.ouro_docs import LocalDocStore, OuroDocStore
+from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
     apply_reflection,
     should_reflect_for_conversation,
@@ -130,9 +130,12 @@ class OuroAgent:
         )
         self._team_doc_stores: dict[str, DocStore] = {}
 
-        self.doc_store: DocStore = LocalDocStore(
-            workspace=config.agent.workspace,
-            agent_name=config.agent.name,
+        self.doc_store: DocStore = CompositeDocStore(
+            local=LocalDocStore(
+                workspace=config.agent.workspace,
+                agent_name=config.agent.name,
+            ),
+            ouro=None,
         )
 
         from .scheduler import AgentScheduler
@@ -305,15 +308,13 @@ class OuroAgent:
         return "\n\n".join(parts)
 
     def _load_shared_memory(self) -> str:
-        """Load the root-level MEMORY.md for cross-team shared knowledge."""
-        shared_path = self._workspace / "MEMORY.md"
-        if not shared_path.exists():
-            return ""
-        try:
-            from .memory.workspace_sync import strip_frontmatter
-            return strip_frontmatter(shared_path.read_text()).strip()
-        except Exception:
-            return ""
+        """Load the root-level MEMORY.md for cross-team shared knowledge.
+
+        Routed through the no-team doc store via the ``SHARED:memory``
+        identity prefix so the doc-store abstraction stays the only path
+        from agent code to disk.
+        """
+        return self.doc_store.read("SHARED:memory")
 
     def _load_scheduled_task_awareness(self) -> str:
         """Return a compact, read-only summary of scheduled tasks."""
@@ -566,65 +567,51 @@ class OuroAgent:
         for tid in team_ids:
             if tid in self._team_doc_stores:
                 continue
-            team_info = self.team_registry.get_team(tid)
-            if team_info and not team_info.agent_can_create:
-                logger.warning(
-                    "Team %s is not writable by agents (source_policy=%s); using local team docs",
-                    tid,
-                    team_info.source_policy,
-                )
-                self._team_doc_stores[tid] = LocalDocStore(
-                    self._workspace,
-                    agent_name=agent_cfg.name,
-                    team_id=tid,
-                    team_slug=team_info.slug,
-                )
-                continue
-            self._team_doc_stores[tid] = OuroDocStore(
-                agent_name=agent_cfg.name,
-                org_id=agent_cfg.org_id,
-                team_id=tid,
-                client=client,
-                registry_path=self._workspace / "teams" / tid / "state.json",
-                workspace=self._workspace,
-                team_slug=team_info.slug if team_info else None,
-                team_name=team_info.name if team_info else None,
-            )
+            self._team_doc_stores[tid] = self._build_team_doc_store(tid, client=client)
 
         self._sync_workspace_docs()
 
-    def doc_store_for(self, team_id: str) -> DocStore:
-        """Return the OuroDocStore for *team_id*, creating it lazily."""
-        if team_id in self._team_doc_stores:
-            return self._team_doc_stores[team_id]
+    def _build_team_doc_store(
+        self,
+        team_id: str,
+        *,
+        client=None,
+    ) -> "CompositeDocStore":
+        """Build a CompositeDocStore for *team_id*, falling back to local-only
+        when the team isn't writable by agents."""
         agent_cfg = self.config.agent
-        if not agent_cfg.org_id:
-            return self.doc_store
         team_info = self.team_registry.get_team(team_id)
+        local = LocalDocStore(
+            self._workspace,
+            agent_name=agent_cfg.name,
+            team_id=team_id,
+            team_slug=team_info.slug if team_info else None,
+        )
         if team_info and not team_info.agent_can_create:
             logger.warning(
                 "Team %s is not writable by agents (source_policy=%s); using local team docs",
                 team_id,
                 team_info.source_policy,
             )
-            store = LocalDocStore(
-                self._workspace,
-                agent_name=agent_cfg.name,
-                team_id=team_id,
-                team_slug=team_info.slug,
-            )
-            self._team_doc_stores[team_id] = store
-            return store
-        store = OuroDocStore(
+            return CompositeDocStore(local=local, ouro=None)
+        ouro = OuroDocStore(
             agent_name=agent_cfg.name,
             org_id=agent_cfg.org_id,
             team_id=team_id,
-            client=self._get_ouro_client(),
+            client=client if client is not None else self._get_ouro_client(),
             registry_path=self._workspace / "teams" / team_id / "state.json",
-            workspace=self._workspace,
             team_slug=team_info.slug if team_info else None,
             team_name=team_info.name if team_info else None,
         )
+        return CompositeDocStore(local=local, ouro=ouro)
+
+    def doc_store_for(self, team_id: str) -> DocStore:
+        """Return the per-team CompositeDocStore, creating it lazily."""
+        if team_id in self._team_doc_stores:
+            return self._team_doc_stores[team_id]
+        if not self.config.agent.org_id:
+            return self.doc_store
+        store = self._build_team_doc_store(team_id)
         self._team_doc_stores[team_id] = store
         return store
 
@@ -634,11 +621,11 @@ class OuroAgent:
             return
         from .memory.workspace_sync import sync_workspace
 
-        ouro_doc_stores = {
-            tid: store
-            for tid, store in self._team_doc_stores.items()
-            if isinstance(store, OuroDocStore)
-        }
+        ouro_doc_stores: dict[str, OuroDocStore] = {}
+        for tid, store in self._team_doc_stores.items():
+            inner = store.ouro if isinstance(store, CompositeDocStore) else None
+            if inner is not None:
+                ouro_doc_stores[tid] = inner
         if not ouro_doc_stores:
             return
         result = sync_workspace(

@@ -42,6 +42,22 @@ def _load_ouro_docs_module():
 _ouro_docs_module = _load_ouro_docs_module()
 LocalDocStore = _ouro_docs_module.LocalDocStore
 OuroDocStore = _ouro_docs_module.OuroDocStore
+CompositeDocStore = _ouro_docs_module.CompositeDocStore
+daily_doc_display_name = _ouro_docs_module.daily_doc_display_name
+
+
+def _registry_payload(docs: dict[str, str]) -> str:
+    return json.dumps(
+        {
+            "team": {
+                "id": "team-1",
+                "name": "Research",
+                "slug": "research",
+                "org_id": "org-1",
+            },
+            "docs": docs,
+        }
+    )
 
 
 class _FakeAssets:
@@ -67,13 +83,24 @@ class _FakePosts:
     def __init__(self):
         self.created = []
         self.updated = []
+        self.contents = {}
 
     def create(self, **kwargs):
         self.created.append(kwargs)
+        self.contents["created-post"] = kwargs.get("content_markdown", "")
         return SimpleNamespace(id="created-post")
 
     def update(self, id, content=None, name=None):
         self.updated.append({"id": id, "content": content, "name": name})
+        if content is not None:
+            self.contents[id] = content.markdown
+
+    def retrieve(self, id):
+        return SimpleNamespace(
+            id=id,
+            content=SimpleNamespace(text=self.contents.get(id, ""), data={}),
+            last_updated=None,
+        )
 
 
 class _FakeClient:
@@ -94,75 +121,26 @@ class TestOuroDocStore(unittest.TestCase):
             registry_path=Path(tmpdir) / "state.json",
         )
 
-    def test_singleton_registry_hit_skips_search(self):
-        name = "MEMORY:hermes:research"
-
-        with TemporaryDirectory() as tmpdir:
-            registry_path = Path(tmpdir) / "doc_registry.json"
-            registry_path.write_text('{"MEMORY:hermes:research": "cached-post"}')
-            client = _FakeClient(search_results=[[{"id": "wrong", "name": name}]])
-            store = OuroDocStore(
-                agent_name="hermes",
-                org_id="org-1",
-                team_id="team-1",
-                team_slug="research",
-                team_name="Research",
-                client=client,
-                registry_path=Path(tmpdir) / "state.json",
-            )
-
-            self.assertEqual(store._resolve(name), "cached-post")
-            self.assertEqual(client.assets.search_calls, [])
-
-    def test_falls_back_to_legacy_doc_registry_filename(self):
-        name = "MEMORY:hermes:research"
-
-        with TemporaryDirectory() as tmpdir:
-            legacy_registry = Path(tmpdir) / "doc_registry.json"
-            legacy_registry.write_text('{"MEMORY:hermes:research": "cached-post"}')
-            client = _FakeClient()
-            store = OuroDocStore(
-                agent_name="hermes",
-                org_id="org-1",
-                team_id="team-1",
-                team_slug="research",
-                team_name="Research",
-                client=client,
-                registry_path=Path(tmpdir) / "state.json",
-            )
-
-            self.assertEqual(store._resolve(name), "cached-post")
-            payload = json.loads((Path(tmpdir) / "state.json").read_text())
-            self.assertEqual(payload["docs"][name], "cached-post")
-
-    def test_loads_new_registry_payload_with_team_metadata(self):
+    def test_registry_hit_skips_search(self):
         name = "MEMORY:hermes:research"
 
         with TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "state.json"
-            registry_path.write_text(
-                json.dumps(
-                    {
-                        "team": {
-                            "id": "team-1",
-                            "name": "Research",
-                            "slug": "research",
-                            "org_id": "org-1",
-                        },
-                        "docs": {name: "cached-post"},
-                    }
-                )
-            )
+            registry_path.write_text(_registry_payload({name: "cached-post"}))
+            client = _FakeClient(search_results=[[{"id": "wrong", "name": name}]])
+            store = self._make_store(client, tmpdir)
+
+            self.assertEqual(store._resolve(name), "cached-post")
+            self.assertEqual(client.assets.search_calls, [])
+
+    def test_loads_registry_payload_with_team_metadata(self):
+        name = "MEMORY:hermes:research"
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(_registry_payload({name: "cached-post"}))
             client = _FakeClient()
-            store = OuroDocStore(
-                agent_name="hermes",
-                org_id="org-1",
-                team_id="team-1",
-                team_slug="research",
-                team_name="Research",
-                client=client,
-                registry_path=registry_path,
-            )
+            store = self._make_store(client, tmpdir)
 
             self.assertEqual(store._resolve(name), "cached-post")
             self.assertEqual(store.team_name, "Research")
@@ -170,8 +148,9 @@ class TestOuroDocStore(unittest.TestCase):
 
     def test_resolve_uses_broader_exact_name_search(self):
         name = "DAILY:hermes:research:2026-04-05"
+        display_name = "#research daily log 2026-04-05"
         matches = [{"id": f"other-{i}", "name": f"OTHER:{i}"} for i in range(8)]
-        matches.append({"id": "daily-post", "name": name})
+        matches.append({"id": "daily-post", "name": display_name})
 
         with TemporaryDirectory() as tmpdir:
             client = _FakeClient(search_results=[matches])
@@ -183,13 +162,15 @@ class TestOuroDocStore(unittest.TestCase):
 
     def test_write_rechecks_lookup_before_creating(self):
         name = "DAILY:hermes:research:2026-04-05"
+        display_name = "#research daily log 2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
+            # First search misses, second search (under the write lock) finds
+            # the post — simulates a race against another process creating it.
             client = _FakeClient(
                 search_results=[
                     [],
-                    [],
-                    [{"id": "existing-post", "name": name}],
+                    [{"id": "existing-post", "name": display_name}],
                 ]
             )
             store = self._make_store(client, tmpdir)
@@ -203,68 +184,113 @@ class TestOuroDocStore(unittest.TestCase):
 
     def test_singleton_ambiguous_recovery_refuses_create(self):
         name = "DAILY:hermes:research:2026-04-05"
+        display_name = "#research daily log 2026-04-05"
         duplicates = [
             {
                 "id": "older-post",
-                "name": name,
+                "name": display_name,
                 "last_updated": "2026-04-05T10:00:00+00:00",
             },
             {
                 "id": "newer-post",
-                "name": name,
+                "name": display_name,
                 "last_updated": "2026-04-05T12:00:00+00:00",
             },
         ]
 
         with TemporaryDirectory() as tmpdir:
-            client = _FakeClient(search_results=[duplicates])
+            client = _FakeClient(search_results=[[], duplicates])
             store = self._make_store(client, tmpdir)
 
             self.assertFalse(store.write(name, "# Daily Log 2026-04-05"))
             self.assertEqual(client.posts.created, [])
             self.assertEqual(client.posts.updated, [])
 
-    def test_write_legacy_team_name_renames_to_canonical(self):
-        legacy_name = "DAILY:hermes:2026-04-05"
-        canonical_name = "DAILY:hermes:research:2026-04-05"
+    def test_create_daily_log_uses_natural_remote_name(self):
+        name = "DAILY:hermes:research:2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
-            client = _FakeClient(
-                search_results=[
-                    [],
-                    [{"id": "existing-post", "name": legacy_name}],
-                ]
+            client = _FakeClient(search_results=[[], []])
+            store = self._make_store(client, tmpdir)
+
+            ok = store.write(name, "# Daily Log 2026-04-05")
+
+            self.assertTrue(ok)
+            self.assertEqual(
+                client.posts.created[0]["name"],
+                "#research daily log 2026-04-05",
+            )
+            self.assertEqual(store._uuid_cache[name], "created-post")
+
+    def test_daily_doc_display_name_uses_team_hashtag(self):
+        self.assertEqual(
+            daily_doc_display_name("DAILY:hermes:permanent-magents:2026-04-05"),
+            "#permanent-magents daily log 2026-04-05",
+        )
+
+    def test_append_list_item_uses_cached_id_without_search(self):
+        name = "DAILY:hermes:research:2026-04-05"
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(_registry_payload({name: "daily-post"}))
+            client = _FakeClient(search_results=[[{"id": "wrong", "name": name}]])
+            client.posts.contents["daily-post"] = (
+                "# Daily Log 2026-04-05\n\n- 10:00 - first"
             )
             store = self._make_store(client, tmpdir)
 
-            ok = store.write(legacy_name, "# Daily Log 2026-04-05\n\n- 10:00 - existing")
+            ok = store.append_list_item(
+                name,
+                "- 10:05 - second",
+                initial_md="# Daily Log 2026-04-05\n\n- 10:05 - second",
+            )
 
             self.assertTrue(ok)
-            self.assertEqual(client.posts.created, [])
-            self.assertEqual(len(client.posts.updated), 2)
-            self.assertEqual(client.posts.updated[0]["name"], canonical_name)
-            self.assertEqual(client.posts.updated[1]["id"], "existing-post")
-            self.assertEqual(store._uuid_cache[canonical_name], "existing-post")
+            self.assertEqual(client.assets.search_calls, [])
+            self.assertEqual(
+                client.posts.contents["daily-post"],
+                "# Daily Log 2026-04-05\n\n- 10:00 - first\n- 10:05 - second",
+            )
 
-    def test_create_legacy_team_memory_does_not_reuse_shared_memory_alias(self):
-        legacy_name = "MEMORY:hermes"
-        canonical_name = "MEMORY:hermes:research"
+    def test_append_list_item_creates_when_id_missing(self):
+        name = "DAILY:hermes:research:2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
-            client = _FakeClient(search_results=[[]])
+            # Search results would resolve, but append_list_item is cache-first
+            # — a cache miss creates directly without searching.
+            client = _FakeClient(search_results=[[{"id": "existing", "name": name}]])
             store = self._make_store(client, tmpdir)
 
-            ok = store.write(legacy_name, "## Facts\n- Team memory")
+            ok = store.append_list_item(
+                name,
+                "- 10:05 - first",
+                initial_md="# Daily Log 2026-04-05\n\n- 10:05 - first",
+            )
 
             self.assertTrue(ok)
-            self.assertEqual(client.posts.created[0]["name"], canonical_name)
-            self.assertEqual(store._uuid_cache[canonical_name], "created-post")
-            self.assertNotIn(legacy_name, store._uuid_cache)
-            payload = json.loads((Path(tmpdir) / "state.json").read_text())
-            self.assertEqual(payload["team"]["id"], "team-1")
-            self.assertEqual(payload["team"]["name"], "Research")
-            self.assertEqual(payload["team"]["slug"], "research")
-            self.assertEqual(payload["docs"][canonical_name], "created-post")
+            self.assertEqual(client.assets.search_calls, [])
+            self.assertEqual(
+                client.posts.created[0]["name"],
+                "#research daily log 2026-04-05",
+            )
+            self.assertEqual(store._uuid_cache[name], "created-post")
+
+    def test_append_list_item_without_initial_md_falls_back_to_item(self):
+        name = "DAILY:hermes:research:2026-04-05"
+
+        with TemporaryDirectory() as tmpdir:
+            client = _FakeClient(search_results=[])
+            store = self._make_store(client, tmpdir)
+
+            ok = store.append_list_item(name, "- 10:05 - first")
+
+            self.assertTrue(ok)
+            # Without initial_md, the item itself seeds the new post.
+            self.assertEqual(
+                client.posts.created[0]["content_markdown"],
+                "- 10:05 - first",
+            )
 
     def test_non_singleton_recovery_prefers_newest_duplicate_exact_match(self):
         name = "REPORT:hermes:weekly"
@@ -286,6 +312,66 @@ class TestOuroDocStore(unittest.TestCase):
             store = self._make_store(client, tmpdir)
 
             self.assertEqual(store._resolve(name), "newer-post")
+
+    def test_persisted_registry_carries_team_metadata(self):
+        name = "REPORT:hermes:weekly"
+
+        with TemporaryDirectory() as tmpdir:
+            client = _FakeClient(search_results=[[]])
+            store = self._make_store(client, tmpdir)
+
+            self.assertTrue(store.write(name, "## Report"))
+            payload = json.loads((Path(tmpdir) / "state.json").read_text())
+            self.assertEqual(payload["team"]["id"], "team-1")
+            self.assertEqual(payload["team"]["name"], "Research")
+            self.assertEqual(payload["team"]["slug"], "research")
+            self.assertEqual(
+                payload["docs"][name],
+                {"uuid": "created-post", "owned": True},
+            )
+
+    def test_ownership_persists_across_restart(self):
+        name = "USER:user-abc"
+
+        with TemporaryDirectory() as tmpdir:
+            client = _FakeClient(search_results=[[]])
+            store = self._make_store(client, tmpdir)
+            self.assertTrue(store.write(name, "## Profile"))
+            self.assertTrue(store.is_owner(name))
+
+            # Reload from disk — ownership must survive.
+            client2 = _FakeClient(search_results=[])
+            reloaded = self._make_store(client2, tmpdir)
+            self.assertEqual(reloaded._uuid_cache[name], "created-post")
+            self.assertTrue(reloaded.is_owner(name))
+
+    def test_recovered_post_is_not_marked_as_owned(self):
+        name = "REPORT:hermes:weekly"
+
+        with TemporaryDirectory() as tmpdir:
+            client = _FakeClient(
+                search_results=[[{"id": "found-post", "name": name}]]
+            )
+            store = self._make_store(client, tmpdir)
+            self.assertEqual(store._resolve(name), "found-post")
+            self.assertFalse(store.is_owner(name))
+
+            payload = json.loads((Path(tmpdir) / "state.json").read_text())
+            self.assertEqual(payload["docs"][name], {"uuid": "found-post"})
+
+    def test_legacy_string_registry_entries_are_accepted(self):
+        name = "MEMORY:hermes:research"
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            # Pre-existing registries used a bare uuid string per entry.
+            registry_path.write_text(_registry_payload({name: "legacy-uuid"}))
+            client = _FakeClient()
+            store = self._make_store(client, tmpdir)
+
+            self.assertEqual(store._resolve(name), "legacy-uuid")
+            # Nothing in the legacy payload says we own it.
+            self.assertFalse(store.is_owner(name))
 
 
 class TestLocalDocStore(unittest.TestCase):
@@ -317,6 +403,49 @@ class TestLocalDocStore(unittest.TestCase):
                 Path(tmpdir) / "teams" / "team-1" / "HEARTBEAT.md",
             )
 
+    def test_shared_memory_routes_to_workspace_root(self):
+        with TemporaryDirectory() as tmpdir:
+            # Both team-scoped and unscoped local stores should land at the
+            # same workspace-root MEMORY.md for SHARED:memory.
+            scoped = LocalDocStore(
+                Path(tmpdir),
+                agent_name="hermes",
+                team_id="team-1",
+                team_slug="research",
+            )
+            unscoped = LocalDocStore(Path(tmpdir), agent_name="hermes")
+
+            for store in (scoped, unscoped):
+                self.assertEqual(
+                    store._name_to_path("SHARED:memory"),
+                    Path(tmpdir) / "MEMORY.md",
+                )
+
+    def test_no_team_routes_to_shared_layout(self):
+        with TemporaryDirectory() as tmpdir:
+            store = LocalDocStore(Path(tmpdir), agent_name="hermes")
+
+            self.assertEqual(
+                store._name_to_path("MEMORY:hermes"),
+                Path(tmpdir) / "shared" / "memory" / "MEMORY.md",
+            )
+            self.assertEqual(
+                store._name_to_path("DAILY:hermes:2026-04-05"),
+                Path(tmpdir) / "shared" / "daily" / "2026-04-05.md",
+            )
+            self.assertEqual(
+                store._name_to_path("USER:user-123"),
+                Path(tmpdir) / "shared" / "users" / "user-123.md",
+            )
+            self.assertEqual(
+                store._name_to_path("SOUL:hermes"),
+                Path(tmpdir) / "SOUL.md",
+            )
+            self.assertEqual(
+                store._name_to_path("NOTES:hermes"),
+                Path(tmpdir) / "NOTES.md",
+            )
+
     def test_append_list_item_merges_into_existing_list(self):
         with TemporaryDirectory() as tmpdir:
             store = LocalDocStore(Path(tmpdir), agent_name="hermes")
@@ -330,6 +459,180 @@ class TestLocalDocStore(unittest.TestCase):
                 store.read(name),
                 "# Daily Log 2026-04-05\n\n- 10:00 — first\n- 10:05 — second",
             )
+
+
+class _FakeOuroForComposite:
+    """Minimal stand-in capturing which calls reached the Ouro backend."""
+
+    def __init__(self):
+        self.reads: list[str] = []
+        self.writes: list[tuple[str, str]] = []
+        self.appends: list[tuple[str, str]] = []
+        self.searches: list[str] = []
+        self.exists_calls: list[str] = []
+        self.comments: list[tuple[str, str]] = []
+        self.read_comment_calls: list[str] = []
+        self.is_owner_calls: list[str] = []
+        self.list_item_calls: list[tuple[str, str, str | None]] = []
+
+    def memory_name(self, agent_name=None):
+        return f"MEMORY:{agent_name or 'agent'}:research"
+
+    def daily_name(self, agent_name, day):
+        return f"DAILY:{agent_name or 'agent'}:research:{day}"
+
+    def read(self, name):
+        self.reads.append(name)
+        return f"ouro:{name}"
+
+    def read_with_meta(self, name):
+        self.reads.append(name)
+        return SimpleNamespace(content=f"ouro:{name}", last_updated=None, post_id="x")
+
+    def write(self, name, content_md):
+        self.writes.append((name, content_md))
+        return True
+
+    def append(self, name, markdown):
+        self.appends.append((name, markdown))
+        return True
+
+    def append_list_item(self, name, item, *, initial_md=None):
+        self.list_item_calls.append((name, item, initial_md))
+        return True
+
+    def exists(self, name):
+        self.exists_calls.append(name)
+        return True
+
+    def comment(self, name, content_md):
+        self.comments.append((name, content_md))
+        return True
+
+    def read_comments(self, name):
+        self.read_comment_calls.append(name)
+        return [{"id": "c1"}]
+
+    def is_owner(self, name):
+        self.is_owner_calls.append(name)
+        return False
+
+    def search(self, query):
+        self.searches.append(query)
+        return [{"id": "p1", "name": query}]
+
+
+class TestCompositeDocStore(unittest.TestCase):
+    def _composite(self, tmpdir, *, with_ouro: bool):
+        local = LocalDocStore(
+            Path(tmpdir),
+            agent_name="hermes",
+            team_id="team-1",
+            team_slug="research",
+        )
+        ouro = _FakeOuroForComposite() if with_ouro else None
+        return CompositeDocStore(local=local, ouro=ouro), local, ouro
+
+    def test_identity_prefixes_route_to_local(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, local, ouro = self._composite(tmpdir, with_ouro=True)
+
+            soul_path = local._name_to_path("SOUL:hermes")
+            soul_path.parent.mkdir(parents=True, exist_ok=True)
+            soul_path.write_text("local soul")
+
+            shared_path = Path(tmpdir) / "MEMORY.md"
+            shared_path.write_text("cross-team facts")
+
+            self.assertEqual(composite.read("SOUL:hermes"), "local soul")
+            self.assertEqual(composite.read("SHARED:memory"), "cross-team facts")
+            self.assertTrue(composite.write("HEARTBEAT:hermes", "beat"))
+            self.assertTrue(composite.write("NOTES:hermes", "note"))
+            self.assertEqual(ouro.reads, [])
+            self.assertEqual(ouro.writes, [])
+
+            heartbeat_path = local._name_to_path("HEARTBEAT:hermes")
+            self.assertEqual(heartbeat_path.read_text(), "beat")
+
+    def test_non_identity_routes_to_ouro_when_available(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, _local, ouro = self._composite(tmpdir, with_ouro=True)
+
+            self.assertEqual(
+                composite.read("MEMORY:hermes:research"), "ouro:MEMORY:hermes:research"
+            )
+            self.assertTrue(composite.write("MEMORY:hermes:research", "fact"))
+            self.assertTrue(composite.append("DAILY:hermes:research:2026-04-05", "- x"))
+            self.assertTrue(composite.exists("USER:abc"))
+            self.assertEqual(composite.search("query"), [{"id": "p1", "name": "query"}])
+
+            self.assertEqual(ouro.reads, ["MEMORY:hermes:research"])
+            self.assertEqual(ouro.writes, [("MEMORY:hermes:research", "fact")])
+            self.assertEqual(
+                ouro.appends, [("DAILY:hermes:research:2026-04-05", "- x")]
+            )
+            self.assertEqual(ouro.searches, ["query"])
+
+    def test_no_ouro_falls_back_to_local_for_everything(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, local, _ouro = self._composite(tmpdir, with_ouro=False)
+
+            self.assertTrue(composite.write("MEMORY:hermes:research", "## Facts"))
+            mem_path = local._name_to_path("MEMORY:hermes:research")
+            self.assertTrue(mem_path.exists())
+            self.assertEqual(composite.search("anything"), [])
+            self.assertFalse(composite.comment("MEMORY:hermes:research", "hi"))
+
+    def test_memory_and_daily_names_come_from_ouro_when_present(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, _local, ouro = self._composite(tmpdir, with_ouro=True)
+
+            self.assertEqual(
+                composite.memory_name("hermes"),
+                ouro.memory_name("hermes"),
+            )
+            self.assertEqual(
+                composite.daily_name("hermes", "2026-04-05"),
+                ouro.daily_name("hermes", "2026-04-05"),
+            )
+
+    def test_memory_and_daily_names_fall_back_to_local_when_no_ouro(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, local, _ouro = self._composite(tmpdir, with_ouro=False)
+
+            self.assertEqual(
+                composite.memory_name("hermes"),
+                local.memory_name("hermes"),
+            )
+            self.assertEqual(
+                composite.daily_name("hermes", "2026-04-05"),
+                local.daily_name("hermes", "2026-04-05"),
+            )
+
+    def test_append_list_item_forwards_initial_md_to_ouro(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, _local, ouro = self._composite(tmpdir, with_ouro=True)
+
+            composite.append_list_item(
+                "DAILY:hermes:research:2026-04-05",
+                "- entry",
+                initial_md="# header\n\n- entry",
+            )
+
+            self.assertEqual(
+                ouro.list_item_calls,
+                [("DAILY:hermes:research:2026-04-05", "- entry", "# header\n\n- entry")],
+            )
+
+    def test_ouro_property_exposes_inner_store(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, _local, ouro = self._composite(tmpdir, with_ouro=True)
+            self.assertIs(composite.ouro, ouro)
+
+            composite_local_only, _local2, _none = self._composite(
+                tmpdir, with_ouro=False
+            )
+            self.assertIsNone(composite_local_only.ouro)
 
 
 if __name__ == "__main__":

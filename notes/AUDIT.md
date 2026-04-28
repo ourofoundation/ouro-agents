@@ -60,6 +60,41 @@ Was entirely stale (referenced local files). Now documents the Ouro post naming 
 - **Pre-MCP fallback pattern**: Kept. `agent.py __init__` reads soul/notes from local files, then `_load_identity_from_ouro()` overwrites after MCP connects. The brief stale-data window is acceptable since the agent doesn't process requests until MCP is connected.
 - **`notes.py` / `load_soul()`**: Inlined and deleted rather than kept as separate modules.
 
+## Doc store cleanup (2026-04)
+
+After the migration above stabilized, the local-vs-Ouro split in `ouro_agents/memory/ouro_docs.py` was simplified:
+
+- **Extracted routing into `CompositeDocStore`.** Identity prefixes (`SOUL`/`HEARTBEAT`/`NOTES`) always go to `LocalDocStore`; everything else goes to `OuroDocStore` when configured, falling back to local. Replaces the `_IDENTITY_PREFIXES` early-returns scattered across `OuroDocStore.read/write/append/exists`.
+- **`OuroDocStore` is now a pure Ouro client.** Dropped the embedded `self._local: LocalDocStore` and the eager shadow-write that mirrored every Ouro write to disk. `workspace_sync` is now the only bridge between local files and Ouro posts (still scoped to team `MEMORY.md` by design).
+- **Purged one-time migration code:**
+  - Legacy registry filename (`doc_registry.json`) and the flat-dict registry payload — only `state.json` with `{team, docs}` is read now.
+  - `_canonicalize_name`/`_legacy_aliases`/`_candidate_names`/`_ensure_canonical_remote_name` — the `MEMORY:agent` → `MEMORY:agent:team-slug` and DAILY remote-rename paths are gone.
+  - `_remote_name_candidates` collapsed to a single canonical title via `_remote_display_name`.
+  - `LocalDocStore._name_to_path` legacy fallbacks (`memory/daily/`, `memory/users/`, root `MEMORY.md`) — one canonical layout: identity at workspace root, team docs under `teams/{team_id}/`, shared docs under `shared/`.
+- **Inlined `_read_by_uuid`/`_write_by_uuid`** into `append_daily_log_entry` and a shared `_content_to_markdown` helper.
+- **`is_owner` kept.** It has live callers in `consolidation._consolidate_user_comments` and `user_model.append_to_user_model` (used to choose between writing directly and contributing via comment). Process-local semantics are intentional — on restart the agent conservatively comments and consolidation merges.
+
+`ouro_agents/agent.py` now builds `CompositeDocStore` everywhere (`self.doc_store` for the no-team default; per-team stores via the new `_build_team_doc_store` helper). `_sync_workspace_docs` reaches into each composite's `.ouro` to feed `sync_workspace`. Test coverage updated: `TestCompositeDocStore` covers the routing rule; migration-only tests were removed.
+
+### Follow-up tightening
+
+After the first pass settled, four more cleanups landed together:
+
+- **`_resolve_or_create` helper.** The duplicated "resolve, then double-checked-lock and create" preambles in `OuroDocStore.write` / `append` collapsed from ~25 lines each to ~9 lines, with the locking/ambiguity logic written once.
+- **Unified list-item append.** `append_list_item` now takes an optional `initial_md=` and is cache-first on Ouro (one retrieve + one update on a registry hit, direct create on a miss). The separate `append_daily_log_entry` method is gone, and `reflection.write_daily_log` lost its three-branch `getattr` dance.
+- **`DocStore` Protocol moved into `ouro_docs.py`.** `__init__.py` re-exports it. The `try/except ImportError` shim at the bottom of `ouro_docs.py` is gone — one source of truth.
+- **Frontmatter helpers extracted into `memory/frontmatter.py`.** `LocalDocStore`, `agent.py`, and `workspace_sync.py` all import from there. The lazy import inside `LocalDocStore` (which existed only to break a cycle) is gone.
+
+### Doc-store correctness pass (2026-04, third pass)
+
+- **Ownership persists across restarts.** `OuroDocStore._owner_cache` was process-local, so on restart the agent's own posts (USER models, etc.) were treated as foreign — `user_model.append_to_user_model` and `consolidation._consolidate_user_comments` would fall into their comment-only branches and wait for consolidation to merge the agent's contributions back into its own posts.
+
+  Fix: each `state.json` doc entry now carries optional ownership: `{"uuid": "...", "owned": true}`. Bare uuid strings still load (legacy registries continue to work). `_create` flags `owned=true`, recovery via `_resolve_name` does not. Reloading the store rebuilds `_owner_cache` from the registry.
+
+- **`SHARED:memory` lives in the doc store now.** `agent._load_shared_memory` previously bypassed the abstraction with a hand-rolled `Path.read_text` + `strip_frontmatter` against workspace-root `MEMORY.md`. It's now `self.doc_store.read("SHARED:memory")`. `SHARED` joined `IDENTITY_PREFIXES` so the composite always pins it to the local store regardless of team scope, and `LocalDocStore._name_to_path` routes `SHARED:memory` to root `MEMORY.md` (with a `SHARED_{key}.md` fallback for any future siblings). Last "raw filesystem" call from `agent.py` is gone.
+
+- **Naming logic moved to `memory/naming.py`.** `slugify_team_key`, `team_doc_key`, `memory_doc_name`, `daily_doc_name`, `daily_doc_display_name`, `remote_display_name`, `is_singleton_name`, `is_identity_name`, plus the `IDENTITY_PREFIXES`/`SINGLETON_PREFIXES` constants. The doc-store implementations now contain only I/O. Module dependency graph is clean: `naming` ← `ouro_docs` ← `workspace_sync` ← `agent`, with `frontmatter` as a leaf shared by `ouro_docs` and `workspace_sync`.
+
 ## How to verify
 
 ```bash

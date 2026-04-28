@@ -12,6 +12,7 @@ from ouro_agents.modes.planning import (
     PlanStore,
     PlanItem,
     build_feedback_review_prompt,
+    build_planning_prompt,
     next_action,
     run_planning_heartbeat,
     run_review_heartbeat,
@@ -84,6 +85,19 @@ def test_feedback_review_prompt_uses_structured_item_numbering_and_sort_order():
     assert "update_quest_item(quest_id, item_id, ...): change description, notes, status," in prompt
     assert "or sort_order" in prompt
     assert "normalize sort_order to match the frontend's 1-indexed numbering" in prompt
+
+
+def test_build_planning_prompt_uses_natural_goal_quest_name():
+    prompt = build_planning_prompt(
+        cadence="1d",
+        agent_name="hermes",
+        goal="Explore XRD route status.",
+    )
+
+    assert "Name it with a concise, natural title that is just the goal" in prompt
+    assert "Explore XRD route status." in prompt
+    assert "planning quest" not in prompt
+    assert "PLAN:hermes" not in prompt
 
 
 def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():

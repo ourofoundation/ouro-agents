@@ -41,6 +41,21 @@ def _plan_doc_store(agent: "OuroAgent", team_id: str | None):
     return agent.doc_store
 
 
+def _plan_quest_name_instruction(goal: str = "") -> str:
+    """Instruction for natural plan quest titles."""
+    if goal:
+        return (
+            "Name it with a concise, natural title that is just the goal or focus "
+            "area. Do not include generic planning labels, dates, agent names, "
+            "team names, or internal keys."
+        )
+    return (
+        "Name it with a concise, natural title for the current focus in your own "
+        "words. Do not include generic planning labels, dates, agent names, team "
+        "names, or internal keys."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -518,7 +533,7 @@ Do NOT use any tools besides create_quest and final_answer. Do NOT attempt to
 execute any plan items or do actual work — only write and publish the plan.
 
 Step 1. Call create_quest to publish your plan{quest_instructions}.
-   Name it exactly "{quest_name}".
+   {quest_name_instruction}
    - Pass status="draft" so the plan quest is not live until approved.
    - Pass description_markdown with **prose context**: background, reasoning,
      focus areas. Use headers and paragraphs — no checklists in the description.
@@ -703,26 +718,12 @@ def build_planning_prompt(
     if extra_context:
         context_section = f"## Additional Context\n{extra_context}"
 
-    now = datetime.now().astimezone()
-    date_label = now.strftime("%Y-%m-%d")
-    if goal:
-        goal_slug = goal[:40].strip().rstrip(".")
-        quest_name = (
-            f"PLAN:{agent_name}:goal:{goal_slug}"
-            if agent_name
-            else f"PLAN:goal:{goal_slug}"
-        )
-    else:
-        quest_name = (
-            f"PLAN:{agent_name}:{date_label}" if agent_name else f"PLAN:{date_label}"
-        )
-
     return PLANNING_PROMPT_TEMPLATE.format(
         cadence_description=_cadence_description(cadence),
         quest_instructions=quest_instructions,
         previous_plan_section=previous_plan_section,
         context_section=context_section,
-        quest_name=quest_name,
+        quest_name_instruction=_plan_quest_name_instruction(goal),
         goal_section=goal_section,
     )
 
