@@ -153,6 +153,49 @@ class TestConfigModeOverrides(unittest.TestCase):
 
         self.assertEqual(config.controller.username, "mmoderwell")
 
+    def test_event_pooling_defaults_when_omitted(self):
+        config = self._load_config(_base_config())
+
+        self.assertTrue(config.event_pooling.enabled)
+        self.assertEqual(
+            config.event_pooling.events["new-message"].settle_seconds,
+            2.0,
+        )
+        self.assertEqual(config.event_pooling.events["comment"].settle_seconds, 20.0)
+        self.assertEqual(config.event_pooling.events["mention"].max_wait_seconds, 90.0)
+        self.assertNotIn("unknown-event", config.event_pooling.events)
+
+    def test_loads_event_pooling_per_event_config(self):
+        data = _base_config()
+        data["event_pooling"] = {
+            "enabled": True,
+            "events": {
+                "new-message": {
+                    "enabled": True,
+                    "settle_seconds": 1,
+                    "jitter_seconds": 2,
+                    "max_wait_seconds": 3,
+                },
+                "comment": {
+                    "enabled": False,
+                    "settle_seconds": 10,
+                    "jitter_seconds": 20,
+                    "max_wait_seconds": 30,
+                },
+            },
+        }
+
+        config = self._load_config(data)
+
+        self.assertEqual(
+            config.event_pooling.events["new-message"].settle_seconds,
+            1.0,
+        )
+        self.assertEqual(config.event_pooling.events["new-message"].jitter_seconds, 2.0)
+        self.assertEqual(config.event_pooling.events["new-message"].max_wait_seconds, 3.0)
+        self.assertFalse(config.event_pooling.events["comment"].enabled)
+        self.assertEqual(config.event_pooling.events["mention"].settle_seconds, 20.0)
+
     def test_loads_env_file_declared_in_config(self):
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)

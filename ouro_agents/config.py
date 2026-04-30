@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings
 
 # Re-export RunMode from its canonical home in modes.profiles.
@@ -107,6 +107,64 @@ class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     webhook_path: str = "/events"
+
+
+class EventPoolTimingConfig(BaseModel):
+    enabled: bool = True
+    settle_seconds: float = Field(default=10.0, ge=0)
+    jitter_seconds: float = Field(default=0.0, ge=0)
+    max_wait_seconds: float = Field(default=45.0, ge=0)
+
+
+def _default_event_pool_events() -> Dict[str, EventPoolTimingConfig]:
+    return {
+        "new-message": EventPoolTimingConfig(
+            settle_seconds=2.0,
+            jitter_seconds=3.0,
+            max_wait_seconds=8.0,
+        ),
+        "comment": EventPoolTimingConfig(
+            settle_seconds=20.0,
+            jitter_seconds=20.0,
+            max_wait_seconds=90.0,
+        ),
+        "mention": EventPoolTimingConfig(
+            settle_seconds=20.0,
+            jitter_seconds=20.0,
+            max_wait_seconds=90.0,
+        ),
+    }
+
+
+class EventPoolingConfig(BaseModel):
+    enabled: bool = True
+    events: Dict[str, EventPoolTimingConfig] = Field(
+        default_factory=_default_event_pool_events
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_default_event_timings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        configured_events = data.get("events")
+        if not isinstance(configured_events, dict):
+            return data
+
+        merged = {
+            name: timing.model_dump()
+            for name, timing in _default_event_pool_events().items()
+        }
+        for event_type, timing in configured_events.items():
+            base = merged.get(event_type, {})
+            if isinstance(timing, EventPoolTimingConfig):
+                merged[event_type] = {**base, **timing.model_dump()}
+            elif isinstance(timing, dict):
+                merged[event_type] = {**base, **timing}
+            else:
+                merged[event_type] = timing
+
+        return {**data, "events": merged}
 
 
 class PlanningConfig(BaseModel):
@@ -314,6 +372,7 @@ class OuroAgentsConfig(BaseSettings):
     mcp_servers: List[MCPServerConfig]
     memory: MemoryConfig
     server: ServerConfig = Field(default_factory=ServerConfig)
+    event_pooling: EventPoolingConfig = Field(default_factory=EventPoolingConfig)
     subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     controller: ControllerConfig = Field(default_factory=ControllerConfig)

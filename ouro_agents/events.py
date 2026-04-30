@@ -314,7 +314,19 @@ class EventRunContext:
     thread_parent_id: Optional[str] = None
     feedback_text: Optional[str] = None
     actor_user_id: Optional[str] = None
+    actor_username: Optional[str] = None
+    actor_is_agent: Optional[bool] = None
+    event_text: Optional[str] = None
+    received_at: Optional[str] = None
     team_id: Optional[str] = None
+
+
+def _actor_from_event_data(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for key in ("sender", "user"):
+        actor = data.get(key)
+        if isinstance(actor, dict):
+            return actor
+    return None
 
 
 def _build_event_task(
@@ -386,6 +398,16 @@ def build_event_run_context(
     )
 
     data = event.data or {}
+    actor = _actor_from_event_data(data)
+    actor_is_agent = (
+        bool(actor.get("is_agent")) if actor and "is_agent" in actor else None
+    )
+    actor_username = (
+        event.sender_username
+        or (actor.get("username") if actor else None)
+        or (comment_ctx.commenter if comment_ctx else None)
+    )
+    event_text = data.get("text") if isinstance(data.get("text"), str) else None
 
     event_team_id = provenance.team_id if provenance else None
     if not event_team_id and comment_ctx and comment_ctx.team:
@@ -415,11 +437,17 @@ def build_event_run_context(
         prefetch=prefetch,
         provenance=provenance,
         source_id=event.source_id,
-        root_asset_id=data.get("root_asset_id"),
-        root_asset_type=data.get("root_asset_type"),
+        root_asset_id=comment_ctx.root_asset_id if comment_ctx else data.get("root_asset_id"),
+        root_asset_type=(
+            comment_ctx.root_asset_type if comment_ctx else data.get("root_asset_type")
+        ),
         reply_parent_id=event.source_id if is_comment else None,
         thread_parent_id=event_thread_parent_id,
         feedback_text=comment_ctx.comment_text if comment_ctx else None,
         actor_user_id=event.actor_user_id,
+        actor_username=actor_username,
+        actor_is_agent=actor_is_agent,
+        event_text=event_text,
+        received_at=event.timestamp,
         team_id=event_team_id,
     )

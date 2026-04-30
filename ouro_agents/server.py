@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from .agent import OuroAgent
 from .config import OuroAgentsConfig, RunMode
 from .display import OuroDisplay, get_display, set_display
+from .event_pool import EventPool
 from .events import EventRunContext, build_event_run_context
 from .logging_config import uvicorn_log_config
 from .observer import AgentObserver
@@ -34,6 +35,7 @@ logger = logging.getLogger(__name__)
 # in SDK_IMPROVEMENTS.md for the planned move to request-scoped state).
 agent_instance: Optional[OuroAgent] = None
 reply_publisher: Optional[OuroReplyPublisher] = None
+event_pool: Optional[EventPool] = None
 last_heartbeat: Optional[datetime] = None
 start_time: datetime = datetime.now(timezone.utc)
 session_threads: Dict[str, str] = {}
@@ -61,7 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Replaces the deprecated ``@app.on_event("startup" | "shutdown")`` decorators.
     """
-    global agent_instance, reply_publisher
+    global agent_instance, reply_publisher, event_pool
     config = OuroAgentsConfig.load_from_file(
         os.environ.get("CONFIG_FILE", "config.json")
     )
@@ -70,6 +72,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     agent_instance = OuroAgent(config)
     agent_instance.connect_mcp()
+    event_pool = EventPool(config.event_pooling, _run_event_task)
     ouro_client = agent_instance._get_ouro_client()
     if ouro_client:
         reply_publisher = OuroReplyPublisher(client=ouro_client)
@@ -94,6 +97,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if event_pool:
+            await event_pool.stop()
+            event_pool = None
         if agent_instance:
             agent_instance.scheduler.stop()
             agent_instance.close()
@@ -299,6 +305,13 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         logger.exception("Failed to process webhook event: %s", event_run.event_type)
 
 
+def _is_self_event(event_run: EventRunContext) -> bool:
+    if not agent_instance:
+        return False
+    own_id = agent_instance.own_user_id
+    return bool(own_id and event_run.actor_user_id == own_id)
+
+
 @app.get("/health")
 async def health_check():
     scheduled_tasks = agent_instance.scheduler.list_tasks() if agent_instance else []
@@ -381,9 +394,29 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
             provenance.team_id,
         )
 
+    if _is_self_event(event_run):
+        logger.info(
+            "Skipping self-triggered %s event before pooling (actor=%s)",
+            event_run.event_type,
+            event_run.actor_user_id,
+        )
+        return {
+            "status": "accepted",
+            "event_type": event_run.event_type,
+            "skipped": True,
+        }
+
+    if event_pool and event_pool.is_poolable(event_run):
+        await event_pool.submit(event_run)
+        return {
+            "status": "accepted",
+            "event_type": event_run.event_type,
+            "pooled": True,
+        }
+
     background_tasks.add_task(_run_event_task, event_run)
 
-    return {"status": "accepted", "event_type": event_run.event_type}
+    return {"status": "accepted", "event_type": event_run.event_type, "pooled": False}
 
 
 def start_server(config_path: str = "config.json"):

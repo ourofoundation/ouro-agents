@@ -142,6 +142,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         event_run = build_event_run_context(
             {
                 "event": "new-message",
+                "timestamp": "2026-04-30T22:00:00Z",
                 "user_id": "agent-recipient",
                 "data": {
                     "user_id": "human-actor",
@@ -159,6 +160,10 @@ class TestBuildEventRunContext(unittest.TestCase):
 
         self.assertEqual(event_run.user_id, "human-actor")
         self.assertEqual(event_run.actor_user_id, "human-actor")
+        self.assertEqual(event_run.actor_username, "alice")
+        self.assertFalse(event_run.actor_is_agent)
+        self.assertEqual(event_run.event_text, "Hello")
+        self.assertEqual(event_run.received_at, "2026-04-30T22:00:00Z")
         self.assertIn("New conversation message from alice", event_run.task)
 
     def test_new_message_falls_back_to_nested_user(self):
@@ -237,6 +242,9 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.thread_parent_id, "asset-123")
         self.assertEqual(event_run.feedback_text, "What do you think?")
         self.assertEqual(event_run.actor_user_id, "actor-1")
+        self.assertEqual(event_run.actor_username, "alice")
+        self.assertFalse(event_run.actor_is_agent)
+        self.assertEqual(event_run.event_text, "What do you think?")
         self.assertEqual(event_run.root_asset_id, "asset-123")
         self.assertEqual(event_run.root_asset_type, "post")
 

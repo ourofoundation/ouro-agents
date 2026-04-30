@@ -1,0 +1,183 @@
+import asyncio
+import unittest
+
+from ouro_agents.config import EventPoolingConfig, EventPoolTimingConfig, RunMode
+from ouro_agents.event_pool import EventPool, build_pooled_event_run
+from ouro_agents.events import EventRunContext
+
+
+def _timing(settle: float = 0.01) -> EventPoolTimingConfig:
+    return EventPoolTimingConfig(
+        settle_seconds=settle,
+        jitter_seconds=0,
+        max_wait_seconds=0.1,
+    )
+
+
+def _config(**events: EventPoolTimingConfig) -> EventPoolingConfig:
+    return EventPoolingConfig(enabled=True, events=dict(events))
+
+
+def _event(
+    event_type: str = "new-message",
+    *,
+    conversation_id: str | None = "conv-1",
+    root_asset_id: str | None = None,
+    thread_parent_id: str | None = None,
+    source_id: str | None = None,
+    text: str = "hello",
+    username: str = "alice",
+    is_agent: bool = False,
+) -> EventRunContext:
+    return EventRunContext(
+        event_type=event_type,
+        task=f"Task for {text}",
+        mode=RunMode.CHAT_REPLY if event_type == "new-message" else RunMode.AUTONOMOUS,
+        conversation_id=conversation_id,
+        user_id=f"user-{username}",
+        source_id=source_id,
+        root_asset_id=root_asset_id,
+        root_asset_type="post" if root_asset_id else None,
+        reply_parent_id=source_id if event_type in {"comment", "mention"} else None,
+        thread_parent_id=thread_parent_id,
+        feedback_text=text if event_type in {"comment", "mention"} else None,
+        actor_user_id=f"user-{username}",
+        actor_username=username,
+        actor_is_agent=is_agent,
+        event_text=text,
+        received_at="2026-04-30T22:00:00Z",
+    )
+
+
+class TestEventPool(unittest.TestCase):
+    def test_pool_key_and_non_poolable_events(self):
+        async def dispatch(event_run: EventRunContext) -> None:
+            dispatched.append(event_run)
+
+        dispatched: list[EventRunContext] = []
+        pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
+
+        self.assertEqual(
+            pool.pool_key(_event("new-message", conversation_id="conv-1")),
+            "conversation:conv-1",
+        )
+        self.assertEqual(
+            pool.pool_key(
+                _event(
+                    "comment",
+                    conversation_id=None,
+                    root_asset_id="post-1",
+                    thread_parent_id="thread-1",
+                )
+            ),
+            "thread:post-1:thread-1",
+        )
+        self.assertFalse(pool.is_poolable(_event("unknown-event")))
+
+    def test_multiple_events_for_one_key_dispatch_once(self):
+        async def exercise() -> list[EventRunContext]:
+            dispatched: list[EventRunContext] = []
+
+            async def dispatch(event_run: EventRunContext) -> None:
+                dispatched.append(event_run)
+
+            pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
+            await pool.submit(_event(text="first"))
+            await asyncio.sleep(0.005)
+            await pool.submit(_event(text="second"))
+            await asyncio.sleep(0.04)
+            await pool.stop()
+            return dispatched
+
+        dispatched = asyncio.run(exercise())
+
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(dispatched[0].event_text, "second")
+        self.assertIn("Pooled Event Batch", dispatched[0].task)
+        self.assertIn("first", dispatched[0].task)
+        self.assertIn("second", dispatched[0].task)
+        self.assertIn("Reply at most once", dispatched[0].task)
+
+    def test_different_keys_dispatch_separately(self):
+        async def exercise() -> list[EventRunContext]:
+            dispatched: list[EventRunContext] = []
+
+            async def dispatch(event_run: EventRunContext) -> None:
+                dispatched.append(event_run)
+
+            pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
+            await pool.submit(_event(conversation_id="conv-1", text="one"))
+            await pool.submit(_event(conversation_id="conv-2", text="two"))
+            await asyncio.sleep(0.03)
+            await pool.stop()
+            return dispatched
+
+        dispatched = asyncio.run(exercise())
+
+        self.assertEqual(len(dispatched), 2)
+        self.assertEqual({event.event_text for event in dispatched}, {"one", "two"})
+
+    def test_event_type_specific_windows_control_dispatch_order(self):
+        async def exercise() -> list[str]:
+            dispatched: list[str] = []
+
+            async def dispatch(event_run: EventRunContext) -> None:
+                dispatched.append(event_run.event_type)
+
+            pool = EventPool(
+                _config(
+                    **{
+                        "new-message": _timing(0.005),
+                        "comment": _timing(0.03),
+                    }
+                ),
+                dispatch,
+            )
+            await pool.submit(_event("new-message", text="chat"))
+            await pool.submit(
+                _event(
+                    "comment",
+                    conversation_id=None,
+                    root_asset_id="post-1",
+                    thread_parent_id="post-1",
+                    source_id="comment-1",
+                    text="comment",
+                )
+            )
+            await asyncio.sleep(0.06)
+            await pool.stop()
+            return dispatched
+
+        dispatched = asyncio.run(exercise())
+
+        self.assertEqual(dispatched, ["new-message", "comment"])
+
+    def test_pooled_context_updates_feedback_text_for_plan_feedback(self):
+        pooled = build_pooled_event_run(
+            [
+                _event(
+                    "comment",
+                    conversation_id=None,
+                    root_asset_id="post-1",
+                    source_id="comment-1",
+                    text="first feedback",
+                ),
+                _event(
+                    "comment",
+                    conversation_id=None,
+                    root_asset_id="post-1",
+                    source_id="comment-2",
+                    text="second feedback",
+                    username="bot",
+                    is_agent=True,
+                ),
+            ]
+        )
+
+        self.assertIn("second feedback", pooled.feedback_text)
+        self.assertIn("first feedback", pooled.feedback_text)
+        self.assertIn("@bot (agent)", pooled.feedback_text)
+
+
+if __name__ == "__main__":
+    unittest.main()
