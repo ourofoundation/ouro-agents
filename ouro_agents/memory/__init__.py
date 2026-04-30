@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol, List, Optional
 
 from pydantic import BaseModel, Field
 
+from .model import MemoryItem
 from .ouro_docs import DocStore
 
 if TYPE_CHECKING:
@@ -14,6 +16,7 @@ __all__ = [
     "DocStore",
     "MemoryResult",
     "MemoryBackend",
+    "MemoryItem",
     "CATEGORY_LABELS",
     "format_memories",
     "expand_query",
@@ -31,6 +34,15 @@ class MemoryResult(BaseModel):
     source: str = ""
     last_accessed: str = ""
     team_id: str = ""
+    subject_type: str = "general"
+    subject_id: str = ""
+    team_ids: list[str] = Field(default_factory=list)
+    asset_ids: list[str] = Field(default_factory=list)
+    user_id: str = ""
+    mode: str = ""
+    confidence: float = 0.7
+    content_hash: str = ""
+    schema_version: int = 1
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -40,7 +52,13 @@ class MemoryBackend(Protocol):
     def search(self, query: str, agent_id: str,
                user_id: Optional[str] = None, limit: int = 10,
                team_id: Optional[str] = None,
-               scope: str = "team") -> List[MemoryResult]:
+               scope: str = "team",
+               category: Optional[str] = None,
+               subject_type: Optional[str] = None,
+               subject_id: Optional[str] = None,
+               asset_id: Optional[str] = None,
+               mode: Optional[str] = None,
+               since: Optional[datetime] = None) -> List[MemoryResult]:
         ...
 
     def add(self, content: str | list[dict], agent_id: str,
@@ -51,7 +69,13 @@ class MemoryBackend(Protocol):
 
     def get_all(self, agent_id: str, user_id: Optional[str] = None,
                 limit: int = 100,
-                team_id: Optional[str] = None) -> List[MemoryResult]:
+                team_id: Optional[str] = None,
+                subject_type: Optional[str] = None,
+                subject_id: Optional[str] = None,
+                asset_id: Optional[str] = None,
+                category: Optional[str] = None,
+                mode: Optional[str] = None,
+                since: Optional[datetime] = None) -> List[MemoryResult]:
         ...
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
@@ -69,6 +93,7 @@ CATEGORY_LABELS = {
     "preference": "Preferences",
     "learning": "Learnings",
     "decision": "Decisions",
+    "direction": "Direction Guidance",
     "observation": "Observations",
     "general": "Context",
 }
@@ -87,7 +112,15 @@ def format_memories(
         grouped.setdefault(m.category, []).append(m)
 
     lines: list[str] = []
-    for cat in ["fact", "decision", "learning", "preference", "observation", "general"]:
+    for cat in [
+        "direction",
+        "fact",
+        "decision",
+        "learning",
+        "preference",
+        "observation",
+        "general",
+    ]:
         items = grouped.get(cat, [])
         if not items:
             continue

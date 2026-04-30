@@ -215,7 +215,7 @@ def run_subagents_parallel(
             try:
                 results[idx] = future.result()
             except Exception as e:
-                logger.error("Parallel subagent %d failed: %s", idx, e)
+                logger.error("Parallel subagent %d failed: %s", idx, e, exc_info=True)
                 results[idx] = SubAgentResult(success=False, error=str(e))
 
     return [r or SubAgentResult(success=False, error="no result") for r in results]
@@ -251,6 +251,38 @@ def _build_chain_delegate(
 
     names_str = ", ".join(allowed.keys())
 
+    def _build_child_context(child_profile: SubAgentProfile) -> SubAgentContext:
+        """Inherit the parent's prompt/runtime context for a nested delegate."""
+        return SubAgentContext(
+            workspace=ctx.workspace,
+            backend=ctx.backend,
+            agent_id=ctx.agent_id,
+            memory_config=ctx.memory_config,
+            model=ctx.model,
+            compactor_model=ctx.compactor_model,
+            user_id=ctx.user_id,
+            conversation_state=ctx.conversation_state,
+            conversation_id=ctx.conversation_id,
+            run_id=ctx.run_id,
+            soul=ctx.soul,
+            notes=ctx.notes,
+            platform_context=ctx.platform_context,
+            working_memory=ctx.working_memory,
+            user_model=ctx.user_model,
+            plans_index=ctx.plans_index,
+            doc_store=ctx.doc_store,
+            team_id=ctx.team_id,
+            deferred_tools=ctx.deferred_tools,
+            deferred_index=ctx.deferred_index,
+            asset_refs=list(ctx.asset_refs),
+            memory_scopes=child_profile.memory_scopes or ctx.memory_scopes,
+            ouro_client=ctx.ouro_client,
+            python_packages=list(ctx.python_packages),
+            python_package_versions=dict(ctx.python_package_versions),
+            record_subagent_usage=ctx.record_subagent_usage,
+            delegatable_profiles=ctx.delegatable_profiles,
+        )
+
     def _run_one(spec: dict) -> dict:
         sa = spec.get("subagent", "")
         task_str = spec.get("task", "")
@@ -265,25 +297,7 @@ def _build_chain_delegate(
                 "error": f"Unknown subagent '{sa}'. Available: {names_str}",
             }
 
-        child_ctx = SubAgentContext(
-            workspace=ctx.workspace,
-            backend=ctx.backend,
-            agent_id=ctx.agent_id,
-            memory_config=ctx.memory_config,
-            model=ctx.model,
-            compactor_model=ctx.compactor_model,
-            user_id=ctx.user_id,
-            conversation_state=ctx.conversation_state,
-            conversation_id=ctx.conversation_id,
-            run_id=ctx.run_id,
-            deferred_tools=ctx.deferred_tools,
-            deferred_index=ctx.deferred_index,
-            asset_refs=ctx.asset_refs,
-            memory_scopes=child_profile.memory_scopes or ctx.memory_scopes,
-            ouro_client=ctx.ouro_client,
-            record_subagent_usage=ctx.record_subagent_usage,
-            delegatable_profiles=ctx.delegatable_profiles,
-        )
+        child_ctx = _build_child_context(child_profile)
         result = run_subagent(child_profile, task_str, child_ctx)
         payload = _format_delegate_payload(
             result,
@@ -296,7 +310,12 @@ def _build_chain_delegate(
 
     @tool
     def delegate(tasks: list) -> str:
-        """Delegate one or more sub-tasks to specialized subagents. Multiple tasks run in parallel automatically.
+        """Delegate one or more sub-tasks to specialized subagents.
+
+        Nested delegates run task specs in order. The parent agent's top-level
+        delegate tool can parallelize safely by creating one model per child;
+        nested delegates share this subagent's model, so they avoid concurrent
+        calls on the same model instance.
 
         Args:
             tasks: List of task specs. Each is a dict with keys:
@@ -307,29 +326,27 @@ def _build_chain_delegate(
         Example single:  [{"subagent": "research", "task": "Find info on X"}]
         Example multi:   [{"subagent": "research", "task": "Find info on X"}, {"subagent": "writer", "task": "Draft summary of Y"}]
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
         if not tasks:
             return json.dumps({"status": "error", "error": "No tasks provided."})
 
         if len(tasks) == 1:
             return json.dumps(_run_one(tasks[0]))
 
-        outputs = [None] * len(tasks)
-        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
-            future_to_idx = {
-                pool.submit(_run_one, spec): i for i, spec in enumerate(tasks)
-            }
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                try:
-                    outputs[idx] = future.result()
-                except Exception as e:
-                    outputs[idx] = {
+        outputs = []
+        for spec in tasks:
+            try:
+                outputs.append(_run_one(spec))
+            except Exception as e:
+                logger.exception(
+                    "Nested delegate '%s' failed", spec.get("subagent", "?")
+                )
+                outputs.append(
+                    {
                         "status": "error",
-                        "subagent": tasks[idx].get("subagent", "?"),
+                        "subagent": spec.get("subagent", "?"),
                         "error": str(e),
                     }
+                )
 
         return json.dumps(outputs)
 
@@ -377,7 +394,9 @@ def _format_task_context(
     if asset_context:
         parts.append(f"## Input Assets\n{asset_context}")
 
-    platform_text = ctx.platform_context or format_platform_context_for_prompt(ctx.workspace)
+    platform_text = ctx.platform_context or format_platform_context_for_prompt(
+        ctx.workspace
+    )
     if platform_text:
         parts.append(
             "## Ouro asset placement\n"
@@ -427,6 +446,8 @@ def _run_agent(
             doc_store=ctx.doc_store,
             team_id=ctx.team_id,
             memory_categories=ctx.memory_scopes,
+            conversation_id=ctx.conversation_id,
+            run_id=ctx.run_id,
         )
         allowed = set(profile.allowed_tools)
         tools.extend(t for t in mem_tools if t.name in allowed)
@@ -554,7 +575,7 @@ def _run_agent(
         task_sections.append(
             f"## Delegation\nYou can delegate sub-tasks to: "
             f"{', '.join(profile.can_delegate_to)}. "
-            f"Use `delegate` with a list of task specs — multiple tasks run in parallel. "
+            f"Use `delegate` with a list of task specs. Nested delegate tasks run in order. "
             f"By default it returns a compact JSON handoff with summary and asset metadata; "
             f'use `return_mode: "full_text"` only when you truly need the full body.'
         )
@@ -563,7 +584,7 @@ def _run_agent(
 
     try:
         result = agent.run(effective_task)
-        return str(result), agent
-    except Exception as e:
-        logger.error("Subagent '%s' agent loop failed: %s", profile.name, e)
-        return "", agent
+    except Exception:
+        logger.exception("Subagent '%s' agent loop failed", profile.name)
+        raise
+    return str(result), agent

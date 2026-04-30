@@ -1,7 +1,7 @@
 ---
 name: ouro-markdown
 description: Ouro extended markdown syntax for posts, comments, and asset embeds
-load: stub
+load: always
 ---
 
 ## Ouro Markdown Syntax
@@ -46,15 +46,12 @@ Skip the embed when the output will not be rendered as markdown (structured
 
 Use typed URI schemes instead of hand-built URLs:
 
-- `[label](asset:<uuid>)` — generic asset link (auto-resolves type)
 - `[label](post:<uuid>)` — link to a post
 - `[label](file:<uuid>)` — link to a file
 - `[label](dataset:<uuid>)` — link to a dataset
 - `[label](route:<uuid>)` — link to a route
 - `[label](service:<uuid>)` — link to a service
-
-Never construct URLs manually with placeholders like `/posts/entity/...`.
-Use the exact `url` from tool results when available.
+- `[label](quest:<uuid>)` — link to a quest
 
 ### User mentions
 

@@ -7,6 +7,7 @@ from typing import List, Optional
 from ..config import MemoryConfig
 from ..usage import RunUsage, UsageTracker, record_usage_from_response
 from . import MemoryBackend, MemoryResult
+from .model import content_hash, memory_item_from_raw, to_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +27,96 @@ def _extract_metadata(raw: dict) -> dict:
     """Pull our custom fields out of a mem0 result's metadata."""
     meta = raw.get("metadata", {}) or {}
     extracted = dict(meta)
-    extracted.setdefault("category", "general")
-    extracted.setdefault("importance", 0.5)
-    extracted.setdefault("created_at", "")
-    extracted.setdefault("source", "")
-    extracted.setdefault("last_accessed", "")
-    extracted.setdefault("team_id", "")
+    text = str(raw.get("memory") or raw.get("text") or "")
+    item = memory_item_from_raw(text, extracted)
+    normalized = to_metadata(item)
+    extracted.update(
+        {k: v for k, v in normalized.items() if k not in extracted or extracted[k] in {"", None}}
+    )
     return extracted
+
+
+def _raw_results(results) -> list[dict]:
+    return results.get("results", []) if isinstance(results, dict) else results
+
+
+def _build_filters(
+    *,
+    category: Optional[str] = None,
+    subject_type: Optional[str] = None,
+    subject_id: Optional[str] = None,
+    mode: Optional[str] = None,
+) -> dict:
+    filters: dict = {}
+    if category:
+        filters["category"] = category
+    if subject_type:
+        filters["subject_type"] = subject_type
+    if subject_id:
+        filters["subject_id"] = subject_id
+    if mode:
+        filters["mode"] = mode
+    return filters
+
+
+def _after_since(result: MemoryResult, since: Optional[datetime]) -> bool:
+    if since is None:
+        return True
+    if not result.created_at:
+        return False
+    try:
+        created = datetime.fromisoformat(result.created_at)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False
+    return created >= since
+
+
+def _to_result(raw: dict, score: float = 0.0) -> MemoryResult:
+    text = raw.get("memory") or raw.get("text") or raw.get("data") or ""
+    meta = _extract_metadata(raw)
+    item = memory_item_from_raw(str(text), meta)
+    return MemoryResult(
+        id=str(raw.get("id") or ""),
+        text=str(text),
+        score=raw.get("score", score),
+        category=item.category,
+        importance=item.importance,
+        created_at=item.created_at.isoformat(),
+        source=item.source,
+        last_accessed=item.last_accessed.isoformat() if item.last_accessed else "",
+        team_id=item.team_ids[0] if item.team_ids else "",
+        subject_type=item.subject_type,
+        subject_id=item.subject_id,
+        team_ids=item.team_ids,
+        asset_ids=item.asset_ids,
+        user_id=item.user_id,
+        mode=item.mode,
+        confidence=item.confidence,
+        content_hash=item.content_hash,
+        schema_version=item.schema_version,
+        metadata=meta,
+    )
+
+
+def _matches_associations(
+    result: MemoryResult,
+    *,
+    team_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+) -> bool:
+    if team_id and team_id not in (result.team_ids or []):
+        return False
+    if asset_id and asset_id not in (result.asset_ids or []):
+        return False
+    return True
+
+
+def _expanded_limit(limit: int, has_post_filters: bool) -> int:
+    if not has_post_filters:
+        return limit
+    return max(limit * 5, min(100, limit + 25))
 
 
 class Mem0Backend:
@@ -168,34 +252,49 @@ class Mem0Backend:
         limit: int = 10,
         team_id: Optional[str] = None,
         scope: str = "team",
+        category: Optional[str] = None,
+        subject_type: Optional[str] = None,
+        subject_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        since: Optional[datetime] = None,
     ) -> List[MemoryResult]:
-        kwargs: dict = {"query": query, "agent_id": agent_id, "limit": limit}
+        has_post_filters = bool(team_id or asset_id)
+        kwargs: dict = {
+            "query": query,
+            "agent_id": agent_id,
+            "limit": _expanded_limit(limit, has_post_filters),
+        }
         if user_id:
             kwargs["user_id"] = user_id
 
-        if team_id and scope == "team":
-            kwargs.setdefault("filters", {})["team_id"] = team_id
+        effective_team_id = team_id if scope in {"personal", "team"} else None
+        filters = _build_filters(
+            category=category,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            mode=mode,
+        )
+        if filters:
+            kwargs["filters"] = filters
 
         results = self._mem.search(**kwargs)
-        res_list = results.get("results", []) if isinstance(results, dict) else results
+        res_list = _raw_results(results)
 
         out: list[MemoryResult] = []
         for r in res_list:
-            meta = _extract_metadata(r)
-            out.append(
-                MemoryResult(
-                    id=str(r.get("id") or ""),
-                    text=r["memory"],
-                    score=r.get("score", 0),
-                    category=meta.get("category", "general"),
-                    importance=meta.get("importance", 0.5),
-                    created_at=meta.get("created_at", ""),
-                    source=meta.get("source", ""),
-                    last_accessed=meta.get("last_accessed", ""),
-                    team_id=meta.get("team_id", ""),
-                    metadata=meta,
+            result = _to_result(r, score=r.get("score", 0))
+            if (
+                _after_since(result, since)
+                and _matches_associations(
+                    result,
+                    team_id=effective_team_id,
+                    asset_id=asset_id,
                 )
-            )
+            ):
+                out.append(result)
+                if len(out) >= limit:
+                    break
         return out
 
     def add(
@@ -211,9 +310,28 @@ class Mem0Backend:
         meta.setdefault("created_at", datetime.now(timezone.utc).isoformat())
         meta.setdefault("category", "general")
         meta.setdefault("importance", 0.5)
+        if user_id:
+            meta.setdefault("user_id", user_id)
+        if run_id:
+            meta.setdefault("run_id", run_id)
 
         if team_id:
             meta["team_id"] = team_id
+
+        text_for_hash = content if isinstance(content, str) else str(content)
+        meta.setdefault("content_hash", content_hash(text_for_hash))
+        item = memory_item_from_raw(text_for_hash, meta)
+        if team_id and team_id not in item.team_ids:
+            item.team_ids = [team_id, *item.team_ids]
+        meta.update(to_metadata(item))
+
+        if isinstance(content, str) and self._has_content_hash(
+            agent_id=agent_id,
+            content_hash_value=str(meta.get("content_hash") or ""),
+            user_id=user_id,
+        ):
+            logger.debug("Skipping duplicate memory write for hash %s", meta["content_hash"])
+            return
 
         kwargs: dict = {"agent_id": agent_id, "metadata": meta}
         if user_id:
@@ -222,37 +340,69 @@ class Mem0Backend:
             kwargs["run_id"] = run_id
         self._mem.add(content, **kwargs)
 
+    def _has_content_hash(
+        self,
+        *,
+        agent_id: str,
+        content_hash_value: str,
+        user_id: Optional[str] = None,
+    ) -> bool:
+        if not content_hash_value:
+            return False
+        kwargs: dict = {
+            "agent_id": agent_id,
+            "limit": 1,
+            "filters": {"content_hash": content_hash_value},
+        }
+        if user_id:
+            kwargs["user_id"] = user_id
+        try:
+            results = self._mem.get_all(**kwargs)
+            return bool(_raw_results(results))
+        except Exception as e:
+            logger.debug("Memory dedupe check failed: %s", e)
+            return False
+
     def get_all(
         self,
         agent_id: str,
         user_id: Optional[str] = None,
         limit: int = 100,
         team_id: Optional[str] = None,
+        subject_type: Optional[str] = None,
+        subject_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        category: Optional[str] = None,
+        mode: Optional[str] = None,
+        since: Optional[datetime] = None,
     ) -> List[MemoryResult]:
-        kwargs: dict = {"agent_id": agent_id, "limit": limit}
+        has_post_filters = bool(team_id or asset_id)
+        kwargs: dict = {
+            "agent_id": agent_id,
+            "limit": _expanded_limit(limit, has_post_filters),
+        }
         if user_id:
             kwargs["user_id"] = user_id
-        if team_id:
-            kwargs.setdefault("filters", {})["team_id"] = team_id
+        filters = _build_filters(
+            category=category,
+            subject_type=subject_type,
+            subject_id=subject_id,
+            mode=mode,
+        )
+        if filters:
+            kwargs["filters"] = filters
         results = self._mem.get_all(**kwargs)
-        res_list = results.get("results", []) if isinstance(results, dict) else results
+        res_list = _raw_results(results)
         out: list[MemoryResult] = []
         for r in res_list:
-            meta = _extract_metadata(r)
-            out.append(
-                MemoryResult(
-                    id=str(r.get("id") or ""),
-                    text=r["memory"],
-                    score=0,
-                    category=meta.get("category", "general"),
-                    importance=meta.get("importance", 0.5),
-                    created_at=meta.get("created_at", ""),
-                    source=meta.get("source", ""),
-                    last_accessed=meta.get("last_accessed", ""),
-                    team_id=meta.get("team_id", ""),
-                    metadata=meta,
-                )
-            )
+            result = _to_result(r)
+            if (
+                _after_since(result, since)
+                and _matches_associations(result, team_id=team_id, asset_id=asset_id)
+            ):
+                out.append(result)
+                if len(out) >= limit:
+                    break
         return out
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:

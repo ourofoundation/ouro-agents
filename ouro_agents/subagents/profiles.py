@@ -134,7 +134,7 @@ RESEARCH = SubAgentProfile(
     delegatable=True,
     max_steps=12,
     can_delegate_to=["writer"],
-    skills=["ouro_markdown", "asset_output"],
+    skills=["ouro", "ouro_markdown", "asset_output"],
 )
 
 PLANNER = SubAgentProfile(
@@ -149,7 +149,7 @@ PLANNER = SubAgentProfile(
 EXECUTOR = SubAgentProfile(
     name="executor",
     description=(
-        "Execute a focused sub-task using tools. Has access to MCP tools and "
+        "Execute a focused sub-task using MCP tools. Has access to MCP tools and "
         "memory. Use for self-contained actions you want off your main context."
     ),
     system_prompt=EXECUTOR_PROMPT,
@@ -159,7 +159,7 @@ EXECUTOR = SubAgentProfile(
     delegatable=True,
     max_steps=8,
     can_delegate_to=["writer"],
-    skills=["ouro_markdown", "asset_output"],
+    skills=["ouro", "ouro_markdown", "asset_output"],
 )
 
 WRITER = SubAgentProfile(
@@ -174,7 +174,7 @@ WRITER = SubAgentProfile(
     preload_tools=["ouro:create_post"],
     delegatable=True,
     max_steps=5,
-    skills=["ouro_markdown", "asset_output"],
+    skills=["ouro", "ouro_markdown", "asset_output"],
 )
 
 DEVELOPER = SubAgentProfile(
@@ -191,7 +191,7 @@ DEVELOPER = SubAgentProfile(
     delegatable=True,
     max_steps=12,
     needs_python_tool=True,
-    skills=["ouro_py", "ouro_markdown", "asset_output"],
+    skills=["ouro", "ouro_py", "ouro_markdown", "asset_output"],
 )
 
 # All built-in profiles

@@ -37,6 +37,17 @@ class TestToolPrompt(unittest.TestCase):
             TOOL_CALLING_SYSTEM_PROMPT,
         )
 
+    def test_base_prompt_prioritizes_completed_work(self):
+        self.assertIn("Do not substitute meta-work for work", TOOL_CALLING_SYSTEM_PROMPT)
+        self.assertIn("transform, analyze, execute, publish, or update", TOOL_CALLING_SYSTEM_PROMPT)
+        self.assertIn("requested artifact/action exists", TOOL_CALLING_SYSTEM_PROMPT)
+
+    def test_base_prompt_requires_evidence_for_platform_work(self):
+        self.assertIn("include concrete evidence in final_answer", TOOL_CALLING_SYSTEM_PROMPT)
+        self.assertIn("asset IDs", TOOL_CALLING_SYSTEM_PROMPT)
+        self.assertIn("action IDs", TOOL_CALLING_SYSTEM_PROMPT)
+        self.assertIn("rather than presenting a plan as completion", TOOL_CALLING_SYSTEM_PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()

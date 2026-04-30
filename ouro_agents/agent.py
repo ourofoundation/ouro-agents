@@ -38,6 +38,7 @@ from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
     apply_reflection,
     should_reflect_for_conversation,
+    store_reflection_memories,
     write_daily_log,
 )
 from .memory.tools import make_memory_tools
@@ -787,6 +788,8 @@ class OuroAgent:
         run_id: str = "",
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        run_mode: str = "",
+        event_type: str = "",
     ):
         """Build the tool list and directory string for a single run.
 
@@ -833,15 +836,22 @@ class OuroAgent:
             doc_store=active_doc_store,
             team_id=team_id,
             memory_categories=getattr(profile, "memory_scopes", []) or [],
+            conversation_id=conversation_id,
+            run_id=run_id,
+            mode=run_mode,
+            event_type=event_type,
+            org_id=self.config.agent.org_id or "",
+            available_team_ids=self._available_memory_team_ids(team_id),
+            available_teams=self._available_memory_teams(team_id),
+            enable_remember=run_mode in {"heartbeat", "plan", "review"},
         )
         if profile.memory_tool_filter is not None:
             allowed = set(profile.memory_tool_filter)
             memory_tools = [t for t in memory_tools if t.name in allowed]
 
-        ouro_client = self._get_ouro_client()
         python_tool, _executor = make_python_tool(
             workspace=self.config.agent.workspace,
-            ouro_client=ouro_client,
+            ouro_client=self._get_ouro_client(),
             python_packages=self.config.agent.python_packages or None,
             package_versions=self._python_package_versions or None,
         )
@@ -977,7 +987,9 @@ class OuroAgent:
 
         delegate.description += f"\n\nAvailable subagents: {_subagent_names_str}"
 
-        delegate_tools = [] if profile.restricted_servers else [delegate]
+        delegate_tools = (
+            [] if profile.restricted_servers or not profile.allow_delegation else [delegate]
+        )
 
         _has_memory_filter = profile.memory_tool_filter is not None
         if _has_memory_filter:
@@ -1049,8 +1061,14 @@ class OuroAgent:
                 turns, summarize_fn=self._summarize_turns
             )
 
-        skills_text = "" if profile.lightweight else self.skills
-        skill_directory = "" if profile.lightweight else self.skill_directory
+        skills_text = self.skills
+        # Heartbeat is lightweight but still has load_skill available; keep a
+        # compact directory so skill use is discoverable without inlining bodies.
+        skill_directory = (
+            self.skill_directory
+            if not profile.lightweight or profile.memory_tool_filter is None
+            else ""
+        )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         shared_context = self._load_shared_prompt_context(
@@ -1078,7 +1096,7 @@ class OuroAgent:
         plans_index_text = shared_context["plans_index"]
 
         delegatable_profiles = self.delegatable_profiles
-        if not profile.lightweight and delegatable_profiles:
+        if not profile.lightweight and profile.allow_delegation and delegatable_profiles:
             subagent_directory = "\n".join(
                 f"- **{p.name}**: {p.description}"
                 for p in delegatable_profiles.values()
@@ -1388,6 +1406,9 @@ class OuroAgent:
         """
         from .subagents.profiles import REFLECTOR
 
+        if "Available teams (use only these IDs in team_ids)" not in task:
+            task = f"{self._format_available_memory_teams(team_id)}\n\n{task}"
+
         _display = display or get_display()
         _display.step("reflecting...")
         if status_callback:
@@ -1423,6 +1444,31 @@ class OuroAgent:
 
         return parse_reflection_result(result.text)
 
+    def _available_memory_teams(self, team_id: Optional[str] = None) -> list[dict]:
+        teams = [
+            {"id": team.id, "slug": team.slug, "name": team.name}
+            for team in self.team_registry.list_teams()
+        ]
+        if team_id and not any(team["id"] == team_id for team in teams):
+            teams.append({"id": team_id, "slug": "", "name": team_id})
+        return teams
+
+    def _available_memory_team_ids(self, team_id: Optional[str] = None) -> set[str]:
+        ids = {team["id"] for team in self._available_memory_teams(team_id)}
+        if team_id:
+            ids.add(team_id)
+        return ids
+
+    def _format_available_memory_teams(self, team_id: Optional[str] = None) -> str:
+        lines = ["Available teams (use only these IDs in team_ids):"]
+        teams = self._available_memory_teams(team_id)
+        if not teams:
+            lines.append("- (none; leave team_ids = [])")
+        else:
+            for team in teams:
+                lines.append(f"- {team['id']} · {team.get('slug', '')} · {team.get('name', '')}")
+        return "\n".join(lines)
+
     def _maybe_reflect_post_turn(
         self,
         conv_state: Optional[ConversationState],
@@ -1446,7 +1492,9 @@ class OuroAgent:
 
         try:
             reflection_result = self._run_reflection(
-                "Reflect on the recent conversation turns and extract what is worth remembering.",
+                "Reflect on the recent conversation turns and extract what is worth "
+                "remembering, especially any durable work-direction guidance that "
+                "should influence future planning.",
                 conversation_state=conv_state,
                 conversation_id=conversation_id,
                 user_id=user_id,
@@ -1467,6 +1515,9 @@ class OuroAgent:
                 conversation_state=conv_state,
                 doc_store=self._resolve_doc_store(team_id=team_id, doc_store=doc_store),
                 team_id=team_id,
+                available_team_ids=self._available_memory_team_ids(team_id),
+                org_id=self.config.agent.org_id or "",
+                mode="chat",
             )
             logger.info(
                 "Post-turn reflection for %s (turn %d): %d facts, %d prefs",
@@ -1502,6 +1553,7 @@ class OuroAgent:
             tool_summary=tool_summary,
             run_mode=mode.value,
             event_type=event_type,
+            available_teams=self._available_memory_teams(team_id),
         )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
@@ -1516,29 +1568,20 @@ class OuroAgent:
             if not reflection:
                 return
 
-            for fact in reflection.facts_to_store:
-                text = fact.get("text", "")
-                if not text:
-                    continue
-                metadata = {
-                    "category": fact.get("category", "fact"),
-                    "importance": fact.get("importance", 0.5),
-                    "source": f"run-reflection:{run_id}",
-                }
-                asset_refs = fact.get("asset_refs", [])
-                if asset_refs:
-                    metadata["asset_refs"] = ",".join(asset_refs)
-                try:
-                    self.memory.add(
-                        text,
-                        agent_id=self.config.agent.name,
-                        user_id=user_id,
-                        run_id=run_id,
-                        metadata=metadata,
-                        team_id=team_id,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to store run-reflection fact: %s", e)
+            store_reflection_memories(
+                reflection,
+                self.memory,
+                agent_id=self.config.agent.name,
+                user_id=user_id,
+                run_id=run_id,
+                conversation_id="",
+                team_id=team_id,
+                available_team_ids=self._available_memory_team_ids(team_id),
+                org_id=self.config.agent.org_id or "",
+                mode=mode.value,
+                event_type=event_type or "",
+                source=f"run-reflection:{run_id}",
+            )
 
             if reflection.daily_log_entry:
                 write_daily_log(
@@ -1581,7 +1624,7 @@ class OuroAgent:
     ) -> str:
         run_started_at = time.monotonic()
         self.connect_mcp()
-        model = model_override or self.model
+        model = model_override or self._build_model(self.config.agent.model)
         active_doc_store = self._resolve_doc_store(team_id=team_id)
 
         _original_reasoning_cb = None
@@ -1669,6 +1712,8 @@ class OuroAgent:
                 run_id=run_id,
                 team_id=team_id,
                 doc_store=active_doc_store,
+                run_mode=mode.value,
+                event_type=event_type or "",
             )
         )
         if extra_tools:
@@ -1699,7 +1744,12 @@ class OuroAgent:
         if preflight and preflight.briefing:
             context_parts.append(f"## Context Briefing\n{preflight.briefing}")
         if preflight and preflight.plan:
-            context_parts.append(f"## Execution Plan\n{preflight.plan}")
+            context_parts.append(
+                "## Advisory Action Plan\n"
+                "This preflight plan is not the deliverable. Use it to choose concrete "
+                "MCP calls and platform actions, then report the results of the work.\n\n"
+                f"{preflight.plan}"
+            )
 
         if context_parts:
             effective_task = (
@@ -1797,6 +1847,38 @@ class OuroAgent:
             except Exception as e:
                 logger.warning("observer.on_result_ready failed: %s", e)
 
+        if conversation_id and profile.append_conversation_turns:
+            try:
+                append_conversation_turn(self._workspace, conversation_id, "user", task)
+                append_conversation_turn(
+                    self._workspace,
+                    conversation_id,
+                    "assistant",
+                    str(result),
+                    tool_summary=tool_summary or None,
+                )
+                from .memory.session import SessionMemoryStore
+
+                session_memory = SessionMemoryStore(self._workspace)
+                session_memory.append_turn(
+                    conversation_id,
+                    role="user",
+                    text=task,
+                    agent_id=self.config.agent.name,
+                    user_id=user_id or "",
+                    run_id=run_id,
+                )
+                session_memory.append_turn(
+                    conversation_id,
+                    role="assistant",
+                    text=str(result),
+                    agent_id=self.config.agent.name,
+                    user_id=user_id or "",
+                    run_id=run_id,
+                )
+            except Exception as e:
+                logger.warning("Failed to append conversation turn: %s", e)
+
         def _do_post_run():
             worth_remembering = preflight.worth_remembering if preflight else not is_trivial
             if not profile.skip_post_reflection and not skip_memory and worth_remembering:
@@ -1810,15 +1892,6 @@ class OuroAgent:
                     event_type=event_type,
                     team_id=team_id,
                     doc_store=active_doc_store,
-                )
-            if conversation_id and profile.append_conversation_turns:
-                append_conversation_turn(self._workspace, conversation_id, "user", task)
-                append_conversation_turn(
-                    self._workspace,
-                    conversation_id,
-                    "assistant",
-                    str(result),
-                    tool_summary=tool_summary or None,
                 )
 
             if profile.update_conversation_state and conversation_id:

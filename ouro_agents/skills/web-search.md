@@ -22,7 +22,7 @@ You have access to web search via the `search` MCP server. This lets you find cu
 
 ## How to Use
 
-1. `load_tool("search:tavily-search")` to activate the tool.
+1. `load_tool(["search:tavily_search"])` to activate the tool.
 2. Call with a clear, specific query. Write queries like you'd type into a search engine — keywords and phrases, not full sentences.
 3. Review the results before acting on them. Tavily returns extracted content and source URLs.
 

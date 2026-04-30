@@ -291,6 +291,25 @@ class TestToolCallParsing(unittest.TestCase):
             {"answer": "Sure - use {'key': 'value'} as an example payload."},
         )
 
+    def test_repatching_model_does_not_leak_chat_mode_recovery(self):
+        model = _AlwaysFailsModel()
+        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
+        _patch_model_for_xml_tool_calls(model, is_chat_mode=False)
+
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content="I'll inspect the thread next and then report back.",
+        )
+
+        parsed = model.parse_tool_calls(message)
+
+        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
+        self.assertEqual(parsed.tool_calls, [])
+        self.assertEqual(
+            parsed.content,
+            "I'll inspect the thread next and then report back.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

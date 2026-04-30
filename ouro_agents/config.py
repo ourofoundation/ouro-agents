@@ -92,6 +92,14 @@ class MemoryConfig(BaseModel):
     memory_md_max_tokens: int = 4000
     mid_session_reflection_interval: int = 10
     decay_after_days: int = 30
+    decay_rules: Dict[str, Dict[str, Any]] = Field(default_factory=lambda: {
+        "direction": {"after_days": None, "factor": 1.0},
+        "decision": {"after_days": None, "factor": 1.0},
+        "fact": {"after_days": 180, "factor": 0.7},
+        "preference": {"after_days": 365, "factor": 0.8},
+        "learning": {"after_days": 180, "factor": 0.8},
+        "observation": {"after_days": 30, "factor": 0.5},
+    })
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
 
 

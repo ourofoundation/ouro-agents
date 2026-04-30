@@ -13,7 +13,9 @@ from ouro_agents.modes.heartbeat import (
     has_future_heartbeat_in_active_window,
     run_heartbeat,
 )
+from ouro_agents.modes.profiles import HEARTBEAT
 from ouro_agents.modes.planning import PlanCycle, PlanItem, PlanStore
+from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT
 from ouro_agents.subagents.context import SubAgentUsage
 from ouro_agents.usage import RunUsage
 
@@ -21,12 +23,26 @@ from ouro_agents.usage import RunUsage
 def test_heartbeat_framing_prefers_bounded_progress():
     assert "bounded work session" in HEARTBEAT_FRAMING
     assert "one meaningful slice of progress" in HEARTBEAT_FRAMING
+    assert "concrete platform work" in HEARTBEAT_FRAMING
+
+
+def test_heartbeat_framing_allows_direction_proposal_posts():
+    assert "direction" in HEARTBEAT_FRAMING
+    assert "3-5 concrete directions" in HEARTBEAT_FRAMING
+    assert "do not create a quest" in HEARTBEAT_FRAMING
+    assert "ouro:create_post" in HEARTBEAT.preload_tools
+
+
+def test_heartbeat_preflight_mentions_direction_guidance():
+    assert "current work-direction guidance" in HEARTBEAT_PREFLIGHT_PROMPT
+    assert "direction-proposal post" in HEARTBEAT_PREFLIGHT_PROMPT
 
 
 def test_plan_execution_playbook_mentions_multi_heartbeat_expectation():
     playbook = build_plan_execution_playbook("## Default Plan\n- [ ] Do the thing", 4)
 
     assert "one meaningful slice of progress" in playbook
+    assert "changes platform state or produces a useful artifact" in playbook
     assert "do not feel pressure to use all available steps" in playbook
     assert "at least 4 heartbeats before replanning" in playbook
     assert "`update_quest_item`" in playbook

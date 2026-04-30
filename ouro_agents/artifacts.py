@@ -299,6 +299,8 @@ def _fetch_comment_thread(
     deferred_tools: dict,
     parent_ids: list[str],
     max_tokens: int = 3000,
+    focus_comment_id: Optional[str] = None,
+    include_parent: bool = False,
 ) -> str:
     """Pre-fetch comments for assets and format as a readable thread."""
     if not parent_ids:
@@ -322,10 +324,26 @@ def _fetch_comment_thread(
             continue
 
         results = data.get("results", []) if isinstance(data, dict) else []
-        if not results:
+        parent = data.get("parent") if isinstance(data, dict) else None
+        if not results and not (include_parent and parent):
             continue
 
         thread_lines: list[str] = [f"### Comment thread on {parent_id}"]
+        if include_parent and isinstance(parent, dict):
+            parent_text = str(parent.get("text") or "").strip()
+            if parent_text:
+                parent_author = parent.get("username", "unknown")
+                parent_cid = parent.get("id", "")
+                parent_entry = f"- **@{parent_author}**: {parent_text}"
+                if parent_cid:
+                    parent_entry += f" [id: {parent_cid}]"
+                if parent_cid and parent_cid == focus_comment_id:
+                    parent_entry += " **[current comment to answer]**"
+                thread_lines.append("#### Parent comment")
+                thread_lines.append(parent_entry)
+                if results:
+                    thread_lines.append("#### Replies in order")
+
         for comment in results:
             author = comment.get("author", "unknown")
             text = comment.get("text", "").strip()
@@ -344,6 +362,8 @@ def _fetch_comment_thread(
                 entry += f" _({reply_count} replies)_"
             if cid:
                 entry += f" [id: {cid}]"
+            if cid and cid == focus_comment_id:
+                entry += " **[current comment to answer]**"
             thread_lines.append(entry)
 
         block = "\n".join(thread_lines)
@@ -375,6 +395,9 @@ class PrefetchSpec:
     asset_ids: list[str] = field(default_factory=list)
     comment_parent_ids: list[str] = field(default_factory=list)
     thread_comment_parent_ids: list[str] = field(default_factory=list)
+    focus_comment_id: Optional[str] = None
+    focus_comment_author: str = ""
+    focus_comment_text: str = ""
 
     @property
     def empty(self) -> bool:
@@ -382,6 +405,7 @@ class PrefetchSpec:
             not self.asset_ids
             and not self.comment_parent_ids
             and not self.thread_comment_parent_ids
+            and not self.focus_comment_id
         )
 
 
@@ -400,11 +424,20 @@ def resolve_prefetch(deferred_tools: dict, spec: PrefetchSpec) -> str:
     if asset_ctx:
         parts.append(f"## Input Assets\n{asset_ctx}")
 
-    comment_ctx = _fetch_comment_thread(deferred_tools, spec.comment_parent_ids)
+    comment_ctx = _fetch_comment_thread(
+        deferred_tools,
+        spec.comment_parent_ids,
+        focus_comment_id=spec.focus_comment_id,
+    )
     if comment_ctx:
         parts.append(f"## Top-Level Comments\n{comment_ctx}")
 
-    thread_ctx = _fetch_comment_thread(deferred_tools, spec.thread_comment_parent_ids)
+    thread_ctx = _fetch_comment_thread(
+        deferred_tools,
+        spec.thread_comment_parent_ids,
+        focus_comment_id=spec.focus_comment_id,
+        include_parent=True,
+    )
     if thread_ctx:
         parts.append(f"## Current Thread\n{thread_ctx}")
 

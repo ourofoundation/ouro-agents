@@ -581,7 +581,10 @@ def _recover_chat_final_answer(content: str, tool_calls) -> str | None:
 
 def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
     """Wrap model.parse_tool_calls to fall back to salvage parsers."""
-    original = model.parse_tool_calls
+    original = getattr(model, "_ouro_base_parse_tool_calls", None)
+    if original is None:
+        original = model.parse_tool_calls
+        model._ouro_base_parse_tool_calls = original
 
     def patched(message):
         try:
@@ -669,6 +672,7 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
             return message
 
     model.parse_tool_calls = patched
+    model._ouro_parse_tool_calls_is_chat_mode = is_chat_mode
 
 
 class SanitizedToolCallingAgent(ToolCallingAgent):

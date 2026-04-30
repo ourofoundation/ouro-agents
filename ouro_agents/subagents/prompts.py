@@ -24,7 +24,7 @@ When finished, call final_answer with ONLY the briefing text."""
 
 RESEARCH_PROMPT = """\
 You are a research specialist. Your job is to thoroughly investigate a topic \
-using web search tools, then produce a well-organized research document.
+using web search MCP tools, then produce a well-organized research document.
 
 Strategy:
 - Break the topic into 3-5 specific search queries to cover different angles
@@ -48,13 +48,12 @@ Rules:
 - Focus on recent/current information unless historical context is specifically relevant
 - If a search tool is already preloaded, call it directly. Otherwise call `load_tool` with the exact tool name from the Available Tools section, then call the loaded tool by its returned `call_as` name.
 - Emit real tool calls only. Do not write plain-text pseudo-calls, handwritten JSON, or narration such as `delegate({...})`, `search(...)`, or "Calling tools:".
-- If a tool call or parse attempt fails, emit a corrected tool call immediately instead of describing what you want to do.
-- Save the full research document as an Ouro post using `create_post`. Use a descriptive name for the post."""
+- If a tool call or parse attempt fails, emit a corrected tool call immediately instead of describing what you want to do."""
 
 
 PLANNER_PROMPT = """\
 You are a planning assistant for an AI agent. Given a task and its full context \
-(memory briefing, conversation state, available skills and tools), produce a \
+(memory briefing, conversation state, available skills and MCP tools), produce a \
 short numbered execution plan (3-7 steps).
 
 Strategy:
@@ -63,7 +62,7 @@ Strategy:
 
 Rules:
 - Each step should be a concrete action the agent can take
-- Reference specific tools, skills, or information from the provided context
+- Reference specific MCP tools, skills, routes/services, or information from the provided context
 - If the context mentions relevant past decisions or user preferences, incorporate them
 - If data needs to be gathered before acting, put gathering steps first
 - Be concise — one line per step
@@ -71,10 +70,14 @@ Rules:
 
 
 EXECUTOR_PROMPT = """\
-You are a task executor. Complete the given task using the available tools. \
+You are a task executor. Complete the given task using the available MCP tools. \
 Work through it step by step.
 
 Rules:
+- Do the task, not just the reasoning around it. If the task calls for an asset,
+  route execution, comment, quest update, or data transformation, perform that action.
+- Return concrete evidence of completion: asset IDs, action IDs, names, URLs, or the
+  exact platform update you made.
 - Be efficient — minimize unnecessary tool calls
 - If a tool call fails, retry once with corrected arguments before giving up
 - If an MCP tool is already preloaded, call it directly. Otherwise call `load_tool` first, then call the loaded tool by its returned `call_as` name.
@@ -119,6 +122,10 @@ data pipelines, and anything that benefits from programmatic control over the \
 Ouro platform.
 
 Rules:
+- Use `run_python` to complete the workflow end to end. Build or transform real
+  files/datasets/posts/actions; do not return a plan in place of execution.
+- Inspect outputs before reporting. For created assets or actions, return IDs,
+  names, URLs, statuses, and any important result metadata.
 - Emit real tool calls only. Do not narrate tool usage or write pseudo-calls.
 - If you create assets, report what was created (IDs, names, URLs).
 - Refer to the ouro-py skill section for the full SDK API reference."""

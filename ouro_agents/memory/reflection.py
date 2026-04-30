@@ -15,6 +15,8 @@ from typing import Optional
 
 from ..subagents.reflector import ReflectionResult, normalize_daily_log_entry
 from .conversation_state import ConversationState
+from .model import to_metadata
+from .validator import MemoryRunContext, validate_memory_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +86,77 @@ def _save_reflected_turn(
     marker.write_text(str(turn_count))
 
 
+def _reflection_candidates(result: ReflectionResult) -> list[dict]:
+    candidates = list(result.facts_to_store)
+    for preference in result.user_preferences:
+        if isinstance(preference, str) and preference.strip():
+            candidates.append(
+                {
+                    "text": preference.strip(),
+                    "subject_type": "user",
+                    "category": "preference",
+                    "team_ids": [],
+                    "importance": 0.6,
+                    "confidence": 0.8,
+                }
+            )
+    return candidates
+
+
+def store_reflection_memories(
+    result: ReflectionResult,
+    memory_backend,
+    *,
+    agent_id: str,
+    user_id: Optional[str],
+    run_id: str,
+    conversation_id: str = "",
+    team_id: Optional[str] = None,
+    available_team_ids: Optional[set[str]] = None,
+    org_id: str = "",
+    mode: str = "chat",
+    event_type: str = "",
+    source: str = "",
+) -> int:
+    """Validate and store durable memories extracted by reflection."""
+    source = source or f"reflection:{run_id or conversation_id}"
+    ctx = MemoryRunContext(
+        agent_id=agent_id,
+        user_id=user_id or "",
+        org_id=org_id,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        mode=mode,
+        event_type=event_type,
+        team_id=team_id or "",
+        available_team_ids=set(available_team_ids or ([] if not team_id else [team_id])),
+    )
+    items, errors = validate_memory_candidates(
+        _reflection_candidates(result),
+        ctx,
+        source=source,
+    )
+    for error in errors:
+        logger.warning("Rejected reflected memory (%s): %s", error.reason, error.text[:80])
+
+    stored = 0
+    for item in items:
+        try:
+            memory_backend.add(
+                item.text,
+                agent_id=agent_id,
+                user_id=user_id,
+                run_id=run_id or conversation_id,
+                metadata=to_metadata(item),
+                team_id=item.team_ids[0] if item.team_ids else None,
+            )
+            stored += 1
+            logger.info("Reflection stored memory [%s]: %s", item.category, item.text[:80])
+        except Exception as e:
+            logger.warning("Failed to store reflected memory: %s", e)
+    return stored
+
+
 def should_reflect_for_conversation(
     conversations_dir: Path,
     conversation_id: str,
@@ -106,34 +179,26 @@ def apply_reflection(
     conversation_state: Optional[ConversationState] = None,
     doc_store=None,
     team_id: Optional[str] = None,
+    available_team_ids: Optional[set[str]] = None,
+    org_id: str = "",
+    mode: str = "chat",
+    event_type: str = "",
 ) -> None:
     """Apply reflection results: store facts, update user model, write daily log."""
-    for fact in result.facts_to_store:
-        text = fact.get("text", "")
-        if not text:
-            continue
-        try:
-            metadata = {
-                "category": fact.get("category", "fact"),
-                "importance": fact.get("importance", 0.5),
-                "source": f"reflection:{conversation_id}",
-            }
-            asset_refs = fact.get("asset_refs", [])
-            if asset_refs:
-                metadata["asset_refs"] = ",".join(asset_refs)
-            memory_backend.add(
-                text,
-                agent_id=agent_id,
-                user_id=user_id,
-                run_id=conversation_id,
-                metadata=metadata,
-                team_id=team_id,
-            )
-            logger.info(
-                "Reflection stored fact [%s]: %s", fact.get("category"), text[:80]
-            )
-        except Exception as e:
-            logger.warning("Failed to store reflected fact: %s", e)
+    store_reflection_memories(
+        result,
+        memory_backend,
+        agent_id=agent_id,
+        user_id=user_id,
+        run_id=conversation_id,
+        conversation_id=conversation_id,
+        team_id=team_id,
+        available_team_ids=available_team_ids,
+        org_id=org_id,
+        mode=mode,
+        event_type=event_type,
+        source=f"reflection:{conversation_id}",
+    )
 
     if result.user_preferences and user_id:
         from .user_model import append_to_user_model

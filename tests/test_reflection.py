@@ -87,6 +87,12 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertIn("avoid repeating immediately", REFLECTOR_PROMPT)
         self.assertIn("already touched this recently", REFLECTOR_PROMPT)
 
+    def test_reflector_prompt_mentions_direction_guidance(self):
+        self.assertIn('"direction"', REFLECTOR_PROMPT)
+        self.assertIn("durable work-direction guidance", REFLECTOR_PROMPT)
+        self.assertIn("influence future planning", REFLECTOR_PROMPT)
+        self.assertIn("Ambient platform discoveries are evidence, not direction", REFLECTOR_PROMPT)
+
     def test_returns_none_when_reflector_hits_max_steps(self):
         self.assertIsNone(parse_reflection_result("Reached max steps."))
 
@@ -101,6 +107,55 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertEqual(result.user_preferences, [])
         self.assertEqual(result.daily_log_entry, "")
 
+    def test_parses_direction_category(self):
+        result = parse_reflection_result(
+            """
+            {
+              "facts_to_store": [
+                {
+                  "text": "User wants the agent to focus on benchmarking next.",
+                  "category": "direction",
+                  "importance": 0.9
+                }
+              ],
+              "user_preferences": [],
+              "daily_log_entry": ""
+            }
+            """
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.facts_to_store[0]["category"], "direction")
+        self.assertEqual(result.facts_to_store[0]["importance"], 0.9)
+
+    def test_parses_new_candidate_schema(self):
+        result = parse_reflection_result(
+            """
+            {
+              "candidates": [
+                {
+                  "text": "Asset abc was reviewed and should not be revisited immediately.",
+                  "subject_type": "asset",
+                  "category": "observation",
+                  "team_ids": ["team-1"],
+                  "asset_ids": ["abc"],
+                  "importance": 0.6,
+                  "confidence": 0.8
+                }
+              ],
+              "user_preferences": [],
+              "daily_log_entry": ""
+            }
+            """
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.facts_to_store[0]["subject_type"], "asset")
+        self.assertEqual(result.facts_to_store[0]["team_ids"], ["team-1"])
+        self.assertEqual(result.facts_to_store[0]["asset_ids"], ["abc"])
+
     def test_build_run_reflection_task_mentions_redundant_follow_up_avoidance(self):
         task = build_run_reflection_task(
             task="Comment on a post if useful.",
@@ -111,6 +166,18 @@ class TestReflectionParsing(unittest.TestCase):
 
         self.assertIn("already touched recently", task)
         self.assertIn("avoid redundant follow-up", task)
+
+    def test_build_run_reflection_task_mentions_direction_feedback(self):
+        task = build_run_reflection_task(
+            task="Comment from alice: please focus more on dataset quality.",
+            result="Acknowledged and replied.",
+            tool_summary=[{"tool": "ouro:create_comment", "result": "replied"}],
+            run_mode="autonomous",
+            event_type="comment",
+        )
+
+        self.assertIn('category="direction"', task)
+        self.assertIn("comments, mentions, plan-review feedback", task)
 
     def test_build_run_reflection_task_filters_noisy_tools_keeps_order(self):
         task = build_run_reflection_task(
@@ -223,6 +290,36 @@ class TestApplyReflection(unittest.TestCase):
             )
 
             self.assertEqual(backend.items[0]["team_id"], "team-42")
+
+    def test_apply_reflection_preserves_direction_category(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            conversations_dir = workspace / "conversations"
+            backend = _FakeMemoryBackend()
+            result = ReflectionResult(
+                facts_to_store=[
+                    {
+                        "text": "User wants the agent to stop posting low-signal updates.",
+                        "category": "direction",
+                        "importance": 0.9,
+                    }
+                ],
+                user_preferences=[],
+                daily_log_entry="",
+            )
+
+            apply_reflection(
+                result,
+                backend,
+                agent_id="hermes",
+                user_id="user-1",
+                conversation_id="conv-1",
+                workspace=workspace,
+                conversations_dir=conversations_dir,
+                conversation_state=_ConversationState(turn_count=3),
+            )
+
+            self.assertEqual(backend.items[0]["metadata"]["category"], "direction")
 
 
 if __name__ == "__main__":

@@ -36,17 +36,30 @@ topic to avoid storing duplicates (batch queries in one call)
 
 Output ONLY valid JSON matching this schema (no markdown fences):
 {
-  "facts_to_store": [{"text": "string", "category": "fact"|"decision"|"learning"|"observation", "importance": 0.0-1.0, "asset_refs": ["uuid"]}],
+  "candidates": [{"text": "string", "subject_type": "user"|"agent"|"team"|"asset"|"general", "subject_id_hint": "string", "category": "fact"|"decision"|"direction"|"learning"|"observation", "team_ids": ["uuid from available teams"], "asset_ids": ["uuid"], "importance": 0.0-1.0, "confidence": 0.0-1.0}],
   "user_preferences": ["string"],
   "daily_log_entry": "string"
 }
 
 Rules:
-- facts_to_store: Important facts, decisions, or knowledge gained. NOT conversation \
+- candidates: Important facts, decisions, or knowledge gained. NOT conversation \
   mechanics or task plumbing. Assign a category and importance \
   (0.3=minor, 0.5=normal, 0.7=significant, 0.9=critical). \
-  If a fact references an Ouro asset, include its UUID in asset_refs AND use \
-  [asset name](asset:<uuid>) links in the text so the fact is self-contained. Otherwise omit asset_refs.
+  If a fact references an Ouro asset, include its UUID in asset_ids AND use \
+  [asset name](asset:<uuid>) links in the text so the fact is self-contained. Otherwise omit asset_ids.
+- team_ids is per-candidate. Use only IDs listed in the Available teams block. \
+  If no listed team applies, return an empty list. Do not invent team IDs.
+- subject_type answers what the memory is about: user preferences are user, \
+  agent operating learnings/directions are agent, team-specific project knowledge \
+  is team, asset interactions are asset, and broadly applicable facts are general.
+- direction: Use this category for durable work-direction guidance from humans \
+  or high-confidence decisions about what the agent should focus on next. Capture \
+  both positive priorities ("spend more time on X") and negative constraints \
+  ("stop doing Y", "avoid Z"). Prefer this over a generic observation when the \
+  memory should influence future planning or heartbeat focus.
+- Only use direction for explicit human guidance, plan feedback, or deliberate \
+  planning decisions. Ambient platform discoveries are evidence, not direction; \
+  store them as modest-confidence observations only when they are useful future context.
 - When a run interacted with an Ouro asset in a way that future heartbeats should \
   avoid repeating immediately (for example: commenting on it, reviewing it, or \
   deciding to pass on it for now), prefer storing one concise observation with \
@@ -116,6 +129,7 @@ def build_run_reflection_task(
     run_mode: str = "autonomous",
     event_type: Optional[str] = None,
     team_name: str = "",
+    available_teams: list[dict] | None = None,
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
@@ -130,17 +144,33 @@ def build_run_reflection_task(
     )
 
     tag = resolve_daily_log_tag(run_mode, event_type, team_name=team_name)
+    team_lines: list[str] = []
+    for team in available_teams or []:
+        team_id = team.get("id") or ""
+        if not team_id:
+            continue
+        slug = team.get("slug") or ""
+        name = team.get("name") or ""
+        team_lines.append(f"- {team_id} · {slug} · {name}")
+    available_team_text = "\n".join(team_lines) if team_lines else "- (none; leave team_ids = [])"
 
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
         f"Run mode: {run_mode}\n"
         f"Daily log tag: {tag}\n\n"
+        "Available teams (use only these IDs in team_ids):\n"
+        f"{available_team_text}\n\n"
         f"Task:\n{task[:600]}\n\n"
         f"Result:\n{str(result)[:800]}\n\n"
         f"Tool calls:\n{tools_text}\n\n"
         "If this run commented on, reviewed, or otherwise interacted with an Ouro "
         "asset, capture that interaction concretely so the next heartbeat can tell "
-        "the asset was already touched recently and avoid redundant follow-up."
+        "the asset was already touched recently and avoid redundant follow-up.\n\n"
+        "If the task or result includes human guidance about what the agent should "
+        "work on, avoid, prioritize, de-prioritize, or change in future plans, store "
+        'that as a category=\"direction\" memory. This is especially important for '
+        "comments, mentions, plan-review feedback, and replies on direction-proposal "
+        "posts."
     )
 
 
@@ -175,18 +205,32 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         data = json.loads(text)
 
-        facts_raw = data.get("facts_to_store", [])
+        facts_raw = data.get("candidates", data.get("facts_to_store", []))
         facts = []
         for fact in facts_raw:
             if isinstance(fact, str):
                 facts.append({"text": fact, "category": "fact", "importance": 0.5})
             elif isinstance(fact, dict):
+                category = fact.get("category", "fact")
+                subject_type = fact.get("subject_type")
+                if not subject_type:
+                    subject_type = (
+                        "agent"
+                        if category in {"learning", "decision", "direction", "observation"}
+                        else "user"
+                    )
+                asset_ids = fact.get("asset_ids", fact.get("asset_refs", []))
                 facts.append(
                     {
                         "text": fact.get("text", ""),
-                        "category": fact.get("category", "fact"),
+                        "subject_type": subject_type,
+                        "subject_id_hint": fact.get("subject_id_hint", fact.get("subject_id", "")),
+                        "category": category,
+                        "team_ids": fact.get("team_ids", []),
+                        "asset_ids": asset_ids,
                         "importance": fact.get("importance", 0.5),
-                        "asset_refs": fact.get("asset_refs", []),
+                        "confidence": fact.get("confidence", 0.7),
+                        "asset_refs": asset_ids,
                     }
                 )
 

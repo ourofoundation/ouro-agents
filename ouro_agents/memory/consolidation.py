@@ -179,8 +179,9 @@ def decay_old_memories(
     config: MemoryConfig,
     team_id: str | None = None,
 ) -> int:
-    """Halve the importance of memories older than decay_after_days. Returns count."""
-    if not config.decay_after_days:
+    """Apply category-specific importance decay to old memories. Returns count."""
+    decay_rules = config.decay_rules or {}
+    if not decay_rules and not config.decay_after_days:
         return 0
     if not team_id:
         # Vector memories are team-owned. Avoid touching every team's memories
@@ -193,11 +194,19 @@ def decay_old_memories(
         logger.warning("Failed to load memories for decay: %s", e)
         return 0
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=config.decay_after_days)
     decayed = 0
 
     for mem in all_memories:
         if not mem.created_at:
+            continue
+        rule = decay_rules.get(mem.category)
+        if rule:
+            after_days = rule.get("after_days")
+            factor = float(rule.get("factor", 0.5))
+        else:
+            after_days = config.decay_after_days
+            factor = 0.5
+        if after_days is None:
             continue
         try:
             created = datetime.fromisoformat(mem.created_at)
@@ -206,8 +215,9 @@ def decay_old_memories(
         except Exception:
             continue
 
+        cutoff = datetime.now(timezone.utc) - timedelta(days=int(after_days))
         if created < cutoff and mem.importance > 0.1:
-            new_importance = max(0.1, mem.importance * 0.5)
+            new_importance = max(0.1, mem.importance * factor)
             try:
                 memory_id = getattr(mem, "id", "") or mem.source
                 backend.update_metadata(memory_id, {"importance": new_importance})

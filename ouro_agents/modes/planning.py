@@ -27,6 +27,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, model_validator
 
 from ..constants import _INTERVAL_RE, parse_json_from_llm
+from ..memory.focus import build_focus_memory_context, is_directional_feedback
 
 if TYPE_CHECKING:
     from ..agent import OuroAgent
@@ -436,6 +437,41 @@ def comment_on_plan(ouro_client, quest_id: str, markdown: str) -> None:
         logger.warning("Failed to comment on plan quest %s: %s", quest_id, e)
 
 
+def remember_plan_feedback_direction(
+    agent: "OuroAgent",
+    cycle: PlanCycle,
+    feedback: str | None,
+) -> None:
+    """Store plan-review feedback that should influence future planning."""
+    if not feedback or not is_directional_feedback(feedback):
+        return
+
+    memory = getattr(agent, "memory", None)
+    agent_cfg = getattr(getattr(agent, "config", None), "agent", None)
+    agent_name = getattr(agent_cfg, "name", "")
+    if not memory or not agent_name:
+        return
+
+    metadata = {
+        "category": "direction",
+        "importance": 0.8,
+        "source": f"plan-feedback:{cycle.quest_id or cycle.id}",
+    }
+    if cycle.quest_id:
+        metadata["asset_refs"] = cycle.quest_id
+
+    try:
+        memory.add(
+            f"Planning guidance from review feedback: {feedback}",
+            agent_id=agent_name,
+            run_id=getattr(agent, "_current_run_id", "") or cycle.id,
+            metadata=metadata,
+            team_id=cycle.team_id,
+        )
+    except Exception as e:
+        logger.warning("Failed to store plan feedback direction memory: %s", e)
+
+
 def notify_controller_plan_ready(
     ouro_client, quest_id: str, controller_username: str | None
 ) -> None:
@@ -523,6 +559,11 @@ for the upcoming period.
 
 Your plan should be realistic given the time available (~{cadence_description}),
 specific enough to guide your heartbeats, and flexible enough to adapt.
+If Additional Context includes work-direction guidance, use it to choose focus,
+scope, and negative constraints before inventing new work.
+Ground every focus choice in the current user goal, an approved quest item,
+work-direction memory, or explicit evidence you have evaluated. Recent platform
+activity alone is not a reason to prioritize a topic.
 
 {previous_plan_section}
 
@@ -551,6 +592,11 @@ You are revising your current plan.{goal_section}
 
 Review what has happened, what's been completed, and what needs to change
 for the upcoming period (~{cadence_description}).
+If Additional Context includes work-direction guidance, use it to adjust focus,
+scope, and negative constraints before inventing new work.
+Ground every focus change in the current user goal, an approved quest item,
+work-direction memory, or explicit evidence you have evaluated. Recent platform
+activity alone is not a reason to prioritize a topic.
 
 ## Current Items
 {current_items_section}
@@ -900,6 +946,17 @@ async def run_planning_heartbeat(
     if plan_store.team_id and agent_cfg.org_id:
         tc = _TC(team_id=plan_store.team_id, org_id=agent_cfg.org_id)
     active_doc_store = _plan_doc_store(agent, plan_store.team_id)
+    direction_context = build_focus_memory_context(
+        getattr(agent, "memory", None),
+        agent_cfg.name,
+        team_id=plan_store.team_id,
+        heading="Work Direction Guidance",
+        guidance=(
+            "Use these memories as strong input when choosing focus and task "
+            "scope. If they conflict with the explicit goal for this planning "
+            "run, prefer the explicit goal."
+        ),
+    )
 
     prompt = build_planning_prompt(
         cadence=planning_cfg.cadence,
@@ -908,6 +965,7 @@ async def run_planning_heartbeat(
         agent_name=agent_cfg.name,
         goal=goal,
         team_context=tc,
+        extra_context=direction_context,
     )
 
     if is_continuation:
@@ -1078,6 +1136,7 @@ async def run_review_heartbeat(
             next_status = "active" if current.status == "active" else "pending_review"
 
         if feedback:
+            remember_plan_feedback_direction(agent, current, feedback)
             if next_status != "cancelled":
                 current.plan_text = revised or current.plan_text
                 if current.quest_id and ouro:

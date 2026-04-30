@@ -53,5 +53,5 @@ Keep the workspace tidy:
 Steps:
 
 1. Write the artifact with `write_file` (path relative to workspace root).
-2. `load_tool("ouro:create_file")` and pass **`file_path`** using that same relative path. Alternatively, use **`file_content_text` + `file_name`** or **`file_content_base64` + `file_name`** when inline payload is preferable.
+2. `load_tool(["ouro:create_file"])` and pass **`file_path`** using that same relative path. Alternatively, use **`file_content_text` + `file_name`** or **`file_content_base64` + `file_name`** when inline payload is preferable.
 3. Include `org_id`, `team_id`, `name`, and optional `description` / `visibility`.

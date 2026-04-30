@@ -51,6 +51,7 @@ class ModeProfile(BaseModel):
     # Tool access: when True, MCP tools are filtered to ``default_servers`` only
     restricted_servers: bool = False
     default_servers: list[str] = Field(default_factory=lambda: ["ouro"])
+    allow_delegation: bool = True
     # None = all memory tools available; list = restrict to these names
     memory_tool_filter: list[str] | None = None
 
@@ -74,12 +75,25 @@ class ModeProfile(BaseModel):
 # Built-in profiles
 # ---------------------------------------------------------------------------
 
+AUTONOMOUS_ACTION_PRELOADS = [
+    "ouro:search_assets",
+    "ouro:get_asset",
+    "ouro:execute_route",
+    "ouro:get_action",
+]
+
+CHAT_DISCOVERY_PRELOADS = [
+    "ouro:get_organizations",
+    "ouro:get_teams",
+]
+
+
 CHAT = ModeProfile(
     name="chat",
     framing=CHAT_FRAMING,
     output_format=CHAT_OUTPUT,
     max_steps=20,
-    preload_tools=[],
+    preload_tools=CHAT_DISCOVERY_PRELOADS,
     load_conversation_state=True,
     include_chat_conversation_id=True,
     skip_preflight=True,
@@ -97,7 +111,7 @@ CHAT_REPLY = ModeProfile(
     framing=CHAT_FRAMING,
     output_format="",  # dynamic — see framing.CHAT_REPLY_OUTPUT
     max_steps=20,
-    preload_tools=[],
+    preload_tools=CHAT_DISCOVERY_PRELOADS,
     load_conversation_state=True,
     include_chat_conversation_id=True,
     skip_preflight=True,
@@ -114,6 +128,7 @@ AUTONOMOUS = ModeProfile(
     framing=AUTONOMOUS_FRAMING,
     output_format=AUTONOMOUS_OUTPUT,
     max_steps=20,
+    preload_tools=AUTONOMOUS_ACTION_PRELOADS,
 )
 
 HEARTBEAT = ModeProfile(
@@ -121,7 +136,7 @@ HEARTBEAT = ModeProfile(
     framing=HEARTBEAT_FRAMING,
     output_format=HEARTBEAT_OUTPUT,
     max_steps=20,
-    preload_tools=["ouro:get_asset", "ouro:create_comment"],
+    preload_tools=["ouro:get_asset", "ouro:create_comment", "ouro:create_post"],
     restricted_servers=True,
     lightweight=True,
     skip_preflight=True,

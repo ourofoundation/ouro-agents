@@ -23,7 +23,10 @@ def _load_artifacts_module():
     return module
 
 
-fetch_asset_content = _load_artifacts_module().fetch_asset_content
+artifacts = _load_artifacts_module()
+fetch_asset_content = artifacts.fetch_asset_content
+PrefetchSpec = artifacts.PrefetchSpec
+resolve_prefetch = artifacts.resolve_prefetch
 
 
 class TestFetchAssetContent(unittest.TestCase):
@@ -79,6 +82,87 @@ class TestFetchAssetContent(unittest.TestCase):
         self.assertIn("Action Input Asset", result)
         self.assertIn("Source Dataset", result)
         self.assertIn('"formula": "Fe2O3"', result)
+
+
+class TestResolvePrefetchComments(unittest.TestCase):
+    def test_marks_focused_top_level_comment_without_reordering(self):
+        def get_comments(**kwargs):
+            self.assertEqual(kwargs, {"parent_id": "post-1"})
+            return {
+                "results": [
+                    {
+                        "id": "comment-1",
+                        "author": "alice",
+                        "text": "First comment",
+                    },
+                    {
+                        "id": "comment-2",
+                        "author": "bob",
+                        "text": "Second comment",
+                    },
+                    {
+                        "id": "comment-3",
+                        "author": "carol",
+                        "text": "Third comment",
+                    },
+                ]
+            }
+
+        result = resolve_prefetch(
+            {"ouro:get_comments": get_comments},
+            PrefetchSpec(
+                comment_parent_ids=["post-1"],
+                focus_comment_id="comment-2",
+            ),
+        )
+
+        self.assertLess(result.index("First comment"), result.index("Second comment"))
+        self.assertLess(result.index("Second comment"), result.index("Third comment"))
+        self.assertIn(
+            "Second comment [id: comment-2] **[current comment to answer]**",
+            result,
+        )
+
+    def test_includes_thread_parent_before_ordered_replies(self):
+        def get_comments(**kwargs):
+            self.assertEqual(kwargs, {"parent_id": "thread-1"})
+            return {
+                "parent": {
+                    "id": "thread-1",
+                    "username": "alice",
+                    "text": "Parent question",
+                    "asset_type": "comment",
+                },
+                "results": [
+                    {
+                        "id": "reply-1",
+                        "author": "bob",
+                        "text": "Earlier reply",
+                    },
+                    {
+                        "id": "reply-2",
+                        "author": "carol",
+                        "text": "Latest reply",
+                    },
+                ],
+            }
+
+        result = resolve_prefetch(
+            {"ouro:get_comments": get_comments},
+            PrefetchSpec(
+                thread_comment_parent_ids=["thread-1"],
+                focus_comment_id="reply-2",
+            ),
+        )
+
+        self.assertLess(result.index("Parent question"), result.index("Earlier reply"))
+        self.assertLess(result.index("Earlier reply"), result.index("Latest reply"))
+        self.assertIn("#### Parent comment", result)
+        self.assertIn("#### Replies in order", result)
+        self.assertIn(
+            "Latest reply [id: reply-2] **[current comment to answer]**",
+            result,
+        )
 
 
 if __name__ == "__main__":

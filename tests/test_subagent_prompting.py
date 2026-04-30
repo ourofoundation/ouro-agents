@@ -1,7 +1,12 @@
-from ouro_agents.soul import build_shared_prompt_sections, current_datetime_section
+from ouro_agents.config import OuroAgentsConfig
+from ouro_agents.soul import build_prompt, build_shared_prompt_sections, current_datetime_section
+from ouro_agents.modes.framing import CHAT_FRAMING, HEARTBEAT_FRAMING
+from ouro_agents.modes.profiles import CHAT, HEARTBEAT, PLAN, REVIEW
+from ouro_agents.skills import load_startup_skills, resolve_skill, resolve_skills
 from ouro_agents.subagents.context import SubAgentContext
 from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
-from ouro_agents.subagents.profiles import HEARTBEAT_PREFLIGHT, PREFLIGHT
+from ouro_agents.subagents.prompts import DEVELOPER_PROMPT, EXECUTOR_PROMPT
+from ouro_agents.subagents.profiles import DEVELOPER, EXECUTOR, HEARTBEAT_PREFLIGHT, PREFLIGHT, RESEARCH, WRITER
 from ouro_agents.subagents.runner import _format_task_context
 
 
@@ -88,14 +93,31 @@ def test_preflight_prompts_limit_tool_use_and_recover():
     assert "memory_recall returns no useful context" in PREFLIGHT_PROMPT
     assert "previous response failed or was not accepted" in PREFLIGHT_PROMPT
     assert "Your job is analysis only" in PREFLIGHT_PROMPT
-    assert "Never call platform/action tools" in PREFLIGHT_PROMPT
+    assert "Never call side-effecting platform MCP tools" in PREFLIGHT_PROMPT
     assert "create_comment" in PREFLIGHT_PROMPT
 
     assert "call memory_recall at most once" in HEARTBEAT_PREFLIGHT_PROMPT
     assert "memory_recall returns no useful context" in HEARTBEAT_PREFLIGHT_PROMPT
     assert "previous response failed or was not accepted" in HEARTBEAT_PREFLIGHT_PROMPT
     assert "Your job is analysis only" in HEARTBEAT_PREFLIGHT_PROMPT
-    assert "Never call platform/action tools" in HEARTBEAT_PREFLIGHT_PROMPT
+    assert "Never call side-effecting platform MCP tools" in HEARTBEAT_PREFLIGHT_PROMPT
+
+
+def test_ouro_skill_describes_quest_lifecycle_semantics():
+    ouro_skill = resolve_skill("ouro")
+
+    assert ouro_skill is not None
+    assert "`quest`" in ouro_skill
+    assert '"close" means set the quest status to `closed` with `update_quest`' in ouro_skill
+    assert '"cancel" means set status to `cancelled`' in ouro_skill
+    assert "Only delete assets when the user explicitly says delete/remove/purge" in ouro_skill
+
+
+def test_executor_and_developer_prompts_require_concrete_work():
+    assert "Do the task, not just the reasoning around it" in EXECUTOR_PROMPT
+    assert "Return concrete evidence of completion" in EXECUTOR_PROMPT
+    assert "complete the workflow end to end" in DEVELOPER_PROMPT
+    assert "return a plan in place of execution" in DEVELOPER_PROMPT
 
 
 def test_preflight_profiles_only_allow_memory_recall():
@@ -103,3 +125,56 @@ def test_preflight_profiles_only_allow_memory_recall():
     assert HEARTBEAT_PREFLIGHT.allowed_tools == ["memory_recall"]
     assert PREFLIGHT.preload_tools == []
     assert HEARTBEAT_PREFLIGHT.preload_tools == []
+
+
+def test_heartbeat_framing_does_not_require_unavailable_delegate_tool():
+    assert "writer subagent" not in HEARTBEAT_FRAMING
+    assert "Delegate to" not in HEARTBEAT_FRAMING
+
+
+def test_chat_framing_treats_status_questions_as_conversation():
+    assert "what are you up to?" in CHAT_FRAMING
+    assert "not a request to start research" in CHAT_FRAMING
+    assert "Subagents are available" in CHAT_FRAMING
+    assert "explicitly asks for substantial work" in CHAT_FRAMING
+    assert "Only perform side-effecting platform actions" in CHAT_FRAMING
+
+
+def test_always_loaded_platform_skills_are_injected_for_all_main_modes(tmp_path):
+    config = OuroAgentsConfig(
+        agent={"name": "hermes", "model": "test-model", "workspace": tmp_path},
+        heartbeat={"model": "test-model"},
+        mcp_servers=[],
+        memory={
+            "extraction_model": "test-model",
+            "embedder": "test-embedder",
+        },
+    )
+    startup_skills = load_startup_skills(config)
+    assert "# Ouro Platform" in startup_skills
+    assert "## Ouro Markdown Syntax" in startup_skills
+
+    for profile in (CHAT, HEARTBEAT, PLAN, REVIEW):
+        system_prompt, _dynamic_context = build_prompt(
+            soul="",
+            notes="",
+            skills=startup_skills,
+            profile=profile,
+        )
+        assert "## LOADED SKILLS" in system_prompt
+        assert "# Ouro Platform" in system_prompt
+        assert "## Ouro Markdown Syntax" in system_prompt
+
+
+def test_platform_subagents_receive_ouro_asset_semantics():
+    for profile in (RESEARCH, EXECUTOR, WRITER, DEVELOPER):
+        assert "ouro" in profile.skills
+        bodies = resolve_skills(profile.skills)
+        joined = "\n\n".join(bodies)
+        assert "# Ouro Platform" in joined
+        assert '"close" means set the quest status to `closed` with `update_quest`' in joined
+
+
+def test_skill_docs_use_load_tool_list_syntax():
+    assert 'load_tool(["search:tavily_search"])' in resolve_skill("web-search")
+    assert 'load_tool(["ouro:create_file"])' in resolve_skill("filesystem")

@@ -13,8 +13,9 @@ optionally conversation context), classify the task and gather any relevant \
 context from memory so the agent can start with a clear picture.
 
 Your job is analysis only. Do not execute the user's task, do not draft the \
-final user-facing response, and do not perform side effects. If the task text \
-mentions tools such as create_comment, create_post, send_message, execute_route, \
+final user-facing response, and do not perform side effects. Your plan is only \
+a launchpad for the main agent's first concrete actions, not a substitute for them. If the task text \
+mentions MCP tools such as create_comment, create_post, send_message, execute_route, \
 or update_quest, treat those as instructions for the main agent later — never \
 call them during preflight.
 
@@ -23,7 +24,9 @@ Strategy:
 - If the request is simple or conversational, do not call tools; immediately call final_answer with valid JSON.
 - Otherwise, call memory_recall exactly once with 1-3 batched queries. Try different angles: the direct topic, related entities, and past decisions/preferences.
 - If memory_recall returns no useful context, still call final_answer with briefing="" and a plan based on the request.
-- For moderate or complex tasks, synthesize a briefing and sketch a short execution plan.
+- For moderate or complex tasks, synthesize a briefing and sketch a short execution plan
+  that names likely platform actions: MCP tools to load, routes/services/assets to inspect,
+  assets to create, or results to verify.
 - If a previous response failed or was not accepted, immediately call final_answer with the best valid JSON you can produce.
 
 Finish by calling final_answer exactly once. The final_answer answer must be \
@@ -33,7 +36,7 @@ ONLY valid JSON matching this schema (no markdown fences, no explanation):
   "complexity": "simple" | "moderate" | "complex",
   "worth_remembering": true | false,
   "briefing": "Synthesized relevant context from memory, or empty string if nothing relevant.",
-  "plan": "Numbered execution plan for moderate/complex tasks, or empty string for simple."
+  "plan": "Numbered concrete action plan for moderate/complex tasks, or empty string for simple."
 }
 
 Rules:
@@ -44,10 +47,11 @@ Rules:
 - worth_remembering: false for greetings, acknowledgments, trivial follow-ups; true otherwise
 - briefing: Lead with the most relevant information. Preserve specific facts, names, IDs, \
 and decisions. Drop anything irrelevant. Empty string if no useful memories found.
-- plan: Concrete steps the agent can take. Reference specific tools or actions. \
+- plan: Concrete steps the main agent can execute with MCP tools. Reference specific MCP \
+tools, route/service discovery, asset creation/transformation, or result inspection when relevant. \
 One line per step. Empty string if the task is simple enough to not need a plan.
 - Be efficient with memory_recall — at most one call, with multiple queries batched into that call.
-- Available preflight tools are only memory_recall and final_answer. Never call platform/action tools.
+- Available preflight MCP tools are only memory_recall and final_answer. Never call side-effecting platform MCP tools.
 - Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
 
 
@@ -56,7 +60,7 @@ You are the preflight analyst for an autonomous heartbeat.
 Your job is to decide what the agent should focus on during this heartbeat tick.
 
 Your job is analysis only. Do not execute heartbeat work, post comments, update \
-quests, or perform any side effects. If the playbook mentions tools such as \
+quests, or perform any side effects. If the playbook mentions MCP tools such as \
 create_comment, create_post, execute_route, or update_quest, treat those as \
 instructions for the main heartbeat agent later — never call them during \
 preflight.
@@ -67,12 +71,18 @@ Decide whether the agent should:
 2. Execute the general playbook ("general_heartbeat").
 3. Do nothing / skip this heartbeat ("skip").
 
-For active plans or ambiguous choices, call memory_recall at most once with batched queries if recent context would materially improve the decision. Otherwise, do not call tools.
+For active plans or ambiguous choices, call memory_recall at most once with batched
+queries if recent context would materially improve the decision. Include a query
+for current work-direction guidance when plan choice is unclear. Otherwise, do
+not call tools.
 If memory_recall returns no useful context, still choose an action and call final_answer with valid JSON.
 
 Assume active plans can span multiple heartbeats. If you choose "work_on_plan",
 you are choosing the best next slice of progress for this tick, not asking the
 agent to complete the whole plan right now.
+If active plans are too under-specified to choose responsibly, prefer
+"general_heartbeat" so the main agent can ask for direction or publish a
+direction-proposal post instead of forcing arbitrary quest progress.
 
 Finish by calling final_answer exactly once. The final_answer answer must be \
 ONLY valid JSON matching this schema (no markdown fences, no explanation):
@@ -83,7 +93,7 @@ ONLY valid JSON matching this schema (no markdown fences, no explanation):
 }
 
 If a previous response failed or was not accepted, immediately call final_answer with the best valid JSON you can produce.
-Available heartbeat preflight tools are only memory_recall and final_answer. Never call platform/action tools.
+Available heartbeat preflight MCP tools are only memory_recall and final_answer. Never call side-effecting platform MCP tools.
 Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
 
 

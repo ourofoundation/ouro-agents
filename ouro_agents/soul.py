@@ -10,18 +10,16 @@ logger = logging.getLogger(__name__)
 
 
 MCP_TOOL_RULES = (
+    "- Terminology: MCP tools are callable functions available to the agent. "
+    "Ouro routes and services are platform endpoints/assets you discover with MCP tools "
+    "and execute through `execute_route`.\n"
     '- MCP tools are deferred. Call `load_tool(["ouro:tool_name"])`, then call the tool by its `call_as` name. '
-    "Preloaded tools (listed below when present) can be called directly — no `load_tool` needed.\n"
+    "Preloaded MCP tools (listed below when present) can be called directly — no `load_tool` needed.\n"
     '- Skills can also be loaded on demand with `load_skill(["skill-name"])` when you need detailed guidance.\n'
     "- Emit real tool calls only — no narration, pseudo-JSON, or plain-text pseudo-calls.\n"
-    "- Omit optional params you don't need (don't pass null). Retry once on failure, then move on.\n"
+    "- Omit optional params you don't need (don't pass null). For the same failed tool call, retry at most once with corrected arguments, then move on.\n"
     "- Batch where possible: load_tool, load_skill, memory_recall, and delegate all accept arrays.\n"
-    "- **Prefer Ouro routes over run_python.** Before writing Python code for a task, first check "
-    "whether an Ouro route can accomplish it: use `search_assets` (type 'route') or recall from memory. "
-    "If a matching route exists, use `execute_route` — it's faster, more reliable, and keeps work on-platform. "
-    "Only fall back to `run_python` when no suitable route exists or for pure computation/data transformation.\n"
     "- File paths are always relative to the workspace root (e.g. 'data/file.json', not 'workspace/data/file.json').\n"
-    "- Link assets in markdown with `[label](asset:<uuid>)` or typed `post:`/`file:`/`dataset:` links.\n"
     "- Memory is curated automatically after each run — facts, daily log entries, and asset references "
     "are extracted from your actions. Focus on the task; memory handles itself.\n"
     "- When memory_recall returns results with asset refs, use get_asset to load the referenced assets if needed.\n"
@@ -32,9 +30,11 @@ MCP_TOOL_RULES = (
 SUBAGENT_RULES = (
     "Subagents run in their own context. Use `delegate` with a list of task specs "
     "(multiple tasks run in parallel). Each spec: `subagent`, `task`, optional `asset_refs` and `return_mode`.\n\n"
+    "**Delegate to accelerate real work, not to avoid it.** A delegation is only useful if you use the returned "
+    "asset/action/result to complete the user's task.\n"
     "**MUST delegate:** web search → `research` (never call search tools yourself), "
     "long-form writing → `writer`, SDK/batch workflows → `developer`, "
-    "focused sub-tasks → `executor`.\n"
+    "focused self-contained sub-tasks → `executor`.\n"
     "**Handle yourself:** simple questions, single tool calls, chat replies, quick lookups.\n\n"
     "Subagents save output as Ouro assets and return JSON with `asset_id`, `name`, `description`. "
     "Use `get_asset(asset_id)` for full content."
@@ -260,8 +260,8 @@ def build_prompt(
             names = ", ".join(f"`{n}`" for n in preloaded_tool_names)
             tool_rules_text += (
                 f"\n\n## PRELOADED TOOLS (ready to call — no load_tool needed)\n"
-                f"These tools are already loaded: {names}. "
-                f"Call them directly. Use `load_tool` only for additional tools."
+                f"These MCP tools are already loaded: {names}. "
+                f"Call them directly. Use `load_tool` only for additional MCP tools."
             )
         tool_rules_text += (
             f"\n\n## DEFERRED TOOL DIRECTORY (name + short description)\n"

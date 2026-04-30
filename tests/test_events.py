@@ -230,6 +230,9 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.prefetch.asset_ids, ["asset-123"])
         self.assertEqual(event_run.prefetch.comment_parent_ids, ["asset-123"])
         self.assertEqual(event_run.prefetch.thread_comment_parent_ids, [])
+        self.assertEqual(event_run.prefetch.focus_comment_id, "comment-456")
+        self.assertEqual(event_run.prefetch.focus_comment_author, "alice")
+        self.assertEqual(event_run.prefetch.focus_comment_text, "What do you think?")
         self.assertEqual(event_run.reply_parent_id, "comment-456")
         self.assertEqual(event_run.thread_parent_id, "asset-123")
         self.assertEqual(event_run.feedback_text, "What do you think?")
@@ -262,6 +265,9 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.prefetch.asset_ids, ["plan-post-1"])
         self.assertEqual(event_run.prefetch.comment_parent_ids, ["plan-post-1"])
         self.assertEqual(event_run.prefetch.thread_comment_parent_ids, ["thread-123"])
+        self.assertEqual(event_run.prefetch.focus_comment_id, "comment-789")
+        self.assertEqual(event_run.prefetch.focus_comment_author, "alice")
+        self.assertEqual(event_run.prefetch.focus_comment_text, "Can we tighten the scope?")
         self.assertIn("post (id: plan-post-1)", event_run.task)
         self.assertIn("`create_comment` on `comment-789`", event_run.task)
         self.assertEqual(event_run.reply_parent_id, "comment-789")
@@ -269,6 +275,33 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.feedback_text, "Can we tighten the scope?")
         self.assertEqual(event_run.actor_user_id, "actor-1")
         self.assertEqual(event_run.root_asset_id, "plan-post-1")
+
+    def test_mention_reply_uses_parent_asset_id_for_thread_context(self):
+        """Mention reply context uses the comment's parent asset."""
+        event_run = build_event_run_context(
+            {
+                "event": "mention",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "alice", "is_agent": False},
+                    "source_id": "comment-789",
+                    "source_asset_type": "comment",
+                    "target_id": "mentioned-user-1",
+                    "target_asset_type": "user",
+                    "parent_asset_id": "thread-123",
+                    "root_asset_id": "plan-post-1",
+                    "root_asset_type": "post",
+                    "text": "@agent can we tighten the scope?",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.prefetch.asset_ids, ["plan-post-1"])
+        self.assertEqual(event_run.prefetch.comment_parent_ids, ["plan-post-1"])
+        self.assertEqual(event_run.prefetch.thread_comment_parent_ids, ["thread-123"])
+        self.assertEqual(event_run.thread_parent_id, "thread-123")
+        self.assertIn("current thread", event_run.task)
 
     def test_comment_task_includes_no_action_guidance(self):
         """Comment tasks should include strong NO_ACTION decision framing."""

@@ -90,7 +90,7 @@ def _team_context_hint(ctx: "CommentContext") -> Optional[str]:
         parts.append(f', org: "{org_label}"')
     parts.append(
         "). When searching for or browsing content related to this "
-        "conversation (e.g. \"what's the latest\"), pass this `team_id` "
+        'conversation (e.g. "what\'s the latest"), pass this `team_id` '
         "to `search_assets` so results are scoped to this team. "
         "Only search more broadly if the user explicitly asks."
     )
@@ -112,6 +112,7 @@ class CommentContext:
     root_asset_type: str
     target_id: Optional[str]
     target_asset_type: Optional[str]
+    parent_asset_id: Optional[str]
     is_thread_reply: bool
     reply_parent_id: str
     comment_text: str
@@ -129,20 +130,44 @@ class CommentContext:
     def from_event(cls, event: WebhookEvent) -> "CommentContext":
         data = event.data
         sender = data.get("sender") or data.get("user")
+        root_asset_id = (
+            data.get("root_asset_id")
+            or data.get("target_id")
+            or data.get("source_id")
+            or "unknown"
+        )
+        root_asset_type = (
+            data.get("root_asset_type")
+            or data.get("target_asset_type")
+            or data.get("source_asset_type")
+            or "unknown"
+        )
+        parent_asset_id = data.get("parent_asset_id")
+        target_asset_type = data.get("target_asset_type")
+        is_thread_reply = target_asset_type == "comment" or (
+            bool(parent_asset_id) and parent_asset_id != root_asset_id
+        )
         return cls(
             source_id=data.get("source_id", "unknown"),
             source_asset_type=data.get("source_asset_type", "unknown"),
-            root_asset_id=data.get("root_asset_id") or data.get("target_id") or data.get("source_id") or "unknown",
-            root_asset_type=data.get("root_asset_type") or data.get("target_asset_type") or data.get("source_asset_type") or "unknown",
+            root_asset_id=root_asset_id,
+            root_asset_type=root_asset_type,
             target_id=data.get("target_id"),
-            target_asset_type=data.get("target_asset_type"),
-            is_thread_reply=data.get("target_asset_type") == "comment",
+            target_asset_type=target_asset_type,
+            parent_asset_id=parent_asset_id,
+            is_thread_reply=is_thread_reply,
             reply_parent_id=data.get("source_id", "unknown"),
             comment_text=data.get("text", ""),
             user=sender if isinstance(sender, dict) else None,
             team=data.get("team"),
             organization=data.get("organization"),
         )
+
+    @property
+    def thread_context_parent_id(self) -> Optional[str]:
+        if not self.is_thread_reply:
+            return None
+        return self.parent_asset_id or self.target_id
 
     def build_prefetch(self) -> PrefetchSpec:
         can_fetch = (
@@ -158,13 +183,17 @@ class CommentContext:
         )
 
         thread_comment_parent_ids: list[str] = []
-        if self.is_thread_reply and self.target_id and self.target_id != "unknown":
-            thread_comment_parent_ids.append(self.target_id)
+        thread_parent_id = self.thread_context_parent_id
+        if thread_parent_id and thread_parent_id != "unknown":
+            thread_comment_parent_ids.append(thread_parent_id)
 
         return PrefetchSpec(
             asset_ids=asset_ids,
             comment_parent_ids=comment_parent_ids,
             thread_comment_parent_ids=thread_comment_parent_ids,
+            focus_comment_id=self.source_id if self.source_id != "unknown" else None,
+            focus_comment_author=self.commenter,
+            focus_comment_text=self.comment_text,
         )
 
 
@@ -368,6 +397,14 @@ def build_event_run_context(
         elif isinstance(data.get("team_id"), str):
             event_team_id = data.get("team_id")
 
+    event_thread_parent_id = None
+    if comment_ctx:
+        event_thread_parent_id = (
+            comment_ctx.thread_context_parent_id
+            or comment_ctx.parent_asset_id
+            or comment_ctx.target_id
+        )
+
     return EventRunContext(
         event_type=event.event_type,
         task=task,
@@ -381,7 +418,7 @@ def build_event_run_context(
         root_asset_id=data.get("root_asset_id"),
         root_asset_type=data.get("root_asset_type"),
         reply_parent_id=event.source_id if is_comment else None,
-        thread_parent_id=comment_ctx.target_id if comment_ctx else None,
+        thread_parent_id=event_thread_parent_id,
         feedback_text=comment_ctx.comment_text if comment_ctx else None,
         actor_user_id=event.actor_user_id,
         team_id=event_team_id,

@@ -52,3 +52,26 @@ def test_decay_filters_by_team_and_updates_memory_id():
     assert count == 1
     assert backend.get_all_calls[0]["team_id"] == "team-42"
     assert backend.updated == [("mem-1", {"importance": 0.4})]
+
+
+def test_decay_preserves_direction_memories():
+    class DirectionBackend(_FakeBackend):
+        def get_all(self, **kwargs):
+            self.get_all_calls.append(kwargs)
+            created = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+            return [
+                MemoryResult(
+                    id="mem-direction",
+                    text="Always prioritize benchmark quality.",
+                    category="direction",
+                    importance=0.8,
+                    created_at=created,
+                )
+            ]
+
+    backend = DirectionBackend()
+
+    count = decay_old_memories(backend, "hermes", _config(), team_id="team-42")
+
+    assert count == 0
+    assert backend.updated == []

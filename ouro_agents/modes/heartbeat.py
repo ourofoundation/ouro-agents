@@ -154,8 +154,11 @@ def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str
     """Instruction block for working on an active plan during one heartbeat."""
     guidance = (
         "Treat this heartbeat as a bounded work session. Make one meaningful slice "
-        "of progress, then stop. Do not try to clear an entire multi-step plan in "
-        "a single tick, and do not feel pressure to use all available steps."
+        "of progress that changes platform state or produces a useful artifact, then stop. "
+        "Good slices include running a route, creating or updating a dataset/file/post, "
+        "adding a substantive comment, or completing a quest item with evidence. Do not "
+        "try to clear an entire multi-step plan in a single tick, and do not feel pressure "
+        "to use all available steps."
     )
     if min_heartbeats > 1:
         guidance += (
@@ -173,7 +176,7 @@ def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str
         "completion note and any produced asset id. Use `list_quest_items` if the "
         "local item context seems stale.\n"
         "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
-        "you MUST use the `create_comment` tool to comment on the plan's original quest "
+        "you MUST use the `create_comment` MCP tool to comment on the plan's original quest "
         "(using the quest id shown above). Summarize the work you accomplished and include "
         "links to any posts or assets you created."
     )
