@@ -311,6 +311,31 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.thread_parent_id, "thread-123")
         self.assertIn("current thread", event_run.task)
 
+    def test_mention_without_root_does_not_use_mentioned_user_as_root(self):
+        event_run = build_event_run_context(
+            {
+                "event": "mention",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "alice", "is_agent": False},
+                    "source_id": "comment-789",
+                    "source_asset_type": "comment",
+                    "target_id": "mentioned-user-1",
+                    "target_asset_type": "user",
+                    "parent_asset_id": "thread-123",
+                    "parent_asset_type": "comment",
+                    "text": "@agent can we tighten the scope?",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.root_asset_id, "thread-123")
+        self.assertEqual(event_run.root_asset_type, "comment")
+        self.assertEqual(event_run.thread_parent_id, "thread-123")
+        self.assertEqual(event_run.prefetch.thread_comment_parent_ids, [])
+        self.assertNotIn("mentioned-user-1", event_run.prefetch.asset_ids)
+
     def test_comment_task_includes_no_action_guidance(self):
         """Comment tasks should include strong NO_ACTION decision framing."""
         event_run = build_event_run_context(

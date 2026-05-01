@@ -67,11 +67,18 @@ class EventPool:
             return f"conversation:{event_run.conversation_id}"
 
         if event_run.event_type in {"comment", "mention"}:
-            root_id = event_run.root_asset_id
-            if not root_id:
+            if _is_top_level_asset_comment(event_run):
+                thread_id = event_run.source_id or event_run.reply_parent_id
+            else:
+                thread_id = (
+                    event_run.thread_parent_id
+                    or event_run.root_asset_id
+                    or event_run.reply_parent_id
+                    or event_run.source_id
+                )
+            if not thread_id:
                 return None
-            thread_id = event_run.thread_parent_id or root_id
-            return f"thread:{root_id}:{thread_id}"
+            return f"thread:{thread_id}"
 
         return None
 
@@ -248,3 +255,13 @@ def _compact_text(text: str, limit: int = 500) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[: limit - 3]}..."
+
+
+def _is_top_level_asset_comment(event: EventRunContext) -> bool:
+    if event.event_type not in {"comment", "mention"}:
+        return False
+    if not (event.source_id or event.reply_parent_id):
+        return False
+    if event.root_asset_type == "comment":
+        return False
+    return not event.thread_parent_id or event.thread_parent_id == event.root_asset_id

@@ -70,9 +70,76 @@ class TestEventPool(unittest.TestCase):
                     thread_parent_id="thread-1",
                 )
             ),
-            "thread:post-1:thread-1",
+            "thread:thread-1",
         )
         self.assertFalse(pool.is_poolable(_event("unknown-event")))
+
+    def test_comment_and_mention_payload_variants_share_thread_key(self):
+        async def dispatch(event_run: EventRunContext) -> None:
+            dispatched.append(event_run)
+
+        dispatched: list[EventRunContext] = []
+        pool = EventPool(
+            _config(**{"comment": _timing(), "mention": _timing()}),
+            dispatch,
+        )
+
+        comment_event = _event(
+            "comment",
+            conversation_id=None,
+            root_asset_id="post-1",
+            thread_parent_id="thread-1",
+            source_id="comment-1",
+        )
+        mention_event = _event(
+            "mention",
+            conversation_id=None,
+            root_asset_id="mentioned-user",
+            thread_parent_id="thread-1",
+            source_id="comment-1",
+        )
+
+        self.assertEqual(pool.pool_key(comment_event), pool.pool_key(mention_event))
+        self.assertEqual(pool.pool_key(comment_event), "thread:thread-1")
+
+    def test_top_level_comments_pool_by_source_comment(self):
+        async def dispatch(event_run: EventRunContext) -> None:
+            dispatched.append(event_run)
+
+        dispatched: list[EventRunContext] = []
+        pool = EventPool(
+            _config(**{"comment": _timing(), "mention": _timing()}),
+            dispatch,
+        )
+
+        first_comment = _event(
+            "comment",
+            conversation_id=None,
+            root_asset_id="post-1",
+            thread_parent_id="post-1",
+            source_id="comment-1",
+            text="first top-level",
+        )
+        second_comment = _event(
+            "comment",
+            conversation_id=None,
+            root_asset_id="post-1",
+            thread_parent_id="post-1",
+            source_id="comment-2",
+            text="second top-level",
+        )
+        mention_for_first = _event(
+            "mention",
+            conversation_id=None,
+            root_asset_id="post-1",
+            thread_parent_id="post-1",
+            source_id="comment-1",
+            text="@agent first top-level",
+        )
+
+        self.assertEqual(pool.pool_key(first_comment), "thread:comment-1")
+        self.assertEqual(pool.pool_key(second_comment), "thread:comment-2")
+        self.assertEqual(pool.pool_key(mention_for_first), "thread:comment-1")
 
     def test_multiple_events_for_one_key_dispatch_once(self):
         async def exercise() -> list[EventRunContext]:
@@ -161,6 +228,7 @@ class TestEventPool(unittest.TestCase):
                     root_asset_id="post-1",
                     source_id="comment-1",
                     text="first feedback",
+                    is_agent=True,
                 ),
                 _event(
                     "comment",
@@ -177,6 +245,7 @@ class TestEventPool(unittest.TestCase):
         self.assertIn("second feedback", pooled.feedback_text)
         self.assertIn("first feedback", pooled.feedback_text)
         self.assertIn("@bot (agent)", pooled.feedback_text)
+        self.assertNotIn("All events in this batch came from agents", pooled.feedback_text)
 
 
 if __name__ == "__main__":

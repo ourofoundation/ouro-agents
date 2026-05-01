@@ -130,20 +130,24 @@ class CommentContext:
     def from_event(cls, event: WebhookEvent) -> "CommentContext":
         data = event.data
         sender = data.get("sender") or data.get("user")
+        parent_asset_id = data.get("parent_asset_id")
+        target_asset_type = data.get("target_asset_type")
+        target_id = data.get("target_id")
+        target_is_user = target_asset_type == "user"
         root_asset_id = (
             data.get("root_asset_id")
-            or data.get("target_id")
+            or parent_asset_id
+            or (target_id if not target_is_user else None)
             or data.get("source_id")
             or "unknown"
         )
         root_asset_type = (
             data.get("root_asset_type")
-            or data.get("target_asset_type")
+            or data.get("parent_asset_type")
+            or (target_asset_type if not target_is_user else None)
             or data.get("source_asset_type")
             or "unknown"
         )
-        parent_asset_id = data.get("parent_asset_id")
-        target_asset_type = data.get("target_asset_type")
         is_thread_reply = target_asset_type == "comment" or (
             bool(parent_asset_id) and parent_asset_id != root_asset_id
         )
@@ -152,7 +156,7 @@ class CommentContext:
             source_asset_type=data.get("source_asset_type", "unknown"),
             root_asset_id=root_asset_id,
             root_asset_type=root_asset_type,
-            target_id=data.get("target_id"),
+            target_id=target_id,
             target_asset_type=target_asset_type,
             parent_asset_id=parent_asset_id,
             is_thread_reply=is_thread_reply,
