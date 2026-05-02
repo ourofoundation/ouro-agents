@@ -8,6 +8,7 @@ from uuid import uuid4
 from typing import Optional
 
 from .agent import OuroAgent
+from .cancellation import RunCancelled
 from .config import OuroAgentsConfig, RunMode
 from .display import OuroDisplay, Verbosity, set_display
 from .modes.planning import PlanStore
@@ -81,15 +82,20 @@ def _run_chat(
                 display.info(f"Switched to: {conversation_id}")
                 continue
 
-            result = asyncio.run(
-                agent.run(
-                    user_input,
-                    conversation_id=conversation_id,
-                    mode=RunMode.CHAT,
-                    user_id="creator",
-                    observer=observer,
+            try:
+                result = asyncio.run(
+                    agent.run(
+                        user_input,
+                        conversation_id=conversation_id,
+                        mode=RunMode.CHAT,
+                        user_id="creator",
+                        observer=observer,
+                    )
                 )
-            )
+            except (KeyboardInterrupt, RunCancelled):
+                agent.cancel_active_runs("interrupted")
+                display.info("Run cancelled.")
+                continue
             display.chat_response(result)
 
 
@@ -183,9 +189,14 @@ def main():
             else:
                 debug_md_path = Path(args.debug_md).expanduser().resolve()
         with OuroAgent(config) as agent:
-            result = asyncio.run(
-                agent.run(args.task, debug_markdown_path=debug_md_path)
-            )
+            try:
+                result = asyncio.run(
+                    agent.run(args.task, debug_markdown_path=debug_md_path)
+                )
+            except (KeyboardInterrupt, RunCancelled):
+                agent.cancel_active_runs("interrupted")
+                display.info("Run cancelled.")
+                sys.exit(130)
         display.run_result(result)
         if debug_md_path is not None:
             display.info(f"Debug markdown written to {debug_md_path}")
@@ -193,7 +204,12 @@ def main():
         sys.exit(_run_chat(args.config, args.conversation_id, display))
     elif args.command == "heartbeat":
         with OuroAgent(config) as agent:
-            result = asyncio.run(agent.heartbeat())
+            try:
+                result = asyncio.run(agent.heartbeat())
+            except (KeyboardInterrupt, RunCancelled):
+                agent.cancel_active_runs("interrupted")
+                display.info("Heartbeat cancelled.")
+                sys.exit(130)
         display.heartbeat_result(result)
     elif args.command == "plan":
         with OuroAgent(config) as agent:
@@ -217,12 +233,17 @@ def main():
                 display.info("planning: no team available")
                 sys.exit(1)
 
-            result = asyncio.run(
-                agent.force_planning_heartbeat(
-                    goal=args.prompt,
-                    team_id=selected_team_id,
+            try:
+                result = asyncio.run(
+                    agent.force_planning_heartbeat(
+                        goal=args.prompt,
+                        team_id=selected_team_id,
+                    )
                 )
-            )
+            except (KeyboardInterrupt, RunCancelled):
+                agent.cancel_active_runs("interrupted")
+                display.info("Planning cancelled.")
+                sys.exit(130)
         display.planning_result(result)
     elif args.command == "review":
         from .teams import TeamRegistry
@@ -239,7 +260,12 @@ def main():
             display.info("Review cancelled.")
             sys.exit(0)
         with OuroAgent(config) as agent:
-            result = asyncio.run(agent.force_review_heartbeat(plan_id=selected_plan_id))
+            try:
+                result = asyncio.run(agent.force_review_heartbeat(plan_id=selected_plan_id))
+            except (KeyboardInterrupt, RunCancelled):
+                agent.cancel_active_runs("interrupted")
+                display.info("Review cancelled.")
+                sys.exit(130)
         display.review_result(result)
 
 

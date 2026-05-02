@@ -18,49 +18,10 @@ def _load_events_module():
         package.__path__ = [str(package_dir)]
         sys.modules["ouro_agents"] = package
 
-    ouro_package = types.ModuleType("ouro")
-    ouro_package.__path__ = []
-    sys.modules["ouro"] = ouro_package
-
-    ouro_events = types.ModuleType("ouro.events")
-
-    @dataclass(frozen=True)
-    class WebhookEvent:
-        event_type: str
-        data: dict
-        timestamp: str | None
-        recipient_user_id: str | None
-        conversation_id: str | None
-        actor_user_id: str | None
-        sender_username: str | None
-        source_id: str | None
-        source_asset_type: str | None
-
-    def parse_webhook_event(body):
-        data = body.get("data", {})
-        event_type = body["event"].strip().lower().replace("_", "-")
-        sender = data.get("sender") if isinstance(data.get("sender"), dict) else {}
-        user = data.get("user") if isinstance(data.get("user"), dict) else {}
-        return WebhookEvent(
-            event_type=event_type,
-            data=data,
-            timestamp=body.get("timestamp"),
-            recipient_user_id=body.get("user_id"),
-            conversation_id=data.get("conversation_id"),
-            actor_user_id=data.get("user_id") or sender.get("id") or user.get("id"),
-            sender_username=(
-                data.get("sender_username")
-                or sender.get("username")
-                or (data.get("sender") if isinstance(data.get("sender"), str) else None)
-                or user.get("username")
-            ),
-            source_id=data.get("source_id"),
-            source_asset_type=data.get("source_asset_type"),
-        )
-
-    ouro_events.WebhookEvent = WebhookEvent
-    ouro_events.parse_webhook_event = parse_webhook_event
-    sys.modules["ouro.events"] = ouro_events
+    # Import the real ouro.events from the in-repo `ouro-py` package; it is
+    # the canonical source of `WebhookEvent` parsing and parity-tested against
+    # the ouro-js registry.
+    import ouro.events  # noqa: F401
 
     config_module = types.ModuleType("ouro_agents.config")
 
@@ -247,6 +208,29 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.event_text, "What do you think?")
         self.assertEqual(event_run.root_asset_id, "asset-123")
         self.assertEqual(event_run.root_asset_type, "post")
+
+    def test_comment_carries_notification_ids(self):
+        event_run = build_event_run_context(
+            {
+                "event": "mention",
+                "user_id": "recipient-1",
+                "notification_id": "notification-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "alice", "is_agent": False},
+                    "source_id": "comment-456",
+                    "source_asset_type": "comment",
+                    "target_id": "asset-123",
+                    "target_asset_type": "post",
+                    "root_asset_id": "asset-123",
+                    "root_asset_type": "post",
+                    "text": "@agent what do you think?",
+                    "notification_id": "notification-1",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.notification_ids, ("notification-1",))
 
     def test_thread_reply_prefetches_post_comments_and_thread(self):
         """Thread reply: load the post, all top-level comments, AND the thread."""

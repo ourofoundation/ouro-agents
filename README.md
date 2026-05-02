@@ -1,148 +1,233 @@
 # ouro-agents
 
-A Python package that lets anyone deploy a persistent, autonomous AI agent on the Ouro platform. The agent connects to Ouro via MCP, maintains its own identity and memory, and runs proactively on a schedule.
+A Python package for running long-lived autonomous agents on the
+[Ouro](https://ouro.foundation) platform. An agent process owns a
+workspace on disk, talks to Ouro through MCP, maintains its own memory,
+and runs in several modes — interactive chat, one-shot tasks, scheduled
+heartbeats, and a multi-cycle planning loop tied to Ouro quests.
 
-## Setup
+## Highlights
+
+- **Multiple run modes** — chat, autonomous, heartbeat, plan, review,
+  chat-reply. Each mode has a declarative profile controlling prompt
+  framing, tool access, and lifecycle.
+- **Subagents** — built-in `research`, `planner`, `executor`, `writer`,
+  `developer` profiles, plus a parallel `delegate` tool for fan-out work.
+  Custom profiles can be dropped into `workspace/subagents/`.
+- **Three-layer memory** — vector memory (mem0 + Chroma) for curated
+  facts, working memory (`MEMORY.md` and daily logs) maintained by the
+  agent itself, and conversation state for chat continuity.
+- **Doc store** — local markdown mirrored to Ouro posts, scoped per-team.
+- **Planning loop** — generates plan cycles tied to Ouro quests, drives
+  them across heartbeats, incorporates comment feedback through review
+  heartbeats.
+- **Scheduler** — heartbeat, consolidation, refinement, plus
+  user-defined recurring tasks (cron or interval).
+- **Refinement & cleanup** — periodic LLM-driven rewrites of working
+  memory based on a typed change-set queue, plus deterministic cleanup
+  for `asset.deleted` webhooks.
+- **OpenRouter integration** — prompt caching for Anthropic models,
+  per-mode and per-subagent reasoning effort, multi-model setups.
+
+## Install
 
 ```bash
 pip install -e .
 ```
 
-Set `OURO_API_KEY`, and if you want to target a non-production backend, set
-`OURO_BASE_URL` (for example `http://localhost:8003` for local dev).
+Python 3.10+ is required.
 
-## Running
+## Quickstart
 
-Start the server:
+Set credentials and start an interactive chat:
+
 ```bash
-ouro-agents serve --config config.json
+export OPENROUTER_API_KEY=sk-or-...
+export OURO_API_KEY=ouro_...
+
+cp config.example.json config.json
+# edit config.json: set agent.name, agent.model, agent.org_id, mcp_servers[].command
+
+ouro-agents chat
 ```
 
-Run a single task:
+Or run a one-shot task:
+
 ```bash
 ouro-agents run "What teams am I on?"
 ```
 
-Use the HTTP API for threaded conversation-style chat:
+Or start the long-running server (heartbeats + webhook receiver):
+
 ```bash
-# First message (new thread auto-created)
+ouro-agents serve --config config.json
+```
+
+The full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
+
+## Documentation
+
+Full docs live in [`docs/`](docs/README.md). A few starting points:
+
+- [Concepts overview](docs/concepts.md) — how the agent loop, modes,
+  subagents, memory, and planning fit together.
+- [Configuration reference](docs/configuration.md) — every field in
+  `config.json`.
+- [CLI reference](docs/cli.md) — every subcommand and flag.
+- [Run modes](docs/run-modes.md) — chat, autonomous, heartbeat, plan, review.
+- [Subagents](docs/subagents.md) — built-in profiles, custom profiles,
+  the `delegate` tool.
+- [Memory model](docs/memory.md) — vector memory, doc store, working
+  memory, reflection.
+- [Workspace layout](docs/workspace.md) — what every directory is for.
+- [Planning](docs/planning.md) — the plan / review cycle.
+- [HTTP API & webhooks](docs/http-api.md) — `/run`, `/health`, event routing.
+- [Glossary](docs/glossary.md) — recurring terms.
+
+## CLI cheatsheet
+
+```bash
+ouro-agents serve --config config.json          # FastAPI server + scheduler
+ouro-agents run "Summarize today's activity"    # one-shot autonomous run
+ouro-agents chat [--conversation-id <id>]       # interactive REPL
+ouro-agents heartbeat                           # one heartbeat tick
+ouro-agents plan ["goal"] [--team-id <id>]      # force a planning heartbeat
+ouro-agents review                              # force a review heartbeat
+```
+
+Add `-v` for verbose output or `--debug-md` to capture a full run trace
+(see the [CLI reference](docs/cli.md)).
+
+## HTTP API
+
+While `ouro-agents serve` is running:
+
+```bash
+# Threaded conversation-style chat
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"task":"Hi, can you help me post a dataset?","session_id":"demo-user-1"}'
 
-# Next message in same session (same conversation_id reused automatically)
+# Same session reuses the same conversation id automatically
 curl -X POST http://localhost:8000/run \
   -H "Content-Type: application/json" \
   -d '{"task":"Use the Machine Learning team","session_id":"demo-user-1"}'
+
+# Health
+curl http://localhost:8000/health
 ```
 
-Start an interactive chat session:
-```bash
-ouro-agents chat
+The server also accepts Ouro webhook events at `server.webhook_path`
+(default `/events`). See [docs/http-api.md](docs/http-api.md) and
+[docs/events.md](docs/events.md).
+
+## Workspace
+
+The agent reads and writes everything under `agent.workspace` (default
+`./workspace`):
+
+```
+workspace/
+├── SOUL.md           # required: identity, values, operating rules
+├── NOTES.md          # optional: ambient notes
+├── MEMORY.md         # curated cross-team memory
+├── conversations/    # per-conversation state and turns
+├── daily-logs/       # daily log markdown
+├── teams/<id>/       # team-scoped memory, plans, doc registry
+├── memory/           # mem0 + Chroma store (opaque)
+├── skills/           # workspace skill overrides
+└── subagents/        # custom SubAgentProfile files
 ```
 
-Chat with an existing conversation thread:
-```bash
-ouro-agents chat --conversation-id <id>
-```
+See [docs/workspace.md](docs/workspace.md).
 
-Trigger a heartbeat tick:
-```bash
-ouro-agents heartbeat
-```
+## Configuration at a glance
 
-## Subagents
-
-The main agent can delegate focused work to built-in subagents such as
-`research`, `planner`, `executor`, and `writer`.
-
-You can set a default model for subagents and configure individual profiles in
-`config.json`:
+Minimal `config.json` shape (full reference in
+[docs/configuration.md](docs/configuration.md)):
 
 ```json
-"subagents": {
-  "default_model": "google/gemini-2.5-flash",
-  "writer": {
-    "model": "anthropic/claude-sonnet-4"
-  },
-  "research": {
-    "max_steps": 30
-  }
-}
-```
-
-- `subagents.default_model`: fallback model used by subagents when a profile
-  does not specify its own override.
-- `subagents.<name>.model`: choose a model for a specific subagent.
-- `subagents.<name>.max_steps`: tune the agent loop for agent-mode
-  subagents like `research` and `executor`.
-
-You can also configure the human account that controls the agent:
-
-```json
-"controller": {
-  "username": "your-handle"
-}
-```
-
-- `controller.username`: the human Ouro username to mention as `{@username}` when a new plan
-  enters review, so the quest is clearly flagged as ready for review.
-
-## Run Modes
-
-Main-agent config now lives under `modes.<name>` instead of being split
-between `agent`, `planning`, and `heartbeat`.
-
-```json
-"modes": {
-  "run": {
-    "max_steps": 30
-  },
-  "chat": {
-    "max_steps": 12
-  },
-  "planning": {
-    "enabled": true,
+{
+  "agent": {
+    "name": "hermes",
     "model": "anthropic/claude-4.6-sonnet",
-    "cadence": "4h",
-    "min_heartbeats": 4,
-    "review_window": "1h",
-    "auto_approve": true,
-    "max_steps": 6
+    "org_id": "00000000-0000-0000-0000-000000000000",
+    "workspace": "./workspace"
   },
-  "heartbeat": {
-    "enabled": true,
-    "every": "1h",
-    "model": "openai/gpt-4.1-mini",
-    "active_hours": {
-      "start": "09:00",
-      "end": "17:00",
-      "timezone": "America/Chicago"
-    },
-    "max_steps": 8
-  }
+  "modes": {
+    "run":      { "max_steps": 60 },
+    "chat":     { "max_steps": 40 },
+    "planning": { "enabled": true, "model": "anthropic/claude-4.6-sonnet", "cadence": "4h" },
+    "heartbeat": {
+      "enabled": true,
+      "every": "1h",
+      "model": "openai/gpt-4.1-mini",
+      "active_hours": { "start": "09:00", "end": "17:00", "timezone": "America/Chicago" }
+    }
+  },
+  "subagents": {
+    "default_model": "google/gemini-2.5-flash",
+    "writer":   { "model": "anthropic/claude-sonnet-4" },
+    "research": { "max_steps": 30 }
+  },
+  "memory": {
+    "provider": "mem0",
+    "path": "./workspace/memory",
+    "extraction_model": "google/gemini-2.5-flash",
+    "embedder": "openai/text-embedding-3-small"
+  },
+  "mcp_servers": [
+    {
+      "name": "ouro",
+      "transport": "stdio",
+      "command": "/path/to/python",
+      "args": ["-m", "ouro_mcp.server"],
+      "env": { "OURO_API_KEY": "${OURO_API_KEY}", "OURO_BASE_URL": "${OURO_BASE_URL}" }
+    }
+  ],
+  "prompt_caching": { "enabled": true, "ttl": "5m" }
 }
 ```
 
-- `modes.run`: override the default steps for the main autonomous run mode.
-- `modes.chat`: override the interactive chat loop.
-- `modes.planning`: planning cadence/model settings plus the planning mode loop (`plan` internally).
-- `modes.heartbeat`: heartbeat scheduler/model settings plus the heartbeat mode loop.
-- `modes.chat-reply`: optionally override threaded reply runs separately from `chat`.
-- Legacy top-level `planning` / `heartbeat`, `agent.max_steps`, `modes.overrides`, and `subagents.overrides` still load and are normalized into the flat shape.
+`controller.username` mentions a human `{@username}` when a plan enters
+review. `subagents.<name>` overrides the model / max steps / reasoning
+for any subagent profile. See the docs for everything else.
 
-## Prompt caching (OpenRouter + Anthropic)
+## Development
 
-`ouro-agents` supports Anthropic prompt caching through OpenRouter. Configure it in `config.json`:
+Tests are in `tests/`:
 
-```json
-"prompt_caching": {
-  "enabled": true,
-  "ttl": "5m"
-}
+```bash
+pytest
 ```
 
-- `enabled`: turns Anthropic top-level `cache_control` on/off.
-- `ttl`: `5m` (default) or `1h`.
+Linting:
 
-This is only applied for models whose ID starts with `anthropic/`.
+```bash
+ruff check .
+```
+
+The package layout:
+
+```
+ouro_agents/
+├── agent.py            # OuroAgent orchestrator
+├── runner.py           # CLI entry point
+├── server.py           # FastAPI + webhook routing
+├── config.py           # Pydantic config models + loader
+├── modes/              # mode profiles + heartbeat + planning
+├── subagents/          # SubAgentProfile + runner + built-in prompts
+├── memory/             # vector memory + doc store + reflection
+├── refinement/         # change-set queue + LLM-driven rewrites
+├── cleanup/            # deterministic asset.deleted handler
+├── skills/             # built-in markdown skills
+├── tools/              # built-in tools (delegate, run_python, etc.)
+├── tui/                # team / plan pickers
+└── utils/              # streaming, callbacks, conversation helpers
+```
+
+Browse [docs/](docs/README.md) for a guided tour.
+
+## License
+
+See the repository root for license terms.

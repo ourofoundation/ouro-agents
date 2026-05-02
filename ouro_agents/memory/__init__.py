@@ -81,6 +81,20 @@ class MemoryBackend(Protocol):
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
         ...
 
+    def delete(self, memory_id: str) -> None:
+        """Permanently remove a memory by id. Best-effort; logs and swallows errors."""
+        ...
+
+    def find_by_asset(
+        self,
+        asset_id: str,
+        agent_id: str,
+        team_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[MemoryResult]:
+        """Find every memory whose asset_ids includes ``asset_id``."""
+        ...
+
     def reset_usage(self) -> None:
         ...
 

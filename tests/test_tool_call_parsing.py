@@ -6,6 +6,8 @@ from smolagents.models import ChatMessage, MessageRole
 from ouro_agents.tools.agent_base import (
     _EMPTY_MODEL_RESPONSE_ANSWER,
     _extract_raw_reasoning_text,
+    _parse_dsml_tool_call_recovery,
+    _parse_dsml_tool_calls,
     _parse_kimi_tool_call_recovery,
     _parse_inline_tool_call,
     _parse_structured_tool_call_recovery,
@@ -22,6 +24,15 @@ class _AlwaysFailsModel:
 class _EmptyResponseModel:
     def parse_tool_calls(self, message):
         raise ValueError("Message contains no content and no tool calls")
+
+
+class _FakeModelWithToolCalls:
+    """Stand-in that satisfies SanitizedToolCallingAgent's __init__ patch."""
+
+    model_id = "fake-model"
+
+    def parse_tool_calls(self, message):
+        return message
 
 
 class TestToolCallParsing(unittest.TestCase):
@@ -290,6 +301,197 @@ class TestToolCallParsing(unittest.TestCase):
             parsed.tool_calls[0].function.arguments,
             {"answer": "Sure - use {'key': 'value'} as an example payload."},
         )
+
+    def test_parses_deepseek_dsml_tool_call_block(self):
+        # The exact DSML format that vLLM (#36654) leaks into the reasoning
+        # field for DeepSeek-V3.x/V4 when the upstream tool-call parser is
+        # bypassed by the reasoning parser.
+        recovery = _parse_dsml_tool_call_recovery(
+            "<｜DSML｜function_calls>\n"
+            "<｜DSML｜invoke name=\"get_asset\">\n"
+            "<｜DSML｜parameter name=\"id\" string=\"true\">019de031-c2a0-7d2f-a818-a6480296e4ab</｜DSML｜parameter>\n"
+            "<｜DSML｜parameter name=\"detail\" string=\"true\">full</｜DSML｜parameter>\n"
+            "</｜DSML｜invoke>\n"
+            "</｜DSML｜function_calls>"
+        )
+
+        self.assertIsNotNone(recovery)
+        self.assertEqual(len(recovery.tool_calls), 1)
+        self.assertEqual(recovery.tool_calls[0].function.name, "get_asset")
+        self.assertEqual(
+            recovery.tool_calls[0].function.arguments,
+            {
+                "id": "019de031-c2a0-7d2f-a818-a6480296e4ab",
+                "detail": "full",
+            },
+        )
+
+    def test_dsml_decodes_non_string_parameter_values(self):
+        # When ``string="true"`` is absent or false, parameters should be
+        # decoded as JSON so booleans/numbers/lists come through correctly.
+        tool_calls = _parse_dsml_tool_calls(
+            "<｜DSML｜function_calls>"
+            "<｜DSML｜invoke name=\"execute_route\">"
+            "<｜DSML｜parameter name=\"dry_run\">true</｜DSML｜parameter>"
+            "<｜DSML｜parameter name=\"limit\">10</｜DSML｜parameter>"
+            "<｜DSML｜parameter name=\"tags\">[\"a\",\"b\"]</｜DSML｜parameter>"
+            "</｜DSML｜invoke>"
+            "</｜DSML｜function_calls>"
+        )
+
+        self.assertIsNotNone(tool_calls)
+        self.assertEqual(tool_calls[0].function.name, "execute_route")
+        self.assertEqual(
+            tool_calls[0].function.arguments,
+            {"dry_run": True, "limit": 10, "tags": ["a", "b"]},
+        )
+
+    def test_dsml_parser_accepts_normalized_ascii_bar(self):
+        # Some providers normalize the ``｜`` (U+FF5C) byte to a regular ``|``
+        # in transit. Make sure either form parses.
+        recovery = _parse_dsml_tool_call_recovery(
+            "<|DSML|function_calls>"
+            "<|DSML|invoke name=\"final_answer\">"
+            "<|DSML|parameter name=\"answer\" string=\"true\">done</|DSML|parameter>"
+            "</|DSML|invoke>"
+            "</|DSML|function_calls>"
+        )
+
+        self.assertIsNotNone(recovery)
+        self.assertEqual(recovery.tool_calls[0].function.name, "final_answer")
+        self.assertEqual(
+            recovery.tool_calls[0].function.arguments, {"answer": "done"}
+        )
+
+    def test_recovers_tool_call_from_reasoning_when_content_empty(self):
+        # vLLM #36654: the model's tool call leaks into the ``reasoning``
+        # field rather than ``content``/``tool_calls``. Without recovery we
+        # would terminate the loop with MODEL_EMPTY_RESPONSE; with it we
+        # extract the call and continue.
+        model = _EmptyResponseModel()
+        _patch_model_for_xml_tool_calls(model)
+
+        leaked = (
+            "I should look up the asset first.\n\n"
+            "<｜DSML｜function_calls>"
+            "<｜DSML｜invoke name=\"get_asset\">"
+            "<｜DSML｜parameter name=\"id\" string=\"true\">abc-123</｜DSML｜parameter>"
+            "</｜DSML｜invoke>"
+            "</｜DSML｜function_calls>"
+        )
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=None,
+                        reasoning=leaked,
+                        reasoning_details=None,
+                    ),
+                )
+            ]
+        )
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content="",
+            raw=raw,
+        )
+
+        parsed = model.parse_tool_calls(message)
+
+        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
+        self.assertEqual(len(parsed.tool_calls), 1)
+        self.assertEqual(parsed.tool_calls[0].function.name, "get_asset")
+        self.assertEqual(
+            parsed.tool_calls[0].function.arguments, {"id": "abc-123"}
+        )
+
+    def test_recovers_tool_call_from_reasoning_details_text(self):
+        # When the leaked tokens live inside ``reasoning_details[].text``
+        # instead of the flat ``reasoning`` string, the salvage should still
+        # find them.
+        model = _EmptyResponseModel()
+        _patch_model_for_xml_tool_calls(model)
+
+        leaked = (
+            "<｜DSML｜function_calls>"
+            "<｜DSML｜invoke name=\"create_comment\">"
+            "<｜DSML｜parameter name=\"parent_id\" string=\"true\">post-1</｜DSML｜parameter>"
+            "<｜DSML｜parameter name=\"content\" string=\"true\">ok</｜DSML｜parameter>"
+            "</｜DSML｜invoke>"
+            "</｜DSML｜function_calls>"
+        )
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=None,
+                        reasoning=None,
+                        reasoning_details=[
+                            {"type": "reasoning.text", "text": leaked, "format": "unknown"}
+                        ],
+                    ),
+                )
+            ]
+        )
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content="",
+            raw=raw,
+        )
+
+        parsed = model.parse_tool_calls(message)
+
+        self.assertEqual(len(parsed.tool_calls), 1)
+        self.assertEqual(parsed.tool_calls[0].function.name, "create_comment")
+        self.assertEqual(
+            parsed.tool_calls[0].function.arguments,
+            {"parent_id": "post-1", "content": "ok"},
+        )
+
+    def test_reasoning_only_streak_logs_diagnostic_warning(self):
+        from logging import WARNING
+        from smolagents import tool
+
+        from ouro_agents.tools.agent_base import (
+            SanitizedToolCallingAgent,
+            logger as agent_base_logger,
+        )
+
+        @tool
+        def sample_tool() -> str:
+            """Sample tool that exists so the agent can be constructed."""
+            return "ok"
+
+        agent = SanitizedToolCallingAgent(
+            tools=[sample_tool],
+            model=_FakeModelWithToolCalls(),
+        )
+
+        # Below threshold: no warning fires.
+        with self.assertNoLogs(agent_base_logger, level=WARNING):
+            for _ in range(SanitizedToolCallingAgent._REASONING_ONLY_WARN_THRESHOLD - 1):
+                agent._track_reasoning_only_step(SimpleNamespace(tool_calls=None))
+
+        # Crossing the threshold fires exactly one warning.
+        with self.assertLogs(agent_base_logger, level=WARNING) as captured:
+            agent._track_reasoning_only_step(SimpleNamespace(tool_calls=None))
+            agent._track_reasoning_only_step(SimpleNamespace(tool_calls=None))
+
+        warning_messages = [
+            r.getMessage() for r in captured.records if r.levelno == WARNING
+        ]
+        self.assertEqual(len(warning_messages), 1)
+        self.assertIn("reasoning-only output", warning_messages[0])
+        self.assertIn("vllm-project/vllm#36654", warning_messages[0])
+
+        # A successful tool call resets the streak so future stalls warn again
+        # for a fresh reason rather than going silent forever.
+        agent._track_reasoning_only_step(SimpleNamespace(tool_calls=["x"]))
+        self.assertEqual(agent._reasoning_only_streak, 0)
 
     def test_repatching_model_does_not_leak_chat_mode_recovery(self):
         model = _AlwaysFailsModel()

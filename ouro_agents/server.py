@@ -12,9 +12,11 @@ from ouro_mcp.utils import content_from_markdown
 from pydantic import BaseModel
 
 from .agent import OuroAgent
+from .cancellation import RunCancelled
 from .config import OuroAgentsConfig, RunMode
 from .display import OuroDisplay, get_display, set_display
 from .event_pool import EventPool
+from .event_registry import is_chat_event
 from .events import EventRunContext, build_event_run_context
 from .logging_config import uvicorn_log_config
 from .observer import AgentObserver
@@ -39,7 +41,6 @@ event_pool: Optional[EventPool] = None
 last_heartbeat: Optional[datetime] = None
 start_time: datetime = datetime.now(timezone.utc)
 session_threads: Dict[str, str] = {}
-REALTIME_CHAT_EVENT_TYPES = {"new-message"}
 
 
 class RunRequest(BaseModel):
@@ -97,6 +98,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if agent_instance:
+            agent_instance.cancel_active_runs("server shutdown")
         if event_pool:
             await event_pool.stop()
             event_pool = None
@@ -138,10 +141,7 @@ class ServerAgentObserver(AgentObserver):
         )
 
     def on_activity(self, status: str, message: Optional[str], active: bool) -> None:
-        if (
-            not self.reply_publisher
-            or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
-        ):
+        if not self.reply_publisher or not is_chat_event(self.event_run.event_type):
             return
         if not self.event_run.conversation_id:
             return
@@ -153,10 +153,7 @@ class ServerAgentObserver(AgentObserver):
         )
 
     def on_stream_chunk(self, chunk: str) -> None:
-        if (
-            not self.reply_publisher
-            or self.event_run.event_type not in REALTIME_CHAT_EVENT_TYPES
-        ):
+        if not self.reply_publisher or not is_chat_event(self.event_run.event_type):
             return
         if not self.event_run.conversation_id:
             return
@@ -195,10 +192,7 @@ class ServerAgentObserver(AgentObserver):
             )
             self.persisted_message_ref.append(msg)
 
-        if (
-            self.reply_publisher
-            and self.event_run.event_type in REALTIME_CHAT_EVENT_TYPES
-        ):
+        if self.reply_publisher and is_chat_event(self.event_run.event_type):
             self.reply_publisher.emit_llm_response_end(
                 conversation_id=self.event_run.conversation_id,
                 message_id=self.stream_message_id,
@@ -230,28 +224,18 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         )
         return
 
-    # Attempt to mark related notifications as read so heartbeat doesn't process them again
-    try:
-        ouro = agent_instance._get_ouro_client()
-        if ouro and event_run.source_id:
-            # Wait briefly to ensure the notification was created by the backend
-            await asyncio.sleep(2)
-            unreads = ouro.notifications.list(unread_only=True, limit=50)
-            if isinstance(unreads, dict):
-                unreads = unreads.get("data", [])
+    # Cleanup events: deterministic, no LLM. Handle synchronously and return
+    # before any of the LLM run-path setup.
+    if event_run.event_type == "asset.deleted":
+        from .cleanup import handle_asset_deleted_webhook
 
-            for n in unreads:
-                n_asset_id = n.get("asset_id")
-                content = n.get("content") or {}
-                c_asset = content.get("asset") or {}
-                if (
-                    n_asset_id == event_run.source_id
-                    or c_asset.get("assetId") == event_run.source_id
-                    or c_asset.get("id") == event_run.source_id
-                ):
-                    ouro.notifications.read(n.get("id"))
-    except Exception as e:
-        logger.warning("Failed to mark notification as read: %s", e)
+        try:
+            await handle_asset_deleted_webhook(agent_instance, event_run)
+        except Exception:
+            logger.exception("asset.deleted cleanup failed")
+        return
+
+    await _mark_event_notifications_read(event_run)
 
     # Route active/pending plan feedback to the dedicated review path
     prov = event_run.provenance
@@ -259,6 +243,8 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         try:
             await agent_instance.handle_plan_feedback(event_run)
             get_display().flush_pending_run_summary()
+        except RunCancelled:
+            logger.info("Cancelled plan feedback event run")
         except Exception:
             logger.exception("Failed to handle plan feedback event")
         return
@@ -273,7 +259,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
     try:
         with (
             reply_publisher.realtime_session()
-            if reply_publisher and event_run.event_type in REALTIME_CHAT_EVENT_TYPES
+            if reply_publisher and is_chat_event(event_run.event_type)
             else nullcontext()
         ):
             observer.on_activity("thinking", "is thinking about it...", True)
@@ -294,15 +280,54 @@ async def _run_event_task(event_run: EventRunContext) -> None:
 
             observer.on_activity("typing", None, False)
             get_display().flush_pending_run_summary()
+    except asyncio.CancelledError:
+        observer.on_activity("typing", None, False)
+        if agent_instance:
+            agent_instance.cancel_active_runs("event task cancelled")
+        if reply_publisher and is_chat_event(event_run.event_type):
+            reply_publisher.emit_llm_response_end(
+                conversation_id=event_run.conversation_id,
+                message_id=stream_message_id,
+                message=None,
+            )
+        logger.info("Cancelled webhook event task: %s", event_run.event_type)
+        raise
+    except RunCancelled:
+        observer.on_activity("typing", None, False)
+        if reply_publisher and is_chat_event(event_run.event_type):
+            reply_publisher.emit_llm_response_end(
+                conversation_id=event_run.conversation_id,
+                message_id=stream_message_id,
+                message=None,
+            )
+        logger.info("Cancelled webhook event run: %s", event_run.event_type)
     except Exception:
         observer.on_activity("typing", None, False)
-        if reply_publisher and event_run.event_type in REALTIME_CHAT_EVENT_TYPES:
+        if reply_publisher and is_chat_event(event_run.event_type):
             reply_publisher.emit_llm_response_end(
                 conversation_id=event_run.conversation_id,
                 message_id=stream_message_id,
                 message=None,
             )
         logger.exception("Failed to process webhook event: %s", event_run.event_type)
+
+
+async def _mark_event_notifications_read(event_run: EventRunContext) -> None:
+    """Mark any correlated in-app notifications as read.
+
+    Backend always emits ``notification_ids`` for notification-backed events
+    since the unified ``notify()`` rollout, so there is no legacy fallback.
+    """
+    if not event_run.notification_ids:
+        return
+    try:
+        ouro = agent_instance._get_ouro_client() if agent_instance else None
+        if not ouro:
+            return
+        for notification_id in event_run.notification_ids:
+            ouro.notifications.read(notification_id)
+    except Exception as e:
+        logger.warning("Failed to mark notification as read: %s", e)
 
 
 def _is_self_event(event_run: EventRunContext) -> bool:
@@ -361,6 +386,8 @@ async def run_task(request: RunRequest):
             "result": result,
             "conversation_id": conversation_id,
         }
+    except RunCancelled as e:
+        raise HTTPException(status_code=499, detail=str(e) or "Run cancelled")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -407,6 +434,8 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         }
 
     if event_pool and event_pool.is_poolable(event_run):
+        if event_run.notification_ids:
+            background_tasks.add_task(_mark_event_notifications_read, event_run)
         await event_pool.submit(event_run)
         return {
             "status": "accepted",

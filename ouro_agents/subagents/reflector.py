@@ -93,9 +93,6 @@ class ReflectionResult:
     daily_log_entry: str = ""
 
 
-_CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
-
-
 def resolve_daily_log_tag(
     run_mode: str,
     event_type: Optional[str] = None,
@@ -105,7 +102,9 @@ def resolve_daily_log_tag(
 
     When *team_name* is provided the tag is suffixed: ``[heartbeat:research]``.
     """
-    if event_type and event_type not in _CHAT_EVENT_TYPES:
+    from ouro_agents.event_registry import is_chat_event
+
+    if event_type and not is_chat_event(event_type):
         base = f"event:{event_type}"
     else:
         _mode_tags = {

@@ -127,7 +127,12 @@ over ad hoc code when a platform endpoint fits the job.
 - Search for route or service assets before building a one-off workflow.
 - Inspect route schemas with `get_asset(id=...)` before execution.
 - Execute with `execute_route(name_or_id=...)` using the schema's expected
-  parameters and input assets.
+  parameters and input assets. Put ordinary JSON fields in `body`, URL/query
+  values in `params` or `query`, and Ouro asset references in `input_assets`.
+- For route asset inputs, use the exact keys from the route's `input_assets`
+  schema, with asset IDs as values: `input_assets={"file": "<file-id>"}`.
+  Do not construct file, dataset, or post body objects by hand; Ouro resolves
+  those asset IDs into the service-facing request body.
 - Inspect results with `get_action(action_id=...)` when needed.
 - When reporting on an action in a markdown surface, embed the route action with
   Ouro Markdown instead of only describing it in prose.

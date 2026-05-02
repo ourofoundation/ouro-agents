@@ -28,6 +28,7 @@ def _event(
     text: str = "hello",
     username: str = "alice",
     is_agent: bool = False,
+    notification_ids: tuple[str, ...] = (),
 ) -> EventRunContext:
     return EventRunContext(
         event_type=event_type,
@@ -46,6 +47,7 @@ def _event(
         actor_is_agent=is_agent,
         event_text=text,
         received_at="2026-04-30T22:00:00Z",
+        notification_ids=notification_ids,
     )
 
 
@@ -246,6 +248,22 @@ class TestEventPool(unittest.TestCase):
         self.assertIn("first feedback", pooled.feedback_text)
         self.assertIn("@bot (agent)", pooled.feedback_text)
         self.assertNotIn("All events in this batch came from agents", pooled.feedback_text)
+
+    def test_pooled_event_merges_notification_ids(self):
+        pooled = build_pooled_event_run(
+            [
+                _event("comment", notification_ids=("notification-1",)),
+                _event(
+                    "mention",
+                    notification_ids=("notification-2", "notification-1"),
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            pooled.notification_ids,
+            ("notification-1", "notification-2"),
+        )
 
 
 if __name__ == "__main__":

@@ -135,6 +135,7 @@ class SubAgentContext:
     # When set (by OuroAgent), every completed subagent run records usage here
     # (top-level and nested delegate chains share the same ledger).
     record_subagent_usage: Optional[Callable[[str, SubAgentUsage], None]] = None
+    cancellation_token: Any = None
 
     # Delegatable profile registry for this run. Passed explicitly so nested
     # subagent chains (``profile.can_delegate_to``) resolve against the

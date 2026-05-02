@@ -7,8 +7,9 @@ import re
 import uuid
 from dataclasses import dataclass
 
-from smolagents import ToolCallingAgent
+from smolagents import ActionStep, ToolCallingAgent
 from smolagents.models import (
+    ChatMessage,
     ChatMessageToolCall,
     ChatMessageToolCallFunction,
     MessageRole,
@@ -16,7 +17,9 @@ from smolagents.models import (
 )
 
 from .. import smolagents_patches as _smolagents_patches  # noqa: F401
+from ..cancellation import RunCancellationToken
 from ..display import get_display
+from ..provider_reasoning import copy_reasoning_fields
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,30 @@ _KIMI_TOOL_CALL_RE = re.compile(
     r"<\|tool_call_argument_begin\|>\s*"
     r"(?P<function_arguments>.*?)\s*"
     r"<\|tool_call_end\|>",
+    re.DOTALL,
+)
+
+# DeepSeek "DSML" tool-call format. When vLLM serves DeepSeek-V3.x/V4 with both
+# --reasoning-parser and --tool-call-parser enabled, the reasoning parser
+# captures the entire output and the DSML tags leak into the ``reasoning``
+# field rather than being parsed into structured ``tool_calls`` (see
+# https://github.com/vllm-project/vllm/issues/36654). We salvage them ourselves.
+# The "｜" character is U+FF5C (fullwidth vertical bar). We accept a regular
+# ``|`` as well so we still match if a provider normalizes the byte.
+_DSML_BAR = r"[｜|]"
+_DSML_FUNCTION_CALLS_RE = re.compile(
+    rf"<{_DSML_BAR}DSML{_DSML_BAR}function_calls>(?P<body>.*?)</{_DSML_BAR}DSML{_DSML_BAR}function_calls>",
+    re.DOTALL,
+)
+_DSML_INVOKE_RE = re.compile(
+    rf"<{_DSML_BAR}DSML{_DSML_BAR}invoke\s+name\s*=\s*\"(?P<name>[^\"]+)\"\s*>"
+    rf"(?P<body>.*?)</{_DSML_BAR}DSML{_DSML_BAR}invoke>",
+    re.DOTALL,
+)
+_DSML_PARAMETER_RE = re.compile(
+    rf"<{_DSML_BAR}DSML{_DSML_BAR}parameter\s+name\s*=\s*\"(?P<name>[^\"]+)\""
+    rf"(?:\s+string\s*=\s*\"(?P<is_string>[^\"]*)\")?\s*>"
+    rf"(?P<value>.*?)</{_DSML_BAR}DSML{_DSML_BAR}parameter>",
     re.DOTALL,
 )
 _CALLING_TOOLS_RE = re.compile(r"Calling tools:\s*", re.IGNORECASE)
@@ -303,6 +330,54 @@ def _parse_kimi_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
 
 def _parse_kimi_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
     recovery = _parse_kimi_tool_call_recovery(content)
+    return recovery.tool_calls if recovery else None
+
+
+def _coerce_dsml_parameter_value(raw: str, is_string: str | None) -> object:
+    """Decode a DSML parameter body into the appropriate Python type.
+
+    DSML parameters carry an optional ``string="true|false"`` attribute. When
+    explicitly true, keep the value as a string. Otherwise try to parse as
+    JSON first (so booleans, numbers, lists, and dicts come through
+    correctly) and fall back to the raw string.
+    """
+    raw = raw.strip()
+    if (is_string or "").strip().lower() == "true":
+        return raw
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
+def _parse_dsml_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
+    """Parse DeepSeek DSML tool-call blocks leaked by vLLM (#36654)."""
+    sections = list(_DSML_FUNCTION_CALLS_RE.finditer(content))
+    if not sections:
+        return None
+
+    result: list[ChatMessageToolCall] = []
+    for section in sections:
+        body = section.group("body")
+        for invoke in _DSML_INVOKE_RE.finditer(body):
+            func_name = invoke.group("name").strip()
+            arguments: dict = {}
+            for param in _DSML_PARAMETER_RE.finditer(invoke.group("body")):
+                arguments[param.group("name").strip()] = _coerce_dsml_parameter_value(
+                    param.group("value"),
+                    param.group("is_string"),
+                )
+            if not func_name:
+                continue
+            result.append(_make_tool_call(func_name, arguments))
+
+    if not result:
+        return None
+    return _ToolCallRecovery(result)
+
+
+def _parse_dsml_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+    recovery = _parse_dsml_tool_call_recovery(content)
     return recovery.tool_calls if recovery else None
 
 
@@ -579,6 +654,56 @@ def _recover_chat_final_answer(content: str, tool_calls) -> str | None:
     return answer
 
 
+def _run_recovery_cascade(content: str) -> _ToolCallRecovery | None:
+    """Try every salvage parser in priority order on a single text blob."""
+    if not content:
+        return None
+    for parser in (
+        _parse_kimi_tool_call_recovery,
+        _parse_dsml_tool_call_recovery,
+        _parse_xml_tool_call_recovery,
+        _parse_narrated_tool_call_recovery,
+        _parse_structured_tool_call_recovery,
+        _parse_inline_tool_call_recovery,
+    ):
+        recovery = parser(content)
+        if recovery:
+            return recovery
+    return None
+
+
+def _raw_reasoning_text_for_salvage(message) -> str:
+    """Pull reasoning text suitable for a tool-call salvage attempt.
+
+    ``_extract_raw_reasoning_text`` formats with ``"<field>: <value>"`` prefixes
+    that would interfere with regex matching of native tool-call tokens.
+    Concatenate the raw values directly instead.
+    """
+    raw_message = _raw_choice_message(message)
+    if raw_message is None:
+        return ""
+    parts: list[str] = []
+    for field in ("reasoning", "reasoning_content"):
+        value = _object_field(raw_message, field)
+        if isinstance(value, str) and value:
+            parts.append(value)
+    details = _object_field(raw_message, "reasoning_details")
+    if isinstance(details, list):
+        for entry in details:
+            if isinstance(entry, dict):
+                text = entry.get("text") or entry.get("summary")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+    return "\n".join(parts)
+
+
+def _install_recovered_tool_calls(message, tool_calls) -> None:
+    message.role = MessageRole.ASSISTANT
+    message.tool_calls = tool_calls
+    for tc in message.tool_calls:
+        tc.function.arguments = parse_json_if_needed(tc.function.arguments)
+
+
 def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
     """Wrap model.parse_tool_calls to fall back to salvage parsers."""
     original = getattr(model, "_ouro_base_parse_tool_calls", None)
@@ -593,6 +718,21 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
             content = message.content or ""
 
             if _is_empty_model_response(exc, content):
+                # vLLM (#36654) sometimes leaks the entire DSML tool-call block
+                # into ``reasoning`` when both reasoning and tool-call parsers
+                # are enabled. Try recovering from there before giving up.
+                reasoning_text = _raw_reasoning_text_for_salvage(message)
+                reasoning_recovery = _run_recovery_cascade(reasoning_text)
+                if reasoning_recovery and reasoning_recovery.tool_calls:
+                    logger.info(
+                        "Recovered tool call from reasoning channel: %s",
+                        [tc.function.name for tc in reasoning_recovery.tool_calls],
+                    )
+                    _install_recovered_tool_calls(
+                        message, reasoning_recovery.tool_calls
+                    )
+                    return message
+
                 _debug_empty_model_response(message, exc)
                 raw_reasoning = _extract_raw_reasoning_text(message)
                 if raw_reasoning:
@@ -621,15 +761,16 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                 ]
                 return message
 
-            recovery = _parse_kimi_tool_call_recovery(content)
+            recovery = _run_recovery_cascade(content)
+            # If salvaging from ``content`` failed, try the reasoning channel
+            # too — DeepSeek runs at high effort sometimes emit the tool call
+            # tokens inside the thinking block rather than as content.
             if not recovery:
-                recovery = _parse_xml_tool_call_recovery(content)
-            if not recovery:
-                recovery = _parse_narrated_tool_call_recovery(content)
-            if not recovery:
-                recovery = _parse_structured_tool_call_recovery(content)
-            if not recovery:
-                recovery = _parse_inline_tool_call_recovery(content)
+                reasoning_recovery = _run_recovery_cascade(
+                    _raw_reasoning_text_for_salvage(message)
+                )
+                if reasoning_recovery:
+                    recovery = reasoning_recovery
 
             tool_calls = recovery.tool_calls if recovery else None
 
@@ -665,14 +806,30 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                 "Recovered tool call via fallback parser: %s",
                 [tc.function.name for tc in tool_calls],
             )
-            message.role = MessageRole.ASSISTANT
-            message.tool_calls = tool_calls
-            for tc in message.tool_calls:
-                tc.function.arguments = parse_json_if_needed(tc.function.arguments)
+            _install_recovered_tool_calls(message, tool_calls)
             return message
 
     model.parse_tool_calls = patched
     model._ouro_parse_tool_calls_is_chat_mode = is_chat_mode
+
+
+def _copy_step_reasoning_to_messages(memory_step, messages: list[ChatMessage]) -> None:
+    """Replay provider reasoning on every assistant-side message for this step.
+
+    Both ``ActionStep`` and ``PlanningStep`` expose ``model_output_message`` and
+    benefit from the replay. We copy onto every ASSISTANT/TOOL_CALL message so
+    that even if smolagents' message collapse logic later changes (e.g. stops
+    merging consecutive same-role messages), the reasoning still survives the
+    round-trip. The dedupe in ``_get_clean_message_list_preserving_reasoning``
+    handles any duplicates introduced here.
+    """
+    source = getattr(memory_step, "model_output_message", None)
+    if source is None:
+        return
+
+    for message in messages:
+        if message.role in (MessageRole.ASSISTANT, MessageRole.TOOL_CALL):
+            copy_reasoning_fields(source, message)
 
 
 class SanitizedToolCallingAgent(ToolCallingAgent):
@@ -688,12 +845,90 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
     transparently when possible.
     """
 
-    def __init__(self, *args, compactor_model=None, is_chat_mode=False, **kwargs):
+    # Threshold for the diagnostic warning about consecutive reasoning-only
+    # steps. Five is enough to flag a stuck loop without firing on the
+    # occasional one-off where a strong model genuinely needed to think.
+    _REASONING_ONLY_WARN_THRESHOLD = 5
+
+    def __init__(
+        self,
+        *args,
+        compactor_model=None,
+        is_chat_mode=False,
+        cancellation_token: RunCancellationToken | None = None,
+        **kwargs,
+    ):
         self._compactor_model = compactor_model
+        self._cancellation_token = cancellation_token
+        self._reasoning_only_streak = 0
+        self._reasoning_only_warned = False
         super().__init__(*args, **kwargs)
         _patch_model_for_xml_tool_calls(self.model, is_chat_mode=is_chat_mode)
 
+    def write_memory_to_messages(self, summary_mode: bool = False) -> list[ChatMessage]:
+        messages = self.memory.system_prompt.to_messages(summary_mode=summary_mode)
+        for memory_step in self.memory.steps:
+            step_messages = memory_step.to_messages(summary_mode=summary_mode)
+            _copy_step_reasoning_to_messages(memory_step, step_messages)
+            messages.extend(step_messages)
+        return messages
+
+    def _raise_if_cancelled(self) -> None:
+        if self._cancellation_token is not None:
+            self._cancellation_token.raise_if_cancelled()
+
+    def run(self, *args, **kwargs):
+        if self._cancellation_token is None:
+            return super().run(*args, **kwargs)
+        with self._cancellation_token.registered_agent(self):
+            try:
+                self._raise_if_cancelled()
+                return super().run(*args, **kwargs)
+            except KeyboardInterrupt:
+                self._cancellation_token.cancel("interrupted")
+                raise
+
+    def _step_stream(self, memory_step: ActionStep):
+        self._raise_if_cancelled()
+        for output in super()._step_stream(memory_step):
+            self._raise_if_cancelled()
+            yield output
+        self._track_reasoning_only_step(memory_step)
+
+    def _track_reasoning_only_step(self, memory_step: ActionStep) -> None:
+        """Warn once when the model loops on reasoning without ever calling tools.
+
+        Concretely: this fires when the parser fell back to the reasoning-only
+        path in :func:`_patch_model_for_xml_tool_calls` for many consecutive
+        steps — usually a sign that ``reasoning.effort`` is too high for the
+        model and the upstream tool-call parser (e.g. vLLM #36654 for DeepSeek)
+        never gets a chance to emit structured calls.
+        """
+        had_tool_calls = bool(getattr(memory_step, "tool_calls", None))
+        if had_tool_calls:
+            self._reasoning_only_streak = 0
+            return
+        self._reasoning_only_streak += 1
+        if (
+            self._reasoning_only_streak >= self._REASONING_ONLY_WARN_THRESHOLD
+            and not self._reasoning_only_warned
+        ):
+            logger.warning(
+                "Model returned reasoning-only output for %d consecutive steps; "
+                "consider lowering reasoning effort or pinning a different "
+                "OpenRouter provider (see vllm-project/vllm#36654 for DeepSeek).",
+                self._reasoning_only_streak,
+            )
+            self._reasoning_only_warned = True
+
+    def process_tool_calls(self, chat_message, memory_step):
+        self._raise_if_cancelled()
+        for output in super().process_tool_calls(chat_message, memory_step):
+            self._raise_if_cancelled()
+            yield output
+
     def execute_tool_call(self, tool_name, arguments):
+        self._raise_if_cancelled()
         if isinstance(arguments, dict):
             available_tools = {**self.tools, **self.managed_agents}
             tool_obj = available_tools.get(tool_name)
@@ -718,6 +953,7 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                     cleaned[key] = value
                 arguments = cleaned
         result = super().execute_tool_call(tool_name, arguments)
+        self._raise_if_cancelled()
         if isinstance(result, str) and len(result) > _MAX_TOOL_OUTPUT_CHARS:
             logger.warning(
                 "Tool '%s' returned %d chars (limit %d); compacting...",

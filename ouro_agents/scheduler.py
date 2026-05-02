@@ -18,6 +18,8 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from .cancellation import RunCancelled
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from pydantic import BaseModel, Field
@@ -172,7 +174,10 @@ def parse_trigger(schedule: str, tz: str = "UTC"):
 
 SYSTEM_HEARTBEAT_ID = "system:heartbeat"
 SYSTEM_CONSOLIDATION_ID = "system:consolidation"
-SYSTEM_PROTECTED_IDS = frozenset({SYSTEM_HEARTBEAT_ID, SYSTEM_CONSOLIDATION_ID})
+SYSTEM_REFINEMENT_ID = "system:refinement"
+SYSTEM_PROTECTED_IDS = frozenset(
+    {SYSTEM_HEARTBEAT_ID, SYSTEM_CONSOLIDATION_ID, SYSTEM_REFINEMENT_ID}
+)
 
 
 class AgentScheduler:
@@ -198,16 +203,24 @@ class AgentScheduler:
             self._register_heartbeat(config.heartbeat)
         if config.memory.consolidation_enabled:
             self._register_consolidation(config.memory)
+        refinement_cfg = getattr(config, "refinement", None)
+        if refinement_cfg and refinement_cfg.enabled:
+            self._register_refinement(refinement_cfg)
 
         self._scheduler.start()
         task_count = len(self.store.load())
         logger.info(
-            "Scheduler started: %d user task(s), heartbeat=%s, consolidation=%s",
+            "Scheduler started: %d user task(s), heartbeat=%s, consolidation=%s, refinement=%s",
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
             (
                 config.memory.consolidation_schedule
                 if config.memory.consolidation_enabled
+                else "disabled"
+            ),
+            (
+                refinement_cfg.schedule
+                if refinement_cfg and refinement_cfg.enabled
                 else "disabled"
             ),
         )
@@ -375,6 +388,8 @@ class AgentScheduler:
             job = self._scheduler.get_job(SYSTEM_HEARTBEAT_ID)
             if job and hasattr(job, "next_run_time") and job.next_run_time:
                 logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+        except RunCancelled:
+            logger.info("Heartbeat cancelled")
         except Exception:
             logger.exception("Heartbeat failed")
 
@@ -436,6 +451,67 @@ class AgentScheduler:
         except Exception:
             logger.exception("Memory consolidation failed")
 
+    def _register_refinement(self, refinement_config) -> None:
+        try:
+            trigger = parse_trigger(refinement_config.schedule)
+        except ValueError:
+            logger.error(
+                "Invalid refinement schedule: %s", refinement_config.schedule
+            )
+            return
+
+        self._scheduler.add_job(
+            self._execute_refinement,
+            trigger=trigger,
+            id=SYSTEM_REFINEMENT_ID,
+            max_instances=1,
+            misfire_grace_time=600,
+            replace_existing=True,
+        )
+        logger.info("Registered refinement: %s", refinement_config.schedule)
+
+    async def _execute_refinement(self) -> None:
+        if not self._agent:
+            return
+        try:
+            logger.info("Running refinement pass...")
+            from .refinement import ChangeSetQueue, run_refinement
+
+            agent = self._agent
+            cfg = getattr(agent.config, "refinement", None)
+            queue = ChangeSetQueue(
+                agent.config.agent.workspace / "data" / "change_queue.jsonl"
+            )
+            summary = run_refinement(
+                agent=agent,
+                queue=queue,
+                max_changes_per_pass=cfg.max_changes_per_pass if cfg else 25,
+                max_docs_per_pass=cfg.max_docs_per_pass if cfg else 15,
+                window_lines=cfg.window_lines if cfg else 20,
+            )
+            logger.info(
+                "Refinement pass: %d pending, %d edits, %d mem0 deletes",
+                summary.pending_seen,
+                summary.windows_applied,
+                summary.memory_deletes,
+            )
+        except Exception:
+            logger.exception("Refinement pass failed")
+
+    def trigger_refinement_now(self) -> None:
+        """Schedule a one-shot refinement run as soon as the loop allows."""
+        if not self._agent or not self._scheduler.running:
+            return
+        try:
+            self._scheduler.add_job(
+                self._execute_refinement,
+                id=f"{SYSTEM_REFINEMENT_ID}:once:{uuid4().hex[:8]}",
+                max_instances=1,
+                misfire_grace_time=120,
+            )
+        except Exception:
+            logger.exception("Failed to schedule one-shot refinement")
+
     async def _execute_task(self, task_id: str) -> None:
         if not self._agent:
             return
@@ -483,6 +559,15 @@ class AgentScheduler:
             # Post-run refinement: learn from this execution
             self._run_refinement(task)
 
+        except RunCancelled as e:
+            self.store.update(
+                task_id,
+                last_run_at=datetime.now(timezone.utc).isoformat(),
+                last_run_status="cancelled",
+                last_error=str(e) or "cancelled",
+                run_count=task.run_count + 1,
+            )
+            logger.info("Scheduled task '%s' cancelled", task.name)
         except Exception as e:
             self.store.update(
                 task_id,

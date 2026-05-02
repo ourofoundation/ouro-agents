@@ -9,6 +9,8 @@ from typing import Any, Callable, Optional, Sequence
 
 from smolagents import OpenAIModel
 
+from .provider_reasoning import attach_reasoning_from_raw_response
+
 logger = logging.getLogger(__name__)
 
 ReasoningCallback = Callable[[str], None]
@@ -395,6 +397,11 @@ class TrackedOpenAIModel(OpenAIModel):
     @property
     def tracker(self) -> UsageTracker:
         return self._tracker
+
+    def generate(self, *args, **kwargs):
+        message = super().generate(*args, **kwargs)
+        attach_reasoning_from_raw_response(message)
+        return message
 
     def create_client(self):
         client = super().create_client()

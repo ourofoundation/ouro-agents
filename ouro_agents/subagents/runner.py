@@ -280,6 +280,7 @@ def _build_chain_delegate(
             python_packages=list(ctx.python_packages),
             python_package_versions=dict(ctx.python_package_versions),
             record_subagent_usage=ctx.record_subagent_usage,
+            cancellation_token=ctx.cancellation_token,
             delegatable_profiles=ctx.delegatable_profiles,
         )
 
@@ -530,6 +531,7 @@ def _run_agent(
         max_steps=profile.max_steps,
         logger=subagent_logger,
         is_chat_mode=False,
+        cancellation_token=ctx.cancellation_token,
     )
     agent_ref["agent"] = agent
 

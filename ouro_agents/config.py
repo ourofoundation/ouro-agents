@@ -35,6 +35,18 @@ def merge_reasoning(*layers: Optional[ReasoningConfig]) -> Optional[ReasoningCon
     return ReasoningConfig(**merged)
 
 
+def merge_openrouter_provider(
+    *layers: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Shallow-merge OpenRouter ``provider`` blocks; later layers override."""
+    merged: dict[str, Any] = {}
+    for layer in layers:
+        if not layer:
+            continue
+        merged.update(layer)
+    return merged or None
+
+
 class AgentConfig(BaseModel):
     name: str
     model: str
@@ -62,6 +74,8 @@ class HeartbeatConfig(BaseModel):
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     # Overlay on top-level ``reasoning`` for heartbeat model and other heartbeat=True builds.
     reasoning: Optional[ReasoningConfig] = None
+    # Overlay on top-level ``openrouter_provider`` for heartbeat builds.
+    openrouter_provider: Optional[Dict[str, Any]] = None
 
 
 class MCPServerConfig(BaseModel):
@@ -185,6 +199,7 @@ class SubAgentOverride(BaseModel):
     model: Optional[str] = None
     max_steps: Optional[int] = None
     reasoning: Optional[ReasoningConfig] = None
+    openrouter_provider: Optional[Dict[str, Any]] = None
 
 
 class SubAgentConfig(BaseModel):
@@ -299,6 +314,7 @@ _HEARTBEAT_SECTION_KEYS = {
     "active_hours",
     "proactive",
     "reasoning",
+    "openrouter_provider",
 }
 
 _PLANNING_SECTION_KEYS = {
@@ -363,10 +379,31 @@ class DisplayConfig(BaseModel):
     usage_table: UsageTableConfig = Field(default_factory=UsageTableConfig)
 
 
+class RefinementConfig(BaseModel):
+    """LLM-driven refinement of agent learnings.
+
+    The refiner drains a typed change-set queue (corrections, guidance updates,
+    etc.) and uses a cheap model to revise affected workspace docs. Asset
+    deletion is handled by the cleanup module and never enters this queue.
+    """
+
+    enabled: bool = True
+    schedule: str = "0 */6 * * *"
+    min_batch_size: int = 5
+    max_changes_per_pass: int = 25
+    max_docs_per_pass: int = 15
+    window_lines: int = 20
+    model: Optional[str] = None
+
+
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
     # OpenRouter: request-level reasoning control (effort / max_tokens / exclude / enabled).
     reasoning: Optional[ReasoningConfig] = None
+    # OpenRouter: top-level ``provider`` routing block applied to every model build
+    # unless overridden per-profile / per-agent. See
+    # https://openrouter.ai/docs/features/provider-routing.
+    openrouter_provider: Optional[Dict[str, Any]] = None
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     heartbeat: HeartbeatConfig
     mcp_servers: List[MCPServerConfig]
@@ -378,6 +415,7 @@ class OuroAgentsConfig(BaseSettings):
     controller: ControllerConfig = Field(default_factory=ControllerConfig)
     modes: ModeConfig = Field(default_factory=ModeConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
+    refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     env_file: Optional[Path] = None
 
     @classmethod

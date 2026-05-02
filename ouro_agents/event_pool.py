@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from .config import EventPoolingConfig, EventPoolTimingConfig
+from .event_registry import spec_for
 from .events import EventRunContext
 
 logger = logging.getLogger(__name__)
@@ -61,26 +62,10 @@ class EventPool:
         return timing
 
     def pool_key(self, event_run: EventRunContext) -> Optional[str]:
-        if event_run.event_type == "new-message":
-            if not event_run.conversation_id:
-                return None
-            return f"conversation:{event_run.conversation_id}"
-
-        if event_run.event_type in {"comment", "mention"}:
-            if _is_top_level_asset_comment(event_run):
-                thread_id = event_run.source_id or event_run.reply_parent_id
-            else:
-                thread_id = (
-                    event_run.thread_parent_id
-                    or event_run.root_asset_id
-                    or event_run.reply_parent_id
-                    or event_run.source_id
-                )
-            if not thread_id:
-                return None
-            return f"thread:{thread_id}"
-
-        return None
+        spec = spec_for(event_run.event_type)
+        if not spec.pool_key_fn:
+            return None
+        return spec.pool_key_fn(event_run)
 
     def is_poolable(self, event_run: EventRunContext) -> bool:
         return bool(self.timing_for(event_run.event_type) and self.pool_key(event_run))
@@ -204,6 +189,7 @@ def build_pooled_event_run(events: Sequence[EventRunContext]) -> EventRunContext
         latest,
         task=f"{latest.task}\n\n{summary}",
         feedback_text=feedback_text,
+        notification_ids=_merge_notification_ids(events),
     )
 
 
@@ -223,6 +209,13 @@ def _format_pooled_context(events: Sequence[EventRunContext]) -> str:
     ]
     lines.extend(_format_event_line(i, event) for i, event in enumerate(events, 1))
     return "\n".join(lines)
+
+
+def _merge_notification_ids(events: Sequence[EventRunContext]) -> tuple[str, ...]:
+    notification_ids: list[str] = []
+    for event in events:
+        notification_ids.extend(event.notification_ids)
+    return tuple(dict.fromkeys(notification_ids))
 
 
 def _format_event_line(index: int, event: EventRunContext) -> str:
@@ -255,13 +248,3 @@ def _compact_text(text: str, limit: int = 500) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[: limit - 3]}..."
-
-
-def _is_top_level_asset_comment(event: EventRunContext) -> bool:
-    if event.event_type not in {"comment", "mention"}:
-        return False
-    if not (event.source_id or event.reply_parent_id):
-        return False
-    if event.root_asset_type == "comment":
-        return False
-    return not event.thread_parent_id or event.thread_parent_id == event.root_asset_id

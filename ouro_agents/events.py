@@ -7,9 +7,8 @@ from ouro.events import WebhookEvent, parse_webhook_event
 from .artifacts import PrefetchSpec
 from .config import RunMode
 from .constants import FETCHABLE_ASSET_TYPES
+from .event_registry import tool_preloads_for
 from .provenance import AssetProvenance
-
-CHAT_EVENT_TYPES = {"new-message", "new-conversation"}
 
 # Shared guidance injected into comment tasks so agents default to silence
 # unless a reply genuinely adds value.
@@ -40,13 +39,6 @@ _THREAD_REPLY_CAUTION = (
     "or the other person is wrapping up, let the thread end. "
     "Prefer silence over a redundant reply."
 )
-
-EVENT_TOOL_PRELOADS: Dict[str, List[str]] = {
-    "comment": ["ouro:get_asset", "ouro:create_comment", "ouro:get_comments"],
-    "mention": ["ouro:get_asset", "ouro:create_comment", "ouro:get_comments"],
-    "new-message": [],
-    "new-conversation": [],
-}
 
 _PLAN_FEEDBACK_PRELOADS: List[str] = [
     "ouro:get_comments",
@@ -129,42 +121,56 @@ class CommentContext:
     @classmethod
     def from_event(cls, event: WebhookEvent) -> "CommentContext":
         data = event.data
-        sender = data.get("sender") or data.get("user")
-        parent_asset_id = data.get("parent_asset_id")
+        parent_asset_id = (
+            event.parent_asset.id if event.parent_asset else data.get("parent_asset_id")
+        )
         target_asset_type = data.get("target_asset_type")
         target_id = data.get("target_id")
         target_is_user = target_asset_type == "user"
         root_asset_id = (
-            data.get("root_asset_id")
+            (event.root_asset.id if event.root_asset else None)
+            or data.get("root_asset_id")
             or parent_asset_id
             or (target_id if not target_is_user else None)
-            or data.get("source_id")
+            or event.source_id
             or "unknown"
         )
         root_asset_type = (
-            data.get("root_asset_type")
-            or data.get("parent_asset_type")
+            (event.root_asset.type if event.root_asset else None)
+            or data.get("root_asset_type")
+            or (event.parent_asset.type if event.parent_asset else None)
             or (target_asset_type if not target_is_user else None)
-            or data.get("source_asset_type")
+            or event.source_asset_type
             or "unknown"
         )
         is_thread_reply = target_asset_type == "comment" or (
             bool(parent_asset_id) and parent_asset_id != root_asset_id
         )
+        actor_dict: Optional[Dict[str, Any]] = None
+        if event.actor:
+            actor_dict = event.actor.model_dump()
+        team_dict: Optional[Dict[str, str]] = (
+            event.team.model_dump() if event.team else data.get("team")
+        )
+        org_dict: Optional[Dict[str, str]] = (
+            event.organization.model_dump()
+            if event.organization
+            else data.get("organization")
+        )
         return cls(
-            source_id=data.get("source_id", "unknown"),
-            source_asset_type=data.get("source_asset_type", "unknown"),
+            source_id=event.source_id or "unknown",
+            source_asset_type=event.source_asset_type or "unknown",
             root_asset_id=root_asset_id,
             root_asset_type=root_asset_type,
             target_id=target_id,
             target_asset_type=target_asset_type,
             parent_asset_id=parent_asset_id,
             is_thread_reply=is_thread_reply,
-            reply_parent_id=data.get("source_id", "unknown"),
+            reply_parent_id=event.source_id or "unknown",
             comment_text=data.get("text", ""),
-            user=sender if isinstance(sender, dict) else None,
-            team=data.get("team"),
-            organization=data.get("organization"),
+            user=actor_dict,
+            team=team_dict if isinstance(team_dict, dict) else None,
+            organization=org_dict if isinstance(org_dict, dict) else None,
         )
 
     @property
@@ -323,14 +329,12 @@ class EventRunContext:
     event_text: Optional[str] = None
     received_at: Optional[str] = None
     team_id: Optional[str] = None
-
-
-def _actor_from_event_data(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    for key in ("sender", "user"):
-        actor = data.get(key)
-        if isinstance(actor, dict):
-            return actor
-    return None
+    notification_ids: tuple[str, ...] = ()
+    # The event's primary asset (when one is present in the payload). Always
+    # populated from ``data.asset`` if the webhook includes it. Used by
+    # cleanup handlers (asset.deleted) and by future asset-scoped routes.
+    asset_id: Optional[str] = None
+    asset_type: Optional[str] = None
 
 
 def _build_event_task(
@@ -341,15 +345,13 @@ def _build_event_task(
     """Build the task string, run mode, preload tools, and prefetch spec."""
     data = event.data
     event_type = event.event_type
-    preload_names = list(EVENT_TOOL_PRELOADS.get(event_type, []))
+    preload_names = list(tool_preloads_for(event_type))
     prefetch = PrefetchSpec()
 
     if event_type == "new-message":
-        user_obj = data.get("sender") or data.get("user") or {}
-        sender = user_obj.get("username") if isinstance(user_obj, dict) else None
-        sender = sender or event.sender_username or "Unknown"
+        sender = event.sender_username or "Unknown"
         content = data.get("text", "")
-        conv = data.get("conversation_id") or event.conversation_id or "unknown"
+        conv = event.conversation_id or "unknown"
         task = (
             f"New conversation message from {sender} (conversation_id: {conv}).\n\n"
             f"{content}"
@@ -402,26 +404,19 @@ def build_event_run_context(
     )
 
     data = event.data or {}
-    actor = _actor_from_event_data(data)
-    actor_is_agent = (
-        bool(actor.get("is_agent")) if actor and "is_agent" in actor else None
-    )
-    actor_username = (
-        event.sender_username
-        or (actor.get("username") if actor else None)
-        or (comment_ctx.commenter if comment_ctx else None)
+    actor_is_agent = event.actor.is_agent if event.actor else None
+    actor_username = event.sender_username or (
+        comment_ctx.commenter if comment_ctx else None
     )
     event_text = data.get("text") if isinstance(data.get("text"), str) else None
 
     event_team_id = provenance.team_id if provenance else None
+    if not event_team_id and event.team:
+        event_team_id = event.team.id
     if not event_team_id and comment_ctx and comment_ctx.team:
         event_team_id = comment_ctx.team.get("id")
-    if not event_team_id:
-        team = data.get("team")
-        if isinstance(team, dict):
-            event_team_id = team.get("id")
-        elif isinstance(data.get("team_id"), str):
-            event_team_id = data.get("team_id")
+    if not event_team_id and isinstance(data.get("team_id"), str):
+        event_team_id = data.get("team_id")
 
     event_thread_parent_id = None
     if comment_ctx:
@@ -454,4 +449,7 @@ def build_event_run_context(
         event_text=event_text,
         received_at=event.timestamp,
         team_id=event_team_id,
+        notification_ids=event.notification_ids,
+        asset_id=event.asset.id if event.asset else None,
+        asset_type=event.asset.type if event.asset else None,
     )

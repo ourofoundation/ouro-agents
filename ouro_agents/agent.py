@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -18,11 +19,13 @@ from smolagents import (
 
 from .artifacts import PrefetchSpec, resolve_prefetch
 from .classify import is_trivial_message
+from .cancellation import RunCancellationToken
 from .config import (
     MCPServerConfig,
     OuroAgentsConfig,
     ReasoningConfig,
     RunMode,
+    merge_openrouter_provider,
     merge_reasoning,
 )
 from .display import OuroDisplay, create_logger, get_display
@@ -125,6 +128,9 @@ class OuroAgent:
         self._deferred_index: list[dict] = []
         self._mcp_connected = False
         self._own_user_id: Optional[str] = None
+        self._run_lock = threading.RLock()
+        self._active_runs_lock = threading.RLock()
+        self._active_run_tokens: set[RunCancellationToken] = set()
 
         self.team_registry: TeamRegistry = TeamRegistry.from_platform_context(
             self._workspace, config.agent.org_id,
@@ -418,10 +424,27 @@ class OuroAgent:
                 layers.append(override.reasoning)
         return merge_reasoning(*layers)
 
+    def _resolve_openrouter_provider(
+        self,
+        *,
+        subagent_profile: Optional[str] = None,
+        heartbeat: bool = False,
+    ) -> Optional[dict]:
+        """Merge global + optional heartbeat overlay + optional subagent override."""
+        layers: list[Optional[dict]] = [self.config.openrouter_provider]
+        if heartbeat:
+            layers.append(self.config.heartbeat.openrouter_provider)
+        if subagent_profile:
+            override = self.config.subagents.profiles.get(subagent_profile)
+            if override and override.openrouter_provider is not None:
+                layers.append(override.openrouter_provider)
+        return merge_openrouter_provider(*layers)
+
     def _build_openrouter_extra_body(
         self,
         model_id: str,
         reasoning: Optional[ReasoningConfig],
+        provider: Optional[dict] = None,
     ) -> Optional[dict]:
         body: dict = {}
         cfg = self.config.prompt_caching
@@ -436,12 +459,21 @@ class OuroAgent:
             if r:
                 body["reasoning"] = r
 
+        if provider:
+            body["provider"] = provider
+
         return body if body else None
 
     def _default_tool_choice(self, model_id: str) -> Optional[str]:
-        # OpenRouter routes for MiniMax reject smolagents' default
-        # `tool_choice="required"`; fall back to `auto` for compatibility.
-        if model_id.startswith("minimax/"):
+        # Some upstream providers reject smolagents' default `tool_choice="required"`:
+        #   - MiniMax routes return a 400 outright.
+        #   - DeepSeek's own "DeepSeek" provider serves reasoning-enabled models
+        #     as `deepseek-reasoner`, which rejects `required` with
+        #     ``deepseek-reasoner does not support this tool_choice``. Even the
+        #     non-reasoning chat variants are happy with `auto`, so we apply it
+        #     to the whole family rather than try to detect reasoning at the
+        #     call site.
+        if model_id.startswith("minimax/") or model_id.startswith("deepseek/"):
             return "auto"
         return None
 
@@ -463,7 +495,11 @@ class OuroAgent:
                 heartbeat=heartbeat,
             )
         )
-        extra_body = self._build_openrouter_extra_body(model_id, resolved)
+        provider = self._resolve_openrouter_provider(
+            subagent_profile=subagent_profile,
+            heartbeat=heartbeat,
+        )
+        extra_body = self._build_openrouter_extra_body(model_id, resolved, provider)
         if extra_body:
             model_kwargs["extra_body"] = extra_body
         tool_choice = self._default_tool_choice(model_id)
@@ -737,8 +773,16 @@ class OuroAgent:
                 f"(server: {server.name}). Use 'stdio' transport instead."
             )
 
+    def cancel_active_runs(self, reason: str = "shutdown") -> None:
+        """Ask all in-flight smolagents loops owned by this agent to stop."""
+        with self._active_runs_lock:
+            tokens = list(self._active_run_tokens)
+        for token in tokens:
+            token.cancel(reason)
+
     def close(self) -> None:
         """Shut down all MCP server connections."""
+        self.cancel_active_runs("agent closing")
         for ctx in self._mcp_contexts:
             try:
                 ctx.__exit__(None, None, None)
@@ -790,6 +834,7 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         run_mode: str = "",
         event_type: str = "",
+        cancellation_token: Optional[RunCancellationToken] = None,
     ):
         """Build the tool list and directory string for a single run.
 
@@ -888,6 +933,7 @@ class OuroAgent:
                 asset_refs=asset_refs or [],
                 team_id=team_id,
                 doc_store=active_doc_store,
+                cancellation_token=cancellation_token,
             )
             return result, profile
 
@@ -1166,6 +1212,7 @@ class OuroAgent:
         usage_tracker: Optional[UsageTracker] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        cancellation_token: Optional[RunCancellationToken] = None,
     ) -> "SubAgentContext":
         from .subagents.context import SubAgentContext
 
@@ -1217,6 +1264,7 @@ class OuroAgent:
             python_packages=self.config.agent.python_packages or [],
             python_package_versions=self._python_package_versions or {},
             record_subagent_usage=self._record_subagent_usage,
+            cancellation_token=cancellation_token,
             delegatable_profiles=self.delegatable_profiles,
         )
 
@@ -1234,6 +1282,7 @@ class OuroAgent:
         asset_refs: Optional[list[str]] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        cancellation_token: Optional[RunCancellationToken] = None,
     ):
         """Build context and dispatch a subagent through the unified runner.
 
@@ -1263,6 +1312,7 @@ class OuroAgent:
             usage_tracker=subagent_usage_tracker,
             team_id=team_id,
             doc_store=doc_store,
+            cancellation_token=cancellation_token,
         )
 
         return run_subagent(effective_profile, task, ctx)
@@ -1276,6 +1326,7 @@ class OuroAgent:
         run_id: str = "",
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        cancellation_token: Optional[RunCancellationToken] = None,
     ) -> list:
         """Run multiple subagents in parallel.
 
@@ -1315,6 +1366,7 @@ class OuroAgent:
                 usage_tracker=subagent_usage_tracker,
                 team_id=team_id,
                 doc_store=doc_store,
+                cancellation_token=cancellation_token,
             )
             dispatch_list.append((effective_profile, task_str, ctx))
 
@@ -1342,6 +1394,7 @@ class OuroAgent:
         status_callback: Optional[RunStatusCallback] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        cancellation_token: Optional[RunCancellationToken] = None,
     ) -> PreflightResult:
         """Run the preflight subagent as a visible step 0.
 
@@ -1368,6 +1421,7 @@ class OuroAgent:
             asset_refs=asset_refs,
             team_id=team_id,
             doc_store=doc_store,
+            cancellation_token=cancellation_token,
         )
         duration_s = time.monotonic() - t0
 
@@ -1621,7 +1675,69 @@ class OuroAgent:
         preserve_existing_usage: bool = False,
         event_type: Optional[str] = None,
         team_id: Optional[str] = None,
+        cancellation_token: Optional[RunCancellationToken] = None,
     ) -> str:
+        token = cancellation_token or RunCancellationToken()
+        with self._active_runs_lock:
+            self._active_run_tokens.add(token)
+        try:
+            try:
+                return await asyncio.to_thread(
+                    self._run_blocking_locked,
+                    task=task,
+                    model_override=model_override,
+                    conversation_id=conversation_id,
+                    mode=mode,
+                    user_id=user_id,
+                    skip_memory=skip_memory,
+                    allowed_servers=allowed_servers,
+                    mode_framing_override=mode_framing_override,
+                    preload_tools=preload_tools,
+                    prefetch=prefetch,
+                    debug_markdown_path=debug_markdown_path,
+                    extra_tools=extra_tools,
+                    observer=observer,
+                    preserve_existing_usage=preserve_existing_usage,
+                    event_type=event_type,
+                    team_id=team_id,
+                    cancellation_token=token,
+                )
+            except asyncio.CancelledError:
+                token.cancel("async task cancelled")
+                raise
+        finally:
+            with self._active_runs_lock:
+                self._active_run_tokens.discard(token)
+
+    def _run_blocking_locked(self, **kwargs) -> str:
+        token = kwargs.get("cancellation_token")
+        with self._run_lock:
+            if token is not None:
+                token.raise_if_cancelled()
+            return self._run_blocking(**kwargs)
+
+    def _run_blocking(
+        self,
+        task: str,
+        model_override=None,
+        conversation_id: Optional[str] = None,
+        mode: RunMode = RunMode.AUTONOMOUS,
+        user_id: Optional[str] = None,
+        skip_memory: bool = False,
+        allowed_servers: Optional[list[str]] = None,
+        mode_framing_override: str = "",
+        preload_tools: Optional[list[str]] = None,
+        prefetch: Optional[PrefetchSpec] = None,
+        debug_markdown_path: Optional[Path] = None,
+        extra_tools: Optional[list] = None,
+        observer: Optional[AgentObserver] = None,
+        preserve_existing_usage: bool = False,
+        event_type: Optional[str] = None,
+        team_id: Optional[str] = None,
+        cancellation_token: Optional[RunCancellationToken] = None,
+    ) -> str:
+        token = cancellation_token or RunCancellationToken()
+        token.raise_if_cancelled()
         run_started_at = time.monotonic()
         self.connect_mcp()
         model = model_override or self._build_model(self.config.agent.model)
@@ -1688,6 +1804,7 @@ class OuroAgent:
                 status_callback=_status_cb,
                 team_id=team_id,
                 doc_store=active_doc_store,
+                cancellation_token=token,
             )
             logger.info(
                 "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d",
@@ -1714,6 +1831,7 @@ class OuroAgent:
                 doc_store=active_doc_store,
                 run_mode=mode.value,
                 event_type=event_type or "",
+                cancellation_token=token,
             )
         )
         if extra_tools:
@@ -1778,6 +1896,7 @@ class OuroAgent:
             logger=create_logger(display=display),
             compactor_model=compactor_model,
             is_chat_mode=(mode in (RunMode.CHAT, RunMode.CHAT_REPLY)),
+            cancellation_token=token,
         )
         agent_ref["agent"] = agent
 
@@ -1817,6 +1936,7 @@ class OuroAgent:
 
         use_reset = not has_history
 
+        token.raise_if_cancelled()
         if observer:
             final_result = None
             streamer = FinalAnswerStreamer()
@@ -1830,6 +1950,7 @@ class OuroAgent:
             result = final_result if final_result is not None else ""
         else:
             result = agent.run(effective_task, reset=use_reset)
+        token.raise_if_cancelled()
 
         if debug_markdown_path:
             try:
@@ -1923,16 +2044,19 @@ class OuroAgent:
                     doc_store=active_doc_store,
                 )
 
-        def _on_post_run_done(task: asyncio.Task) -> None:
+        def _run_post_run_background() -> None:
             try:
-                task.result()
-            except asyncio.CancelledError:
-                return
+                if token.cancelled:
+                    return
+                _do_post_run()
             except Exception:
                 logger.warning("Post-run background task failed", exc_info=True)
 
-        bg_task = asyncio.create_task(asyncio.to_thread(_do_post_run))
-        bg_task.add_done_callback(_on_post_run_done)
+        threading.Thread(
+            target=_run_post_run_background,
+            name=f"ouro-post-run-{run_id}",
+            daemon=True,
+        ).start()
 
         usage = collect_run_usage(agent, model, self._usage_tracker)
         memory_ledger = self.memory.usage_ledger() or None

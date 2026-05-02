@@ -410,3 +410,27 @@ class Mem0Backend:
             self._mem.update(memory_id, metadata=metadata)
         except Exception as e:
             logger.warning("Failed to update memory metadata %s: %s", memory_id, e)
+
+    def delete(self, memory_id: str) -> None:
+        if not memory_id:
+            return
+        try:
+            self._mem.delete(memory_id)
+        except Exception as e:
+            logger.warning("Failed to delete memory %s: %s", memory_id, e)
+
+    def find_by_asset(
+        self,
+        asset_id: str,
+        agent_id: str,
+        team_id: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[MemoryResult]:
+        if not asset_id:
+            return []
+        return self.get_all(
+            agent_id=agent_id,
+            limit=limit,
+            team_id=team_id,
+            asset_id=asset_id,
+        )
