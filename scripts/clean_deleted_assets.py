@@ -132,8 +132,10 @@ _MISSING_ERROR_FRAGMENTS = (
     "not found",
     "no asset_type",
     # PostgREST PGRST116: ``.single()`` returned 0 rows. The /assets/{id}/type
-    # endpoint uses single() so this message is functionally a 404.
+    # endpoint uses single() so these messages are functionally a 404.
     "single json object",
+    "json object requested",
+    "multiple (or no) rows returned",
     "pgrst116",
     "0 rows",
 )
@@ -142,7 +144,10 @@ _MISSING_ERROR_FRAGMENTS = (
 def asset_missing_on_ouro(client, asset_id: str) -> bool:
     """Return True iff Ouro has no asset with that id (404 or PGRST116)."""
     try:
-        client.assets.retrieve(asset_id)
+        response = client.assets.client.get(f"/assets/{asset_id}/type")
+        data = client.assets._handle_response(response)
+        if not data or not data.get("asset_type"):
+            return True
         return False
     except Exception as exc:
         # ouro-py raises NotFoundError on 404 (subclass of ApiError). Anything
