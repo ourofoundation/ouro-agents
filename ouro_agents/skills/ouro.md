@@ -151,8 +151,11 @@ action when explaining what happened.
 
 ## Data, Quests, And Conversations
 
-- Datasets: prefer `query_dataset` over downloading when you need to inspect or
-  analyze rows.
+- Datasets: create with `create_dataset` using explicit `org_id` and `team_id`.
+  For small tables, pass `data` as a JSON row array (`[{"col": "val"}]`). For
+  local files, pass `data_path` for `.csv`, `.json`, `.jsonl`/`.ndjson`, or
+  `.parquet` files. Prefer `query_dataset` over downloading when you need to
+  inspect or analyze rows; use `limit` and `offset` to page through results.
 - Quests: understand lifecycle language before acting. "Close" means set status
   to `closed` with `update_quest`; "cancel" means set status to `cancelled`;
   "complete an item" means use `complete_quest_item`. These are lifecycle

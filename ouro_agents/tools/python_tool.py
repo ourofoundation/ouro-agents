@@ -235,7 +235,7 @@ def _make_ouro_helpers(ouro_client: "Ouro") -> dict:
             ouro = get_ouro_client()
             results = ouro.assets.search("climate data")
             post = ouro.posts.create(name="Report", content_markdown="...", org_id="...", team_id="...")
-            ds = ouro.datasets.get("<uuid>")
+            ds = ouro.datasets.retrieve("<uuid>")
         """
         return ouro_client
 
@@ -290,8 +290,8 @@ def make_python_tool(
             ouro = get_ouro_client()
             results = ouro.assets.search("topic")
             post = ouro.posts.create(name="My Post", content_markdown="...", org_id="...", team_id="...")
-            ds = ouro.datasets.get("<uuid>")
-            rows = ouro.datasets.query("<uuid>", query="SELECT * FROM data LIMIT 10")
+            ds = ouro.datasets.retrieve("<uuid>")
+            rows = ouro.datasets.query("<uuid>")
         - To publish a workspace file: use MCP `ouro:create_file` with `file_path` equal to the same
           relative path you passed to `write_file` (WORKSPACE_ROOT matches the run_python workspace)."""
 

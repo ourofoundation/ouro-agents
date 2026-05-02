@@ -38,7 +38,7 @@ ouro = get_ouro_client()
 ### Datasets (ouro.datasets)
 - `list(query="", limit=20, offset=0, scope=None, org_id=None, team_id=None, **kwargs)` → list[Dataset]
 - `create(name, visibility, data=None, description=None, **kwargs)` → Dataset
-  - `data`: DataFrame, list[dict], or dict (must have ≥1 row, ≥1 column)
+  - `data`: DataFrame or list[dict] (must have ≥1 row, ≥1 column)
   - Pass `org_id` and `team_id` in kwargs
 - `retrieve(id)` → Dataset
 - `query(id)` → DataFrame (fetches all rows)
