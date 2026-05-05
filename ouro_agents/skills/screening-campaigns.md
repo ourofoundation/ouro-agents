@@ -88,13 +88,14 @@ def append_rows(rows):
 
 
 def execute_route(name_or_id, payload):
-    return ouro.routes.use(
+    action = ouro.routes.execute(
         name_or_id,
         body=payload,
         wait=True,
         poll_interval=5.0,
         poll_timeout=120.0,
     )
+    return action.final_data
 
 
 def score_candidate(prediction):

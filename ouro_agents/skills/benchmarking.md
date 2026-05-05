@@ -100,13 +100,14 @@ def now_iso():
 
 
 def run_route(composition):
-    return ouro.routes.use(
+    action = ouro.routes.execute(
         ROUTE_ID,
         body={"composition": composition},
         wait=True,
         poll_interval=5.0,
         poll_timeout=120.0,
     )
+    return action.final_data
 
 
 rows = []

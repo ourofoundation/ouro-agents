@@ -42,7 +42,7 @@ ouro = get_ouro_client()
   - Pass `org_id` and `team_id` in kwargs
 - `retrieve(id)` → Dataset
 - `query(id)` → DataFrame (fetches all rows)
-- `load(table_name)` → DataFrame (finds dataset by table_name, then fetches rows)
+- `query(id, sql)` → DataFrame (read-only SQL; use `{{table}}` as placeholder)
 - `schema(id)` → list[dict] (column definitions)
 - `stats(id)` → dict
 - `update(id, name=None, data=None, data_mode="append", description=None, **kwargs)` → Dataset
