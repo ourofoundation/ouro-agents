@@ -62,6 +62,11 @@ def _append_markdown_list_item(existing: str, addition: str) -> str:
     return f"{existing}{separator}{addition}"
 
 
+def _requires_owned_cache(name: str) -> bool:
+    """Return True for docs that must only use agent-owned registry entries."""
+    return name.split(":", 1)[0] == "DAILY"
+
+
 @dataclass
 class ReadResult:
     """Content + metadata from a doc-store read."""
@@ -236,6 +241,27 @@ class OuroDocStore:
         self._save_registry()
         return uuid
 
+    def _forget_uuid(self, name: str) -> None:
+        """Remove a stale registry entry and persist the change."""
+        self._uuid_cache.pop(name, None)
+        self._owner_cache.discard(name)
+        self._save_registry()
+
+    def _cached_uuid(self, name: str, *, require_owned: bool = False) -> Optional[str]:
+        """Return a usable cached UUID, optionally requiring ownership."""
+        uuid = self._uuid_cache.get(name)
+        if not uuid:
+            return None
+        if not require_owned or name in self._owner_cache:
+            return uuid
+        logger.warning(
+            "Ignoring non-owned cached UUID for %s (%s); will create owned doc",
+            name,
+            uuid,
+        )
+        self._forget_uuid(name)
+        return None
+
     # -- Search + resolution -------------------------------------------------
 
     @staticmethod
@@ -252,11 +278,12 @@ class OuroDocStore:
             return None
 
     def _search_exact_name_matches(self, name: str, *, limit: int = 25) -> list[dict]:
-        """Search for posts whose remote title exactly matches *name*'s display."""
+        """Search this agent's posts whose remote title exactly matches *name*'s display."""
         remote_name = remote_display_name(name)
         results = self._client.assets.search(
             query=remote_name,
             asset_type="post",
+            scope="personal",
             team_id=self.team_id,
             limit=limit,
         )
@@ -293,9 +320,12 @@ class OuroDocStore:
         pick a winner when multiple exact matches exist; the caller is
         expected to surface or clean up the duplicate.
         """
-        cached = self._uuid_cache.get(name)
+        owned_only = _requires_owned_cache(name)
+        cached = self._cached_uuid(name, require_owned=owned_only)
         if cached:
             return cached, False
+        if owned_only:
+            return None, False
 
         try:
             matches = self._search_exact_name_matches(name, limit=25)
@@ -494,12 +524,12 @@ class OuroDocStore:
         with the item merged into the trailing list. When it doesn't exist:
         creates with *initial_md* if supplied, otherwise with the item alone.
 
-        On Ouro this is cache-first: a registry hit goes straight to a
-        retrieve+update with no search round-trip. On a cache miss we
-        create directly (no recovery search) — appropriate for daily-log
-        style usage where this process owns the doc.
+        On Ouro this is owned-cache-first: an owned registry hit goes straight
+        to a retrieve+update with no search round-trip. On a miss (or a stale
+        non-owned cache entry) we create directly because this process owns
+        list-style docs such as daily logs.
         """
-        uuid = self._uuid_cache.get(name)
+        uuid = self._cached_uuid(name, require_owned=True)
         if not uuid:
             return self._create(name, initial_md or markdown_item) is not None
 

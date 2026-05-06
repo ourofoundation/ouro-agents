@@ -46,7 +46,7 @@ CompositeDocStore = _ouro_docs_module.CompositeDocStore
 daily_doc_display_name = _ouro_docs_module.daily_doc_display_name
 
 
-def _registry_payload(docs: dict[str, str]) -> str:
+def _registry_payload(docs: dict[str, object]) -> str:
     return json.dumps(
         {
             "team": {
@@ -146,23 +146,38 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertEqual(store.team_name, "Research")
             self.assertEqual(store.team_slug, "research")
 
-    def test_resolve_uses_broader_exact_name_search(self):
-        name = "DAILY:hermes:research:2026-04-05"
-        display_name = "#research daily log 2026-04-05"
+    def test_resolve_uses_broader_exact_name_search_for_recoverable_names(self):
+        name = "REPORT:hermes:weekly"
+        display_name = name
         matches = [{"id": f"other-{i}", "name": f"OTHER:{i}"} for i in range(8)]
-        matches.append({"id": "daily-post", "name": display_name})
+        matches.append({"id": "report-post", "name": display_name})
 
         with TemporaryDirectory() as tmpdir:
             client = _FakeClient(search_results=[matches])
             store = self._make_store(client, tmpdir)
 
             self.assertTrue(store.exists(name))
-            self.assertEqual(store._uuid_cache[name], "daily-post")
+            self.assertEqual(store._uuid_cache[name], "report-post")
             self.assertGreaterEqual(client.assets.search_calls[0]["limit"], 25)
+            self.assertEqual(client.assets.search_calls[0]["scope"], "personal")
 
-    def test_write_rechecks_lookup_before_creating(self):
+    def test_daily_resolve_does_not_search_or_cache_external_post(self):
         name = "DAILY:hermes:research:2026-04-05"
         display_name = "#research daily log 2026-04-05"
+
+        with TemporaryDirectory() as tmpdir:
+            client = _FakeClient(
+                search_results=[[{"id": "apollo-daily", "name": display_name}]]
+            )
+            store = self._make_store(client, tmpdir)
+
+            self.assertFalse(store.exists(name))
+            self.assertNotIn(name, store._uuid_cache)
+            self.assertEqual(client.assets.search_calls, [])
+
+    def test_write_rechecks_lookup_before_creating(self):
+        name = "REPORT:hermes:weekly"
+        display_name = name
 
         with TemporaryDirectory() as tmpdir:
             # First search misses, second search (under the write lock) finds
@@ -183,8 +198,8 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertEqual(client.posts.updated[0]["id"], "existing-post")
 
     def test_singleton_ambiguous_recovery_refuses_create(self):
-        name = "DAILY:hermes:research:2026-04-05"
-        display_name = "#research daily log 2026-04-05"
+        name = "MEMORY:hermes:research"
+        display_name = name
         duplicates = [
             {
                 "id": "older-post",
@@ -221,6 +236,8 @@ class TestOuroDocStore(unittest.TestCase):
                 "#research daily log 2026-04-05",
             )
             self.assertEqual(store._uuid_cache[name], "created-post")
+            self.assertTrue(store.is_owner(name))
+            self.assertEqual(client.assets.search_calls, [])
 
     def test_daily_doc_display_name_uses_team_hashtag(self):
         self.assertEqual(
@@ -233,7 +250,9 @@ class TestOuroDocStore(unittest.TestCase):
 
         with TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "state.json"
-            registry_path.write_text(_registry_payload({name: "daily-post"}))
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "daily-post", "owned": True}})
+            )
             client = _FakeClient(search_results=[[{"id": "wrong", "name": name}]])
             client.posts.contents["daily-post"] = (
                 "# Daily Log 2026-04-05\n\n- 10:00 - first"
@@ -252,6 +271,34 @@ class TestOuroDocStore(unittest.TestCase):
                 client.posts.contents["daily-post"],
                 "# Daily Log 2026-04-05\n\n- 10:00 - first\n- 10:05 - second",
             )
+
+    def test_append_list_item_ignores_non_owned_cached_daily_and_creates(self):
+        name = "DAILY:hermes:research:2026-04-05"
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(_registry_payload({name: "apollo-daily"}))
+            client = _FakeClient(search_results=[[{"id": "wrong", "name": name}]])
+            client.posts.contents["apollo-daily"] = (
+                "# Daily Log 2026-04-05\n\n- 10:00 - apollo"
+            )
+            store = self._make_store(client, tmpdir)
+
+            ok = store.append_list_item(
+                name,
+                "- 10:05 - hermes",
+                initial_md="# Daily Log 2026-04-05\n\n- 10:05 - hermes",
+            )
+
+            self.assertTrue(ok)
+            self.assertEqual(client.assets.search_calls, [])
+            self.assertEqual(client.posts.updated, [])
+            self.assertEqual(
+                client.posts.created[0]["name"],
+                "#research daily log 2026-04-05",
+            )
+            self.assertEqual(store._uuid_cache[name], "created-post")
+            self.assertTrue(store.is_owner(name))
 
     def test_append_list_item_creates_when_id_missing(self):
         name = "DAILY:hermes:research:2026-04-05"
