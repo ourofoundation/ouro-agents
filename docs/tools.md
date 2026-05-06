@@ -92,7 +92,8 @@ included in subagents that set `needs_python_tool=True` (e.g.
 The executor:
 
 - Imports only the packages listed in `agent.python_packages` and
-  validates them at agent startup.
+  validates them at agent startup. Use wildcard entries such as
+  `pymatgen.*` or `ase.*` when submodule imports should be available.
 - Receives the agent's Ouro SDK client (`OURO_API_KEY` required) under
   the global name `ouro`, so subagents can do
   `ouro.posts.create(...)`, `ouro.routes.execute(...)`, etc.

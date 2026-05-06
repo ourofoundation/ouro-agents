@@ -19,9 +19,21 @@ def _load_python_tool_module():
 
 _python_tool_module = _load_python_tool_module()
 _make_workspace_fs = _python_tool_module._make_workspace_fs
+validate_python_packages = _python_tool_module.validate_python_packages
 
 
 class TestPythonToolWorkspaceFs(unittest.TestCase):
+    def test_validate_python_packages_checks_dotted_import_targets(self):
+        results = validate_python_packages(["xml.dom", "xml.not_a_real_module"])
+
+        self.assertIsNotNone(results["xml.dom"])
+        self.assertIsNone(results["xml.not_a_real_module"])
+
+    def test_validate_python_packages_accepts_wildcard_import_targets(self):
+        results = validate_python_packages(["xml.dom.*"])
+
+        self.assertIsNotNone(results["xml.dom.*"])
+
     def test_extract_zip_unpacks_into_workspace(self):
         with TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

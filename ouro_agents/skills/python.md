@@ -25,6 +25,7 @@ You have a `run_python` tool that executes code in a sandboxed Python environmen
 ## Usage Notes
 
 - State persists across calls within a single run. Define a variable in one call, use it in the next.
+- In-memory state does NOT survive past the end of a run. To carry data forward, write it to the workspace (e.g. `scratch/state.json`) — see the **filesystem** skill.
 - Print statements are captured — use `print()` to inspect intermediate values.
 - Authorized imports: `json`, `math`, `statistics`, `datetime`, `re`, `collections`, `itertools`, `functools`, `csv`, `io`, `textwrap`, `hashlib`, `base64`, `urllib.parse`.
 - No network access, no `os`/`subprocess` from within code. Use your other tools for those.

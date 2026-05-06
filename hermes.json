@@ -12,11 +12,11 @@
     "workspace": "./agents/hermes",
     "org_id": "00000000-0000-0000-0000-000000000000",
     "python_packages": [
-      "ase",
-      "pymatgen",
-      "pymatgen.core",
-      "pymatgen.io.cif",
-      "spglib"
+      "numpy.*",
+      "scipy.*",
+      "ase.*",
+      "pymatgen.*",
+      "spglib.*"
     ]
   },
   "subagents": {

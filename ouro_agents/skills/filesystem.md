@@ -39,12 +39,26 @@ These are sandboxed — path traversal outside the workspace is blocked.
 - For web content — use the `search` MCP server.
 - Don't store sensitive information (API keys, credentials) in workspace files.
 
+## Persistence
+
+The workspace is your home directory on disk — everything you write here survives
+across runs, restarts, and crashes. In-memory Python state inside `run_python`
+is discarded when a run ends, so use the filesystem as your cross-run scratchpad:
+serialize state to JSON (or any text format) and read it back on the next run.
+
+```python
+import json
+state = json.loads(read_file("scratch/state.json")) if file_exists("scratch/state.json") else {}
+state["last_seen"] = "2026-05-06"
+write_file("scratch/state.json", json.dumps(state, indent=2))
+```
+
 ## File Organization
 
 Keep the workspace tidy:
 - `workspace/drafts/` — work-in-progress content before publishing
 - `workspace/data/` — downloaded or generated data files
-- `workspace/scratch/` — temporary files for intermediate work
+- `workspace/scratch/` — intermediate state, including data carried across runs
 
 ## Upload Pattern
 

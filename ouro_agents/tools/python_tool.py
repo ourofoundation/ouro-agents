@@ -18,15 +18,18 @@ logger = logging.getLogger(__name__)
 
 
 def validate_python_packages(packages: list[str]) -> dict[str, str | None]:
-    """Import each package and return {name: version_or_None}.
+    """Import each package and return {name: version_or_unknown_or_None}.
 
-    Logs a warning for any package that cannot be imported.
+    Logs a warning for any package that cannot be imported. ``None`` means the
+    import failed; importable packages without discoverable metadata use
+    ``"unknown"`` so they are not treated as missing.
     """
     results: dict[str, str | None] = {}
     for pkg in packages:
-        top_level = pkg.split(".")[0]
+        import_target = pkg[:-2] if pkg.endswith(".*") else pkg
+        top_level = import_target.split(".")[0]
         try:
-            mod = importlib.import_module(top_level)
+            mod = importlib.import_module(import_target)
             version = getattr(mod, "__version__", None)
             if version is None:
                 try:
@@ -34,7 +37,7 @@ def validate_python_packages(packages: list[str]) -> dict[str, str | None]:
 
                     version = _meta_version(top_level)
                 except Exception:
-                    pass
+                    version = "unknown"
             results[pkg] = version
             logger.info("Python package validated: %s==%s", pkg, version or "unknown")
         except ImportError:
@@ -305,13 +308,20 @@ def make_python_tool(
         State persists between calls within a single run — variables defined in one
         call are available in later calls. Print output is captured alongside the result.
 
+        In-memory Python state (variables, loaded objects) is discarded when the run
+        ends, but workspace files written via `write_file` persist across runs and
+        restarts. To carry data forward, serialize it to a file under `scratch/`
+        (e.g. `write_file('scratch/state.json', json.dumps(data))`) and read it back
+        on the next run with `read_file`.
+
         Important sandbox rules:
-        - Do NOT use open(), pathlib.Path, os, pandas, numpy, or other unlisted libraries.
+        - Do NOT use open(), pathlib.Path, os, pandas, or other unlisted libraries.
         - Only the imports listed below are allowed. If you need filesystem access, use the helpers below instead of imports.
         - Paths for file helpers are relative to the workspace root.
 
         Authorized imports: json, math, statistics, datetime, re, collections,
-        itertools, functools, csv, io, textwrap, hashlib, base64, urllib.parse.
+        itertools, functools, csv, io, textwrap, hashlib, base64, urllib.parse,
+        plus any configured packages listed below.
 
         Workspace file helpers (no import needed, paths relative to workspace):
         - read_file(path) -> str: Read a file.
@@ -352,7 +362,12 @@ def make_python_tool(
     if package_versions:
         available = {k: v for k, v in package_versions.items() if v is not None}
         if available:
-            lines = [f"        - {pkg} {ver}" for pkg, ver in available.items()]
+            lines = [
+                f"        - {pkg[:-2]} {ver} (including submodules)"
+                if pkg.endswith(".*")
+                else f"        - {pkg} {ver}"
+                for pkg, ver in available.items()
+            ]
             pkg_docs = (
                 "\n\n        Additional installed packages (import these directly):\n"
                 + "\n".join(lines)

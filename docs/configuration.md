@@ -43,7 +43,7 @@ You typically write `heartbeat` and `planning` *inside* the `modes` block
 | `model` | str | required | Default OpenRouter model id. |
 | `workspace` | path | `./workspace` | Workspace directory. |
 | `org_id` | str | none | Ouro organization the agent operates in. Required when using teams. |
-| `python_packages` | list[str] | `[]` | Packages exposed inside the `run_python` sandbox. Validated at startup. |
+| `python_packages` | list[str] | `[]` | Packages exposed inside the `run_python` sandbox. Use `package.*` to allow submodules such as `pymatgen.symmetry.analyzer`; entries are validated at startup. |
 
 `agent.team_id` is **not** supported anymore — teams are discovered at
 runtime. The loader raises if it sees one.
