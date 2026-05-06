@@ -15,7 +15,11 @@ from .debug import (
     serialize_memory_step_for_debug,
     write_run_debug_markdown_preamble,
 )
-from .streaming import FinalAnswerStreamer, extract_streamed_answer_text
+from .streaming import (
+    FinalAnswerStreamer,
+    IntermediateContentStreamer,
+    extract_streamed_answer_text,
+)
 
 __all__ = [
     "append_conversation_turn",
@@ -29,6 +33,7 @@ __all__ = [
     "FinalAnswerStreamer",
     "format_conversation_turns",
     "format_turns_verbatim",
+    "IntermediateContentStreamer",
     "load_conversation_turns",
     "markdown_fence",
     "serialize_memory_step_for_debug",

@@ -39,6 +39,107 @@ _EMPTY_MODEL_RESPONSE_ANSWER = (
 )
 _RAW_DEBUG_MAX_CHARS = 4_000
 
+# When the model emits plain content (no tool call) and salvage parsers fail,
+# we used to coerce the text into ``final_answer`` so chat-mode runs would not
+# spiral into empty-tool-call loops. That terminated the agent prematurely
+# whenever the model's "let me check that next" preamble slipped out of the
+# reasoning channel into content. The patterns below identify text that is
+# almost certainly an intermediate thought rather than a user-facing reply,
+# so we can route those cases to the corrective-nudge path instead.
+#
+# Anchored to the start of the trimmed content. Matched case-insensitively.
+_PREAMBLE_PREFIX_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^let'?s\b", re.IGNORECASE),
+    re.compile(r"^let\s+me\b", re.IGNORECASE),
+    re.compile(r"^i'?ll\b", re.IGNORECASE),
+    re.compile(r"^i\s+will\b", re.IGNORECASE),
+    re.compile(r"^i'?m\s+going\s+to\b", re.IGNORECASE),
+    re.compile(r"^i\s+need\s+to\b", re.IGNORECASE),
+    re.compile(r"^i\s+should\b", re.IGNORECASE),
+    re.compile(r"^now\s+(?:let|i'?ll|i\s+will|i\s+need)\b", re.IGNORECASE),
+    re.compile(r"^next,?\s+(?:i'?ll|i\s+will|let)\b", re.IGNORECASE),
+    re.compile(r"^first,?\s+(?:i'?ll|i\s+will|let|i\s+need)\b", re.IGNORECASE),
+    re.compile(r"^then\s+(?:i'?ll|i\s+will)\b", re.IGNORECASE),
+    re.compile(r"^okay,?\s+(?:so|let|i'?ll|now)\b", re.IGNORECASE),
+    re.compile(r"^alright,?\s+(?:so|let|i'?ll|now)\b", re.IGNORECASE),
+    re.compile(r"^so\s+(?:let|i'?ll|i\s+will|i\s+need|first)\b", re.IGNORECASE),
+    re.compile(r"^wait,?\s+", re.IGNORECASE),
+    re.compile(r"^hmm,?\s+", re.IGNORECASE),
+    re.compile(r"^actually,?\s+", re.IGNORECASE),
+    re.compile(r"^one\s+(?:moment|sec(?:ond)?)\b", re.IGNORECASE),
+    re.compile(r"^(?:give|just)\s+me\s+(?:a\s+)?(?:moment|sec(?:ond)?|minute)\b", re.IGNORECASE),
+    re.compile(r"^thinking\b", re.IGNORECASE),
+    re.compile(r"^working\s+on\b", re.IGNORECASE),
+    re.compile(r"^checking\b", re.IGNORECASE),
+    re.compile(r"^looking\b", re.IGNORECASE),
+    re.compile(r"^pulling\s+(?:up|that|those)\b", re.IGNORECASE),
+    re.compile(r"^surfacing\b", re.IGNORECASE),
+    re.compile(r"^searching\b", re.IGNORECASE),
+)
+
+# Substring fragments that, if present anywhere, strongly indicate an
+# intermediate thought rather than a complete reply.
+_PREAMBLE_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\blet\s+me\s+(?:check|look|search|pull|surface|see|verify|confirm|grab|fetch|run|try)\b", re.IGNORECASE),
+    re.compile(r"\bi'?ll\s+(?:check|look|search|pull|surface|see|verify|confirm|grab|fetch|run|try|now)\b", re.IGNORECASE),
+    re.compile(r"\bi'?m\s+going\s+to\s+(?:check|look|search|pull|surface|verify|run|try)\b", re.IGNORECASE),
+)
+
+_PREAMBLE_NUDGE_OBSERVATION = (
+    "[runtime] Your previous step ended on a preamble — content without a tool call "
+    "and without final_answer:\n"
+    "    {preview}\n"
+    "That looked like an intermediate thought (e.g. \"let me…\", \"I'll…\"), so "
+    "it has been treated as an unfinished step rather than a final reply.\n\n"
+    "Now do exactly one of:\n"
+    "  - call the actual tool you intended (e.g. memory_recall, search_assets, send_message); "
+    "you can include a brief content line alongside it as narration, or\n"
+    "  - call final_answer with your real user-facing reply.\n\n"
+    "Don't end a turn on a 'let me…' / 'I'll…' line — pair it with the tool call, or "
+    "finish the work and reply."
+)
+_PREAMBLE_NUDGE_PREVIEW_CHARS = 240
+
+
+def _looks_like_preamble(content: str) -> bool:
+    """Return True when content looks like a mid-thought continuation cue.
+
+    These are sentences a reasoning model produces when it intended to call
+    another tool but accidentally leaked the lead-in into the content channel.
+    Coercing them into ``final_answer`` ends the run with the user seeing only
+    "let me check that next…" — exactly the bug we are guarding against.
+    """
+    if not content:
+        return False
+    text = content.strip()
+    if not text:
+        return False
+
+    # Single short fragment with no terminal punctuation reads as a status
+    # update, not a reply. ``len(text) <= 60`` is roughly one short clause.
+    has_terminal = any(ch in text for ch in (".", "!", "?"))
+    if len(text) <= 60 and not has_terminal:
+        return True
+
+    # Trailing ellipsis or colon is a hard signal of "more to come".
+    if text.endswith(("…", "...", ":")):
+        return True
+
+    if any(p.match(text) for p in _PREAMBLE_PREFIX_PATTERNS):
+        return True
+
+    # Single-sentence intent declarations like "Not pulling enough detail from
+    # memory — let me surface the actual results." This is the original
+    # hermes regression: an intent fragment after a brief observation.
+    if any(p.search(text) for p in _PREAMBLE_INTENT_PATTERNS):
+        # Only flag when the whole content is intent-flavored. A long reply
+        # that happens to contain "let me check" mid-paragraph is fine.
+        # Use a generous threshold so multi-paragraph replies are exempt.
+        if len(text) <= 400:
+            return True
+
+    return False
+
 
 def _compact_tool_output(
     tool_name: str,
@@ -645,13 +746,29 @@ def _recover_chat_final_answer(content: str, tool_calls) -> str | None:
     facing reply. If we fail to parse any tool calls after all recovery attempts,
     returning that text as ``final_answer`` is safer than handing smolagents an
     empty tool-call list, which causes another step and can spiral into loops.
+
+    Exception: when the content reads as a mid-thought continuation cue
+    ("let me check…", "I'll search next…"), DO NOT coerce it. That kind of
+    content means the model intended to call another tool but leaked the
+    lead-in into content; auto-finalizing on it terminates the run with the
+    user only seeing the preamble. Those cases route to the corrective-nudge
+    path in :func:`_patch_model_for_xml_tool_calls` instead.
     """
     if tool_calls:
         return None
     answer = content.strip()
     if not answer:
         return None
+    if _looks_like_preamble(answer):
+        return None
     return answer
+
+
+def _build_preamble_nudge_observation(content: str) -> str:
+    preview = content.strip()
+    if len(preview) > _PREAMBLE_NUDGE_PREVIEW_CHARS:
+        preview = preview[:_PREAMBLE_NUDGE_PREVIEW_CHARS].rstrip() + "…"
+    return _PREAMBLE_NUDGE_OBSERVATION.format(preview=preview)
 
 
 def _run_recovery_cascade(content: str) -> _ToolCallRecovery | None:
@@ -774,9 +891,35 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
 
             tool_calls = recovery.tool_calls if recovery else None
 
+            # If salvage failed and the content reads as an intermediate thought
+            # ("let me check that next", "I'll search now…"), treat it as a
+            # recoverable empty step and attach a corrective nudge that the
+            # SanitizedToolCallingAgent will surface as a TOOL_RESPONSE on the
+            # next inference. Runs in BOTH chat and autonomous modes — leaking
+            # preamble into content is a model bug regardless of mode.
+            if not tool_calls and _looks_like_preamble(content):
+                preview = _message_preview(content)
+                if preview:
+                    get_display().thought(preview)
+                logger.warning(
+                    "Model emitted intermediate-thought content without a tool call; "
+                    "skipping auto-final-answer and nudging on next step: %r",
+                    _message_preview(content),
+                )
+                message.role = MessageRole.ASSISTANT
+                message.tool_calls = []
+                # Stash the nudge text on the message; SanitizedToolCallingAgent
+                # picks this up after _step_stream completes and converts it
+                # into a memory_step observation so the next inference sees it.
+                message._ouro_preamble_nudge_observation = (
+                    _build_preamble_nudge_observation(content)
+                )
+                return message
+
             # In chat modes, if all salvage parsers fail and the model emitted
             # plain text, treat it as the intended assistant reply instead of
-            # continuing with an empty tool-call list.
+            # continuing with an empty tool-call list. Preamble-style content
+            # has already been routed above and will not reach this branch.
             chat_final_answer = None
             if is_chat_mode:
                 chat_final_answer = _recover_chat_final_answer(content, tool_calls)
@@ -894,6 +1037,36 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
             self._raise_if_cancelled()
             yield output
         self._track_reasoning_only_step(memory_step)
+        self._inject_preamble_nudge_observation(memory_step)
+
+    def _inject_preamble_nudge_observation(
+        self, memory_step: ActionStep
+    ) -> None:
+        """Surface a nudge when the patched parser flagged preamble content.
+
+        The patched ``parse_tool_calls`` cannot itself add to the agent's
+        memory — it only sees the ChatMessage. So it stashes the nudge text
+        on the message; we read it here and append it to ``observations`` so
+        smolagents' ``ActionStep.to_messages`` emits a TOOL_RESPONSE on the
+        next inference. The model then sees a clear corrective hint instead
+        of just its own dangling preamble in context.
+        """
+        message = getattr(memory_step, "model_output_message", None)
+        if message is None:
+            return
+        nudge = getattr(message, "_ouro_preamble_nudge_observation", None)
+        if not nudge:
+            return
+        existing = getattr(memory_step, "observations", None) or ""
+        if nudge in existing:
+            return
+        memory_step.observations = (
+            f"{existing}\n\n{nudge}".strip() if existing else nudge
+        )
+        try:
+            delattr(message, "_ouro_preamble_nudge_observation")
+        except AttributeError:
+            pass
 
     def _track_reasoning_only_step(self, memory_step: ActionStep) -> None:
         """Warn once when the model loops on reasoning without ever calling tools.

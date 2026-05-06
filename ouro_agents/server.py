@@ -152,26 +152,86 @@ class ServerAgentObserver(AgentObserver):
             message=message,
         )
 
+    def _ensure_typing(self) -> None:
+        """Send a single 'typing' activity event the first time text streams."""
+        if self.state["has_started_typing"]:
+            return
+        self.state["has_started_typing"] = True
+        if not self.reply_publisher or not self.event_run.conversation_id:
+            return
+        self.reply_publisher.emit_activity(
+            conversation_id=self.event_run.conversation_id,
+            status="typing",
+            active=True,
+        )
+
     def on_stream_chunk(self, chunk: str) -> None:
         if not self.reply_publisher or not is_chat_event(self.event_run.event_type):
             return
         if not self.event_run.conversation_id:
             return
         self.state["has_streamed"] = True
-
-        if not self.state["has_started_typing"]:
-            self.state["has_started_typing"] = True
-            self.reply_publisher.emit_activity(
-                conversation_id=self.event_run.conversation_id,
-                status="typing",
-                active=True,
-            )
+        self._ensure_typing()
 
         self.reply_publisher.emit_llm_response(
             conversation_id=self.event_run.conversation_id,
             content=chunk,
             message_id=self.stream_message_id,
         )
+
+    def on_intermediate_chunk(self, message_id: str, chunk: str) -> None:
+        """Stream a step's commentary chunk to the conversation websocket.
+
+        Each non-final step gets its own ``message_id`` so the client can
+        render commentary as a distinct message that arrives before the
+        final reply, matching how chat-style coding agents narrate work.
+        """
+        if not self.reply_publisher or not is_chat_event(self.event_run.event_type):
+            return
+        if not self.event_run.conversation_id:
+            return
+        self._ensure_typing()
+        self.reply_publisher.emit_llm_response(
+            conversation_id=self.event_run.conversation_id,
+            content=chunk,
+            message_id=message_id,
+        )
+
+    def on_intermediate_end(self, message_id: str, full_text: str) -> None:
+        """Persist a step's commentary message and signal end-of-stream.
+
+        ``full_text`` is the concatenation of every chunk emitted under
+        ``message_id`` during this step. Persisting at end-of-step (rather
+        than on every chunk) keeps writes proportional to the number of
+        steps instead of the number of tokens.
+        """
+        if not self.event_run.conversation_id or not self.reply_publisher:
+            return
+        text = (full_text or "").strip()
+        if not text:
+            return
+        msg = None
+        try:
+            ouro = self.reply_publisher.client
+            content = content_from_markdown(ouro, text)
+            msg = Messages(ouro).create(
+                self.event_run.conversation_id,
+                id=message_id,
+                type="message",
+                text=content.text,
+                json=content.json,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist intermediate content message",
+                exc_info=True,
+            )
+        if is_chat_event(self.event_run.event_type):
+            self.reply_publisher.emit_llm_response_end(
+                conversation_id=self.event_run.conversation_id,
+                message_id=message_id,
+                message=msg,
+            )
 
     def on_result_ready(self, result_text: str) -> None:
         msg = None

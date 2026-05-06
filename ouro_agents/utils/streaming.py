@@ -102,6 +102,75 @@ def extract_streamed_answer_from_content(content_blob: str) -> Optional[str]:
     return extract_streamed_answer_text(content_blob)
 
 
+class IntermediateContentStreamer:
+    """Stream the assistant content channel as commentary chunks per step.
+
+    The agent often emits brief narration alongside a tool call ("Looking at
+    recent quests first.", "Found three candidates — checking each."). That
+    text lives on ``delta.content`` and is separate from final_answer arg
+    deltas, which are handled by :class:`FinalAnswerStreamer`. This class
+    surfaces those commentary deltas so the server can emit them to the
+    websocket and persist them as conversation messages, giving the user the
+    same live + replayable experience they'd get from a chat-style coding
+    agent.
+
+    The streamer is per-step: call :meth:`reset` (or :meth:`flush`) on every
+    step boundary so each step gets its own accumulator and message id.
+
+    Suppression: if the model embeds a legacy ``<function=final_answer>``
+    block inside content, :class:`FinalAnswerStreamer` already extracts the
+    answer from there. To avoid double-emitting that text as commentary, we
+    suppress further intermediate output once we see the marker.
+    """
+
+    def __init__(self):
+        self._buffer = ""
+        self._streamed = ""
+        self._suppressed = False
+
+    def consume(self, delta: ChatMessageStreamDelta) -> Optional[str]:
+        if not delta.content:
+            return None
+        if self._suppressed:
+            return None
+
+        new_buffer = self._buffer + str(delta.content)
+
+        if (
+            "<function=final_answer>" in new_buffer
+            or extract_streamed_answer_from_content(new_buffer) is not None
+        ):
+            self._suppressed = True
+            return None
+
+        self._buffer = new_buffer
+        chunk = new_buffer[len(self._streamed) :]
+        if not chunk:
+            return None
+        self._streamed = new_buffer
+        return chunk
+
+    @property
+    def buffered_text(self) -> str:
+        """The full content streamed for this step so far."""
+        return self._streamed
+
+    @property
+    def has_streamed(self) -> bool:
+        return bool(self._streamed)
+
+    def reset(self) -> None:
+        self._buffer = ""
+        self._streamed = ""
+        self._suppressed = False
+
+    def flush(self) -> str:
+        """Return the full streamed text and reset for the next step."""
+        text = self._streamed
+        self.reset()
+        return text
+
+
 class FinalAnswerStreamer:
     def __init__(self):
         self._tool_names: dict[int, str] = {}

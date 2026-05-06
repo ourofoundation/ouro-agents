@@ -5,7 +5,7 @@
   },
   "agent": {
     "name": "apollo",
-    "model": "minimax/minimax-m2.7",
+    "model": "deepseek/deepseek-v4-pro",
     "reasoning": {
       "effort": "medium"
     },
@@ -19,23 +19,29 @@
       "spglib.*"
     ]
   },
+  "openrouter_provider": {
+    "ignore": [
+      "Parasail"
+    ],
+    "allow_fallbacks": true
+  },
   "subagents": {
     "preflight": {
-      "model": "minimax/minimax-m2.7",
+      "model": "deepseek/deepseek-v4-pro",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 4
     },
     "research": {
-      "model": "xiaomi/mimo-v2-flash",
+      "model": "deepseek/deepseek-v4-pro",
       "reasoning": {
-        "effort": "low"
+        "effort": "none"
       },
       "max_steps": 10
     },
     "writer": {
-      "model": "minimax/minimax-m2.7"
+      "model": "deepseek/deepseek-v4-pro"
     },
     "executor": {
       "max_steps": 24
@@ -44,21 +50,21 @@
   "modes": {
     "planning": {
       "enabled": true,
-      "model": "minimax/minimax-m2.7",
+      "model": "deepseek/deepseek-v4-pro",
       "max_steps": 20,
       "cadence": "8h",
       "min_heartbeats": 4,
       "review_window": "1h",
-      "auto_approve": true
+      "auto_approve": false
     },
     "heartbeat": {
       "enabled": true,
-      "every": "2h",
-      "model": "minimax/minimax-m2.7",
+      "every": "1h",
+      "model": "deepseek/deepseek-v4-pro",
       "max_steps": 20,
       "active_hours": {
-        "start": "09:00",
-        "end": "22:00",
+        "start": "08:30",
+        "end": "21:30",
         "timezone": "America/Chicago"
       },
       "proactive": {
@@ -73,7 +79,7 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/apollo/memory",
-    "extraction_model": "xiaomi/mimo-v2-flash",
+    "extraction_model": "deepseek/deepseek-v4-pro",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "retrieval_queries": 3,
@@ -84,6 +90,29 @@
     "decay_after_days": 30,
     "graph": {
       "enabled": false
+    }
+  },
+  "event_pooling": {
+    "enabled": true,
+    "events": {
+      "new-message": {
+        "enabled": true,
+        "settle_seconds": 2,
+        "jitter_seconds": 3,
+        "max_wait_seconds": 8
+      },
+      "comment": {
+        "enabled": true,
+        "settle_seconds": 20,
+        "jitter_seconds": 60,
+        "max_wait_seconds": 180
+      },
+      "mention": {
+        "enabled": true,
+        "settle_seconds": 20,
+        "jitter_seconds": 60,
+        "max_wait_seconds": 180
+      }
     }
   },
   "mcp_servers": [

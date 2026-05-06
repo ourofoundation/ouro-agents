@@ -92,7 +92,8 @@ from .utils.debug import (
     append_run_debug_markdown_trace,
     write_run_debug_markdown_preamble,
 )
-from .utils.streaming import FinalAnswerStreamer
+from .utils.streaming import FinalAnswerStreamer, IntermediateContentStreamer
+from .uuid_v7 import uuid7_str
 
 if TYPE_CHECKING:
     from .modes.planning import PlanCycle
@@ -1940,13 +1941,68 @@ class OuroAgent:
         if observer:
             final_result = None
             streamer = FinalAnswerStreamer()
+            intermediate_streamer = IntermediateContentStreamer()
+            current_intermediate_message_id: str | None = None
+
+            def _flush_intermediate(*, drop: bool = False) -> None:
+                """Close out the current step's commentary stream, if any.
+
+                Called on every step boundary. When ``drop`` is True the
+                buffered text is discarded instead of persisted (used when a
+                step ends with no real content — typically the final-answer
+                step whose only "content" is the answer itself, streamed
+                separately via on_stream_chunk).
+                """
+                nonlocal current_intermediate_message_id
+                if current_intermediate_message_id is None:
+                    intermediate_streamer.reset()
+                    return
+                full_text = intermediate_streamer.flush()
+                msg_id = current_intermediate_message_id
+                current_intermediate_message_id = None
+                if drop or not full_text.strip():
+                    return
+                try:
+                    observer.on_intermediate_end(msg_id, full_text)
+                except Exception:
+                    logger.warning(
+                        "observer.on_intermediate_end failed",
+                        exc_info=True,
+                    )
+
             for event in agent.run(effective_task, stream=True, reset=use_reset):
                 if isinstance(event, ChatMessageStreamDelta):
                     chunk = streamer.consume(event)
                     if chunk:
                         observer.on_stream_chunk(chunk)
+                    inter_chunk = intermediate_streamer.consume(event)
+                    if inter_chunk:
+                        if current_intermediate_message_id is None:
+                            current_intermediate_message_id = uuid7_str()
+                        try:
+                            observer.on_intermediate_chunk(
+                                current_intermediate_message_id, inter_chunk
+                            )
+                        except Exception:
+                            logger.warning(
+                                "observer.on_intermediate_chunk failed",
+                                exc_info=True,
+                            )
+                elif isinstance(event, ActionStep):
+                    # Step boundary. Persist the step's commentary unless
+                    # the step ended on a final_answer (in which case the
+                    # final-answer stream is already covering the user-
+                    # facing reply via on_stream_chunk + on_result_ready).
+                    _flush_intermediate(
+                        drop=bool(getattr(event, "is_final_answer", False))
+                    )
                 elif isinstance(event, FinalAnswerStep):
                     final_result = event.output
+
+            # Safety net: if the run terminated without a trailing ActionStep
+            # (e.g. AgentMaxStepsError path), make sure we don't leak buffered
+            # commentary that was streamed but never flushed for persistence.
+            _flush_intermediate()
             result = final_result if final_result is not None else ""
         else:
             result = agent.run(effective_task, reset=use_reset)
