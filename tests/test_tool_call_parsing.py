@@ -5,8 +5,10 @@ from smolagents.models import ChatMessage, MessageRole
 
 from ouro_agents.tools.agent_base import (
     _EMPTY_MODEL_RESPONSE_ANSWER,
+    _build_empty_narrated_tool_call_nudge_observation,
     _build_preamble_nudge_observation,
     _extract_raw_reasoning_text,
+    _looks_like_empty_narrated_tool_call,
     _looks_like_preamble,
     _parse_dsml_tool_call_recovery,
     _parse_dsml_tool_calls,
@@ -148,6 +150,54 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertIsNotNone(tool_calls)
         self.assertEqual(tool_calls[0].function.name, "get_comments")
         self.assertEqual(tool_calls[0].function.arguments, {"parent_id": "abc-123"})
+
+    def test_recovered_narrated_tool_call_scrubs_raw_content(self):
+        model = _AlwaysFailsModel()
+        _patch_model_for_xml_tool_calls(model)
+
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=(
+                "Calling tools:\n"
+                "[{'id': 'call_00', 'type': 'function', 'function': "
+                "{'name': 'get_asset', 'arguments': {'id': 'asset-123'}}}]"
+            ),
+        )
+
+        parsed = model.parse_tool_calls(message)
+
+        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
+        self.assertEqual(len(parsed.tool_calls), 1)
+        self.assertEqual(parsed.tool_calls[0].function.name, "get_asset")
+        self.assertEqual(parsed.tool_calls[0].function.arguments, {"id": "asset-123"})
+        self.assertEqual(parsed.content, "")
+
+    def test_empty_narrated_tool_call_gets_specific_nudge(self):
+        model = _AlwaysFailsModel()
+        _patch_model_for_xml_tool_calls(model)
+
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content="Let me check for a draft first:\nCalling tools:\n[]",
+        )
+
+        parsed = model.parse_tool_calls(message)
+
+        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
+        self.assertEqual(parsed.tool_calls, [])
+        self.assertEqual(parsed.content, "")
+        nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
+        self.assertIsNotNone(nudge)
+        self.assertIn("empty tool list", nudge)
+        self.assertIn("Do not write `Calling tools:`", nudge)
+
+    def test_detects_empty_narrated_tool_call(self):
+        self.assertTrue(_looks_like_empty_narrated_tool_call("Calling tools:\n[]"))
+        self.assertFalse(
+            _looks_like_empty_narrated_tool_call(
+                "Calling tools:\n[{'function': {'name': 'get_asset', 'arguments': {}}}]"
+            )
+        )
 
     def test_recovers_nested_route_execution_arguments(self):
         tool_calls = _parse_structured_tool_calls(
@@ -731,6 +781,13 @@ class TestPreambleNudgePath(unittest.TestCase):
         preview_marker = "    Let me really"
         self.assertIn(preview_marker, nudge)
         # The full original text is too long to fit in the preview.
+        self.assertNotIn(long_text, nudge)
+
+    def test_empty_narrated_tool_call_nudge_truncates_long_preview(self):
+        long_text = "Calling tools:\n[]" + (" extra" * 100)
+        nudge = _build_empty_narrated_tool_call_nudge_observation(long_text)
+        self.assertIn("empty tool list", nudge)
+        self.assertIn("…", nudge)
         self.assertNotIn(long_text, nudge)
 
 

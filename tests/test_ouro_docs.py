@@ -84,6 +84,9 @@ class _FakePosts:
         self.created = []
         self.updated = []
         self.contents = {}
+        # UUID -> Exception. When present, retrieve/update raise instead.
+        self.retrieve_errors: dict[str, Exception] = {}
+        self.update_errors: dict[str, Exception] = {}
 
     def create(self, **kwargs):
         self.created.append(kwargs)
@@ -91,11 +94,15 @@ class _FakePosts:
         return SimpleNamespace(id="created-post")
 
     def update(self, id, content=None, name=None):
+        if id in self.update_errors:
+            raise self.update_errors[id]
         self.updated.append({"id": id, "content": content, "name": name})
         if content is not None:
             self.contents[id] = content.markdown
 
     def retrieve(self, id):
+        if id in self.retrieve_errors:
+            raise self.retrieve_errors[id]
         return SimpleNamespace(
             id=id,
             content=SimpleNamespace(text=self.contents.get(id, ""), data={}),
@@ -405,6 +412,166 @@ class TestOuroDocStore(unittest.TestCase):
 
             payload = json.loads((Path(tmpdir) / "state.json").read_text())
             self.assertEqual(payload["docs"][name], {"uuid": "found-post"})
+
+    def test_read_with_meta_drops_stale_uuid_and_recovers_via_search(self):
+        name = "MEMORY:hermes:research"
+        coerce = RuntimeError("Cannot coerce the result to a single JSON object")
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "dead-uuid", "owned": True}})
+            )
+            client = _FakeClient(
+                search_results=[[{"id": "live-uuid", "name": name}]]
+            )
+            client.posts.retrieve_errors["dead-uuid"] = coerce
+            client.posts.contents["live-uuid"] = "## Live"
+            store = self._make_store(client, tmpdir)
+
+            result = store.read_with_meta(name)
+
+            self.assertEqual(result.content, "## Live")
+            self.assertEqual(store._uuid_cache[name], "live-uuid")
+            self.assertFalse(store.is_owner(name))
+
+            payload = json.loads((Path(tmpdir) / "state.json").read_text())
+            self.assertEqual(payload["docs"][name], {"uuid": "live-uuid"})
+
+    def test_read_with_meta_returns_empty_when_recovery_finds_nothing(self):
+        name = "MEMORY:hermes:research"
+        coerce = RuntimeError("Cannot coerce the result to a single JSON object")
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "dead-uuid", "owned": True}})
+            )
+            client = _FakeClient(search_results=[[]])
+            client.posts.retrieve_errors["dead-uuid"] = coerce
+            store = self._make_store(client, tmpdir)
+
+            result = store.read_with_meta(name)
+
+            self.assertEqual(result.content, "")
+            self.assertNotIn(name, store._uuid_cache)
+            self.assertFalse(store.is_owner(name))
+
+    def test_write_drops_stale_uuid_on_permission_error_and_creates_new(self):
+        name = "MEMORY:hermes:research"
+        forbidden = RuntimeError("You don't have permission to update this asset")
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "dead-uuid", "owned": True}})
+            )
+            # After the dropped UUID, recovery searches twice (outside +
+            # under the write lock) and finds nothing — so a new post is
+            # minted instead of reattaching to a stranger's post.
+            client = _FakeClient(search_results=[[], []])
+            client.posts.update_errors["dead-uuid"] = forbidden
+            store = self._make_store(client, tmpdir)
+
+            ok = store.write(name, "## Refreshed memory")
+
+            self.assertTrue(ok)
+            self.assertEqual(len(client.posts.created), 1)
+            self.assertEqual(
+                client.posts.created[0]["content_markdown"], "## Refreshed memory"
+            )
+            self.assertEqual(store._uuid_cache[name], "created-post")
+            self.assertTrue(store.is_owner(name))
+
+    def test_write_does_not_loop_when_recovery_also_fails(self):
+        name = "MEMORY:hermes:research"
+        forbidden = RuntimeError("You don't have permission to update this asset")
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "dead-uuid", "owned": True}})
+            )
+            # Recovery search finds an exact-name match owned by someone
+            # else; the second update also 403s. The retry guard must stop
+            # us before we recurse forever.
+            client = _FakeClient(
+                search_results=[[{"id": "stranger", "name": name}]]
+            )
+            client.posts.update_errors["dead-uuid"] = forbidden
+            client.posts.update_errors["stranger"] = forbidden
+            store = self._make_store(client, tmpdir)
+
+            ok = store.write(name, "## Doomed")
+
+            self.assertFalse(ok)
+            self.assertEqual(client.posts.created, [])
+
+    def test_append_drops_stale_uuid_and_creates_new(self):
+        name = "REPORT:hermes:weekly"
+        coerce = RuntimeError("Cannot coerce the result to a single JSON object")
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "dead-uuid", "owned": True}})
+            )
+            client = _FakeClient(search_results=[[], []])
+            client.posts.retrieve_errors["dead-uuid"] = coerce
+            store = self._make_store(client, tmpdir)
+
+            ok = store.append(name, "## Latest")
+
+            self.assertTrue(ok)
+            self.assertEqual(len(client.posts.created), 1)
+            self.assertEqual(store._uuid_cache[name], "created-post")
+            self.assertTrue(store.is_owner(name))
+
+    def test_append_list_item_drops_stale_uuid_and_creates_new(self):
+        name = "DAILY:hermes:research:2026-04-05"
+        coerce = RuntimeError("Cannot coerce the result to a single JSON object")
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "dead-uuid", "owned": True}})
+            )
+            client = _FakeClient(search_results=[])
+            client.posts.retrieve_errors["dead-uuid"] = coerce
+            store = self._make_store(client, tmpdir)
+
+            ok = store.append_list_item(
+                name,
+                "- 10:05 - hermes",
+                initial_md="# Daily Log\n\n- 10:05 - hermes",
+            )
+
+            self.assertTrue(ok)
+            self.assertEqual(len(client.posts.created), 1)
+            self.assertEqual(
+                client.posts.created[0]["content_markdown"],
+                "# Daily Log\n\n- 10:05 - hermes",
+            )
+            self.assertEqual(store._uuid_cache[name], "created-post")
+
+    def test_unrelated_errors_do_not_drop_cached_uuid(self):
+        name = "REPORT:hermes:weekly"
+        boom = RuntimeError("connection reset by peer")
+
+        with TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "state.json"
+            registry_path.write_text(
+                _registry_payload({name: {"uuid": "live-uuid", "owned": True}})
+            )
+            client = _FakeClient()
+            client.posts.update_errors["live-uuid"] = boom
+            store = self._make_store(client, tmpdir)
+
+            ok = store.write(name, "## Body")
+
+            self.assertFalse(ok)
+            self.assertEqual(store._uuid_cache[name], "live-uuid")
+            self.assertTrue(store.is_owner(name))
 
     def test_legacy_string_registry_entries_are_accepted(self):
         name = "MEMORY:hermes:research"

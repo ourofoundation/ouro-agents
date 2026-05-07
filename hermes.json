@@ -7,7 +7,7 @@
     "name": "hermes",
     "model": "deepseek/deepseek-v4-pro",
     "reasoning": {
-      "effort": "medium"
+      "effort": "high"
     },
     "workspace": "./agents/hermes",
     "org_id": "00000000-0000-0000-0000-000000000000",

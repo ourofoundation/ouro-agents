@@ -67,6 +67,31 @@ def _requires_owned_cache(name: str) -> bool:
     return name.split(":", 1)[0] == "DAILY"
 
 
+_STALE_UUID_HINTS = (
+    "cannot coerce the result to a single",
+    "not found",
+    "404",
+    "403",
+    "permission",
+    "not allowed",
+    "forbidden",
+)
+
+
+def _looks_like_stale_uuid(exc: Exception) -> bool:
+    """Return True when *exc* suggests a registry UUID points to a tombstone.
+
+    Covers the two cases observed against the Ouro backend: PostgREST's
+    ``Cannot coerce the result to a single JSON object`` (returned when
+    ``.single()`` finds zero rows under RLS, e.g. the post was deleted) and
+    explicit permission errors on update of a row whose ACL changed. In both
+    cases the cached UUID is unusable and re-resolution via search/create is
+    the right next step.
+    """
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _STALE_UUID_HINTS)
+
+
 @dataclass
 class ReadResult:
     """Content + metadata from a doc-store read."""
@@ -262,6 +287,38 @@ class OuroDocStore:
         self._forget_uuid(name)
         return None
 
+    def _drop_stale_uuid(
+        self,
+        name: str,
+        uuid: str,
+        exc: Exception,
+        already_recovered: bool,
+        *,
+        op: str,
+    ) -> bool:
+        """Forget *uuid* and signal a single retry when *exc* looks stale.
+
+        Returns True iff the caller should retry the operation. Only retries
+        once per call chain (gated by ``already_recovered``) and only when
+        the registry still has the same UUID we tried to use, so a concurrent
+        recovery elsewhere doesn't double-evict.
+        """
+        if already_recovered:
+            return False
+        if not _looks_like_stale_uuid(exc):
+            return False
+        if self._uuid_cache.get(name) != uuid:
+            return False
+        logger.warning(
+            "OuroDocStore.%s: dropping stale registry entry for %s (%s): %s",
+            op,
+            name,
+            uuid,
+            exc,
+        )
+        self._forget_uuid(name)
+        return True
+
     # -- Search + resolution -------------------------------------------------
 
     @staticmethod
@@ -447,8 +504,13 @@ class OuroDocStore:
         """Read a post by name. Returns empty string if not found."""
         return self.read_with_meta(name).content
 
-    def read_with_meta(self, name: str) -> ReadResult:
-        """Read a post by name, returning content and metadata."""
+    def read_with_meta(self, name: str, *, _recovered: bool = False) -> ReadResult:
+        """Read a post by name, returning content and metadata.
+
+        If the cached UUID points to a tombstone (post deleted, ACL
+        revoked), drops the registry entry and retries once via the
+        search path. Guarded by ``_recovered`` to prevent loops.
+        """
         uuid = self._resolve(name)
         if not uuid:
             return ReadResult(content="")
@@ -461,11 +523,19 @@ class OuroDocStore:
                 post_id=str(post.id),
             )
         except Exception as e:
+            if self._drop_stale_uuid(name, uuid, e, _recovered, op="read_with_meta"):
+                return self.read_with_meta(name, _recovered=True)
             logger.warning("OuroDocStore.read_with_meta failed for %s: %s", name, e)
             return ReadResult(content="")
 
-    def write(self, name: str, content_md: str) -> bool:
-        """Update a post this agent owns. Creates it if it doesn't exist."""
+    def write(self, name: str, content_md: str, *, _recovered: bool = False) -> bool:
+        """Update a post this agent owns. Creates it if it doesn't exist.
+
+        On a stale-UUID error from update (post deleted out from under us,
+        or ownership rescinded) the registry entry is dropped and the call
+        is retried once — which falls through to ``_resolve_or_create``
+        and creates a fresh owned post when no exact-name match exists.
+        """
         uuid, created = self._resolve_or_create(name, content_md)
         if uuid is None:
             return False
@@ -476,14 +546,17 @@ class OuroDocStore:
             self._client.posts.update(id=uuid, content=self._make_content(content_md))
             return True
         except Exception as e:
+            if self._drop_stale_uuid(name, uuid, e, _recovered, op="write"):
+                return self.write(name, content_md, _recovered=True)
             logger.warning("OuroDocStore.write failed for %s: %s", name, e)
             return False
 
-    def append(self, name: str, markdown: str) -> bool:
+    def append(self, name: str, markdown: str, *, _recovered: bool = False) -> bool:
         """Append markdown to an existing post (or create it).
 
         Works at the Content/TipTap level so rich formatting is preserved
-        — no read→concat→rewrite lossy round-trip.
+        — no read→concat→rewrite lossy round-trip. Self-heals on stale
+        UUIDs the same way ``write`` does.
         """
         uuid, created = self._resolve_or_create(name, markdown)
         if uuid is None:
@@ -508,6 +581,8 @@ class OuroDocStore:
             self._client.posts.update(id=uuid, content=existing)
             return True
         except Exception as e:
+            if self._drop_stale_uuid(name, uuid, e, _recovered, op="append"):
+                return self.append(name, markdown, _recovered=True)
             logger.warning("OuroDocStore.append failed for %s: %s", name, e)
             return False
 
@@ -517,6 +592,7 @@ class OuroDocStore:
         markdown_item: str,
         *,
         initial_md: str | None = None,
+        _recovered: bool = False,
     ) -> bool:
         """Append a markdown list item, creating the post when missing.
 
@@ -527,7 +603,8 @@ class OuroDocStore:
         On Ouro this is owned-cache-first: an owned registry hit goes straight
         to a retrieve+update with no search round-trip. On a miss (or a stale
         non-owned cache entry) we create directly because this process owns
-        list-style docs such as daily logs.
+        list-style docs such as daily logs. On a stale-UUID error we drop the
+        registry entry and retry once via the create path.
         """
         uuid = self._cached_uuid(name, require_owned=True)
         if not uuid:
@@ -540,6 +617,13 @@ class OuroDocStore:
             self._client.posts.update(id=uuid, content=self._make_content(new_md))
             return True
         except Exception as e:
+            if self._drop_stale_uuid(name, uuid, e, _recovered, op="append_list_item"):
+                return self.append_list_item(
+                    name,
+                    markdown_item,
+                    initial_md=initial_md,
+                    _recovered=True,
+                )
             logger.warning(
                 "OuroDocStore.append_list_item failed for %s (%s): %s",
                 name,

@@ -99,6 +99,15 @@ _PREAMBLE_NUDGE_OBSERVATION = (
     "finish the work and reply."
 )
 _PREAMBLE_NUDGE_PREVIEW_CHARS = 240
+_EMPTY_NARRATED_TOOL_CALL_NUDGE_OBSERVATION = (
+    "[runtime] Your previous step emitted a narrated tool-call block with an empty "
+    "tool list:\n"
+    "    {preview}\n"
+    "That is not a callable action. Now do exactly one of:\n"
+    "  - call one real available tool through the native tool-call mechanism, or\n"
+    "  - call final_answer with the result or blocker.\n\n"
+    "Do not write `Calling tools:` text or an empty list in assistant content."
+)
 
 
 def _looks_like_preamble(content: str) -> bool:
@@ -547,6 +556,30 @@ def _parse_narrated_tool_call_recovery(content: str) -> _ToolCallRecovery | None
     return _tool_call_recovery_from_data(parsed)
 
 
+def _looks_like_empty_narrated_tool_call(content: str) -> bool:
+    """Detect pseudo-tool output that explicitly contains ``Calling tools: []``.
+
+    This is a separate failure mode from a generic preamble: the model has
+    copied the fallback-parser-friendly narrated format but supplied no actual
+    calls. A targeted nudge is clearer than telling it only that it ended on a
+    preamble.
+    """
+    match = _CALLING_TOOLS_RE.search(content)
+    if not match:
+        return False
+
+    list_start = content.find("[", match.end())
+    payload = _extract_bracketed_block(content, list_start)
+    if not payload:
+        return False
+
+    try:
+        parsed = ast.literal_eval(payload)
+    except Exception:
+        return False
+    return parsed == []
+
+
 def _parse_narrated_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
     recovery = _parse_narrated_tool_call_recovery(content)
     return recovery.tool_calls if recovery else None
@@ -771,6 +804,13 @@ def _build_preamble_nudge_observation(content: str) -> str:
     return _PREAMBLE_NUDGE_OBSERVATION.format(preview=preview)
 
 
+def _build_empty_narrated_tool_call_nudge_observation(content: str) -> str:
+    preview = content.strip()
+    if len(preview) > _PREAMBLE_NUDGE_PREVIEW_CHARS:
+        preview = preview[:_PREAMBLE_NUDGE_PREVIEW_CHARS].rstrip() + "…"
+    return _EMPTY_NARRATED_TOOL_CALL_NUDGE_OBSERVATION.format(preview=preview)
+
+
 def _run_recovery_cascade(content: str) -> _ToolCallRecovery | None:
     """Try every salvage parser in priority order on a single text blob."""
     if not content:
@@ -814,9 +854,13 @@ def _raw_reasoning_text_for_salvage(message) -> str:
     return "\n".join(parts)
 
 
-def _install_recovered_tool_calls(message, tool_calls) -> None:
+def _install_recovered_tool_calls(message, recovery: _ToolCallRecovery) -> None:
     message.role = MessageRole.ASSISTANT
-    message.tool_calls = tool_calls
+    message.tool_calls = recovery.tool_calls
+    # Do not replay malformed tool-call syntax (e.g. "Calling tools: [...]") in
+    # the next prompt. Once recovered into structured tool_calls, the raw text is
+    # only a source of imitation drift for later steps.
+    message.content = recovery.thought_text or ""
     for tc in message.tool_calls:
         tc.function.arguments = parse_json_if_needed(tc.function.arguments)
 
@@ -845,9 +889,7 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                         "Recovered tool call from reasoning channel: %s",
                         [tc.function.name for tc in reasoning_recovery.tool_calls],
                     )
-                    _install_recovered_tool_calls(
-                        message, reasoning_recovery.tool_calls
-                    )
+                    _install_recovered_tool_calls(message, reasoning_recovery)
                     return message
 
                 _debug_empty_model_response(message, exc)
@@ -890,6 +932,23 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                     recovery = reasoning_recovery
 
             tool_calls = recovery.tool_calls if recovery else None
+
+            if not tool_calls and _looks_like_empty_narrated_tool_call(content):
+                preview = _message_preview(content)
+                if preview:
+                    get_display().thought(preview)
+                logger.warning(
+                    "Model emitted narrated tool-call text with an empty list; "
+                    "nudging on next step: %r",
+                    _message_preview(content),
+                )
+                message.role = MessageRole.ASSISTANT
+                message.tool_calls = []
+                message._ouro_preamble_nudge_observation = (
+                    _build_empty_narrated_tool_call_nudge_observation(content)
+                )
+                message.content = ""
+                return message
 
             # If salvage failed and the content reads as an intermediate thought
             # ("let me check that next", "I'll search now…"), treat it as a
@@ -949,7 +1008,7 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                 "Recovered tool call via fallback parser: %s",
                 [tc.function.name for tc in tool_calls],
             )
-            _install_recovered_tool_calls(message, tool_calls)
+            _install_recovered_tool_calls(message, recovery)
             return message
 
     model.parse_tool_calls = patched
