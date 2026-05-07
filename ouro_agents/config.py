@@ -101,8 +101,11 @@ class MemoryConfig(BaseModel):
     search_limit: int = 10
     retrieval_queries: int = 3
     max_retrieval_tokens: int = 4000
-    consolidation_enabled: bool = True
-    consolidation_schedule: str = "0 3 * * *"
+    dream_enabled: bool = True
+    dream_schedule: str = "0 3 * * *"
+    dream_review_enabled: bool = True
+    dream_review_max_per_run: int = 5
+    confidence_decay_enabled: bool = True
     memory_md_max_tokens: int = 4000
     mid_session_reflection_interval: int = 10
     decay_after_days: int = 30
@@ -115,6 +118,7 @@ class MemoryConfig(BaseModel):
         "observation": {"after_days": 30, "factor": 0.5},
     })
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
+
 
 
 class ServerConfig(BaseModel):

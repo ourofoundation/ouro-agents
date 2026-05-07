@@ -15,7 +15,7 @@ from .modes.planning import PlanStore
 from .observer import AgentObserver
 from .server import start_server
 from .tui.review_picker import choose_review_plan, reviewable_plans
-from .tui.team_picker import choose_plan_team
+from .tui.team_picker import _ALL_TEAMS_SENTINEL, choose_dream_team, choose_plan_team
 
 
 def _resolve_verbosity(args: argparse.Namespace) -> Verbosity:
@@ -153,6 +153,14 @@ def main():
     subparsers.add_parser(
         "review", help="Force a review heartbeat (check for feedback on current plan)"
     )
+    dream_parser = subparsers.add_parser(
+        "dream", help="Run the dream cycle (memory maintenance, confidence decay, review)"
+    )
+    dream_parser.add_argument(
+        "--team-id",
+        default=None,
+        help="Run dream for a specific team only (omit to run all teams)",
+    )
 
     args = parser.parse_args()
 
@@ -267,6 +275,26 @@ def main():
                 display.info("Review cancelled.")
                 sys.exit(130)
         display.review_result(result)
+    elif args.command == "dream":
+        with OuroAgent(config) as agent:
+            selected_team_id = args.team_id
+            if not selected_team_id:
+                try:
+                    agent._refresh_platform_context()
+                except Exception:
+                    pass
+                selected_team_id = choose_dream_team(agent.team_registry.list_teams())
+                if selected_team_id is None:
+                    display.info("Dream cancelled.")
+                    sys.exit(0)
+
+            team_id = None if selected_team_id == _ALL_TEAMS_SENTINEL else selected_team_id
+            display.info(
+                f"Running dream cycle{f' for team {team_id}' if team_id else ' (all teams)'}..."
+            )
+            results = agent.dream(team_id=team_id)
+        for scope, summary in results.items():
+            display.info(f"  [{scope}] {summary}")
 
 
 if __name__ == "__main__":

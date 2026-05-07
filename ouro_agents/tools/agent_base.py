@@ -109,6 +109,17 @@ _EMPTY_NARRATED_TOOL_CALL_NUDGE_OBSERVATION = (
     "Do not write `Calling tools:` text or an empty list in assistant content."
 )
 
+_EMPTY_RESPONSE_MAX_RETRIES = 2
+_EMPTY_RESPONSE_NUDGE_OBSERVATION = (
+    "[runtime] Your previous model response was completely empty — no content and no "
+    "tool calls were returned. This is likely a transient provider issue, not a "
+    "problem with your reasoning.\n\n"
+    "Resume where you left off. Do exactly one of:\n"
+    "  - call the tool you intended to call next, or\n"
+    "  - call final_answer with your result if you are done.\n\n"
+    "Do not repeat work you have already completed."
+)
+
 
 def _looks_like_preamble(content: str) -> bool:
     """Return True when content looks like a mid-thought continuation cue.
@@ -872,9 +883,13 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
         original = model.parse_tool_calls
         model._ouro_base_parse_tool_calls = original
 
+    model._ouro_empty_response_streak = 0
+
     def patched(message):
         try:
-            return original(message)
+            result = original(message)
+            model._ouro_empty_response_streak = 0
+            return result
         except Exception as exc:
             content = message.content or ""
 
@@ -889,15 +904,35 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                         "Recovered tool call from reasoning channel: %s",
                         [tc.function.name for tc in reasoning_recovery.tool_calls],
                     )
+                    model._ouro_empty_response_streak = 0
                     _install_recovered_tool_calls(message, reasoning_recovery)
                     return message
 
+                model._ouro_empty_response_streak += 1
                 _debug_empty_model_response(message, exc)
                 raw_reasoning = _extract_raw_reasoning_text(message)
                 if raw_reasoning:
                     get_display().thought(_message_preview(raw_reasoning))
+
+                if model._ouro_empty_response_streak < _EMPTY_RESPONSE_MAX_RETRIES:
+                    logger.warning(
+                        "Model returned no content and no tool calls "
+                        "(attempt %d/%d); nudging to retry.",
+                        model._ouro_empty_response_streak,
+                        _EMPTY_RESPONSE_MAX_RETRIES,
+                    )
+                    message.role = MessageRole.ASSISTANT
+                    message.tool_calls = []
+                    message.content = ""
+                    message._ouro_preamble_nudge_observation = (
+                        _EMPTY_RESPONSE_NUDGE_OBSERVATION
+                    )
+                    return message
+
                 logger.warning(
-                    "Model returned no content and no tool calls; terminating agent loop."
+                    "Model returned no content and no tool calls %d times; "
+                    "terminating agent loop.",
+                    model._ouro_empty_response_streak,
                 )
                 message.role = MessageRole.ASSISTANT
                 message.tool_calls = [
@@ -1008,6 +1043,7 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                 "Recovered tool call via fallback parser: %s",
                 [tc.function.name for tc in tool_calls],
             )
+            model._ouro_empty_response_streak = 0
             _install_recovered_tool_calls(message, recovery)
             return message
 

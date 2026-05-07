@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..constants import _INTERVAL_RE, parse_json_from_llm
 from ..memory.focus import build_focus_memory_context, is_directional_feedback
+from ..syncing import normalize_status, read_field
 
 if TYPE_CHECKING:
     from ..agent import OuroAgent
@@ -385,24 +386,98 @@ def parse_plan_items(raw: list[dict]) -> list[PlanItem]:
     return items
 
 
+_PLAN_ITEM_STATUS_ALIASES = {
+    "complete": "done",
+    "completed": "done",
+    "closed": "done",
+    "skip": "skipped",
+    "in-progress": "in_progress",
+    "active": "in_progress",
+    "running": "in_progress",
+}
+
+
+def _status_from_api(value: object) -> str:
+    """Normalize platform item status into the local PlanItem vocabulary."""
+    status = normalize_status(
+        value,
+        aliases=_PLAN_ITEM_STATUS_ALIASES,
+        default="pending",
+    )
+    return status if status in {"pending", "in_progress", "done", "skipped"} else "pending"
+
+
+def _plan_items_from_api_objects(api_items: object) -> list[PlanItem]:
+    """Convert QuestItem-like API objects or dicts into PlanItems."""
+    items: list[PlanItem] = []
+    for item in api_items or []:
+        items.append(
+            PlanItem(
+                id=str(read_field(item, "id") or str(uuid4())[:8]),
+                description=str(read_field(item, "description", "") or ""),
+                status=_status_from_api(read_field(item, "status", "pending")),  # type: ignore[arg-type]
+                notes=str(read_field(item, "notes", "") or ""),
+            )
+        )
+    return items
+
+
 def refresh_items_from_api(ouro_client, quest_id: str) -> list[PlanItem]:
     """Fetch quest items from the API and return as PlanItems."""
     if not ouro_client or not quest_id:
         return []
     try:
         api_items = ouro_client.quests.list_items(quest_id)
-        return [
-            PlanItem(
-                id=str(item.id) if item.id else str(uuid4())[:8],
-                description=item.description,
-                status=item.status,
-                notes=item.notes or "",
-            )
-            for item in api_items
-        ]
+        return _plan_items_from_api_objects(api_items)
     except Exception as e:
         logger.warning("Failed to fetch items for quest %s: %s", quest_id, e)
         return []
+
+
+def reconcile_plan_with_remote_quest(
+    plan_store: PlanStore,
+    cycle: PlanCycle | None,
+    ouro_client,
+) -> PlanCycle | None:
+    """Refresh local plan state from its Ouro quest, archiving terminal quests.
+
+    The platform quest is authoritative here.  This is intentionally one-way:
+    when the remote quest is already closed/cancelled, we archive local JSON
+    without calling ``update_quest_status`` and pushing stale local state back.
+    """
+    if not cycle or not cycle.quest_id or not ouro_client:
+        return cycle
+
+    try:
+        quest = ouro_client.quests.retrieve(cycle.quest_id)
+    except Exception as e:
+        logger.warning("Failed to retrieve plan quest %s: %s", cycle.quest_id, e)
+        return cycle
+
+    remote_status = normalize_status(
+        read_field(quest, "quest.status") or read_field(quest, "status"),
+    )
+    remote_items = _plan_items_from_api_objects(read_field(quest, "items", []))
+    if remote_items:
+        cycle.items = remote_items
+
+    remote_done = bool(remote_items) and all(
+        item.status in ("done", "skipped") for item in remote_items
+    )
+    if remote_status in {"closed", "cancelled"} or remote_done:
+        cycle.status = "cancelled" if remote_status == "cancelled" else "completed"
+        archived = plan_store.archive(cycle, ouro_client=None)
+        logger.info(
+            "Archived local plan %s after remote quest %s status=%s done=%s",
+            cycle.id[:8],
+            cycle.quest_id,
+            remote_status or "unknown",
+            remote_done,
+        )
+        return None
+
+    plan_store.save(cycle)
+    return cycle
 
 
 def update_quest_status(ouro_client, cycle: PlanCycle, **kwargs) -> None:

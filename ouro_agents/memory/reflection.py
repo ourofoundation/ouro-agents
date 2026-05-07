@@ -47,6 +47,39 @@ def write_daily_log(
         )
 
 
+def validated_daily_log_entries(
+    result: ReflectionResult,
+    *,
+    run_team_id: Optional[str] = None,
+    available_team_ids: Optional[set[str]] = None,
+) -> list[tuple[str, str]]:
+    """Return validated ``(team_id, entry)`` pairs from structured reflection logs."""
+    valid_ids = set(available_team_ids or ([] if not run_team_id else [run_team_id]))
+    entries: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for daily_entry in getattr(result, "daily_log_entries", []):
+        raw_team_id = str(getattr(daily_entry, "team_id", "") or "").strip()
+        entry_text = str(getattr(daily_entry, "entry", "") or "").strip()
+        if not entry_text:
+            continue
+        target_team_id = raw_team_id if raw_team_id in valid_ids else ""
+        if not target_team_id and run_team_id:
+            target_team_id = run_team_id
+        if not target_team_id:
+            logger.warning(
+                "Dropped daily log entry with invalid team_id=%s: %s",
+                raw_team_id or "(empty)",
+                entry_text[:80],
+            )
+            continue
+        key = (target_team_id, entry_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(key)
+    return entries
+
+
 def should_reflect(
     conversation_state: Optional[ConversationState],
     reflection_interval: int = 10,
@@ -214,8 +247,17 @@ def apply_reflection(
         except Exception as e:
             logger.warning("Failed to update user model: %s", e)
 
-    if result.daily_log_entry:
-        entry = normalize_daily_log_entry(result.daily_log_entry, run_mode="chat")
+    daily_entries = validated_daily_log_entries(
+        result,
+        run_team_id=team_id,
+        available_team_ids={team_id} if team_id else set(),
+    )
+    for _target_team_id, raw_entry in daily_entries:
+        entry = normalize_daily_log_entry(
+            raw_entry,
+            run_mode=mode,
+            event_type=event_type,
+        )
         write_daily_log(
             workspace,
             entry,

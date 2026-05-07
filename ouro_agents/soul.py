@@ -114,17 +114,20 @@ def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
             )
 
 
-def current_datetime_section() -> str:
+def current_datetime_section(workspace_root: str = "") -> str:
     """Return a compact current-date section for prompt injection."""
     local_now = datetime.now().astimezone()
     utc_now = local_now.astimezone(timezone.utc)
-    return (
-        "## CURRENT DATE AND TIME\n"
-        f"Local datetime: {local_now.isoformat()}\n"
-        f"Current date: {local_now.date().isoformat()}\n"
-        f"Weekday: {local_now.strftime('%A')}\n"
-        f"UTC datetime: {utc_now.isoformat()}"
-    )
+    lines = [
+        "## CURRENT DATE AND TIME",
+        f"Local datetime: {local_now.isoformat()}",
+        f"Current date: {local_now.date().isoformat()}",
+        f"Weekday: {local_now.strftime('%A')}",
+        f"UTC datetime: {utc_now.isoformat()}",
+    ]
+    if workspace_root:
+        lines.append(f"Workspace root: {workspace_root}")
+    return "\n".join(lines)
 
 
 def build_shared_prompt_sections(
@@ -136,9 +139,10 @@ def build_shared_prompt_sections(
     working_memory: str = "",
     conversation_state: str = "",
     plans_index: str = "",
+    workspace_root: str = "",
 ) -> dict[str, str]:
     """Build the shared prompt sections used by main and subagent runs."""
-    sections: dict[str, str] = {"current_datetime": current_datetime_section()}
+    sections: dict[str, str] = {"current_datetime": current_datetime_section(workspace_root)}
 
     if soul:
         sections["soul"] = f"## IDENTITY AND RULES (SOUL)\n{soul}"
@@ -196,6 +200,7 @@ def build_prompt(
     chat_conversation_id: Optional[str] = None,
     preloaded_tool_names: Optional[list[str]] = None,
     plans_index: str = "",
+    workspace_root: str = "",
 ) -> tuple[str, str]:
     """Assemble the system prompt and dynamic context.
 
@@ -212,6 +217,7 @@ def build_prompt(
         working_memory=working_memory,
         conversation_state=conversation_state,
         plans_index=plans_index,
+        workspace_root=workspace_root,
     )
 
     framing = mode_framing_override or profile.framing

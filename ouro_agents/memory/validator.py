@@ -140,6 +140,8 @@ def validate_memory_candidate(
         source=source,
         importance=max(0.0, min(1.0, _as_float(candidate.get("importance"), 0.5))),
         confidence=max(0.0, min(1.0, _as_float(candidate.get("confidence"), 0.7))),
+        volatility=max(0.0, min(1.0, _as_float(candidate.get("volatility"), 0.0))),
+        verification_hint=str(candidate.get("verification_hint") or ""),
         content_hash=content_hash(text),
         schema_version=2,
         created_at=now,

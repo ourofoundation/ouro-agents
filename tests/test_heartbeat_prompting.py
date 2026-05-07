@@ -218,6 +218,98 @@ def test_run_heartbeat_scopes_preflight_and_run_to_selected_team(tmp_path):
     ]
 
 
+def test_run_heartbeat_archives_closed_plan_then_runs_unscoped(tmp_path):
+    workspace = tmp_path
+    store_a = PlanStore(workspace / "teams" / "team-a" / "plans", team_id="team-a")
+    store_a.save(
+        PlanCycle(
+            id="cycle-a",
+            status="active",
+            kind="default",
+            team_id="team-a",
+            quest_id="quest-a",
+            items=[PlanItem(description="Do stale A", status="pending")],
+        )
+    )
+
+    captured = {}
+
+    class _RootDocStore:
+        def read(self, key):
+            if key == "HEARTBEAT:hermes":
+                return "General unscoped heartbeat"
+            return None
+
+    class _Registry:
+        def team_ids(self):
+            return {"team-a", "team-b"}
+
+    class _Quests:
+        def retrieve(self, quest_id):
+            assert quest_id == "quest-a"
+            return SimpleNamespace(
+                quest=SimpleNamespace(status="closed"),
+                items=[
+                    SimpleNamespace(
+                        id="remote-a",
+                        description="Already finished",
+                        status="done",
+                        notes="Closed remotely",
+                    )
+                ],
+            )
+
+    class _FakeAgent:
+        def __init__(self):
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(
+                    model="heartbeat-model",
+                    proactive=SimpleNamespace(enabled=False, servers=[]),
+                    active_hours=None,
+                ),
+                planning=SimpleNamespace(
+                    enabled=True,
+                    cadence="1d",
+                    min_heartbeats=1,
+                    review_window="1h",
+                    auto_approve=False,
+                ),
+                agent=SimpleNamespace(model="main-model", workspace=workspace, name="hermes"),
+            )
+            self.team_registry = _Registry()
+            self.doc_store = _RootDocStore()
+
+        def doc_store_for(self, team_id):
+            raise AssertionError(f"stale team should not be selected: {team_id}")
+
+        def _build_model(self, model_id, heartbeat=False):
+            return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
+
+        def _refresh_platform_context(self):
+            return None
+
+        def _get_ouro_client(self):
+            return SimpleNamespace(quests=_Quests())
+
+        def _run_subagent(self, *_args, **_kwargs):
+            raise AssertionError("no plan preflight should run after archive")
+
+        async def run(self, task, **kwargs):
+            captured["task"] = task
+            captured["kwargs"] = kwargs
+            return '{"action":"none"}'
+
+    result = asyncio.run(run_heartbeat(_FakeAgent()))
+
+    assert result is None
+    assert captured["task"] == "General unscoped heartbeat"
+    assert captured["kwargs"]["team_id"] is None
+    assert store_a.load_default() is None
+    archived = store_a.load_history(limit=1)[0]
+    assert archived.status == "completed"
+    assert archived.items[0].id == "remote-a"
+
+
 def test_run_heartbeat_does_not_fallback_to_root_playbook_for_team_runs(tmp_path):
     workspace = tmp_path
     (workspace / "HEARTBEAT.md").write_text("legacy root heartbeat")

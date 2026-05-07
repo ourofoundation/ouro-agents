@@ -376,6 +376,7 @@ def _format_task_context(
             ctx.conversation_state.format_for_prompt() if ctx.conversation_state else ""
         ),
         plans_index=ctx.plans_index,
+        workspace_root=str(ctx.workspace.resolve()),
     )
     ordered_shared_keys = (
         "current_datetime",

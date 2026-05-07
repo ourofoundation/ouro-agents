@@ -36,9 +36,9 @@ topic to avoid storing duplicates (batch queries in one call)
 
 Output ONLY valid JSON matching this schema (no markdown fences):
 {
-  "candidates": [{"text": "string", "subject_type": "user"|"agent"|"team"|"asset"|"general", "subject_id_hint": "string", "category": "fact"|"decision"|"direction"|"learning"|"observation", "team_ids": ["uuid from available teams"], "asset_ids": ["uuid"], "importance": 0.0-1.0, "confidence": 0.0-1.0}],
+  "candidates": [{"text": "string", "subject_type": "user"|"agent"|"team"|"asset"|"general", "subject_id_hint": "string", "category": "fact"|"decision"|"direction"|"learning"|"observation", "team_ids": ["uuid from available teams"], "asset_ids": ["uuid"], "importance": 0.0-1.0, "confidence": 0.0-1.0, "volatility": 0.0-1.0, "verification_hint": "string or empty"}],
   "user_preferences": ["string"],
-  "daily_log_entry": "string"
+  "daily_log_entries": [{"team_id": "uuid from available teams", "entry": "string"}]
 }
 
 Rules:
@@ -47,6 +47,17 @@ Rules:
   (0.3=minor, 0.5=normal, 0.7=significant, 0.9=critical). \
   If a fact references an Ouro asset, include its UUID in asset_ids AND use \
   [asset name](asset:<uuid>) links in the text so the fact is self-contained. Otherwise omit asset_ids.
+- volatility: How likely the fact is to change or become stale over time. \
+  0.0=permanent/immutable (user identity, explicit human direction, stable preferences). \
+  0.2-0.4=slow-changing (project structure, team conventions, platform capabilities). \
+  0.5-0.7=environment-dependent (API behaviors, system states, resource availability). \
+  0.8-1.0=highly transient (errors, outages, temporary workarounds, one-time observations). \
+  When in doubt, prefer higher volatility — it's cheaper to re-confirm a truth than to \
+  act on a stale falsehood.
+- verification_hint: For volatile facts (volatility >= 0.5), optionally include a brief \
+  hint about how the fact could be re-verified in the future. Examples: \
+  "check GET /api/endpoint", "search for asset by name", "query team feed". \
+  Leave empty for facts that can only be verified by human confirmation or LLM judgment.
 - team_ids is per-candidate. Use only IDs listed in the Available teams block. \
   If no listed team applies, return an empty list. Do not invent team IDs.
 - subject_type answers what the memory is about: user preferences are user, \
@@ -67,17 +78,21 @@ Rules:
   "I already touched this recently."
 - user_preferences: Communication style, interests, or workflow patterns observed. \
   Only include clear, repeated signals. Omit for task/run reflection.
-- daily_log_entry: One-line summary of what was accomplished. \
-  Link any Ouro assets created or referenced using markdown: [asset name](asset:<uuid>). \
+- daily_log_entries: Team-specific one-line summaries of what was accomplished. \
+  Use this when a run did work relevant to one or more listed teams. Each entry \
+  must describe only the work relevant to its team_id; do not copy one generic \
+  entry across teams. Use only IDs from the Available teams block. If no listed \
+  team applies, return an empty list. Link any Ouro assets created or referenced \
+  using markdown: [asset name](asset:<uuid>). \
   If the run context includes "Daily log tag: [tag]", use that exact tag as the prefix. \
   Otherwise use [chat] for conversation reflections. Never invent tags like [heartbeat] \
   or [event:comment] yourself — the system determines the correct tag. \
   Format: "[tag] brief description with [linked assets](asset:<uuid>)"
-- For heartbeat engagement actions, make the daily_log_entry specific enough to \
+- For heartbeat engagement actions, make each daily log entry specific enough to \
   prevent accidental repetition on the next tick. Include which asset was touched \
   and the gist of the interaction, not generic text like "engaged with community."
-- If nothing is worth remembering, return empty lists and an empty string.
-- If the run was trivial (e.g. NO_ACTION), return empty list and empty string.
+- If nothing is worth remembering, return empty lists.
+- If the run was trivial (e.g. NO_ACTION), return empty lists.
 - Be concise. Each fact/preference should be one sentence.
 - Do NOT store facts that duplicate or closely overlap with existing memories.
 - If entity files provide background, use them to add richer context to facts \
@@ -87,10 +102,16 @@ When finished, call final_answer with ONLY the JSON."""
 
 
 @dataclass
+class DailyLogEntry:
+    team_id: str = ""
+    entry: str = ""
+
+
+@dataclass
 class ReflectionResult:
     facts_to_store: list[dict] = field(default_factory=list)
     user_preferences: list[str] = field(default_factory=list)
-    daily_log_entry: str = ""
+    daily_log_entries: list[DailyLogEntry] = field(default_factory=list)
 
 
 def resolve_daily_log_tag(
@@ -165,6 +186,9 @@ def build_run_reflection_task(
         "If this run commented on, reviewed, or otherwise interacted with an Ouro "
         "asset, capture that interaction concretely so the next heartbeat can tell "
         "the asset was already touched recently and avoid redundant follow-up.\n\n"
+        "For daily_log_entries, write separate entries for separate teams only when "
+        "the work was actually relevant to each team. Do not broadcast one generic "
+        "summary to multiple teams.\n\n"
         "If the task or result includes human guidance about what the agent should "
         "work on, avoid, prioritize, de-prioritize, or change in future plans, store "
         'that as a category=\"direction\" memory. This is especially important for '
@@ -219,6 +243,10 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
                         else "user"
                     )
                 asset_ids = fact.get("asset_ids", fact.get("asset_refs", []))
+                try:
+                    volatility = max(0.0, min(1.0, float(fact.get("volatility", 0.0))))
+                except (TypeError, ValueError):
+                    volatility = 0.0
                 facts.append(
                     {
                         "text": fact.get("text", ""),
@@ -229,14 +257,33 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
                         "asset_ids": asset_ids,
                         "importance": fact.get("importance", 0.5),
                         "confidence": fact.get("confidence", 0.7),
+                        "volatility": volatility,
+                        "verification_hint": str(fact.get("verification_hint") or ""),
                         "asset_refs": asset_ids,
                     }
                 )
 
+        daily_entries = []
+        for entry in data.get("daily_log_entries", []):
+            if not isinstance(entry, dict):
+                continue
+            team_id = str(entry.get("team_id") or "").strip()
+            if not team_id:
+                team_ids = entry.get("team_ids")
+                if isinstance(team_ids, list) and team_ids:
+                    team_id = str(team_ids[0] or "").strip()
+            text = str(
+                entry.get("entry")
+                or entry.get("text")
+                or ""
+            ).strip()
+            if text:
+                daily_entries.append(DailyLogEntry(team_id=team_id, entry=text))
+
         return ReflectionResult(
             facts_to_store=facts,
             user_preferences=data.get("user_preferences", []),
-            daily_log_entry=data.get("daily_log_entry", ""),
+            daily_log_entries=daily_entries,
         )
     except Exception as e:
         preview = text[:200].replace("\n", "\\n")

@@ -211,8 +211,8 @@ def _select_heartbeat_team_id(team_plan_stores: dict[str, object]) -> str | None
     priorities = {"active": 0, "pending_review": 1, "planning": 2}
     for team_id, store in team_plan_stores.items():
         default_plan = store.load_default()
-        if default_plan:
-            ranked.append((priorities.get(default_plan.status, 3), team_id))
+        if default_plan and default_plan.status in priorities:
+            ranked.append((priorities[default_plan.status], team_id))
     if ranked:
         ranked.sort()
         selected = ranked[0][1]
@@ -221,12 +221,18 @@ def _select_heartbeat_team_id(team_plan_stores: dict[str, object]) -> str | None
             selected[:8], ranked[0][0], len(ranked),
         )
         return selected
-    fallback = next(iter(team_plan_stores), None)
+    if len(team_plan_stores) == 1:
+        fallback = next(iter(team_plan_stores), None)
+        logger.info(
+            "No teams have active plans; defaulting to only team %s",
+            fallback[:8] if fallback else "none",
+        )
+        return fallback
     logger.info(
-        "No teams have active plans; defaulting to team %s (%d teams total)",
-        fallback[:8] if fallback else "none", len(team_plan_stores),
+        "No teams have active plans; running general heartbeat unscoped (%d teams total)",
+        len(team_plan_stores),
     )
-    return fallback
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +330,7 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
         comment_on_plan,
         next_action,
         parse_cadence_seconds,
+        reconcile_plan_with_remote_quest,
         render_all_plans_context,
         run_planning_heartbeat,
         run_review_heartbeat,
@@ -392,10 +399,17 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             logger.warning("No teams discovered — cannot run planning without a team")
             return None
 
+        ouro_client = agent._get_ouro_client()
+        for store in team_plan_stores.values():
+            for cycle in store.load_all_active():
+                reconcile_plan_with_remote_quest(store, cycle, ouro_client)
+
         heartbeat_team_id = _select_heartbeat_team_id(team_plan_stores)
-        plan_store = team_plan_stores[heartbeat_team_id]
-        default_plan = plan_store.load_default()
-        heartbeat_doc_store = agent.doc_store_for(heartbeat_team_id)
+        default_plan = None
+        if heartbeat_team_id:
+            plan_store = team_plan_stores[heartbeat_team_id]
+            default_plan = plan_store.load_default()
+            heartbeat_doc_store = agent.doc_store_for(heartbeat_team_id)
 
         logger.info(
             "Default plan for team %s: %s",
@@ -404,14 +418,16 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             if default_plan else "none",
         )
 
-        action = next_action(
-            current=default_plan,
-            cadence=planning_cfg.cadence,
-            min_heartbeats=planning_cfg.min_heartbeats,
-            review_window=planning_cfg.review_window,
-            auto_approve=planning_cfg.auto_approve,
-        )
-        logger.info("Planning next_action=%s", action)
+        action = None
+        if plan_store:
+            action = next_action(
+                current=default_plan,
+                cadence=planning_cfg.cadence,
+                min_heartbeats=planning_cfg.min_heartbeats,
+                review_window=planning_cfg.review_window,
+                auto_approve=planning_cfg.auto_approve,
+            )
+            logger.info("Planning next_action=%s", action)
 
         if action == "plan":
             future_hb = has_future_heartbeat_in_active_window(agent.config.heartbeat)
@@ -518,37 +534,38 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             )
 
         # --- Goal plans: auto-approve / auto-complete (selected team only) ---
-        now_utc = datetime.now(timezone.utc)
-        review_secs = parse_cadence_seconds(planning_cfg.review_window)
-        for gp in plan_store.load_all_active():
-            if gp.kind != "goal":
-                continue
-            if (
-                gp.status == "pending_review"
-                and planning_cfg.auto_approve
-                and review_secs
-            ):
-                created = datetime.fromisoformat(gp.created_at)
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                if (now_utc - created).total_seconds() >= review_secs:
-                    gp.status = "active"
-                    gp.activated_at = now_utc.isoformat()
-                    plan_store.save(gp)
-                    update_quest_status(agent._get_ouro_client(), gp)
-                    comment_on_plan(
-                        agent._get_ouro_client(),
-                        gp.quest_id,
-                        "Review window elapsed — goal plan auto-activated.",
-                    )
-                    logger.info("Goal plan %s auto-approved", gp.id[:8])
-            if gp.status == "active":
-                gp.heartbeats_completed += 1
-                if gp.all_items_complete:
-                    plan_store.archive(gp, ouro_client=agent._get_ouro_client())
-                    logger.info("Goal plan %s completed (all items done)", gp.id[:8])
-                else:
-                    plan_store.save(gp)
+        if plan_store:
+            now_utc = datetime.now(timezone.utc)
+            review_secs = parse_cadence_seconds(planning_cfg.review_window)
+            for gp in plan_store.load_all_active():
+                if gp.kind != "goal":
+                    continue
+                if (
+                    gp.status == "pending_review"
+                    and planning_cfg.auto_approve
+                    and review_secs
+                ):
+                    created = datetime.fromisoformat(gp.created_at)
+                    if created.tzinfo is None:
+                        created = created.replace(tzinfo=timezone.utc)
+                    if (now_utc - created).total_seconds() >= review_secs:
+                        gp.status = "active"
+                        gp.activated_at = now_utc.isoformat()
+                        plan_store.save(gp)
+                        update_quest_status(agent._get_ouro_client(), gp)
+                        comment_on_plan(
+                            agent._get_ouro_client(),
+                            gp.quest_id,
+                            "Review window elapsed — goal plan auto-activated.",
+                        )
+                        logger.info("Goal plan %s auto-approved", gp.id[:8])
+                if gp.status == "active":
+                    gp.heartbeats_completed += 1
+                    if gp.all_items_complete:
+                        plan_store.archive(gp, ouro_client=agent._get_ouro_client())
+                        logger.info("Goal plan %s completed (all items done)", gp.id[:8])
+                    else:
+                        plan_store.save(gp)
     else:
         logger.info("Planning disabled; skipping planning cycle")
 

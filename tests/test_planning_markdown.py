@@ -15,6 +15,7 @@ from ouro_agents.modes.planning import (
     build_feedback_review_prompt,
     build_planning_prompt,
     next_action,
+    reconcile_plan_with_remote_quest,
     run_planning_heartbeat,
     run_review_heartbeat,
 )
@@ -251,6 +252,91 @@ def test_next_action_active_with_quest_but_no_local_items_still_executes():
     )
 
     assert action == "execute"
+
+
+def test_reconcile_plan_with_remote_closed_quest_archives_without_update(tmp_path):
+    plan_store = PlanStore(tmp_path / "plans")
+    current = PlanCycle(
+        id="cycle-closed",
+        status="active",
+        kind="default",
+        quest_id="quest-closed",
+        items=[PlanItem(id="local", description="Stale local item", status="pending")],
+    )
+    plan_store.save(current)
+
+    class FakeQuests:
+        def __init__(self):
+            self.updates = []
+
+        def retrieve(self, quest_id):
+            assert quest_id == "quest-closed"
+            return SimpleNamespace(
+                quest=SimpleNamespace(status="closed"),
+                items=[
+                    SimpleNamespace(
+                        id="remote",
+                        description="Remote completed item",
+                        status="done",
+                        notes="Finished on Ouro",
+                    )
+                ],
+            )
+
+        def update(self, quest_id, **kwargs):
+            self.updates.append((quest_id, kwargs))
+
+    ouro_client = SimpleNamespace(quests=FakeQuests())
+
+    result = reconcile_plan_with_remote_quest(plan_store, current, ouro_client)
+
+    assert result is None
+    assert plan_store.load_default() is None
+    archived = plan_store.load_history(limit=1)[0]
+    assert archived.status == "completed"
+    assert archived.items[0].id == "remote"
+    assert ouro_client.quests.updates == []
+
+
+def test_reconcile_plan_with_remote_open_quest_refreshes_items(tmp_path):
+    plan_store = PlanStore(tmp_path / "plans")
+    current = PlanCycle(
+        id="cycle-open",
+        status="active",
+        kind="default",
+        quest_id="quest-open",
+        items=[PlanItem(id="local", description="Stale local item", status="pending")],
+    )
+    plan_store.save(current)
+
+    class FakeQuests:
+        def retrieve(self, quest_id):
+            assert quest_id == "quest-open"
+            return SimpleNamespace(
+                quest=SimpleNamespace(status="open"),
+                items=[
+                    SimpleNamespace(
+                        id="remote",
+                        description="Remote live item",
+                        status="in_progress",
+                        notes="Started on Ouro",
+                    )
+                ],
+            )
+
+    result = reconcile_plan_with_remote_quest(
+        plan_store,
+        current,
+        SimpleNamespace(quests=FakeQuests()),
+    )
+
+    assert result is not None
+    loaded = plan_store.load_default()
+    assert loaded is not None
+    assert loaded.status == "active"
+    assert loaded.items[0].id == "remote"
+    assert loaded.items[0].description == "Remote live item"
+    assert loaded.items[0].status == "in_progress"
 
 
 def test_run_review_heartbeat_cancels_without_rewriting_plan():

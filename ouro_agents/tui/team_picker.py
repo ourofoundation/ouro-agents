@@ -43,14 +43,18 @@ def build_team_options(teams: list["TeamInfo"]) -> list[TeamOption]:
     return options
 
 
-def choose_plan_team(teams: list["TeamInfo"]) -> str | None:
-    options = build_team_options(teams)
-    if not options:
-        return None
-    if len(options) == 1:
-        return options[0].team_id
+_ALL_TEAMS_SENTINEL = "__all__"
+
+
+def _run_team_picker(
+    options: list[TeamOption],
+    *,
+    title: str = "Select A Team",
+    include_all: bool = False,
+) -> str | None:
+    """Shared TUI team picker. Returns team_id, _ALL_TEAMS_SENTINEL, or None (cancelled)."""
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return options[0].team_id
+        return _ALL_TEAMS_SENTINEL if include_all else (options[0].team_id if options else None)
 
     from textual.app import App, ComposeResult  # type: ignore[reportMissingImports]
     from textual.binding import Binding  # type: ignore[reportMissingImports]
@@ -103,13 +107,14 @@ def choose_plan_team(teams: list["TeamInfo"]) -> str | None:
             Binding("q", "cancel", "Cancel", show=False),
         ]
 
-        def __init__(self, team_options: list[TeamOption]) -> None:
+        def __init__(self, team_options: list[TeamOption], *, dialog_title: str) -> None:
             super().__init__()
             self._team_options = team_options
+            self._dialog_title = dialog_title
 
         def compose(self) -> ComposeResult:
             yield Container(
-                Static("Select A Team For The Plan", id="title"),
+                Static(self._dialog_title, id="title"),
                 Static("Use arrow keys to move, Enter to continue, Esc to cancel.", id="help"),
                 ListView(*(TeamItem(option) for option in self._team_options), id="teams"),
                 id="dialog",
@@ -128,4 +133,27 @@ def choose_plan_team(teams: list["TeamInfo"]) -> str | None:
         def action_cancel(self) -> None:
             self.exit(None)
 
-    return TeamPickerApp(options).run()
+    display_options = list(options)
+    if include_all:
+        display_options.insert(
+            0, TeamOption(team_id=_ALL_TEAMS_SENTINEL, title="All teams", subtitle="run across every configured team")
+        )
+
+    return TeamPickerApp(display_options, dialog_title=title).run()
+
+
+def choose_plan_team(teams: list["TeamInfo"]) -> str | None:
+    options = build_team_options(teams)
+    if not options:
+        return None
+    if len(options) == 1:
+        return options[0].team_id
+    return _run_team_picker(options, title="Select A Team For The Plan")
+
+
+def choose_dream_team(teams: list["TeamInfo"]) -> str | None:
+    """Pick a team for the dream cycle, or 'all'. Returns team_id, _ALL_TEAMS_SENTINEL, or None."""
+    options = build_team_options(teams)
+    if not options:
+        return _ALL_TEAMS_SENTINEL
+    return _run_team_picker(options, title="Select A Team For Dream Cycle", include_all=True)

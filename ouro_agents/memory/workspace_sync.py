@@ -21,8 +21,8 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
+from ..syncing import choose_timestamp_sync_action
 from .frontmatter import (
     parse_frontmatter_timestamp,
     set_frontmatter_timestamp,
@@ -103,31 +103,16 @@ def _sync_target(
     ouro_body = ouro_result.content.strip()
     ouro_ts = ouro_result.last_updated
 
-    if not local_body and not ouro_body:
+    decision = choose_timestamp_sync_action(
+        local_body=local_body,
+        remote_body=ouro_body,
+        local_ts=local_ts,
+        remote_ts=ouro_ts,
+    )
+    action = decision.action
+    if action == "unchanged":
         result.unchanged.append(key)
         return
-
-    action: Optional[str] = None
-    if local_ts and ouro_ts:
-        local_aware = _ensure_utc(local_ts)
-        ouro_aware = _ensure_utc(ouro_ts)
-        if local_aware > ouro_aware:
-            action = "push"
-        elif ouro_aware > local_aware:
-            action = "pull"
-        else:
-            result.unchanged.append(key)
-            return
-    elif local_body and not ouro_body:
-        action = "push"
-    elif ouro_body and not local_body:
-        action = "pull"
-    elif local_body and not local_ts and ouro_ts:
-        action = "push"
-    elif ouro_body and not ouro_ts and local_ts:
-        action = "pull"
-    else:
-        action = "push"
 
     now = datetime.now(timezone.utc)
 
@@ -152,13 +137,6 @@ def _sync_target(
         return
 
     result.unchanged.append(key)
-
-
-def _ensure_utc(dt: datetime) -> datetime:
-    """Ensure a datetime is timezone-aware (assume UTC if naive)."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
 
 
 def _write_local_with_timestamp(path: Path, body: str, ts: datetime) -> None:

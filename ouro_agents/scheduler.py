@@ -173,10 +173,10 @@ def parse_trigger(schedule: str, tz: str = "UTC"):
 # ---------------------------------------------------------------------------
 
 SYSTEM_HEARTBEAT_ID = "system:heartbeat"
-SYSTEM_CONSOLIDATION_ID = "system:consolidation"
+SYSTEM_DREAM_ID = "system:dream"
 SYSTEM_REFINEMENT_ID = "system:refinement"
 SYSTEM_PROTECTED_IDS = frozenset(
-    {SYSTEM_HEARTBEAT_ID, SYSTEM_CONSOLIDATION_ID, SYSTEM_REFINEMENT_ID}
+    {SYSTEM_HEARTBEAT_ID, SYSTEM_DREAM_ID, SYSTEM_REFINEMENT_ID}
 )
 
 
@@ -201,8 +201,8 @@ class AgentScheduler:
         config = agent.config
         if config.heartbeat.enabled:
             self._register_heartbeat(config.heartbeat)
-        if config.memory.consolidation_enabled:
-            self._register_consolidation(config.memory)
+        if config.memory.dream_enabled:
+            self._register_dream(config.memory)
         refinement_cfg = getattr(config, "refinement", None)
         if refinement_cfg and refinement_cfg.enabled:
             self._register_refinement(refinement_cfg)
@@ -210,12 +210,12 @@ class AgentScheduler:
         self._scheduler.start()
         task_count = len(self.store.load())
         logger.info(
-            "Scheduler started: %d user task(s), heartbeat=%s, consolidation=%s, refinement=%s",
+            "Scheduler started: %d user task(s), heartbeat=%s, dream=%s, refinement=%s",
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
             (
-                config.memory.consolidation_schedule
-                if config.memory.consolidation_enabled
+                config.memory.dream_schedule
+                if config.memory.dream_enabled
                 else "disabled"
             ),
             (
@@ -393,35 +393,38 @@ class AgentScheduler:
         except Exception:
             logger.exception("Heartbeat failed")
 
-    def _register_consolidation(self, memory_config) -> None:
+    def _register_dream(self, memory_config) -> None:
         try:
-            trigger = parse_trigger(memory_config.consolidation_schedule)
+            trigger = parse_trigger(memory_config.dream_schedule)
         except ValueError:
             logger.error(
-                "Invalid consolidation schedule: %s",
-                memory_config.consolidation_schedule,
+                "Invalid dream schedule: %s",
+                memory_config.dream_schedule,
             )
             return
 
         self._scheduler.add_job(
-            self._execute_consolidation,
+            self._execute_dream,
             trigger=trigger,
-            id=SYSTEM_CONSOLIDATION_ID,
+            id=SYSTEM_DREAM_ID,
             max_instances=1,
             misfire_grace_time=600,
             replace_existing=True,
         )
         logger.info(
-            "Registered consolidation: %s",
-            memory_config.consolidation_schedule,
+            "Registered dream cycle: %s",
+            memory_config.dream_schedule,
         )
 
-    async def _execute_consolidation(self) -> None:
+
+    async def _execute_dream(self) -> None:
         if not self._agent:
             return
         try:
-            logger.info("Running memory consolidation...")
-            from .memory.consolidation import run_consolidation
+            logger.info("Running dream cycle...")
+            from datetime import date, timedelta
+
+            from .memory.dream import run_dream
 
             agent = self._agent
             hb_model = agent._build_model(
@@ -429,7 +432,7 @@ class AgentScheduler:
                 heartbeat=True,
             )
             results_by_scope: dict[str, dict] = {}
-            results_by_scope["shared"] = run_consolidation(
+            results_by_scope["shared"] = run_dream(
                 workspace=agent.config.agent.workspace,
                 backend=agent.memory,
                 agent_id=agent.config.agent.name,
@@ -437,8 +440,21 @@ class AgentScheduler:
                 model=hb_model,
                 doc_store=agent.doc_store,
             )
+
+            today = date.today().isoformat()
+            yesterday = (date.today() - timedelta(days=1)).isoformat()
+
             for team_id, doc_store in sorted(agent._team_doc_stores.items()):
-                results_by_scope[team_id] = run_consolidation(
+                # Skip teams with no recent activity (no daily log today or yesterday)
+                has_activity = (
+                    doc_store.exists(doc_store.daily_name(agent.config.agent.name, today))
+                    or doc_store.exists(doc_store.daily_name(agent.config.agent.name, yesterday))
+                )
+                if not has_activity:
+                    logger.debug("Dream: skipping team %s (no recent activity)", team_id)
+                    continue
+
+                results_by_scope[team_id] = run_dream(
                     workspace=agent.config.agent.workspace,
                     backend=agent.memory,
                     agent_id=agent.config.agent.name,
@@ -447,9 +463,10 @@ class AgentScheduler:
                     doc_store=doc_store,
                     team_id=team_id,
                 )
-            logger.info("Memory consolidation complete: %s", results_by_scope)
+            logger.info("Dream cycle complete: %s", results_by_scope)
         except Exception:
-            logger.exception("Memory consolidation failed")
+            logger.exception("Dream cycle failed")
+
 
     def _register_refinement(self, refinement_config) -> None:
         try:

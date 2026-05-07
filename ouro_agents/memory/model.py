@@ -110,10 +110,13 @@ class MemoryItem(BaseModel):
     source: str = ""
     importance: float = 0.5
     confidence: float = 0.7
+    volatility: float = 0.0
+    verification_hint: str = ""
     content_hash: str = ""
     schema_version: int = 2
     created_at: datetime = Field(default_factory=utc_now)
     last_accessed: datetime | None = None
+    last_verified: datetime | None = None
 
 
 def _safe_category(value: Any, default: str = "fact") -> str:
@@ -146,12 +149,16 @@ def to_metadata(item: MemoryItem) -> dict[str, str | float | int]:
         "source": item.source,
         "importance": float(item.importance),
         "confidence": float(item.confidence),
+        "volatility": float(item.volatility),
+        "verification_hint": item.verification_hint,
         "content_hash": item.content_hash or content_hash(item.text),
         "schema_version": 2,
         "created_at": item.created_at.isoformat(),
     }
     if item.last_accessed:
         metadata["last_accessed"] = item.last_accessed.isoformat()
+    if item.last_verified:
+        metadata["last_verified"] = item.last_verified.isoformat()
 
     # Legacy fields stay populated for one release so old filters/readers work.
     metadata["team_id"] = team_ids[0] if team_ids else ""
@@ -189,11 +196,17 @@ def memory_item_from_raw(text: str, raw_metadata: dict[str, Any] | None = None) 
 
     created_at = parse_timestamp(meta.get("created_at")) or utc_now()
     last_accessed = parse_timestamp(meta.get("last_accessed"))
+    last_verified = parse_timestamp(meta.get("last_verified"))
 
     try:
         schema_version = int(meta.get("schema_version") or 1)
     except (TypeError, ValueError):
         schema_version = 1
+
+    try:
+        volatility = float(meta.get("volatility") or 0.0)
+    except (TypeError, ValueError):
+        volatility = 0.0
 
     resolved_content_hash = str(meta.get("content_hash") or content_hash(text))
     if text.strip() and resolved_content_hash == EMPTY_CONTENT_HASH:
@@ -215,8 +228,11 @@ def memory_item_from_raw(text: str, raw_metadata: dict[str, Any] | None = None) 
         source=str(meta.get("source") or ""),
         importance=float(meta.get("importance") or 0.5),
         confidence=float(meta.get("confidence") or 0.7),
+        volatility=volatility,
+        verification_hint=str(meta.get("verification_hint") or ""),
         content_hash=resolved_content_hash,
         schema_version=schema_version,
         created_at=created_at,
         last_accessed=last_accessed,
+        last_verified=last_verified,
     )

@@ -41,6 +41,9 @@ class MemoryResult(BaseModel):
     user_id: str = ""
     mode: str = ""
     confidence: float = 0.7
+    volatility: float = 0.0
+    last_verified: str = ""
+    verification_hint: str = ""
     content_hash: str = ""
     schema_version: int = 1
     metadata: dict[str, Any] = Field(default_factory=dict)

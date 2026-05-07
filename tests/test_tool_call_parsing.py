@@ -5,6 +5,8 @@ from smolagents.models import ChatMessage, MessageRole
 
 from ouro_agents.tools.agent_base import (
     _EMPTY_MODEL_RESPONSE_ANSWER,
+    _EMPTY_RESPONSE_MAX_RETRIES,
+    _EMPTY_RESPONSE_NUDGE_OBSERVATION,
     _build_empty_narrated_tool_call_nudge_observation,
     _build_preamble_nudge_observation,
     _extract_raw_reasoning_text,
@@ -41,7 +43,7 @@ class _FakeModelWithToolCalls:
 
 
 class TestToolCallParsing(unittest.TestCase):
-    def test_empty_model_response_terminates_with_sentinel_final_answer(self):
+    def test_empty_model_response_nudges_on_first_attempt(self):
         model = _EmptyResponseModel()
         _patch_model_for_xml_tool_calls(model)
 
@@ -53,12 +55,58 @@ class TestToolCallParsing(unittest.TestCase):
         parsed = model.parse_tool_calls(message)
 
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
+        self.assertEqual(parsed.tool_calls, [])
+        self.assertEqual(parsed.content, "")
+        nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
+        self.assertIsNotNone(nudge)
+        self.assertEqual(nudge, _EMPTY_RESPONSE_NUDGE_OBSERVATION)
+        self.assertEqual(model._ouro_empty_response_streak, 1)
+
+    def test_empty_model_response_terminates_after_max_retries(self):
+        model = _EmptyResponseModel()
+        _patch_model_for_xml_tool_calls(model)
+
+        for _ in range(_EMPTY_RESPONSE_MAX_RETRIES - 1):
+            msg = ChatMessage(role=MessageRole.ASSISTANT, content="")
+            parsed = model.parse_tool_calls(msg)
+            self.assertEqual(parsed.tool_calls, [])
+
+        final_msg = ChatMessage(role=MessageRole.ASSISTANT, content="")
+        parsed = model.parse_tool_calls(final_msg)
+
+        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(len(parsed.tool_calls), 1)
         self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
         self.assertEqual(
             parsed.tool_calls[0].function.arguments,
             {"answer": _EMPTY_MODEL_RESPONSE_ANSWER},
         )
+
+    def test_empty_response_streak_resets_on_successful_parse(self):
+        call_count = 0
+
+        class _AlternatingModel:
+            def parse_tool_calls(self, message):
+                nonlocal call_count
+                call_count += 1
+                if call_count <= 1:
+                    raise ValueError("Message contains no content and no tool calls")
+                return message
+
+        model = _AlternatingModel()
+        _patch_model_for_xml_tool_calls(model)
+
+        msg1 = ChatMessage(role=MessageRole.ASSISTANT, content="")
+        model.parse_tool_calls(msg1)
+        self.assertEqual(model._ouro_empty_response_streak, 1)
+
+        msg2 = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content="done",
+            tool_calls=[],
+        )
+        model.parse_tool_calls(msg2)
+        self.assertEqual(model._ouro_empty_response_streak, 0)
 
     def test_extracts_reasoning_from_raw_empty_response(self):
         raw = SimpleNamespace(

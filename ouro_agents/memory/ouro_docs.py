@@ -647,7 +647,7 @@ class OuroDocStore:
             return False
 
     def read_comments(self, name: str) -> list[dict]:
-        """Read comments on a post (for consolidation)."""
+        """Read comments on a post (for dream cycle consolidation)."""
         uuid = self._resolve(name)
         if not uuid:
             return []
@@ -662,9 +662,9 @@ class OuroDocStore:
     def is_owner(self, name: str) -> bool:
         """Return True only for posts this process created in the current run.
 
-        Used by ``user_model``/``consolidation`` to choose between writing
+        Used by ``user_model``/``dream`` to choose between writing
         directly and contributing via comment. Process-local by design — on
-        restart we intentionally fall back to commenting until consolidation
+        restart we intentionally fall back to commenting until the dream cycle
         runs.
         """
         return name in self._owner_cache

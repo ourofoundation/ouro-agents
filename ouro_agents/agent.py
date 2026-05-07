@@ -42,6 +42,7 @@ from .memory.reflection import (
     apply_reflection,
     should_reflect_for_conversation,
     store_reflection_memories,
+    validated_daily_log_entries,
     write_daily_log,
 )
 from .memory.tools import make_memory_tools
@@ -1171,6 +1172,7 @@ class OuroAgent:
             ),
             preloaded_tool_names=preloaded_tool_names,
             plans_index=plans_index_text,
+            workspace_root=str(self._workspace.resolve()),
         )
 
     def _resolve_subagent_model(
@@ -1638,22 +1640,34 @@ class OuroAgent:
                 source=f"run-reflection:{run_id}",
             )
 
-            if reflection.daily_log_entry:
+            daily_writes = 0
+            seen_daily_entries: set[tuple[str, str]] = set()
+            for target_team_id, entry_text in validated_daily_log_entries(
+                reflection,
+                run_team_id=team_id,
+                available_team_ids=self._available_memory_team_ids(team_id),
+            ):
+                normalized_entry = normalize_daily_log_entry(
+                    entry_text,
+                    mode.value,
+                    event_type=event_type,
+                )
+                dedupe_key = (target_team_id, normalized_entry)
+                if dedupe_key in seen_daily_entries:
+                    continue
+                seen_daily_entries.add(dedupe_key)
                 write_daily_log(
                     self.config.agent.workspace,
-                    normalize_daily_log_entry(
-                        reflection.daily_log_entry,
-                        mode.value,
-                        event_type=event_type,
-                    ),
-                    doc_store=active_doc_store,
+                    normalized_entry,
+                    doc_store=self.doc_store_for(target_team_id),
                     agent_name=self.config.agent.name,
                 )
+                daily_writes += 1
 
             logger.info(
                 "Post-run reflection: %d facts, daily=%s",
                 len(reflection.facts_to_store),
-                bool(reflection.daily_log_entry),
+                bool(daily_writes),
             )
         except Exception as e:
             logger.warning("Post-run reflection failed: %s", e)
@@ -2158,6 +2172,52 @@ class OuroAgent:
         from .modes.heartbeat import force_review_heartbeat
 
         return await force_review_heartbeat(self, plan_id=plan_id)
+
+    def dream(self, team_id: str | None = None) -> dict[str, dict]:
+        """Run the dream cycle (memory maintenance) immediately.
+
+        If *team_id* is provided, only that team is processed. Otherwise runs
+        across shared scope and all configured teams.
+        """
+        from .memory.dream import run_dream
+
+        model = self._build_model(
+            self.config.heartbeat.model or self.config.agent.model,
+            heartbeat=True,
+        )
+        results: dict[str, dict] = {}
+
+        if team_id:
+            doc_store = self.doc_store_for(team_id)
+            results[team_id] = run_dream(
+                workspace=self.config.agent.workspace,
+                backend=self.memory,
+                agent_id=self.config.agent.name,
+                config=self.config.memory,
+                model=model,
+                doc_store=doc_store,
+                team_id=team_id,
+            )
+        else:
+            results["shared"] = run_dream(
+                workspace=self.config.agent.workspace,
+                backend=self.memory,
+                agent_id=self.config.agent.name,
+                config=self.config.memory,
+                model=model,
+                doc_store=self.doc_store,
+            )
+            for tid, doc_store in sorted(self._team_doc_stores.items()):
+                results[tid] = run_dream(
+                    workspace=self.config.agent.workspace,
+                    backend=self.memory,
+                    agent_id=self.config.agent.name,
+                    config=self.config.memory,
+                    model=model,
+                    doc_store=doc_store,
+                    team_id=tid,
+                )
+        return results
 
     async def handle_plan_feedback(self, event_run) -> Optional[str]:
         """Handle feedback on a plan quest from an incoming event."""

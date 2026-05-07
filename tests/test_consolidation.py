@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from ouro_agents.config import MemoryConfig
 from ouro_agents.memory import MemoryResult
-from ouro_agents.memory.consolidation import decay_old_memories
+from ouro_agents.memory.dream import decay_old_memories
 
 
 class _FakeBackend:

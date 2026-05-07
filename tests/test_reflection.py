@@ -53,11 +53,13 @@ def _load_reflection_modules():
 
 
 _reflector_module, _reflection_module = _load_reflection_modules()
+DailyLogEntry = _reflector_module.DailyLogEntry
 ReflectionResult = _reflector_module.ReflectionResult
 parse_reflection_result = _reflector_module.parse_reflection_result
 build_run_reflection_task = _reflector_module.build_run_reflection_task
 REFLECTOR_PROMPT = _reflector_module.REFLECTOR_PROMPT
 apply_reflection = _reflection_module.apply_reflection
+validated_daily_log_entries = _reflection_module.validated_daily_log_entries
 
 
 class _FakeMemoryBackend:
@@ -98,14 +100,14 @@ class TestReflectionParsing(unittest.TestCase):
 
     def test_parses_valid_empty_reflection_payload(self):
         result = parse_reflection_result(
-            '{"facts_to_store": [], "user_preferences": [], "daily_log_entry": ""}'
+            '{"facts_to_store": [], "user_preferences": [], "daily_log_entries": []}'
         )
 
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.facts_to_store, [])
         self.assertEqual(result.user_preferences, [])
-        self.assertEqual(result.daily_log_entry, "")
+        self.assertEqual(result.daily_log_entries, [])
 
     def test_parses_direction_category(self):
         result = parse_reflection_result(
@@ -119,7 +121,7 @@ class TestReflectionParsing(unittest.TestCase):
                 }
               ],
               "user_preferences": [],
-              "daily_log_entry": ""
+              "daily_log_entries": []
             }
             """
         )
@@ -145,7 +147,7 @@ class TestReflectionParsing(unittest.TestCase):
                 }
               ],
               "user_preferences": [],
-              "daily_log_entry": ""
+              "daily_log_entries": []
             }
             """
         )
@@ -155,6 +157,75 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertEqual(result.facts_to_store[0]["subject_type"], "asset")
         self.assertEqual(result.facts_to_store[0]["team_ids"], ["team-1"])
         self.assertEqual(result.facts_to_store[0]["asset_ids"], ["abc"])
+
+    def test_parses_structured_daily_log_entries(self):
+        result = parse_reflection_result(
+            """
+            {
+              "candidates": [],
+              "user_preferences": [],
+              "daily_log_entries": [
+                {"team_id": "team-materials", "entry": "[heartbeat] Reviewed materials feed"},
+                {"team_id": "team-super", "entry": "[heartbeat] Checked superconductor thread"}
+              ]
+            }
+            """
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(
+            [(entry.team_id, entry.entry) for entry in result.daily_log_entries],
+            [
+                ("team-materials", "[heartbeat] Reviewed materials feed"),
+                ("team-super", "[heartbeat] Checked superconductor thread"),
+            ],
+        )
+
+    def test_validated_daily_log_entries_keep_distinct_team_entries(self):
+        result = ReflectionResult(
+            daily_log_entries=[
+                DailyLogEntry(team_id="team-materials", entry="[heartbeat] Materials work"),
+                DailyLogEntry(team_id="team-super", entry="[heartbeat] Superconductor work"),
+                DailyLogEntry(team_id="unknown", entry="[heartbeat] Invalid team"),
+                DailyLogEntry(team_id="team-super", entry="[heartbeat] Superconductor work"),
+            ],
+        )
+
+        entries = validated_daily_log_entries(
+            result,
+            available_team_ids={"team-materials", "team-super"},
+        )
+
+        self.assertEqual(
+            entries,
+            [
+                ("team-materials", "[heartbeat] Materials work"),
+                ("team-super", "[heartbeat] Superconductor work"),
+            ],
+        )
+
+    def test_validated_daily_log_entries_fallback_to_run_team_when_scoped(self):
+        result = ReflectionResult(
+            daily_log_entries=[
+                DailyLogEntry(team_id="", entry="[heartbeat] Plan work"),
+                DailyLogEntry(team_id="unknown", entry="[heartbeat] More plan work"),
+            ],
+        )
+
+        entries = validated_daily_log_entries(
+            result,
+            run_team_id="team-plan",
+            available_team_ids={"team-plan"},
+        )
+
+        self.assertEqual(
+            entries,
+            [
+                ("team-plan", "[heartbeat] Plan work"),
+                ("team-plan", "[heartbeat] More plan work"),
+            ],
+        )
 
     def test_build_run_reflection_task_mentions_redundant_follow_up_avoidance(self):
         task = build_run_reflection_task(
@@ -239,7 +310,6 @@ class TestApplyReflection(unittest.TestCase):
                     }
                 ],
                 user_preferences=[],
-                daily_log_entry="",
             )
 
             apply_reflection(
@@ -274,7 +344,6 @@ class TestApplyReflection(unittest.TestCase):
                     }
                 ],
                 user_preferences=[],
-                daily_log_entry="",
             )
 
             apply_reflection(
@@ -305,7 +374,6 @@ class TestApplyReflection(unittest.TestCase):
                     }
                 ],
                 user_preferences=[],
-                daily_log_entry="",
             )
 
             apply_reflection(

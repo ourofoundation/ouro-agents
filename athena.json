@@ -71,7 +71,7 @@
     "search_limit": 10,
     "retrieval_queries": 3,
     "max_retrieval_tokens": 1500,
-    "consolidation_enabled": true,
+    "dream_enabled": true,
     "memory_md_max_tokens": 1500,
     "mid_session_reflection_interval": 5,
     "decay_after_days": 30,
