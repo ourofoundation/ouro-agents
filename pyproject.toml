@@ -26,8 +26,8 @@ dependencies = [
     "openai",
     "mcp",
     "textual",
-    "ouro-mcp>=0.3.2",
-    "ouro-py>=0.7.0",
+    "ouro-mcp>=0.6.0",
+    "ouro-py>=0.9.0",
 ]
 
 [project.scripts]

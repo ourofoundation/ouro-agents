@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -235,6 +235,85 @@ def _select_heartbeat_team_id(team_plan_stores: dict[str, object]) -> str | None
     return None
 
 
+def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]:
+    """Fetch actionable quest items assigned to this agent, if supported by the API."""
+    if not agent.own_user_id:
+        return []
+    try:
+        ouro = agent._get_ouro_client()
+        list_assigned = getattr(ouro.quests, "list_assigned_items", None)
+        if not list_assigned:
+            logger.debug("Assigned quest item listing is not available in this SDK")
+            return []
+        raw = list_assigned(limit=limit, status=["pending", "in_progress"])
+        if isinstance(raw, dict):
+            raw = raw.get("data") or []
+        if not isinstance(raw, list):
+            return []
+        return [item for item in raw if isinstance(item, dict)]
+    except Exception as e:
+        logger.warning("Failed to load assigned quest items: %s", e)
+        return []
+
+
+def _assigned_item_quest(item: dict[str, Any]) -> dict[str, Any]:
+    quest = item.get("quest_asset")
+    return quest if isinstance(quest, dict) else {}
+
+
+def _assigned_work_team_id(items: list[dict[str, Any]]) -> str | None:
+    for item in items:
+        team_id = _assigned_item_quest(item).get("team_id")
+        if team_id:
+            return str(team_id)
+    return None
+
+
+def _format_assigned_quest_items(items: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for idx, item in enumerate(items, start=1):
+        quest = _assigned_item_quest(item)
+        quest_id = str(item.get("quest_id") or quest.get("id") or "")
+        quest_name = quest.get("name") or "Untitled quest"
+        status = item.get("status") or "unknown"
+        item_id = str(item.get("id") or "")
+        description = item.get("description") or "(no description)"
+        submission_assets = item.get("submission_assets")
+        eval_route_id = item.get("eval_route_id")
+        details = []
+        if submission_assets:
+            details.append(f"submission_assets={json.dumps(submission_assets)}")
+        if eval_route_id:
+            details.append(f"eval_route_id={eval_route_id}")
+        suffix = f" ({'; '.join(details)})" if details else ""
+        lines.append(
+            f"{idx}. Quest `{quest_id}` — {quest_name}\n"
+            f"   Item `{item_id}` [{status}]: {description}{suffix}"
+        )
+    return "\n".join(lines)
+
+
+def build_assigned_work_playbook(items: list[dict[str, Any]]) -> str:
+    """Instruction block for externally planned quest work assigned to the agent."""
+    return (
+        "You are executing quest work assigned to you by someone else.\n\n"
+        "The quest owner is responsible for planning. Do not create a new planning "
+        "quest or rewrite the quest's plan unless the owner explicitly asks for that. "
+        "Choose one assigned pending or in-progress item, make one meaningful slice "
+        "of progress, and leave clear evidence.\n\n"
+        "## Assigned Quest Items\n"
+        f"{_format_assigned_quest_items(items)}\n\n"
+        "Use `get_asset` or `list_quest_items` if you need more quest context. "
+        "Mark the item `in_progress` with `update_quest_item` if you have permission; "
+        "if that is rejected, continue with the work and report progress through a "
+        "submission or comment. For completion on a quest owned by someone else, "
+        "prefer `submit_quest_entry` with a substantive description and any produced "
+        "asset IDs. Use `complete_quest_item` only when you are clearly allowed to "
+        "self-complete the item. If blocked, comment on the quest with the blocker "
+        "and the next concrete question."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
@@ -353,9 +432,10 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
     team_plan_stores: dict[str, PlanStore] = {}
     plan_store: Optional[PlanStore] = None
     planning_cfg = agent.config.planning
+    assigned_items = _load_assigned_quest_items(agent)
 
     # --- Planning cycle integration ---
-    if planning_cfg.enabled:
+    if planning_cfg.enabled and not assigned_items:
         logger.info(
             "Planning enabled: cadence=%s, min_heartbeats=%d, auto_approve=%s",
             planning_cfg.cadence, planning_cfg.min_heartbeats, planning_cfg.auto_approve,
@@ -567,7 +647,12 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
                     else:
                         plan_store.save(gp)
     else:
-        logger.info("Planning disabled; skipping planning cycle")
+        if planning_cfg.enabled:
+            logger.info(
+                "Assigned quest work is waiting; deferring self-planning this heartbeat"
+            )
+        else:
+            logger.info("Planning disabled; skipping planning cycle")
 
     # --- Check for active plans that need execution ---
     extra_tools = []
@@ -575,7 +660,26 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
     playbook = None
     heartbeat_source = "none"
 
-    if planning_cfg.enabled and plan_store:
+    if assigned_items:
+        assigned_team_id = _assigned_work_team_id(assigned_items)
+        if assigned_team_id and assigned_team_id in _sorted_team_ids(agent):
+            heartbeat_team_id = assigned_team_id
+            heartbeat_doc_store = agent.doc_store_for(assigned_team_id)
+        playbook = build_assigned_work_playbook(assigned_items)
+        heartbeat_source = "assigned-quest-items"
+        preload_tools = [
+            "ouro:list_assigned_quest_items",
+            "ouro:get_asset",
+            "ouro:list_quest_items",
+            "ouro:update_quest_item",
+            "ouro:submit_quest_entry",
+            "ouro:list_quest_entries",
+            "ouro:complete_quest_item",
+            "ouro:create_comment",
+        ]
+        logger.info("Executing assigned quest work: %d item(s)", len(assigned_items))
+
+    if not playbook and planning_cfg.enabled and plan_store:
         scoped_store = team_plan_stores.get(heartbeat_team_id, plan_store)
         active_plans = [
             p for p in scoped_store.load_all_active() if p.status == "active"

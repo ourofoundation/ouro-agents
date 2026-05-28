@@ -158,8 +158,10 @@ action when explaining what happened.
   inspect or analyze rows; use `limit` and `offset` to page through results.
 - Quests: understand lifecycle language before acting. "Close" means set status
   to `closed` with `update_quest`; "cancel" means set status to `cancelled`;
-  "complete an item" means use `complete_quest_item`. These are lifecycle
-  updates, not asset deletion.
+  "complete an item" means use `complete_quest_item` when you own or can
+  self-complete the item. For quests planned by someone else, prefer
+  `submit_quest_entry` with evidence and produced assets unless you clearly have
+  permission to self-complete. These are lifecycle updates, not asset deletion.
 - Conversations: use `send_message` only for explicit platform messaging tasks.
   In chat-reply runs, do not call `send_message`; the host posts your
   `final_answer` automatically.

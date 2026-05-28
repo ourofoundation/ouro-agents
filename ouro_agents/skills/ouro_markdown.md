@@ -35,9 +35,13 @@ route with the action pinned instead of describing the result in prose alone:
 ```
 
 `execute_route` returns `action_id` in its response — pass that through. If
-the route created an asset, it also returns `output_asset_id` / `output_asset_type`
-so you can reference the output directly (e.g. `[label](dataset:<uuid>)`) in
-the surrounding copy.
+the route created assets, the response surfaces them as `output_assets`:
+a list of `{name, is_primary?, asset: {id, asset_type, ...}}` entries, one
+per declared output slot. Pick the slot by `name` (e.g. `report`,
+`raw_results`); `is_primary: true` marks the canonical entry for
+single-output routes. Reference the asset in surrounding copy with the
+usual typed link form (e.g. `[label](dataset:<uuid>)` using
+`output_assets[i].asset.id`).
 
 Skip the embed when the output will not be rendered as markdown (structured
 `final_answer` JSON payloads, quest items, tool call arguments, etc.).
