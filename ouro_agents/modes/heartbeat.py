@@ -237,7 +237,7 @@ def _select_heartbeat_team_id(team_plan_stores: dict[str, object]) -> str | None
 
 def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]:
     """Fetch actionable quest items assigned to this agent, if supported by the API."""
-    if not agent.own_user_id:
+    if not getattr(agent, "own_user_id", None):
         return []
     try:
         ouro = agent._get_ouro_client()

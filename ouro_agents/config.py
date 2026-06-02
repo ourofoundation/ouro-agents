@@ -53,6 +53,8 @@ class AgentConfig(BaseModel):
     workspace: Path = Path("./workspace")
     org_id: Optional[str] = None
     python_packages: List[str] = Field(default_factory=list)
+    # Default OpenRouter reasoning for the main agent model (see ``ReasoningConfig``).
+    reasoning: Optional[ReasoningConfig] = None
 
 
 class PromptCachingConfig(BaseModel):
@@ -72,7 +74,7 @@ class HeartbeatConfig(BaseModel):
     model: str
     active_hours: Optional[Dict[str, str]] = None
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
-    # Overlay on top-level ``reasoning`` for heartbeat model and other heartbeat=True builds.
+    # Overlay on top of ``agent.reasoning`` for heartbeat model builds.
     reasoning: Optional[ReasoningConfig] = None
     # Overlay on top-level ``openrouter_provider`` for heartbeat builds.
     openrouter_provider: Optional[Dict[str, Any]] = None
@@ -402,8 +404,6 @@ class RefinementConfig(BaseModel):
 
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
-    # OpenRouter: request-level reasoning control (effort / max_tokens / exclude / enabled).
-    reasoning: Optional[ReasoningConfig] = None
     # OpenRouter: top-level ``provider`` routing block applied to every model build
     # unless overridden per-profile / per-agent. See
     # https://openrouter.ai/docs/features/provider-routing.
@@ -528,5 +528,10 @@ class OuroAgentsConfig(BaseSettings):
                 "at runtime from the platform. Remove the team_id field from "
                 "your config.json."
             )
+
+        # ``reasoning`` belongs under ``agent``; migrate legacy top-level field.
+        legacy_reasoning = expanded_data.pop("reasoning", None)
+        if legacy_reasoning and not agent_section.get("reasoning"):
+            agent_section["reasoning"] = legacy_reasoning
 
         return cls(**expanded_data)

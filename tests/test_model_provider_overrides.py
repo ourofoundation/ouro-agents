@@ -15,7 +15,7 @@ class TestModelProviderOverrides(unittest.TestCase):
     ):
         agent = OuroAgent.__new__(OuroAgent)
         agent.config = SimpleNamespace(
-            reasoning=None,
+            agent=SimpleNamespace(reasoning=None),
             prompt_caching=SimpleNamespace(enabled=False, ttl="5m"),
             heartbeat=SimpleNamespace(
                 reasoning=None,
@@ -46,6 +46,25 @@ class TestModelProviderOverrides(unittest.TestCase):
         self.assertEqual(
             agent._default_tool_choice("deepseek/deepseek-chat"), "auto"
         )
+
+    def test_defaults_to_auto_tool_choice_for_qwen(self):
+        agent = self._make_agent()
+
+        self.assertEqual(
+            agent._default_tool_choice("qwen/qwen3.7-max"), "auto"
+        )
+
+    def test_build_model_passes_auto_tool_choice_for_qwen(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("qwen/qwen3.7-max")
+
+        self.assertEqual(tracked_model.call_args.kwargs["tool_choice"], "auto")
 
     def test_build_model_passes_auto_tool_choice_for_minimax(self):
         agent = self._make_agent()

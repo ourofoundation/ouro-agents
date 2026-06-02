@@ -49,14 +49,17 @@ memory don't.
 
 ## Reasoning
 
-`reasoning` maps directly to OpenRouter's top-level `reasoning` field:
+`agent.reasoning` maps to OpenRouter's top-level `reasoning` field on each
+request:
 
 ```json
-"reasoning": {
-  "effort": "medium",
-  "max_tokens": null,
-  "exclude": false,
-  "enabled": null
+"agent": {
+  "reasoning": {
+    "effort": "medium",
+    "max_tokens": null,
+    "exclude": false,
+    "enabled": null
+  }
 }
 ```
 
@@ -71,7 +74,7 @@ memory don't.
 
 `merge_reasoning(*layers)` does last-wins merging per non-None field:
 
-1. Top-level `reasoning` (global default).
+1. `agent.reasoning` (main agent default).
 2. `heartbeat.reasoning` (overlay for the heartbeat model and any other
    `heartbeat=True` model build).
 3. `subagents.<name>.reasoning` (per-profile override).
@@ -79,8 +82,8 @@ memory don't.
 Example:
 
 ```json
-"reasoning": { "effort": "medium" },
-"heartbeat": { "reasoning": { "effort": "low" } },
+"agent": { "reasoning": { "effort": "medium" } },
+"modes": { "heartbeat": { "reasoning": { "effort": "low" } } },
 "subagents": {
   "preflight": { "reasoning": { "effort": "none" } },
   "research":  { "reasoning": { "effort": "low" } }
@@ -105,5 +108,6 @@ This is off by default to keep the standard run summary compact.
 
 Some providers reject smolagents' default `tool_choice="required"`.
 `OuroAgent._default_tool_choice` falls back to `auto` for known
-exceptions (currently MiniMax routes). Add another model-id prefix in
-that helper if you find a new one.
+exceptions (MiniMax, DeepSeek, and Qwen when OpenRouter reasoning/thinking
+is enabled). Add another model-id prefix in that helper if you find a new
+one.

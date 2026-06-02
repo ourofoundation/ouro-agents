@@ -417,7 +417,7 @@ class OuroAgent:
         heartbeat: bool = False,
     ) -> Optional[ReasoningConfig]:
         """Merge global + optional heartbeat overlay + optional subagent override."""
-        layers: list[Optional[ReasoningConfig]] = [self.config.reasoning]
+        layers: list[Optional[ReasoningConfig]] = [self.config.agent.reasoning]
         if heartbeat:
             layers.append(self.config.heartbeat.reasoning)
         if subagent_profile:
@@ -466,7 +466,12 @@ class OuroAgent:
 
         return body if body else None
 
-    def _default_tool_choice(self, model_id: str) -> Optional[str]:
+    def _default_tool_choice(
+        self,
+        model_id: str,
+        *,
+        reasoning: Optional[ReasoningConfig] = None,
+    ) -> Optional[str]:
         # Some upstream providers reject smolagents' default `tool_choice="required"`:
         #   - MiniMax routes return a 400 outright.
         #   - DeepSeek's own "DeepSeek" provider serves reasoning-enabled models
@@ -475,7 +480,14 @@ class OuroAgent:
         #     non-reasoning chat variants are happy with `auto`, so we apply it
         #     to the whole family rather than try to detect reasoning at the
         #     call site.
-        if model_id.startswith("minimax/") or model_id.startswith("deepseek/"):
+        #   - Qwen via Alibaba rejects `required` (and object tool_choice) in
+        #     thinking mode. Qwen 3.x routes often enter thinking even without an
+        #     explicit OpenRouter ``reasoning`` block, so always use ``auto``.
+        if (
+            model_id.startswith("minimax/")
+            or model_id.startswith("deepseek/")
+            or model_id.startswith("qwen/")
+        ):
             return "auto"
         return None
 
@@ -504,7 +516,7 @@ class OuroAgent:
         extra_body = self._build_openrouter_extra_body(model_id, resolved, provider)
         if extra_body:
             model_kwargs["extra_body"] = extra_body
-        tool_choice = self._default_tool_choice(model_id)
+        tool_choice = self._default_tool_choice(model_id, reasoning=resolved)
         if tool_choice is not None:
             model_kwargs["tool_choice"] = tool_choice
 
@@ -978,8 +990,11 @@ class OuroAgent:
             execution, planning) so your main context stays clean. Each subagent
             runs independently and returns a structured JSON handoff. By default
             the parent sees a short summary plus asset metadata (name, description,
-            asset_id). The subagent saves its full output as an Ouro post (or other
-            asset type) automatically.
+            asset_id, link). The subagent saves AND publishes its full output as an
+            Ouro post (or other asset type) automatically — so once it returns an
+            asset_id, do NOT create or publish another asset for that work and do
+            NOT paste its full body into your reply. Surface it by embedding or
+            linking the returned asset_id (use the provided `link`).
 
             Args:
                 tasks: List of task specs. Each is a dict with keys:

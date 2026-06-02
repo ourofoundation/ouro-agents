@@ -94,10 +94,24 @@ def delegate_success_payload(
         "summary": result.asset_description or summary,
     }
     if result.asset_id:
+        asset_type = result.asset_type or "post"
+        name = result.asset_name or ""
         payload["asset_id"] = result.asset_id
-        payload["asset_type"] = result.asset_type or "post"
-        payload["name"] = result.asset_name or ""
+        payload["asset_type"] = asset_type
+        payload["name"] = name
         payload["description"] = result.asset_description or ""
+        if result.asset_visibility:
+            payload["visibility"] = result.asset_visibility
+        # The subagent already created and published this asset on Ouro.
+        # Hand the parent a drop-in reference and an explicit instruction so it
+        # surfaces the existing asset instead of recreating or republishing it.
+        payload["link"] = f"[{name or asset_type}]({asset_type}:{result.asset_id})"
+        payload["next_step"] = (
+            f"This {asset_type} already exists and is published on Ouro. "
+            "Reference it by embedding or linking the asset_id above in your reply — "
+            "do NOT create another asset or paste its full body. "
+            "Call get_asset(asset_id) only if you need the full content."
+        )
     if result.usage.total_tokens:
         payload["tokens_used"] = result.usage.total_tokens
     if mode == "full_text":

@@ -183,6 +183,7 @@ def parse_asset_result(text: str) -> Optional[dict[str, Any]]:
         "name": data["name"],
         "description": data.get("description", ""),
         "content": data.get("content", ""),
+        "visibility": data.get("visibility", ""),
     }
 
 

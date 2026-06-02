@@ -222,6 +222,22 @@ class TestConfigModeOverrides(unittest.TestCase):
             self.assertEqual(config.env_file, env_path)
             self.assertEqual(config.mcp_servers[0].env["API_KEY"], "from-config")
 
+    def test_agent_reasoning_is_loaded(self):
+        data = _base_config()
+        data["agent"]["reasoning"] = {"effort": "medium"}
+
+        config = self._load_config(data)
+
+        self.assertEqual(config.agent.reasoning.effort, "medium")
+
+    def test_migrates_legacy_top_level_reasoning_into_agent(self):
+        data = _base_config()
+        data["reasoning"] = {"effort": "low"}
+
+        config = self._load_config(data)
+
+        self.assertEqual(config.agent.reasoning.effort, "low")
+
     def test_env_file_override_takes_priority_over_config_value(self):
         with TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)

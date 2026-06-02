@@ -36,8 +36,11 @@ SUBAGENT_RULES = (
     "long-form writing → `writer`, SDK/batch workflows → `developer`, "
     "focused self-contained sub-tasks → `executor`.\n"
     "**Handle yourself:** simple questions, single tool calls, chat replies, quick lookups.\n\n"
-    "Subagents save output as Ouro assets and return JSON with `asset_id`, `name`, `description`. "
-    "Use `get_asset(asset_id)` for full content."
+    "Subagents save output as Ouro assets and return JSON with `asset_id`, `name`, `description`, "
+    "and a ready-to-use `link`. The asset is already created and published — **do NOT create or "
+    "publish another asset for the same work, and do NOT paste the subagent's full body into your reply.** "
+    "Surface the result by embedding or linking the returned `asset_id` (use the provided `link`). "
+    "Call `get_asset(asset_id)` only when you genuinely need the full content."
 )
 
 # Section ordering — lower number = higher priority = appears first in prompt

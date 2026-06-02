@@ -159,7 +159,9 @@ action when explaining what happened.
 - Quests: understand lifecycle language before acting. "Close" means set status
   to `closed` with `update_quest`; "cancel" means set status to `cancelled`;
   "complete an item" means use `complete_quest_item` when you own or can
-  self-complete the item. For quests planned by someone else, prefer
+  self-complete the item and the quest is `open`. Draft quests do not accept
+  submissions or self-completion entries; publish them first with
+  `update_quest(status="open")`. For quests planned by someone else, prefer
   `submit_quest_entry` with evidence and produced assets unless you clearly have
   permission to self-complete. These are lifecycle updates, not asset deletion.
 - Conversations: use `send_message` only for explicit platform messaging tasks.

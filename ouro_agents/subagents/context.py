@@ -79,6 +79,7 @@ class SubAgentResult:
     asset_type: Optional[str] = None
     asset_name: Optional[str] = None
     asset_description: Optional[str] = None
+    asset_visibility: Optional[str] = None
 
     def __str__(self) -> str:
         return self.text

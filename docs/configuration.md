@@ -13,8 +13,7 @@ point.
 
 ```json
 {
-  "agent":         { ... },
-  "reasoning":     { ... },
+  "agent":         { ... },   // includes optional ``reasoning``
   "prompt_caching":{ ... },
   "heartbeat":     { ... },     // populated from modes.heartbeat
   "planning":      { ... },     // populated from modes.planning
@@ -44,13 +43,17 @@ You typically write `heartbeat` and `planning` *inside* the `modes` block
 | `workspace` | path | `./workspace` | Workspace directory. |
 | `org_id` | str | none | Ouro organization the agent operates in. Required when using teams. |
 | `python_packages` | list[str] | `[]` | Packages exposed inside the `run_python` sandbox. Use `package.*` to allow submodules such as `pymatgen.symmetry.analyzer`; entries are validated at startup. |
+| `reasoning` | ReasoningConfig | none | Default OpenRouter reasoning for the main agent model (see below). |
 
 `agent.team_id` is **not** supported anymore — teams are discovered at
 runtime. The loader raises if it sees one.
 
-## `reasoning`
+A legacy top-level `reasoning` block is migrated into `agent.reasoning` on
+load.
 
-Maps directly to OpenRouter's top-level `reasoning` request field.
+### `agent.reasoning`
+
+Maps to OpenRouter's top-level `reasoning` request field on chat completions.
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -61,7 +64,7 @@ Maps directly to OpenRouter's top-level `reasoning` request field.
 
 Layered overrides:
 
-- `heartbeat.reasoning` — overlays on top of `reasoning` whenever the
+- `heartbeat.reasoning` — overlays on top of `agent.reasoning` whenever the
   heartbeat model is built.
 - `subagents.<name>.reasoning` — per-profile override.
 
@@ -89,7 +92,7 @@ inside `modes.heartbeat` and hoisted out at load time.
 | `active_hours` | `{start, end, timezone}` | none | Skip ticks outside this window. |
 | `proactive.enabled` | bool | `false` | Allow heartbeats to use additional MCP servers. |
 | `proactive.servers` | list[str] | `["ouro"]` | Extra servers when proactive. |
-| `reasoning` | ReasoningConfig | none | Overlay on top of global `reasoning`. |
+| `reasoning` | ReasoningConfig | none | Overlay on top of `agent.reasoning`. |
 
 ## `planning`
 

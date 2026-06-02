@@ -19,9 +19,12 @@ When your work produces reusable content, save it as an Ouro asset:
      "asset_type": "comment"|"post"|"dataset"|"file"|"route"|"service"|"conversation"|"quest",
      "name": "<asset name>",
      "description": "<one-line summary>",
+     "visibility": "<the visibility you created it with, e.g. public or private>",
      "content": "<full output text>"
    }
    ```
+   Always include `visibility` — the parent agent uses it to decide whether further
+   action (sharing, changing access) is needed.
 
 3. If the create tool is unavailable, return the full content directly in
    `final_answer` as plain text.

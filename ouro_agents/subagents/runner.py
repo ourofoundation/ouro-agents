@@ -171,6 +171,7 @@ def run_subagent(
                 asset_type=asset["asset_type"],
                 asset_name=asset["name"],
                 asset_description=asset["description"],
+                asset_visibility=asset.get("visibility") or None,
             )
         return SubAgentResult(text=text, success=True, usage=usage)
     except Exception as e:
@@ -317,6 +318,10 @@ def _build_chain_delegate(
         delegate tool can parallelize safely by creating one model per child;
         nested delegates share this subagent's model, so they avoid concurrent
         calls on the same model instance.
+
+        When a child returns an `asset_id`, it has already created and published
+        that asset on Ouro. Do NOT create another asset for the same work — reuse
+        the returned asset_id (and its `link`) in your own final_answer.
 
         Args:
             tasks: List of task specs. Each is a dict with keys:
