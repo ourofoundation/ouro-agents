@@ -37,6 +37,14 @@ def uvicorn_log_config() -> dict[str, Any]:
             "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
             # APScheduler is chatty at INFO (job add/start); we log our own scheduler lines.
             "apscheduler": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+            # watchfiles logs every fs event at INFO even when uvicorn filters reload;
+            # workspace/chroma writes are expected during agent runs.
+            "watchfiles": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+            "watchfiles.main": {
+                "handlers": ["default"],
+                "level": "WARNING",
+                "propagate": False,
+            },
         },
         "root": {"handlers": ["default"], "level": "INFO"},
     }

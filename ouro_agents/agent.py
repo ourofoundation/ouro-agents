@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 from uuid import uuid4
@@ -37,13 +37,14 @@ from .memory.conversation_state import (
     update_state,
 )
 from .memory import DocStore
+from .memory.naming import current_period_heading, period_key, store_rhythm
 from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
     apply_reflection,
     should_reflect_for_conversation,
     store_reflection_memories,
     validated_daily_log_entries,
-    write_daily_log,
+    write_log,
 )
 from .memory.tools import make_memory_tools
 from .teams import TeamContext, TeamRegistry
@@ -139,10 +140,15 @@ class OuroAgent:
         )
         self._team_doc_stores: dict[str, DocStore] = {}
 
+        from .memory.log_prefix_migration import migrate_log_prefix_workspace
+
+        migrate_log_prefix_workspace(self._workspace)
+
         self.doc_store: DocStore = CompositeDocStore(
             local=LocalDocStore(
                 workspace=config.agent.workspace,
                 agent_name=config.agent.name,
+                rhythm=config.memory.rhythm,
             ),
             ouro=None,
         )
@@ -298,16 +304,17 @@ class OuroAgent:
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         parts: list[str] = []
         name = self.config.agent.name
-        today = date.today().isoformat()
+        rhythm = store_rhythm(active_doc_store)
+        period = period_key(rhythm)
         memory_name = active_doc_store.memory_name(name)
-        daily_name = active_doc_store.daily_name(name, today)
+        log_name = active_doc_store.log_name(name, period)
 
         content = active_doc_store.read(memory_name)
         if content:
             parts.append(content)
-        daily_content = active_doc_store.read(daily_name)
-        if daily_content:
-            parts.append(f"## Today's Log ({today})\n{daily_content}")
+        log_content = active_doc_store.read(log_name)
+        if log_content:
+            parts.append(f"## {current_period_heading(rhythm)} ({period})\n{log_content}")
 
         if team_id:
             shared_memory = self._load_shared_memory()
@@ -460,6 +467,18 @@ class OuroAgent:
             r = reasoning.model_dump(exclude_none=True)
             if r:
                 body["reasoning"] = r
+
+        # MiniMax M-series does interleaved thinking and, by default, injects the
+        # model's chain-of-thought into the ``content`` channel as
+        # ``reasoning_content``. That mixing is what makes MiniMax leak raw
+        # tool-call tokens (``<invoke …>`` / ``]<]minimax[>[``) into assistant
+        # text instead of emitting structured tool_calls. ``reasoning_split``
+        # asks for the thinking to be separated into ``reasoning_details`` so the
+        # content channel stays clean. See the MiniMax M3 tool-use guide:
+        # https://platform.minimax.io/docs/guides/text-m3-function-call
+        # (Harmless if the route ignores the flag.)
+        if model_id.startswith("minimax/"):
+            body["reasoning_split"] = True
 
         if provider:
             body["provider"] = provider
@@ -637,6 +656,7 @@ class OuroAgent:
             agent_name=agent_cfg.name,
             team_id=team_id,
             team_slug=team_info.slug if team_info else None,
+            rhythm=self.config.memory.rhythm,
         )
         if team_info and not team_info.agent_can_create:
             logger.warning(
@@ -653,6 +673,7 @@ class OuroAgent:
             registry_path=self._workspace / "teams" / team_id / "state.json",
             team_slug=team_info.slug if team_info else None,
             team_name=team_info.name if team_info else None,
+            rhythm=self.config.memory.rhythm,
         )
         return CompositeDocStore(local=local, ouro=ouro)
 
@@ -1671,7 +1692,7 @@ class OuroAgent:
                 if dedupe_key in seen_daily_entries:
                     continue
                 seen_daily_entries.add(dedupe_key)
-                write_daily_log(
+                write_log(
                     self.config.agent.workspace,
                     normalized_entry,
                     doc_store=self.doc_store_for(target_team_id),

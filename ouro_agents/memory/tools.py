@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -10,6 +10,7 @@ from smolagents import tool
 
 from . import MemoryBackend
 from .model import to_metadata
+from .naming import period_key, store_rhythm
 from .relevance import memory_signal_score
 from .session import SessionMemoryStore
 from .validator import MemoryRunContext, validate_memory_candidate
@@ -358,22 +359,22 @@ def make_memory_tools(
         except Exception:
             lines.append("Vector store: unable to query")
 
-        today = date.today().isoformat()
-
         if doc_store:
+            rhythm = store_rhythm(doc_store)
+            period = period_key(rhythm)
             memory_name = doc_store.memory_name(agent_id)
-            daily_name = doc_store.daily_name(agent_id, today)
+            log_name = doc_store.log_name(agent_id, period)
             content = doc_store.read(memory_name)
             if content:
                 tokens = len(content) // 4
                 lines.append(f"Working memory: ~{tokens} tokens")
 
-            daily_content = doc_store.read(daily_name)
-            if daily_content:
+            log_content = doc_store.read(log_name)
+            if log_content:
                 entry_count = sum(
-                    1 for line in daily_content.split("\n") if line.strip().startswith("-")
+                    1 for line in log_content.split("\n") if line.strip().startswith("-")
                 )
-                lines.append(f"Today's log: {entry_count} entries")
+                lines.append(f"Current log: {entry_count} entries")
 
             from .ouro_docs import OuroDocStore
             storage = "Ouro posts (shared)" if isinstance(doc_store, OuroDocStore) else "local files"

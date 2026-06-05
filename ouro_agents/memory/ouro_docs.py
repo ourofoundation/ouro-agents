@@ -30,9 +30,14 @@ from typing import TYPE_CHECKING, Optional, Protocol
 from .frontmatter import strip_frontmatter
 from .naming import (
     IDENTITY_PREFIXES,
-    daily_doc_display_name,
-    daily_doc_name,
+    LOG_PREFIX,
+    canonical_log_name,
+    is_log_prefix,
     is_singleton_name,
+    legacy_log_name,
+    log_doc_display_name,
+    log_doc_name,
+    log_name_lookup_keys,
     memory_doc_name,
     remote_display_name,
     slugify_team_key,
@@ -64,7 +69,7 @@ def _append_markdown_list_item(existing: str, addition: str) -> str:
 
 def _requires_owned_cache(name: str) -> bool:
     """Return True for docs that must only use agent-owned registry entries."""
-    return name.split(":", 1)[0] == "DAILY"
+    return is_log_prefix(name.split(":", 1)[0])
 
 
 _STALE_UUID_HINTS = (
@@ -104,6 +109,8 @@ class ReadResult:
 class DocStore(Protocol):
     """Interface for document stores (Ouro-backed or local filesystem)."""
 
+    rhythm: str
+
     def read(self, name: str) -> str: ...
     def write(self, name: str, content_md: str) -> bool: ...
     def append(self, name: str, markdown: str) -> bool: ...
@@ -120,7 +127,7 @@ class DocStore(Protocol):
     def search(self, query: str) -> list[dict]: ...
     def is_owner(self, name: str) -> bool: ...
     def memory_name(self, agent_name: str | None = None) -> str: ...
-    def daily_name(self, agent_name: str | None, day: str) -> str: ...
+    def log_name(self, agent_name: str | None, period: str) -> str: ...
 
 
 def _build_client(api_key: str | None = None, base_url: str | None = None) -> "Ouro":
@@ -151,12 +158,14 @@ class OuroDocStore:
         registry_path: Optional[Path] = None,
         team_slug: str | None = None,
         team_name: str | None = None,
+        rhythm: str = "daily",
     ):
         self.agent_name = agent_name
         self.org_id = org_id
         self.team_id = team_id
         self.team_name = team_name or ""
         self.team_slug = team_doc_key(team_slug=team_slug, team_id=team_id)
+        self.rhythm = rhythm
         self._client = client or _build_client(api_key, base_url)
         self._owner_cache: set[str] = set()
         self._write_lock = threading.RLock()
@@ -173,11 +182,11 @@ class OuroDocStore:
             team_id=self.team_id,
         )
 
-    def daily_name(self, agent_name: str | None, day: str) -> str:
-        """Canonical DAILY name for this store's scope."""
-        return daily_doc_name(
+    def log_name(self, agent_name: str | None, period: str) -> str:
+        """Canonical period-log name for this store's scope."""
+        return log_doc_name(
             agent_name or self.agent_name,
-            day,
+            period,
             team_slug=self.team_slug,
             team_id=self.team_id,
         )
@@ -262,7 +271,12 @@ class OuroDocStore:
 
     def _remember_uuid(self, name: str, uuid: str) -> str:
         """Cache and persist a resolved UUID for future exact lookups."""
-        self._uuid_cache[name] = uuid
+        canonical = canonical_log_name(name)
+        self._uuid_cache[canonical] = uuid
+        legacy = legacy_log_name(canonical)
+        if legacy and legacy in self._uuid_cache:
+            self._uuid_cache.pop(legacy, None)
+            self._owner_cache.discard(legacy)
         self._save_registry()
         return uuid
 
@@ -274,17 +288,18 @@ class OuroDocStore:
 
     def _cached_uuid(self, name: str, *, require_owned: bool = False) -> Optional[str]:
         """Return a usable cached UUID, optionally requiring ownership."""
-        uuid = self._uuid_cache.get(name)
-        if not uuid:
-            return None
-        if not require_owned or name in self._owner_cache:
-            return uuid
-        logger.warning(
-            "Ignoring non-owned cached UUID for %s (%s); will create owned doc",
-            name,
-            uuid,
-        )
-        self._forget_uuid(name)
+        for key in log_name_lookup_keys(name) if is_log_prefix(name.split(":", 1)[0]) else [name]:
+            uuid = self._uuid_cache.get(key)
+            if not uuid:
+                continue
+            if not require_owned or key in self._owner_cache:
+                return uuid
+            logger.warning(
+                "Ignoring non-owned cached UUID for %s (%s); will create owned doc",
+                key,
+                uuid,
+            )
+            self._forget_uuid(key)
         return None
 
     def _drop_stale_uuid(
@@ -373,7 +388,7 @@ class OuroDocStore:
         """Resolve a logical doc name to ``(uuid, ambiguous)``.
 
         Cache hit short-circuits. Otherwise one exact-name search. For
-        singleton prefixes (``MEMORY``/``DAILY``/``USER``/etc.) refuses to
+        singleton prefixes (``MEMORY``/``LOG``/``USER``/etc.) refuses to
         pick a winner when multiple exact matches exist; the caller is
         expected to surface or clean up the duplicate.
         """
@@ -384,29 +399,39 @@ class OuroDocStore:
         if owned_only:
             return None, False
 
-        try:
-            matches = self._search_exact_name_matches(name, limit=25)
-        except Exception as e:
-            logger.warning("OuroDocStore._resolve failed for %s: %s", name, e)
-            return None, False
+        lookup_names = (
+            log_name_lookup_keys(name)
+            if is_log_prefix(name.split(":", 1)[0])
+            else [name]
+        )
+        for lookup_name in lookup_names:
+            try:
+                matches = self._search_exact_name_matches(lookup_name, limit=25)
+            except Exception as e:
+                logger.warning(
+                    "OuroDocStore._resolve failed for %s: %s", lookup_name, e
+                )
+                continue
 
-        if not matches:
-            return None, False
+            if not matches:
+                continue
 
-        if is_singleton_name(name) and len(matches) > 1:
-            logger.warning(
-                "Multiple exact singleton post matches found for %s; refusing recovery",
-                name,
-            )
-            return None, True
+            if is_singleton_name(lookup_name) and len(matches) > 1:
+                logger.warning(
+                    "Multiple exact singleton post matches found for %s; refusing recovery",
+                    lookup_name,
+                )
+                return None, True
 
-        selected = self._select_exact_match_item(name, matches)
-        if not selected:
-            return None, False
+            selected = self._select_exact_match_item(lookup_name, matches)
+            if not selected:
+                continue
 
-        uuid = str(selected["id"])
-        self._remember_uuid(name, uuid)
-        return uuid, False
+            uuid = str(selected["id"])
+            self._remember_uuid(lookup_name, uuid)
+            return uuid, False
+
+        return None, False
 
     def _resolve(self, name: str) -> Optional[str]:
         """Resolve a post name to its UUID."""
@@ -701,12 +726,12 @@ class LocalDocStore:
       always at workspace root regardless of team scope)
     - With ``team_id`` set:
         - ``MEMORY`` → ``teams/{team_id}/MEMORY.md``
-        - ``DAILY:*:*:{day}`` → ``teams/{team_id}/daily/{day}.md``
+        - ``LOG:*:*:{period}`` → ``teams/{team_id}/logs/{period}.md`` (legacy ``daily/`` read fallback)
         - ``HEARTBEAT``/``NOTES`` → ``teams/{team_id}/{prefix}.md``
     - Without ``team_id``:
         - ``HEARTBEAT``/``NOTES`` → workspace root
         - ``MEMORY`` → ``shared/memory/MEMORY.md``
-        - ``DAILY`` → ``shared/daily/{day}.md``
+        - ``LOG`` → ``shared/logs/{period}.md`` (legacy ``shared/daily/`` read fallback)
         - ``USER:{user_id}`` → ``shared/users/{user_id}.md``
     - Anything else → ``data/docs/{safe_name}.md``
     """
@@ -717,11 +742,13 @@ class LocalDocStore:
         agent_name: str = "",
         team_id: str | None = None,
         team_slug: str | None = None,
+        rhythm: str = "daily",
     ):
         self._workspace = workspace
         self.agent_name = agent_name
         self.team_id = team_id
         self.team_slug = team_doc_key(team_slug=team_slug, team_id=team_id)
+        self.rhythm = rhythm
 
     def memory_name(self, agent_name: str | None = None) -> str:
         """Canonical MEMORY name for this store's scope."""
@@ -731,17 +758,37 @@ class LocalDocStore:
             team_id=self.team_id if self.team_id else None,
         )
 
-    def daily_name(self, agent_name: str | None, day: str) -> str:
-        """Canonical DAILY name for this store's scope."""
-        return daily_doc_name(
+    def log_name(self, agent_name: str | None, period: str) -> str:
+        """Canonical period-log name for this store's scope."""
+        return log_doc_name(
             agent_name or self.agent_name,
-            day,
+            period,
             team_slug=self.team_slug if self.team_id else None,
             team_id=self.team_id if self.team_id else None,
         )
 
+    def _log_storage_dirs(self) -> list[Path]:
+        """Canonical ``logs/`` dir first, then legacy ``daily/`` for reads."""
+        if self.team_id:
+            team_dir = self._workspace / "teams" / self.team_id
+            return [team_dir / "logs", team_dir / "daily"]
+        return [
+            self._workspace / "shared" / "logs",
+            self._workspace / "shared" / "daily",
+        ]
+
+    def _log_period_path(self, parts: list[str]) -> Path:
+        period_file = f"{parts[-1]}.md"
+        for directory in self._log_storage_dirs():
+            candidate = directory / period_file
+            if candidate.exists():
+                return candidate
+        return self._log_storage_dirs()[0] / period_file
+
     def _name_to_path(self, name: str) -> Path:
         """Map a post name like ``MEMORY:agent`` to a local file path."""
+        if is_log_prefix(name.split(":", 1)[0]):
+            name = canonical_log_name(name)
         parts = name.split(":")
         prefix = parts[0]
 
@@ -760,8 +807,8 @@ class LocalDocStore:
             team_dir = self._workspace / "teams" / self.team_id
             if prefix == "MEMORY":
                 return team_dir / "MEMORY.md"
-            if prefix == "DAILY" and len(parts) >= 3:
-                return team_dir / "daily" / f"{parts[-1]}.md"
+            if prefix == LOG_PREFIX and len(parts) >= 3:
+                return self._log_period_path(parts)
             if prefix in ("HEARTBEAT", "NOTES"):
                 return team_dir / f"{prefix}.md"
 
@@ -769,8 +816,8 @@ class LocalDocStore:
             return self._workspace / f"{prefix}.md"
         if prefix == "MEMORY":
             return self._workspace / "shared" / "memory" / "MEMORY.md"
-        if prefix == "DAILY" and len(parts) >= 3:
-            return self._workspace / "shared" / "daily" / f"{parts[-1]}.md"
+        if prefix == LOG_PREFIX and len(parts) >= 3:
+            return self._log_period_path(parts)
         if prefix == "USER" and len(parts) >= 2:
             return self._workspace / "shared" / "users" / f"{parts[1]}.md"
 
@@ -881,6 +928,11 @@ class CompositeDocStore:
         """Expose the underlying local store."""
         return self._local
 
+    @property
+    def rhythm(self) -> str:
+        """Memory rhythm, taken from whichever backend owns the name scope."""
+        return getattr(self._scoped(), "rhythm", "daily")
+
     def _backend(self, name: str):
         prefix = name.split(":", 1)[0]
         if prefix in IDENTITY_PREFIXES or self._ouro is None:
@@ -894,8 +946,8 @@ class CompositeDocStore:
     def memory_name(self, agent_name: str | None = None) -> str:
         return self._scoped().memory_name(agent_name)
 
-    def daily_name(self, agent_name: str | None, day: str) -> str:
-        return self._scoped().daily_name(agent_name, day)
+    def log_name(self, agent_name: str | None, period: str) -> str:
+        return self._scoped().log_name(agent_name, period)
 
     def read(self, name: str) -> str:
         return self._backend(name).read(name)

@@ -179,7 +179,7 @@ See [Subagents](./subagents.md) for profile authoring.
 
 ## `memory`
 
-Vector memory backend + consolidation policy.
+Vector memory backend + dream (consolidation) policy.
 
 | Field | Default | Notes |
 |-------|---------|-------|
@@ -190,8 +190,9 @@ Vector memory backend + consolidation policy.
 | `search_limit` | 10 | Default top-K for `memory_recall`. |
 | `retrieval_queries` | 3 | Multi-query expansion in preflight. |
 | `max_retrieval_tokens` | 4000 | Soft cap on injected memory bytes. |
-| `consolidation_enabled` | `true` | Run the nightly consolidation job. |
-| `consolidation_schedule` | `0 3 * * *` | Cron for consolidation. |
+| `rhythm` | `daily` | Log/dream cadence: `daily`, `weekly`, or `biweekly`. Sets the window a single log doc covers **and** how often the dream cycle runs. |
+| `dream_enabled` | `true` | Run the dream (memory consolidation) cycle. |
+| `dream_time` | `03:00` | Time of day (`HH:MM`, UTC) for the dream tick. The tick only does work when a new `rhythm` period has begun since the last run. |
 | `memory_md_max_tokens` | 4000 | Cap on `MEMORY.md` size after consolidation. |
 | `mid_session_reflection_interval` | 10 | Chat turns between mid-session reflections. |
 | `decay_after_days` | 30 | Global decay fallback. |

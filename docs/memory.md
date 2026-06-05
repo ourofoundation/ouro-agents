@@ -58,8 +58,8 @@ Each category has its own decay policy in `memory.decay_rules`:
 ```
 
 `memory.decay_after_days` is a global fallback when a category has no
-specific rule. `memory.consolidation_enabled` (cron `consolidation_schedule`)
-runs a consolidation pass that:
+specific rule. `memory.dream_enabled` runs a consolidation ("dream") pass —
+once per `memory.rhythm` period, at `memory.dream_time` — that:
 
 - Promotes high-importance, frequently-accessed memories into `MEMORY.md`.
 - Decays older memories by their category factor.
@@ -101,8 +101,9 @@ Names are scoped by team and agent:
 
 - `MEMORY:<agent>` — root, shared across teams.
 - `MEMORY:<agent>:<team_slug>` — per-team memory.
-- `DAILY:<agent>:<YYYY-MM-DD>` — root daily log.
-- `DAILY:<agent>:<team_slug>:<YYYY-MM-DD>` — per-team daily log.
+- `LOG:<agent>:<period>` — root log. `<period>` follows `memory.rhythm`:
+  `2026-06-02` (daily), `2026-W23` (weekly), or `2026-06-01-2w` (biweekly).
+- `LOG:<agent>:<team_slug>:<period>` — per-team log (same `<period>` scheme).
 - `USER:<user_id>` — the user-model file consulted when a `user_id` is
   passed into `OuroAgent.run`.
 - `NOTES:<agent>` — opt-in notes file (falls back to root `NOTES.md` when

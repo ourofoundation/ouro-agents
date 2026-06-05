@@ -76,8 +76,8 @@ class _FakeDocStore:
     def memory_name(self, agent_name=None):
         return f"MEMORY:{agent_name}:team"
 
-    def daily_name(self, agent_name, day):
-        return f"DAILY:{agent_name}:team:{day}"
+    def log_name(self, agent_name, period):
+        return f"LOG:{agent_name}:team:{period}"
 
     def read(self, name):
         return ""

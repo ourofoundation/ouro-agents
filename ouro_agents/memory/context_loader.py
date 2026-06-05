@@ -7,12 +7,12 @@ state and the current request, so the agent doesn't have to manually read them.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from ..constants import CHARS_PER_TOKEN
 from .conversation_state import ConversationState
+from .naming import period_key_offset, store_rhythm
 
 if TYPE_CHECKING:
     from . import DocStore
@@ -130,20 +130,23 @@ def _load_recent_daily_context(
     doc_store: Optional["DocStore"] = None,
     agent_name: str = "",
 ) -> str:
-    """Load yesterday's daily log if it exists (today's is already in working memory)."""
+    """Load the previous period's log if it exists (the current one is already
+    in working memory). The window follows the doc store's rhythm."""
     if not doc_store:
         return ""
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
-    daily_name = doc_store.daily_name(agent_name, yesterday)
-    content = doc_store.read(daily_name)
+    rhythm = store_rhythm(doc_store)
+    previous_period = period_key_offset(rhythm, -1)
+    log_name = doc_store.log_name(agent_name, previous_period)
+    content = doc_store.read(log_name)
     if not content:
         return ""
 
+    label = {"weekly": "Last week", "biweekly": "Last period"}.get(rhythm, "Yesterday")
     max_chars = 300 * CHARS_PER_TOKEN
     if len(content) > max_chars:
         content = content[:max_chars] + "\n[...truncated]"
-    return f"### Yesterday ({yesterday})\n{content}"
+    return f"### {label} ({previous_period})\n{content}"
 
 
 def load_entity_context(

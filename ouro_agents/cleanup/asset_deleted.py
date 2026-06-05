@@ -462,9 +462,9 @@ async def handle_asset_deleted_webhook(
     logger.info(summary)
 
     try:
-        from ..memory.reflection import write_daily_log
+        from ..memory.reflection import write_log
 
-        write_daily_log(
+        write_log(
             workspace=workspace,
             entry_text=summary,
             doc_store=getattr(agent, "doc_store", None),

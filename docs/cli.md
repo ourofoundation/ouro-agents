@@ -27,8 +27,8 @@ the heartbeat scheduler, registers the webhook receiver at
 `server.webhook_path`, and connects to all configured MCP servers.
 
 `PYTHON_ENV=production` disables uvicorn's autoreload. Otherwise the
-server runs with `reload=True` (and excludes `workspace/*` from the
-watcher).
+server runs with `reload=True`, watching only the `ouro_agents` package
+(not the agent workspace or Chroma memory store).
 
 See the [HTTP API doc](./http-api.md) for the routes the server exposes.
 

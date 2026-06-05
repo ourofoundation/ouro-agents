@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager, nullcontext
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Optional
 
@@ -508,24 +509,35 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
     return {"status": "accepted", "event_type": event_run.event_type, "pooled": False}
 
 
+def dev_reload_settings(config: OuroAgentsConfig) -> tuple[list[str], list[str]]:
+    """Reload dirs/excludes for dev: watch package source only, not agent workspace."""
+    package_root = Path(__file__).resolve().parent
+    workspace = config.agent.workspace.resolve()
+    chroma = (config.memory.path / "chroma").resolve()
+    reload_dirs = [str(package_root)]
+    reload_excludes = [
+        str(workspace),
+        str(chroma),
+        "__pycache__",
+        "*.pyc",
+    ]
+    return reload_dirs, reload_excludes
+
+
 def start_server(config_path: str = "config.json"):
     os.environ["CONFIG_FILE"] = config_path
     config = OuroAgentsConfig.load_from_file(config_path)
     reload = os.getenv("PYTHON_ENV") != "production"
-    reload_excludes = (
-        [
-            "workspace/*",
-            "../workspace/*",
-            "__pycache__",
-        ]
-        if reload
-        else None
-    )
+    reload_dirs = None
+    reload_excludes = None
+    if reload:
+        reload_dirs, reload_excludes = dev_reload_settings(config)
     uvicorn.run(
         "ouro_agents.server:app",
         host=config.server.host,
         port=config.server.port,
         reload=reload,
+        reload_dirs=reload_dirs,
         reload_excludes=reload_excludes,
         log_config=uvicorn_log_config(),
     )

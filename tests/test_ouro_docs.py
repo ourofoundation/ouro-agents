@@ -1,3 +1,4 @@
+import importlib
 import importlib.util
 import json
 import sys
@@ -43,7 +44,8 @@ _ouro_docs_module = _load_ouro_docs_module()
 LocalDocStore = _ouro_docs_module.LocalDocStore
 OuroDocStore = _ouro_docs_module.OuroDocStore
 CompositeDocStore = _ouro_docs_module.CompositeDocStore
-daily_doc_display_name = _ouro_docs_module.daily_doc_display_name
+_naming_module = importlib.import_module("ouro_agents.memory.naming")
+log_doc_display_name = _naming_module.log_doc_display_name
 
 
 def _registry_payload(docs: dict[str, object]) -> str:
@@ -169,7 +171,7 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertEqual(client.assets.search_calls[0]["scope"], "personal")
 
     def test_daily_resolve_does_not_search_or_cache_external_post(self):
-        name = "DAILY:hermes:research:2026-04-05"
+        name = "LOG:hermes:research:2026-04-05"
         display_name = "#research daily log 2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
@@ -229,7 +231,7 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertEqual(client.posts.updated, [])
 
     def test_create_daily_log_uses_natural_remote_name(self):
-        name = "DAILY:hermes:research:2026-04-05"
+        name = "LOG:hermes:research:2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
             client = _FakeClient(search_results=[[], []])
@@ -246,14 +248,14 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertTrue(store.is_owner(name))
             self.assertEqual(client.assets.search_calls, [])
 
-    def test_daily_doc_display_name_uses_team_hashtag(self):
+    def test_log_doc_display_name_uses_team_hashtag(self):
         self.assertEqual(
-            daily_doc_display_name("DAILY:hermes:permanent-magents:2026-04-05"),
+            log_doc_display_name("LOG:hermes:permanent-magents:2026-04-05"),
             "#permanent-magents daily log 2026-04-05",
         )
 
     def test_append_list_item_uses_cached_id_without_search(self):
-        name = "DAILY:hermes:research:2026-04-05"
+        name = "LOG:hermes:research:2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "state.json"
@@ -280,7 +282,7 @@ class TestOuroDocStore(unittest.TestCase):
             )
 
     def test_append_list_item_ignores_non_owned_cached_daily_and_creates(self):
-        name = "DAILY:hermes:research:2026-04-05"
+        name = "LOG:hermes:research:2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "state.json"
@@ -308,7 +310,7 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertTrue(store.is_owner(name))
 
     def test_append_list_item_creates_when_id_missing(self):
-        name = "DAILY:hermes:research:2026-04-05"
+        name = "LOG:hermes:research:2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
             # Search results would resolve, but append_list_item is cache-first
@@ -331,7 +333,7 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertEqual(store._uuid_cache[name], "created-post")
 
     def test_append_list_item_without_initial_md_falls_back_to_item(self):
-        name = "DAILY:hermes:research:2026-04-05"
+        name = "LOG:hermes:research:2026-04-05"
 
         with TemporaryDirectory() as tmpdir:
             client = _FakeClient(search_results=[])
@@ -528,7 +530,7 @@ class TestOuroDocStore(unittest.TestCase):
             self.assertTrue(store.is_owner(name))
 
     def test_append_list_item_drops_stale_uuid_and_creates_new(self):
-        name = "DAILY:hermes:research:2026-04-05"
+        name = "LOG:hermes:research:2026-04-05"
         coerce = RuntimeError("Cannot coerce the result to a single JSON object")
 
         with TemporaryDirectory() as tmpdir:
@@ -589,7 +591,7 @@ class TestOuroDocStore(unittest.TestCase):
 
 
 class TestLocalDocStore(unittest.TestCase):
-    def test_team_qualified_daily_routes_to_team_file(self):
+    def test_team_qualified_log_routes_to_team_file(self):
         with TemporaryDirectory() as tmpdir:
             store = LocalDocStore(
                 Path(tmpdir),
@@ -599,8 +601,8 @@ class TestLocalDocStore(unittest.TestCase):
             )
 
             self.assertEqual(
-                store._name_to_path("DAILY:hermes:research:2026-04-05"),
-                Path(tmpdir) / "teams" / "team-1" / "daily" / "2026-04-05.md",
+                store._name_to_path("LOG:hermes:research:2026-04-05"),
+                Path(tmpdir) / "teams" / "team-1" / "logs" / "2026-04-05.md",
             )
 
     def test_team_qualified_heartbeat_routes_to_team_file(self):
@@ -644,8 +646,8 @@ class TestLocalDocStore(unittest.TestCase):
                 Path(tmpdir) / "shared" / "memory" / "MEMORY.md",
             )
             self.assertEqual(
-                store._name_to_path("DAILY:hermes:2026-04-05"),
-                Path(tmpdir) / "shared" / "daily" / "2026-04-05.md",
+                store._name_to_path("LOG:hermes:2026-04-05"),
+                Path(tmpdir) / "shared" / "logs" / "2026-04-05.md",
             )
             self.assertEqual(
                 store._name_to_path("USER:user-123"),
@@ -660,10 +662,25 @@ class TestLocalDocStore(unittest.TestCase):
                 Path(tmpdir) / "NOTES.md",
             )
 
+    def test_reads_legacy_daily_directory_for_log_name(self):
+        with TemporaryDirectory() as tmpdir:
+            store = LocalDocStore(
+                Path(tmpdir),
+                agent_name="hermes",
+                team_id="team-1",
+                team_slug="research",
+            )
+            legacy_dir = Path(tmpdir) / "teams" / "team-1" / "daily"
+            legacy_dir.mkdir(parents=True)
+            (legacy_dir / "2026-04-05.md").write_text("# Daily Log\n\n- legacy entry\n")
+
+            name = store.log_name("hermes", "2026-04-05")
+            self.assertIn("legacy entry", store.read(name))
+
     def test_append_list_item_merges_into_existing_list(self):
         with TemporaryDirectory() as tmpdir:
             store = LocalDocStore(Path(tmpdir), agent_name="hermes")
-            name = store.daily_name("hermes", "2026-04-05")
+            name = store.log_name("hermes", "2026-04-05")
             store.write(name, "# Daily Log 2026-04-05\n\n- 10:00 — first\n")
 
             ok = store.append_list_item(name, "- 10:05 — second\n")
@@ -692,8 +709,8 @@ class _FakeOuroForComposite:
     def memory_name(self, agent_name=None):
         return f"MEMORY:{agent_name or 'agent'}:research"
 
-    def daily_name(self, agent_name, day):
-        return f"DAILY:{agent_name or 'agent'}:research:{day}"
+    def log_name(self, agent_name, period):
+        return f"LOG:{agent_name or 'agent'}:research:{period}"
 
     def read(self, name):
         self.reads.append(name)
@@ -776,14 +793,14 @@ class TestCompositeDocStore(unittest.TestCase):
                 composite.read("MEMORY:hermes:research"), "ouro:MEMORY:hermes:research"
             )
             self.assertTrue(composite.write("MEMORY:hermes:research", "fact"))
-            self.assertTrue(composite.append("DAILY:hermes:research:2026-04-05", "- x"))
+            self.assertTrue(composite.append("LOG:hermes:research:2026-04-05", "- x"))
             self.assertTrue(composite.exists("USER:abc"))
             self.assertEqual(composite.search("query"), [{"id": "p1", "name": "query"}])
 
             self.assertEqual(ouro.reads, ["MEMORY:hermes:research"])
             self.assertEqual(ouro.writes, [("MEMORY:hermes:research", "fact")])
             self.assertEqual(
-                ouro.appends, [("DAILY:hermes:research:2026-04-05", "- x")]
+                ouro.appends, [("LOG:hermes:research:2026-04-05", "- x")]
             )
             self.assertEqual(ouro.searches, ["query"])
 
@@ -797,7 +814,7 @@ class TestCompositeDocStore(unittest.TestCase):
             self.assertEqual(composite.search("anything"), [])
             self.assertFalse(composite.comment("MEMORY:hermes:research", "hi"))
 
-    def test_memory_and_daily_names_come_from_ouro_when_present(self):
+    def test_memory_and_log_names_come_from_ouro_when_present(self):
         with TemporaryDirectory() as tmpdir:
             composite, _local, ouro = self._composite(tmpdir, with_ouro=True)
 
@@ -806,11 +823,11 @@ class TestCompositeDocStore(unittest.TestCase):
                 ouro.memory_name("hermes"),
             )
             self.assertEqual(
-                composite.daily_name("hermes", "2026-04-05"),
-                ouro.daily_name("hermes", "2026-04-05"),
+                composite.log_name("hermes", "2026-04-05"),
+                ouro.log_name("hermes", "2026-04-05"),
             )
 
-    def test_memory_and_daily_names_fall_back_to_local_when_no_ouro(self):
+    def test_memory_and_log_names_fall_back_to_local_when_no_ouro(self):
         with TemporaryDirectory() as tmpdir:
             composite, local, _ouro = self._composite(tmpdir, with_ouro=False)
 
@@ -819,8 +836,8 @@ class TestCompositeDocStore(unittest.TestCase):
                 local.memory_name("hermes"),
             )
             self.assertEqual(
-                composite.daily_name("hermes", "2026-04-05"),
-                local.daily_name("hermes", "2026-04-05"),
+                composite.log_name("hermes", "2026-04-05"),
+                local.log_name("hermes", "2026-04-05"),
             )
 
     def test_append_list_item_forwards_initial_md_to_ouro(self):
@@ -828,14 +845,14 @@ class TestCompositeDocStore(unittest.TestCase):
             composite, _local, ouro = self._composite(tmpdir, with_ouro=True)
 
             composite.append_list_item(
-                "DAILY:hermes:research:2026-04-05",
+                "LOG:hermes:research:2026-04-05",
                 "- entry",
                 initial_md="# header\n\n- entry",
             )
 
             self.assertEqual(
                 ouro.list_item_calls,
-                [("DAILY:hermes:research:2026-04-05", "- entry", "# header\n\n- entry")],
+                [("LOG:hermes:research:2026-04-05", "- entry", "# header\n\n- entry")],
             )
 
     def test_ouro_property_exposes_inner_store(self):

@@ -10,6 +10,9 @@ from pydantic_settings import BaseSettings
 # on config), while keeping ``from .config import RunMode`` working everywhere.
 from .modes.profiles import RunMode  # noqa: F401
 
+# Single source of truth for the memory rhythm vocabulary.
+from .memory.naming import Rhythm
+
 # OpenRouter unified `reasoning` request field (effort vs max_tokens; model-dependent).
 ReasoningEffort = Literal["xhigh", "high", "medium", "low", "minimal", "none"]
 
@@ -103,8 +106,14 @@ class MemoryConfig(BaseModel):
     search_limit: int = 10
     retrieval_queries: int = 3
     max_retrieval_tokens: int = 4000
+    # Memory rhythm: how often the agent rolls its log and runs the dream cycle.
+    # Drives both the log bucket window AND the dream cadence (single source of
+    # truth — there is intentionally no separate dream cron to misconfigure).
+    rhythm: Rhythm = "daily"
     dream_enabled: bool = True
-    dream_schedule: str = "0 3 * * *"
+    # Time of day (HH:MM, UTC) for the nightly dream tick. The tick only does
+    # work when a new `rhythm` period has begun since the last run.
+    dream_time: str = "03:00"
     dream_review_enabled: bool = True
     dream_review_max_per_run: int = 5
     confidence_decay_enabled: bool = True
@@ -121,6 +130,20 @@ class MemoryConfig(BaseModel):
     })
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_deprecated_dream_schedule(cls, data: Any) -> Any:
+        """`dream_schedule` is superseded by `rhythm` + `dream_time`."""
+        if isinstance(data, dict) and "dream_schedule" in data:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "memory.dream_schedule is deprecated and ignored. The dream cycle "
+                "now follows memory.rhythm (daily/weekly/biweekly) and runs at "
+                "memory.dream_time."
+            )
+            data = {k: v for k, v in data.items() if k != "dream_schedule"}
+        return data
 
 
 class ServerConfig(BaseModel):

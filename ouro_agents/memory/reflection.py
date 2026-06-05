@@ -16,28 +16,34 @@ from typing import Optional
 from ..subagents.reflector import ReflectionResult, normalize_daily_log_entry
 from .conversation_state import ConversationState
 from .model import to_metadata
+from .naming import period_key, period_log_title, store_rhythm
 from .validator import MemoryRunContext, validate_memory_candidates
 
 logger = logging.getLogger(__name__)
 
 
-def write_daily_log(
+def write_log(
     workspace: Path,
     entry_text: str,
     doc_store=None,
     agent_name: str = "",
 ) -> None:
-    """Append a timestamped entry to today's daily log."""
+    """Append a timestamped entry to the current period's log.
+
+    The period window (daily/weekly/biweekly) is determined by the doc store's
+    configured ``rhythm`` — callers don't need to know the cadence.
+    """
     if not doc_store:
-        logger.warning("write_daily_log called without a doc_store")
+        logger.warning("write_log called without a doc_store")
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    rhythm = store_rhythm(doc_store)
+    period = period_key(rhythm)
     ts = datetime.now().strftime("%H:%M")
     entry = f"- {ts} — {entry_text}\n"
 
-    post_name = doc_store.daily_name(agent_name, today)
-    initial_content = f"# Daily Log {today}\n\n{entry}"
+    post_name = doc_store.log_name(agent_name, period)
+    initial_content = f"# {period_log_title(rhythm)} {period}\n\n{entry}"
     ok = doc_store.append_list_item(post_name, entry, initial_md=initial_content)
     if not ok:
         logger.warning(
@@ -258,13 +264,13 @@ def apply_reflection(
             run_mode=mode,
             event_type=event_type,
         )
-        write_daily_log(
+        write_log(
             workspace,
             entry,
             doc_store=doc_store,
             agent_name=agent_id,
         )
-        logger.info("Reflection logged to daily: %s", entry[:80])
+        logger.info("Reflection logged: %s", entry[:80])
 
     turn_count = conversation_state.turn_count if conversation_state else 0
     _save_reflected_turn(conversations_dir, conversation_id, turn_count)

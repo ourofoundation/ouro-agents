@@ -63,8 +63,8 @@ Names produced by `memory.naming` (and consumed by every doc store):
 |---------|-------|
 | `MEMORY:<agent>` | Root memory. |
 | `MEMORY:<agent>:<team_slug>` | Team memory. |
-| `DAILY:<agent>:<YYYY-MM-DD>` | Root daily log. |
-| `DAILY:<agent>:<team_slug>:<YYYY-MM-DD>` | Team daily log. |
+| `LOG:<agent>:<period>` | Root log. `<period>` follows `memory.rhythm`: `2026-06-02` (daily), `2026-W23` (weekly), `2026-06-01-2w` (biweekly). |
+| `LOG:<agent>:<team_slug>:<period>` | Team log (same `<period>` scheme). |
 | `NOTES:<agent>` | Notes file. |
 | `USER:<user_id>` | User-model file (per-team or root). |
 | `SHARED:memory` | Internal alias the agent uses to read root MEMORY from a team-scoped run. |

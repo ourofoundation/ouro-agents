@@ -144,6 +144,36 @@ class TestModelProviderOverrides(unittest.TestCase):
 
         self.assertNotIn("extra_body", tracked_model.call_args.kwargs)
 
+    def test_minimax_routes_request_reasoning_split(self):
+        # MiniMax leaks tool-call tokens into content when its thinking shares
+        # the content channel; reasoning_split keeps the channels separate.
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("minimax/minimax-m3")
+
+        extra_body = tracked_model.call_args.kwargs.get("extra_body")
+        self.assertIsNotNone(extra_body)
+        self.assertTrue(extra_body["reasoning_split"])
+
+    def test_non_minimax_routes_omit_reasoning_split(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-4.1-mini")
+
+        extra_body = tracked_model.call_args.kwargs.get("extra_body")
+        if extra_body is not None:
+            self.assertNotIn("reasoning_split", extra_body)
+
 
 if __name__ == "__main__":
     unittest.main()

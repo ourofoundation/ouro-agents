@@ -403,7 +403,7 @@ def start_scheduler(agent, config: HeartbeatConfig):
 
 async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
     """Run a full heartbeat cycle: planning integration, playbook, and run."""
-    from ..memory.reflection import write_daily_log
+    from ..memory.reflection import write_log
     from .planning import (
         PlanStore,
         comment_on_plan,
@@ -598,7 +598,7 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             quest_link = (
                 f" [plan](asset:{default_plan.quest_id})" if default_plan.quest_id else ""
             )
-            write_daily_log(
+            write_log(
                 agent.config.agent.workspace,
                 f"[planning:auto-approved]{quest_link} Plan activated without feedback",
                 doc_store=heartbeat_doc_store,

@@ -16,21 +16,30 @@ workspace/
 ├── runs.jsonl                   # append-only log of every run
 ├── data/
 │   ├── platform_context.json    # cached profile/orgs/teams from Ouro
-│   └── scheduled_tasks.json     # persisted ScheduledTask list
+│   ├── scheduled_tasks.json     # persisted ScheduledTask list
+│   ├── last_dream_period        # dream-cycle rollover marker (rhythm)
+│   └── .log_prefix_v1           # migration marker (DAILY→LOG rename)
 ├── conversations/<id>/
 │   ├── state.json               # ConversationState
 │   └── turns.jsonl              # raw user/assistant turns
-├── daily-logs/                  # daily-log markdown (root scope)
 ├── debug-runs/                  # ouro-agents run --debug-md output
 ├── memory/                      # mem0 + Chroma store (do not edit)
 ├── skills/                      # workspace skill overrides
 ├── subagents/                   # custom SubAgentProfile files (json/yaml)
+├── shared/
+│   ├── memory/MEMORY.md         # unscoped agent memory (no team context)
+│   ├── logs/<period>.md         # root period logs (daily/weekly/biweekly)
+│   └── users/<user_id>.md       # user-model files
 └── teams/<team_id>/
-    ├── MEMORY.md                # team-scoped memory
-    ├── daily-logs/
+    ├── MEMORY.md                # team-scoped working memory
+    ├── logs/<period>.md         # team period logs
     ├── plans/                   # PlanCycle JSON files
-    └── state.json               # local registry of doc-name → Ouro post UUID
+    └── state.json               # doc-name → Ouro post UUID registry
 ```
+
+Legacy workspaces may still have `shared/daily/` or `teams/<id>/daily/` until
+the startup migration moves them to `logs/`. The doc store reads both during
+the transition.
 
 ## SOUL.md (required)
 
@@ -58,19 +67,26 @@ team is writable by agents.
 The agent maintains both files itself:
 
 - The `reflector` subagent appends curated facts after runs.
-- The nightly consolidation job promotes high-importance vector memories
-  into markdown and trims oldest content first.
+- The dream cycle promotes high-importance log entries and compacts
+  working memory on each `memory.rhythm` boundary.
 
 Hand-editing is fine, but expect edits to be reorganized over time as
 the agent rewrites for clarity.
 
-## Daily logs
+## Period logs
 
 Each run that produces a worth-remembering reflection appends an entry to
-the day's log:
+the **current period's** log. The period window follows `memory.rhythm`
+(`daily`, `weekly`, or `biweekly`):
 
-- `daily-logs/<YYYY-MM-DD>.md` — root scope.
-- `teams/<team_id>/daily-logs/<YYYY-MM-DD>.md` — team-scoped.
+| Rhythm | Example period key | Local path (team-scoped) |
+|--------|------------------|--------------------------|
+| daily | `2026-06-02` | `teams/<team_id>/logs/2026-06-02.md` |
+| weekly | `2026-W23` | `teams/<team_id>/logs/2026-W23.md` |
+| biweekly | `2026-06-01-2w` | `teams/<team_id>/logs/2026-06-01-2w.md` |
+
+Logical doc keys use the `LOG:` prefix (e.g. `LOG:<agent>:<team_slug>:<period>`).
+Root-scoped logs live under `shared/logs/` when no team context is set.
 
 Entries are short bullet-style summaries with timestamps. Paired with the
 run log (`runs.jsonl`) they make a complete chronological record.

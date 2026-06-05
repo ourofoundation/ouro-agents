@@ -132,8 +132,8 @@ workspace/
 ├── NOTES.md          # optional: ambient notes
 ├── MEMORY.md         # curated cross-team memory
 ├── conversations/    # per-conversation state and turns
-├── daily-logs/       # daily log markdown
-├── teams/<id>/       # team-scoped memory, plans, doc registry
+├── shared/logs/      # period logs (daily/weekly/biweekly)
+├── teams/<id>/       # team memory, logs/, plans, doc registry
 ├── memory/           # mem0 + Chroma store (opaque)
 ├── skills/           # workspace skill overrides
 └── subagents/        # custom SubAgentProfile files

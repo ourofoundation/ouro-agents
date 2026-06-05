@@ -15,6 +15,8 @@ from ouro_agents.tools.agent_base import (
     _parse_dsml_tool_call_recovery,
     _parse_dsml_tool_calls,
     _parse_kimi_tool_call_recovery,
+    _parse_minimax_tool_call_recovery,
+    _parse_minimax_tool_calls,
     _parse_inline_tool_call,
     _parse_structured_tool_call_recovery,
     _parse_structured_tool_calls,
@@ -933,6 +935,133 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         agent._inject_preamble_nudge_observation(memory_step)
 
         self.assertIsNone(memory_step.observations)
+
+
+class TestMiniMaxToolCallParsing(unittest.TestCase):
+    """MiniMax M2/M2.1 emit XML tool calls that some OpenRouter routes fail to
+    parse natively, leaking the tokens into content. Without a salvage parser
+    these get coerced into ``final_answer`` and the real tool never runs (e.g.
+    a ``send_email`` that silently never sends).
+    """
+
+    def test_parses_canonical_minimax_tool_call(self):
+        recovery = _parse_minimax_tool_call_recovery(
+            "<minimax:tool_call>\n"
+            '<invoke name="get_weather">\n'
+            '<parameter name="location">San Francisco</parameter>\n'
+            '<parameter name="unit">celsius</parameter>\n'
+            "</invoke>\n"
+            "</minimax:tool_call>"
+        )
+
+        self.assertIsNotNone(recovery)
+        self.assertEqual(len(recovery.tool_calls), 1)
+        self.assertEqual(recovery.tool_calls[0].function.name, "get_weather")
+        self.assertEqual(
+            recovery.tool_calls[0].function.arguments,
+            {"location": "San Francisco", "unit": "celsius"},
+        )
+
+    def test_canonical_parameter_json_values_are_decoded(self):
+        tool_calls = _parse_minimax_tool_calls(
+            "<minimax:tool_call>"
+            '<invoke name="search_web">'
+            '<parameter name="query_tag">["technology", "events"]</parameter>'
+            '<parameter name="query">OpenAI latest release</parameter>'
+            "</invoke>"
+            "</minimax:tool_call>"
+        )
+
+        self.assertIsNotNone(tool_calls)
+        self.assertEqual(tool_calls[0].function.name, "search_web")
+        self.assertEqual(
+            tool_calls[0].function.arguments,
+            {"query_tag": ["technology", "events"], "query": "OpenAI latest release"},
+        )
+
+    def test_parses_multiple_invoke_blocks(self):
+        tool_calls = _parse_minimax_tool_calls(
+            "<minimax:tool_call>"
+            '<invoke name="get_weather"><parameter name="location">Paris</parameter></invoke>'
+            '<invoke name="get_weather"><parameter name="location">New York</parameter></invoke>'
+            "</minimax:tool_call>"
+        )
+
+        self.assertEqual(len(tool_calls), 2)
+        self.assertEqual(tool_calls[0].function.arguments, {"location": "Paris"})
+        self.assertEqual(tool_calls[1].function.arguments, {"location": "New York"})
+
+    def test_recovers_degenerate_bare_tag_send_email(self):
+        # Exact shape captured from a hermes run: minimax-m3 dumped the
+        # send_email JSON schema as bare XML tags separated by the
+        # ``]<]minimax[>[`` artifact, with an <html> value that itself contains
+        # a nested <html>...</html> document.
+        content = (
+            "Tools used:\n- Loaded tools: resend:send_email\n\n"
+            "[TOOL_CALL]\n"
+            '{ tool = "send_email", args = { to = ["matt@ouro.foundation"],'
+            'subject = "Test from Hermes",text = "Hey Matt",html = "<tool_call>\n'
+            ']<]minimax[>[<invoke name="send_email">'
+            "]<]minimax[>[<to>]<]minimax[>[<item>matt@ouro.foundation]<]minimax[>[</item>"
+            "]<]minimax[>[</to>]<]minimax[>[<subject>Test from Hermes]<]minimax[>[</subject>"
+            "]<]minimax[>[<text>Hey Matt — test 🚀\n\n— Hermes]<]minimax[>[</text>"
+            "]<]minimax[>[<html><!DOCTYPE html>\n<html>\n  <body style=\"padding: 24px;\">"
+            "<h2>Hey Matt</h2></body>\n</html>]<]minimax[>[</html>"
+            "]<]minimax[>[<cc>]<]minimax[>[</cc>]<]minimax[>[<bcc>]<]minimax[>[</bcc>"
+            "]<]minimax[>[<scheduledAt>]<]minimax[>[</scheduledAt>"
+            "]<]minimax[>[<attachments>]<]minimax[>[</attachments>"
+            "]<]minimax[>[<tags>]<]minimax[>[</tags>"
+            "]<]minimax[>[<topicId>]<]minimax[>[</topicId>"
+            "]<]minimax[>[<replyTo>]<]minimax[>[</replyTo>"
+            "]<]minimax[>[</invoke>\n]<]minimax[>[</tool_call>"
+        )
+
+        recovery = _parse_minimax_tool_call_recovery(content)
+
+        self.assertIsNotNone(recovery)
+        self.assertEqual(len(recovery.tool_calls), 1)
+        call = recovery.tool_calls[0]
+        self.assertEqual(call.function.name, "send_email")
+        args = call.function.arguments
+        self.assertEqual(args["to"], ["matt@ouro.foundation"])
+        self.assertEqual(args["subject"], "Test from Hermes")
+        self.assertEqual(args["text"], "Hey Matt — test 🚀\n\n— Hermes")
+        # The full nested HTML document is captured intact.
+        self.assertIn("<!DOCTYPE html>", args["html"])
+        self.assertIn("<h2>Hey Matt</h2>", args["html"])
+        self.assertTrue(args["html"].rstrip().endswith("</html>"))
+        # Empty schema fields are dropped, not sent as blank strings.
+        for blank in ("cc", "bcc", "scheduledAt", "attachments", "tags", "topicId", "replyTo"):
+            self.assertNotIn(blank, args)
+
+    def test_ignores_non_minimax_content(self):
+        self.assertIsNone(
+            _parse_minimax_tool_call_recovery("Just a normal reply with no tool call.")
+        )
+
+    def test_patched_parser_recovers_send_email_instead_of_final_answer(self):
+        # The actual regression: in chat mode, a leaked MiniMax send_email must
+        # be recovered as a real tool call, NOT coerced into final_answer text.
+        model = _AlwaysFailsModel()
+        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
+
+        content = (
+            '<minimax:tool_call><invoke name="send_email">'
+            '<parameter name="to">["matt@ouro.foundation"]</parameter>'
+            '<parameter name="subject">Test from Hermes</parameter>'
+            "</invoke></minimax:tool_call>"
+        )
+        message = ChatMessage(role=MessageRole.ASSISTANT, content=content)
+
+        parsed = model.parse_tool_calls(message)
+
+        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
+        self.assertEqual(len(parsed.tool_calls), 1)
+        self.assertEqual(parsed.tool_calls[0].function.name, "send_email")
+        self.assertEqual(
+            parsed.tool_calls[0].function.arguments,
+            {"to": ["matt@ouro.foundation"], "subject": "Test from Hermes"},
+        )
 
 
 if __name__ == "__main__":

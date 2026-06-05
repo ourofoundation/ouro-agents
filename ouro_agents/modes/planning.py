@@ -1000,7 +1000,7 @@ async def run_planning_heartbeat(
     *kind* controls whether this is a ``"default"`` cadence plan or a
     ``"goal"`` plan that coexists alongside the default.
     """
-    from ..memory.reflection import write_daily_log
+    from ..memory.reflection import write_log
     from .profiles import RunMode
 
     planning_cfg = agent.config.planning
@@ -1103,7 +1103,7 @@ async def run_planning_heartbeat(
         cycle.quest_id,
     )
     quest_link = f" [plan](asset:{cycle.quest_id})" if cycle.quest_id else ""
-    write_daily_log(
+    write_log(
         agent.config.agent.workspace,
         f"[planning:{action_label}]{quest_link} {kind_label}plan {action_label}",
         doc_store=active_doc_store,
@@ -1129,7 +1129,7 @@ async def run_review_heartbeat(
     included directly in the prompt so the agent doesn't need to call
     get_comments.
     """
-    from ..memory.reflection import write_daily_log
+    from ..memory.reflection import write_log
     from .profiles import RunMode
 
     active_doc_store = _plan_doc_store(agent, plan_store.team_id)
@@ -1141,7 +1141,7 @@ async def run_review_heartbeat(
             current.activated_at = datetime.now(timezone.utc).isoformat()
             plan_store.save(current)
             logger.info("Plan cycle %s activated (no quest to review)", current.id)
-            write_daily_log(
+            write_log(
                 agent.config.agent.workspace,
                 "[planning:activated] Plan activated (no quest)",
                 doc_store=active_doc_store,
@@ -1230,7 +1230,7 @@ async def run_review_heartbeat(
                 quest_link = (
                     f" [plan](asset:{current.quest_id})" if current.quest_id else ""
                 )
-                write_daily_log(
+                write_log(
                     agent.config.agent.workspace,
                     f"[planning:cancelled]{quest_link} Plan cancelled: {feedback[:100]}",
                     doc_store=active_doc_store,
@@ -1248,7 +1248,7 @@ async def run_review_heartbeat(
                 quest_link = (
                     f" [plan](asset:{current.quest_id})" if current.quest_id else ""
                 )
-                write_daily_log(
+                write_log(
                     agent.config.agent.workspace,
                     f"[planning:approved]{quest_link} Plan approved: {feedback[:100]}",
                     doc_store=active_doc_store,
@@ -1280,7 +1280,7 @@ async def run_review_heartbeat(
                     if current.status == "active"
                     else "Plan revised, pending approval"
                 )
-                write_daily_log(
+                write_log(
                     agent.config.agent.workspace,
                     f"[planning:revised]{quest_link} {log_prefix}: {feedback[:100]}",
                     doc_store=active_doc_store,

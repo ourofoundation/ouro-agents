@@ -168,6 +168,16 @@ def parse_trigger(schedule: str, tz: str = "UTC"):
     )
 
 
+def _daily_time_trigger(time_str: str, tz: str = "UTC"):
+    """Build a daily cron trigger from an ``HH:MM`` string (defaults to 03:00)."""
+    try:
+        hour_str, minute_str = time_str.strip().split(":", 1)
+        return CronTrigger(hour=int(hour_str), minute=int(minute_str), timezone=tz)
+    except (ValueError, AttributeError):
+        logger.warning("Invalid dream_time '%s', defaulting to 03:00", time_str)
+        return CronTrigger(hour=3, minute=0, timezone=tz)
+
+
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
@@ -214,7 +224,7 @@ class AgentScheduler:
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
             (
-                config.memory.dream_schedule
+                f"{config.memory.rhythm}@{config.memory.dream_time}"
                 if config.memory.dream_enabled
                 else "disabled"
             ),
@@ -394,15 +404,7 @@ class AgentScheduler:
             logger.exception("Heartbeat failed")
 
     def _register_dream(self, memory_config) -> None:
-        try:
-            trigger = parse_trigger(memory_config.dream_schedule)
-        except ValueError:
-            logger.error(
-                "Invalid dream schedule: %s",
-                memory_config.dream_schedule,
-            )
-            return
-
+        trigger = _daily_time_trigger(memory_config.dream_time)
         self._scheduler.add_job(
             self._execute_dream,
             trigger=trigger,
@@ -412,8 +414,9 @@ class AgentScheduler:
             replace_existing=True,
         )
         logger.info(
-            "Registered dream cycle: %s",
-            memory_config.dream_schedule,
+            "Registered dream cycle: rhythm=%s, daily tick at %s",
+            memory_config.rhythm,
+            memory_config.dream_time,
         )
 
 
@@ -421,19 +424,36 @@ class AgentScheduler:
         if not self._agent:
             return
         try:
-            logger.info("Running dream cycle...")
-            from datetime import date, timedelta
-
-            from .memory.dream import run_dream
+            from .memory.dream import (
+                read_dream_marker,
+                run_dream,
+                write_dream_marker,
+            )
+            from .memory.naming import period_key, period_key_offset
 
             agent = self._agent
+            workspace = agent.config.agent.workspace
+            rhythm = agent.config.memory.rhythm
+
+            # The tick fires daily, but the cycle only runs once per rhythm
+            # period. This is what makes "dream on the log cadence" work
+            # uniformly for daily/weekly/biweekly without a per-cadence cron.
+            current_period = period_key(rhythm)
+            if read_dream_marker(workspace) == current_period:
+                logger.debug(
+                    "Dream: rhythm boundary not reached (period %s already processed), skipping",
+                    current_period,
+                )
+                return
+
+            logger.info("Running dream cycle for period %s (rhythm=%s)...", current_period, rhythm)
             hb_model = agent._build_model(
                 agent.config.heartbeat.model or agent.config.agent.model,
                 heartbeat=True,
             )
             results_by_scope: dict[str, dict] = {}
             results_by_scope["shared"] = run_dream(
-                workspace=agent.config.agent.workspace,
+                workspace=workspace,
                 backend=agent.memory,
                 agent_id=agent.config.agent.name,
                 config=agent.config.memory,
@@ -441,21 +461,20 @@ class AgentScheduler:
                 doc_store=agent.doc_store,
             )
 
-            today = date.today().isoformat()
-            yesterday = (date.today() - timedelta(days=1)).isoformat()
+            previous_period = period_key_offset(rhythm, -1)
 
             for team_id, doc_store in sorted(agent._team_doc_stores.items()):
-                # Skip teams with no recent activity (no daily log today or yesterday)
+                # Skip teams with no log in the current or previous period.
                 has_activity = (
-                    doc_store.exists(doc_store.daily_name(agent.config.agent.name, today))
-                    or doc_store.exists(doc_store.daily_name(agent.config.agent.name, yesterday))
+                    doc_store.exists(doc_store.log_name(agent.config.agent.name, current_period))
+                    or doc_store.exists(doc_store.log_name(agent.config.agent.name, previous_period))
                 )
                 if not has_activity:
                     logger.debug("Dream: skipping team %s (no recent activity)", team_id)
                     continue
 
                 results_by_scope[team_id] = run_dream(
-                    workspace=agent.config.agent.workspace,
+                    workspace=workspace,
                     backend=agent.memory,
                     agent_id=agent.config.agent.name,
                     config=agent.config.memory,
@@ -463,6 +482,8 @@ class AgentScheduler:
                     doc_store=doc_store,
                     team_id=team_id,
                 )
+
+            write_dream_marker(workspace, current_period)
             logger.info("Dream cycle complete: %s", results_by_scope)
         except Exception:
             logger.exception("Dream cycle failed")

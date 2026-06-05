@@ -12,7 +12,7 @@ It runs only when the FastAPI server is up (`ouro-agents serve`).
 | Task | When | Source |
 |------|------|--------|
 | `system:heartbeat` | Every `heartbeat.every`, anchored to the start of the active window. | `HeartbeatConfig`. |
-| `system:consolidation` | `memory.consolidation_schedule` (cron, default `0 3 * * *`). | `MemoryConfig`. |
+| `system:dream` | Ticks daily at `memory.dream_time` (default `03:00`), but only runs once per `memory.rhythm` period (daily/weekly/biweekly). | `MemoryConfig`. |
 | `system:refinement` | `refinement.schedule` (cron, default `0 */6 * * *`). | `RefinementConfig`. |
 
 System task ids are protected: `SYSTEM_PROTECTED_IDS` blocks the agent

@@ -4,7 +4,7 @@ The agent's "dream" cycle runs on a schedule (default nightly) to keep the
 memory system healthy and prevent stale learnings from persisting:
 
 1. Working memory compaction — rewrite when over token budget to merge/prune
-2. Daily log promotion — promote yesterday's important entries to working memory
+2. Period log promotion — promote the previous period's important entries to working memory
 3. Importance decay — reduce importance of old unaccessed memories
 4. Confidence decay — reduce confidence on volatile memories not recently verified
 5. Dream review — LLM re-evaluation of stale volatile memories
@@ -13,15 +13,48 @@ memory system healthy and prevent stale learnings from persisting:
 
 import json
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 from . import MemoryBackend, MemoryResult
 from ..config import MemoryConfig
 from ..constants import CHARS_PER_TOKEN
+from .naming import period_key_offset, store_rhythm
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Rhythm rollover marker
+#
+# The dream tick fires daily but only runs when a new rhythm period has begun
+# since the last successful run. The last-processed period key is persisted so
+# the gate survives restarts and recovers (runs once) after downtime.
+# ---------------------------------------------------------------------------
+
+
+def _dream_marker_path(workspace: Path) -> Path:
+    return workspace / "data" / "last_dream_period"
+
+
+def read_dream_marker(workspace: Path) -> str:
+    """Return the last period key the dream cycle completed (or "")."""
+    path = _dream_marker_path(workspace)
+    try:
+        return path.read_text().strip() if path.exists() else ""
+    except OSError:
+        return ""
+
+
+def write_dream_marker(workspace: Path, period: str) -> None:
+    """Record the period key the dream cycle just completed."""
+    path = _dream_marker_path(workspace)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(period)
+    except OSError as e:
+        logger.warning("Failed to write dream marker: %s", e)
 
 COMPACTION_PROMPT = """\
 You are a memory curator. Given the current contents of the agent's persistent \
@@ -40,7 +73,7 @@ Rules:
 Output the complete rewritten working memory content, nothing else."""
 
 PROMOTION_PROMPT = """\
-You are a memory curator. Given yesterday's daily log and the agent's current \
+You are a memory curator. Given the previous period's log and the agent's current \
 working memory, decide which log entries (if any) should be promoted to working \
 memory as durable knowledge.
 
@@ -147,23 +180,29 @@ def compact_memory_md(
 # ---------------------------------------------------------------------------
 
 
-def promote_daily_entries(
+def promote_log_entries(
     workspace: Path,
     model,
     doc_store=None,
     agent_name: str = "",
 ) -> int:
-    """Promote worthy entries from yesterday's daily log to working memory. Returns count."""
+    """Promote worthy entries from the previous period's log to working memory.
+
+    "Previous period" follows the doc store's rhythm: the prior day (daily),
+    the prior ISO week (weekly), or the prior 2-week window (biweekly). Returns
+    the number of promoted entries.
+    """
     if not doc_store:
         return 0
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
-    daily_name = doc_store.daily_name(agent_name, yesterday)
+    rhythm = store_rhythm(doc_store)
+    previous_period = period_key_offset(rhythm, -1)
+    log_name = doc_store.log_name(agent_name, previous_period)
     memory_name = doc_store.memory_name(agent_name)
-    daily_content = doc_store.read(daily_name).strip()
+    log_content = doc_store.read(log_name).strip()
     memory_content = doc_store.read(memory_name)
 
-    if not daily_content or len(daily_content) < 20:
+    if not log_content or len(log_content) < 20:
         return 0
 
     try:
@@ -173,7 +212,7 @@ def promote_daily_entries(
                 {
                     "role": "user",
                     "content": (
-                        f"Yesterday's daily log:\n{daily_content}\n\n"
+                        f"Previous period's log:\n{log_content}\n\n"
                         f"Current working memory:\n{memory_content}"
                     ),
                 },
@@ -191,12 +230,12 @@ def promote_daily_entries(
         content = memory_content
         for entry in entries:
             section = entry.get("section", "Facts")
-            text = entry.get("entry", "").strip()
-            if not text:
+            entry_text = entry.get("entry", "").strip()
+            if not entry_text:
                 continue
 
             header = f"## {section}"
-            bullet = f"- {text}\n"
+            bullet = f"- {entry_text}\n"
             if header in content:
                 idx = content.index(header) + len(header)
                 next_newline = content.index("\n", idx) + 1
@@ -207,7 +246,7 @@ def promote_daily_entries(
         if not doc_store.write(memory_name, content):
             raise RuntimeError(f"Failed to write {memory_name}")
 
-        logger.info("Promoted %d entries from %s daily log to working memory", len(entries), yesterday)
+        logger.info("Promoted %d entries from %s log to working memory", len(entries), previous_period)
         return len(entries)
     except Exception as e:
         logger.warning("Daily log promotion failed: %s", e)
@@ -579,7 +618,7 @@ def run_dream(
         workspace, config, model,
         doc_store=doc_store, agent_name=agent_id,
     )
-    results["promoted"] = promote_daily_entries(
+    results["promoted"] = promote_log_entries(
         workspace, model,
         doc_store=doc_store, agent_name=agent_id,
     )

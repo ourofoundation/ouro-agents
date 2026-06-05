@@ -15,8 +15,8 @@ new platform-facing posts use more readable asset titles when available.
 | Logical Key | Platform Title | Purpose | Owner |
 |-----------|---------|---------|-------|
 | `MEMORY:{agent_name}` | `MEMORY:{agent_name}` | Durable facts, preferences, learnings — your long-term brain | Each agent owns its own |
-| `DAILY:{agent_name}:{YYYY-MM-DD}` | `{agent_name} daily log {YYYY-MM-DD}` | What happened today — decisions, tasks, observations | Each agent owns its own |
-| `DAILY:{agent_name}:{team}:{YYYY-MM-DD}` | `#{team} daily log {YYYY-MM-DD}` | Team-scoped daily activity | Each agent owns its own |
+| `LOG:{agent_name}:{period}` | e.g. `{agent_name} daily log 2026-06-02` | Period log — decisions, tasks, observations (`period` follows `memory.rhythm`) | Each agent owns its own |
+| `LOG:{agent_name}:{team}:{period}` | e.g. `#{team} weekly log 2026-W23` | Team-scoped period activity | Each agent owns its own |
 | `SOUL:{agent_name}` | local only | Agent identity and rules | Each agent owns its own |
 | `HEARTBEAT:{agent_name}` | local only | Autonomous playbook | Each agent owns its own |
 | `NOTES:{agent_name}` | local only | Deployment-specific notes | Each agent owns its own |
@@ -38,7 +38,7 @@ Your local workspace is organized by team. When working in a team context, store
 | Path | Purpose |
 |------|---------|
 | `teams/{team_id}/MEMORY.md` | Team working memory (synced with Ouro post) |
-| `teams/{team_id}/daily/{YYYY-MM-DD}.md` | Team daily logs |
+| `teams/{team_id}/logs/{period}.md` | Team period logs |
 | `teams/{team_id}/HEARTBEAT.md` | Team-specific playbook |
 | `teams/{team_id}/NOTES.md` | Team-specific deployment notes |
 | `teams/{team_id}/plans/active/` | Active plan cycle JSON |

@@ -240,6 +240,30 @@ _DSML_PARAMETER_RE = re.compile(
     rf"(?P<value>.*?)</{_DSML_BAR}DSML{_DSML_BAR}parameter>",
     re.DOTALL,
 )
+# MiniMax M2/M2.1 XML tool-call format. The canonical shape is:
+#     <minimax:tool_call>
+#     <invoke name="tool-name">
+#     <parameter name="param-key">param-value</parameter>
+#     </invoke>
+#     </minimax:tool_call>
+# (see https://huggingface.co/MiniMaxAI/MiniMax-M2 docs/tool_calling_guide.md).
+# OpenRouter routes that don't natively parse this format leak the tokens into
+# ``content``/``reasoning`` instead of structured ``tool_calls``. We also handle
+# a degenerate variant observed in the wild where the model dumps the tool's
+# JSON-schema property names as bare XML tags
+# (e.g. ``<to><item>x</item></to><subject>...</subject>``) interspersed with a
+# repeated ``]<]minimax[>[`` separator-token artifact.
+_MINIMAX_SEPARATOR_RE = re.compile(r"\]<\]minimax\[>\[")
+_MINIMAX_INVOKE_RE = re.compile(
+    r"<invoke\s+name\s*=\s*\"(?P<name>[^\"]+)\"\s*>(?P<body>.*?)</invoke>",
+    re.DOTALL,
+)
+_MINIMAX_PARAMETER_RE = re.compile(
+    r"<parameter\s+name\s*=\s*\"(?P<name>[^\"]+)\"\s*>(?P<value>.*?)</parameter>",
+    re.DOTALL,
+)
+_MINIMAX_ITEM_RE = re.compile(r"<item>(?P<value>.*?)</item>", re.DOTALL)
+_MINIMAX_TAG_RE = re.compile(r"<(?P<close>/?)(?P<name>[A-Za-z_][\w:.-]*)[^>]*>")
 _CALLING_TOOLS_RE = re.compile(r"Calling tools:\s*", re.IGNORECASE)
 _INLINE_TOOL_CALL_RE = re.compile(
     r"(?:^|[\n\r`:]|\btool\s+)\s*(?P<name>[a-z][a-z0-9_:-]*)\s*\(",
@@ -499,6 +523,98 @@ def _parse_dsml_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
 
 def _parse_dsml_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
     recovery = _parse_dsml_tool_call_recovery(content)
+    return recovery.tool_calls if recovery else None
+
+
+def _coerce_minimax_value(raw: str) -> object:
+    """Decode a MiniMax XML parameter/tag body into the appropriate type.
+
+    Values come through as raw strings. Only JSON-decode when the value looks
+    like a list or object so we keep prose fields (``subject``, ``text``,
+    ``html``) verbatim instead of mangling something like ``"123 reasons"`` or
+    an HTML document.
+    """
+    text = raw.strip()
+    if text.startswith(("[", "{")):
+        try:
+            return json.loads(text)
+        except (ValueError, TypeError):
+            return text
+    return text
+
+
+def _add_minimax_bare_param(params: dict, name: str, inner: str) -> None:
+    """Record one bare-tag parameter, treating ``<item>`` children as a list.
+
+    Empty tags (e.g. ``<cc></cc>``) are dropped: in the degenerate output the
+    model emits the entire JSON schema as tags, leaving unused fields blank.
+    """
+    items = [v.strip() for v in _MINIMAX_ITEM_RE.findall(inner) if v.strip()]
+    if items:
+        params[name] = items
+        return
+    value = inner.strip()
+    if value:
+        params[name] = _coerce_minimax_value(value)
+
+
+def _parse_minimax_bare_tag_params(body: str) -> dict:
+    """Parse a degenerate ``<invoke>`` body that uses schema names as bare tags.
+
+    Each direct child element of the invoke body becomes a parameter. A
+    depth-counting tag scanner is used (rather than naive non-greedy regex) so
+    values that themselves contain same-named tags — most importantly an
+    ``<html>`` parameter whose value is a full ``<html>...</html>`` document —
+    are captured intact. Declarations like ``<!DOCTYPE html>`` are ignored
+    because they do not match a tag-name pattern.
+    """
+    params: dict = {}
+    stack: list[tuple[str, int]] = []
+    for match in _MINIMAX_TAG_RE.finditer(body):
+        name = match.group("name")
+        if not match.group("close"):
+            stack.append((name, match.end()))
+            continue
+        for depth in range(len(stack) - 1, -1, -1):
+            if stack[depth][0] != name:
+                continue
+            open_name, content_start = stack[depth]
+            inner = body[content_start : match.start()]
+            del stack[depth:]
+            if not stack:
+                _add_minimax_bare_param(params, open_name, inner)
+            break
+    return params
+
+
+def _parse_minimax_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
+    """Parse MiniMax M2/M2.1 XML tool calls leaked into content/reasoning."""
+    if "<invoke" not in content and "minimax" not in content:
+        return None
+
+    cleaned = _MINIMAX_SEPARATOR_RE.sub("", content)
+    result: list[ChatMessageToolCall] = []
+    for invoke in _MINIMAX_INVOKE_RE.finditer(cleaned):
+        func_name = invoke.group("name").strip()
+        if not func_name:
+            continue
+        body = invoke.group("body")
+        arguments: dict = {}
+        for param in _MINIMAX_PARAMETER_RE.finditer(body):
+            key = param.group("name").strip()
+            if key:
+                arguments[key] = _coerce_minimax_value(param.group("value"))
+        if not arguments:
+            arguments = _parse_minimax_bare_tag_params(body)
+        result.append(_make_tool_call(func_name, arguments))
+
+    if not result:
+        return None
+    return _ToolCallRecovery(result)
+
+
+def _parse_minimax_tool_calls(content: str) -> list[ChatMessageToolCall] | None:
+    recovery = _parse_minimax_tool_call_recovery(content)
     return recovery.tool_calls if recovery else None
 
 
@@ -829,6 +945,7 @@ def _run_recovery_cascade(content: str) -> _ToolCallRecovery | None:
     for parser in (
         _parse_kimi_tool_call_recovery,
         _parse_dsml_tool_call_recovery,
+        _parse_minimax_tool_call_recovery,
         _parse_xml_tool_call_recovery,
         _parse_narrated_tool_call_recovery,
         _parse_structured_tool_call_recovery,
