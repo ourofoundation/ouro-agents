@@ -255,6 +255,35 @@ class TestOuroDocStore(unittest.TestCase):
             "#permanent-magents daily log 2026-04-05",
         )
 
+    def test_create_weekly_log_with_hashtag_title_is_private(self):
+        name = "LOG:hermes:agent-consciousness:2026-W24"
+
+        with TemporaryDirectory() as tmpdir:
+            client = _FakeClient(search_results=[[], []])
+            store = self._make_store(client, tmpdir)
+
+            ok = store.write(name, "# Weekly Log 2026-W24")
+
+            self.assertTrue(ok)
+            self.assertEqual(
+                client.posts.created[0]["name"],
+                "#agent-consciousness weekly log 2026-W24",
+            )
+            self.assertEqual(client.posts.created[0]["visibility"], "private")
+
+    def test_create_memory_doc_is_private(self):
+        name = "MEMORY:hermes:research"
+
+        with TemporaryDirectory() as tmpdir:
+            client = _FakeClient(search_results=[[], []])
+            store = self._make_store(client, tmpdir)
+
+            ok = store.write(name, "## Durable facts")
+
+            self.assertTrue(ok)
+            self.assertEqual(client.posts.created[0]["visibility"], "private")
+            self.assertEqual(store._uuid_cache[name], "created-post")
+
     def test_append_list_item_uses_cached_id_without_search(self):
         name = "LOG:hermes:research:2026-04-05"
 

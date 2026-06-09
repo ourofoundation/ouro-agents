@@ -75,7 +75,7 @@ def _requires_owned_cache(name: str) -> bool:
 def _visibility_for_doc(name: str) -> str:
     """Choose the Ouro visibility for a newly created memory document."""
     prefix = name.split(":", 1)[0]
-    if is_log_prefix(prefix):
+    if prefix == "MEMORY" or is_log_prefix(prefix):
         return "private"
     return "organization"
 
