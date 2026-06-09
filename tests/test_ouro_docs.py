@@ -244,6 +244,7 @@ class TestOuroDocStore(unittest.TestCase):
                 client.posts.created[0]["name"],
                 "#research daily log 2026-04-05",
             )
+            self.assertEqual(client.posts.created[0]["visibility"], "private")
             self.assertEqual(store._uuid_cache[name], "created-post")
             self.assertTrue(store.is_owner(name))
             self.assertEqual(client.assets.search_calls, [])
@@ -377,6 +378,7 @@ class TestOuroDocStore(unittest.TestCase):
             store = self._make_store(client, tmpdir)
 
             self.assertTrue(store.write(name, "## Report"))
+            self.assertEqual(client.posts.created[0]["visibility"], "organization")
             payload = json.loads((Path(tmpdir) / "state.json").read_text())
             self.assertEqual(payload["team"]["id"], "team-1")
             self.assertEqual(payload["team"]["name"], "Research")

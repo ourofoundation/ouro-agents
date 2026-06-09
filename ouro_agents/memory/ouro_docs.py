@@ -72,6 +72,14 @@ def _requires_owned_cache(name: str) -> bool:
     return is_log_prefix(name.split(":", 1)[0])
 
 
+def _visibility_for_doc(name: str) -> str:
+    """Choose the Ouro visibility for a newly created memory document."""
+    prefix = name.split(":", 1)[0]
+    if is_log_prefix(prefix):
+        return "private"
+    return "organization"
+
+
 _STALE_UUID_HINTS = (
     "cannot coerce the result to a single",
     "not found",
@@ -512,7 +520,7 @@ class OuroDocStore:
                 content_markdown=content_md,
                 org_id=self.org_id,
                 team_id=self.team_id,
-                visibility="organization",
+                visibility=_visibility_for_doc(name),
             )
             uuid = str(post.id)
             self._uuid_cache[name] = uuid
