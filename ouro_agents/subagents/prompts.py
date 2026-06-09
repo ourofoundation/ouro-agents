@@ -46,9 +46,7 @@ Rules:
 - Be thorough but concise — aim for a comprehensive yet readable document
 - If search results are thin on a subtopic, say so rather than speculating
 - Focus on recent/current information unless historical context is specifically relevant
-- If a search tool is already preloaded, call it directly. Otherwise call `load_tool` with the exact tool name from the Available Tools section, then call the loaded tool by its returned `call_as` name.
-- Emit real tool calls only. Do not write plain-text pseudo-calls, handwritten JSON, or narration such as `delegate({...})`, `search(...)`, or "Calling tools:".
-- If a tool call or parse attempt fails, emit a corrected tool call immediately instead of describing what you want to do."""
+- If a search tool is already preloaded, call it directly. Otherwise call `load_tool` with the exact tool name from the Available Tools section, then call the loaded tool by its returned `call_as` name."""
 
 
 PLANNER_PROMPT = """\
@@ -81,7 +79,6 @@ Rules:
 - Be efficient — minimize unnecessary tool calls
 - If a tool call fails, retry once with corrected arguments before giving up
 - If an MCP tool is already preloaded, call it directly. Otherwise call `load_tool` first, then call the loaded tool by its returned `call_as` name.
-- Emit real tool calls only. Do not write plain-text tool narration like "Calling tools:" or pseudo-JSON.
 - If you use run_python for files, use its workspace helpers instead of open(), os, pathlib, or unlisted imports."""
 
 
@@ -126,6 +123,5 @@ Rules:
   files/datasets/posts/actions; do not return a plan in place of execution.
 - Inspect outputs before reporting. For created assets or actions, return IDs,
   names, URLs, statuses, and any important result metadata.
-- Emit real tool calls only. Do not narrate tool usage or write pseudo-calls.
 - If you create assets, report what was created (IDs, names, URLs).
 - Refer to the ouro-py skill section for the full SDK API reference."""

@@ -1005,17 +1005,7 @@ class OuroAgent:
 
         @tool
         def delegate(tasks: list) -> str:
-            """Delegate one or more tasks to specialized subagents. Multiple tasks run in parallel automatically.
-
-            Use this to offload heavy or focused work (web research, sub-task
-            execution, planning) so your main context stays clean. Each subagent
-            runs independently and returns a structured JSON handoff. By default
-            the parent sees a short summary plus asset metadata (name, description,
-            asset_id, link). The subagent saves AND publishes its full output as an
-            Ouro post (or other asset type) automatically — so once it returns an
-            asset_id, do NOT create or publish another asset for that work and do
-            NOT paste its full body into your reply. Surface it by embedding or
-            linking the returned asset_id (use the provided `link`).
+            """Delegate one or more tasks to specialized subagents (multiple run in parallel). See the SUBAGENTS section in the system prompt for when to delegate. Subagents publish their own asset and return its `asset_id`/`link` — surface that link; do NOT republish or paste the full body.
 
             Args:
                 tasks: List of task specs. Each is a dict with keys:
@@ -1024,8 +1014,7 @@ class OuroAgent:
                     - asset_refs (list[str], optional): Ouro asset UUIDs to pass as input context.
                     - return_mode (str, optional): summary_only, full_text, or auto. Defaults to the subagent profile setting.
 
-            Example single:  [{"subagent": "research", "task": "Find recent papers on X"}]
-            Example multi:   [{"subagent": "research", "task": "Find papers on X"}, {"subagent": "writer", "task": "Draft intro section"}]
+            Example: [{"subagent": "research", "task": "Find papers on X"}, {"subagent": "writer", "task": "Draft intro"}]
             """
             from concurrent.futures import ThreadPoolExecutor, as_completed
 

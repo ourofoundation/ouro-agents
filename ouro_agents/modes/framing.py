@@ -79,18 +79,14 @@ Write `final_answer` content with standard Markdown plus the Ouro Markdown synta
 
 CHAT_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Chat mode: respond with `final_answer` only.\n"
-    "Never respond with plain text outside a tool call. "
-    "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON.\n\n"
+    "Chat mode: respond with `final_answer` only.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
 AUTONOMOUS_OUTPUT = (
     "## OUTPUT FORMAT\n"
     "For simple replies (greetings, acknowledgments, or when no tools are needed), "
-    "call the `final_answer` tool directly with your response. "
-    "Never respond with plain text outside a tool call. "
-    "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON.\n\n"
+    "call the `final_answer` tool directly with your response.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
@@ -112,9 +108,7 @@ REVIEW_OUTPUT = (
 CHAT_REPLY_OUTPUT = (
     "## OUTPUT FORMAT\n"
     "Your reply is posted to the conversation automatically when you call `final_answer`. "
-    "Do NOT call `send_message` — the server persists your response for you.\n"
-    "Never respond with plain text outside a tool call. "
-    "Never emit pseudo-tool syntax such as 'Calling tools:' or handwritten JSON.\n\n"
+    "Do NOT call `send_message` — the server persists your response for you.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 

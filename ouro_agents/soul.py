@@ -16,8 +16,7 @@ MCP_TOOL_RULES = (
     '- MCP tools are deferred. Call `load_tool(["ouro:tool_name"])`, then call the tool by its `call_as` name. '
     "Preloaded MCP tools (listed below when present) can be called directly — no `load_tool` needed.\n"
     '- Skills can also be loaded on demand with `load_skill(["skill-name"])` when you need detailed guidance.\n'
-    "- Emit real tool calls only — no narration, pseudo-JSON, or plain-text pseudo-calls.\n"
-    "- Omit optional params you don't need (don't pass null). For the same failed tool call, retry at most once with corrected arguments, then move on.\n"
+    "- Omit optional params you don't need (don't pass null).\n"
     "- Batch where possible: load_tool, load_skill, memory_recall, and delegate all accept arrays.\n"
     "- File paths are always relative to the workspace root (e.g. 'data/file.json', not 'workspace/data/file.json').\n"
     "- Memory is curated automatically after each run — facts, daily log entries, and asset references "
@@ -119,7 +118,10 @@ def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
 
 def current_datetime_section(workspace_root: str = "") -> str:
     """Return a compact current-date section for prompt injection."""
-    local_now = datetime.now().astimezone()
+    # Drop sub-second precision: the model never needs microseconds, and a
+    # volatile timestamp would otherwise bust prompt-prefix caching on any
+    # consumer that still places this section in a cached block.
+    local_now = datetime.now().astimezone().replace(microsecond=0)
     utc_now = local_now.astimezone(timezone.utc)
     lines = [
         "## CURRENT DATE AND TIME",
@@ -175,7 +177,15 @@ def build_shared_prompt_sections(
 
 # Sections that change every turn and should live in the task message
 # (not the system prompt) to enable prefix caching on the static part.
+#
+# ``current_datetime`` belongs here: it changes on every call, and when it
+# sat near the top of the *static* system prompt it invalidated the cached
+# prefix for everything after it (soul, platform context, skills, the tool
+# directory — several thousand tokens). Subagents already inject it via the
+# task message (``runner._format_task_context``); this keeps the main agent
+# consistent and makes the whole static prompt cacheable.
 _DYNAMIC_SECTIONS = {
+    "current_datetime",
     "conversation_state",
     "plans_index",
     "entity_context",

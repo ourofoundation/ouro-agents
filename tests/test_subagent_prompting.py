@@ -166,6 +166,23 @@ def test_always_loaded_platform_skills_are_injected_for_all_main_modes(tmp_path)
         assert "## Ouro Markdown Syntax" in system_prompt
 
 
+def test_current_datetime_is_dynamic_not_in_cacheable_static_prompt():
+    """The volatile timestamp must live in dynamic context, not the static
+    system prompt — otherwise it busts prompt-prefix caching for everything
+    after it (soul, platform context, skills, tool directory)."""
+    for profile in (CHAT, HEARTBEAT, PLAN, REVIEW):
+        system_prompt, dynamic_context = build_prompt(
+            soul="Be precise.",
+            notes="",
+            skills="# Ouro Platform",
+            profile=profile,
+        )
+        assert "## CURRENT DATE AND TIME" not in system_prompt
+        assert "## CURRENT DATE AND TIME" in dynamic_context
+        # The stable, cacheable content stays in the static prompt.
+        assert "# Ouro Platform" in system_prompt
+
+
 def test_platform_subagents_receive_ouro_asset_semantics():
     for profile in (RESEARCH, EXECUTOR, WRITER, DEVELOPER):
         assert "ouro" in profile.skills
