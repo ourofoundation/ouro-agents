@@ -50,6 +50,10 @@ and decisions. Drop anything irrelevant. Empty string if no useful memories foun
 - plan: Concrete steps the main agent can execute with MCP tools. Reference specific MCP \
 tools, route/service discovery, asset creation/transformation, or result inspection when relevant. \
 One line per step. Empty string if the task is simple enough to not need a plan.
+- plan ordering: if the request explicitly names a durable artifact to create (a quest, post, \
+plan, dataset), put that creation step FIRST — before web research, outreach, or other long \
+execution — so the requested deliverable exists even if later steps stall. Do not front-load \
+research ahead of an artifact the user directly asked for.
 - Be efficient with memory_recall — at most one call, with multiple queries batched into that call.
 - Available preflight MCP tools are only memory_recall and final_answer. Never call side-effecting platform MCP tools.
 - Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""

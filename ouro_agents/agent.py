@@ -136,7 +136,8 @@ class OuroAgent:
         self._active_run_tokens: set[RunCancellationToken] = set()
 
         self.team_registry: TeamRegistry = TeamRegistry.from_platform_context(
-            self._workspace, config.agent.org_id,
+            self._workspace,
+            config.agent.org_id,
         )
         self._team_doc_stores: dict[str, DocStore] = {}
 
@@ -220,7 +221,9 @@ class OuroAgent:
             "profile": None,
             "organizations": [],
             "teams": [],
-            "base_url": os.getenv("OURO_FRONTEND_URL") or os.getenv("OURO_BASE_URL") or "https://ouro.foundation",
+            "base_url": os.getenv("OURO_FRONTEND_URL")
+            or os.getenv("OURO_BASE_URL")
+            or "https://ouro.foundation",
         }
 
         me_tool = self._deferred_tools.get("ouro:get_me")
@@ -314,7 +317,9 @@ class OuroAgent:
             parts.append(content)
         log_content = active_doc_store.read(log_name)
         if log_content:
-            parts.append(f"## {current_period_heading(rhythm)} ({period})\n{log_content}")
+            parts.append(
+                f"## {current_period_heading(rhythm)} ({period})\n{log_content}"
+            )
 
         if team_id:
             shared_memory = self._load_shared_memory()
@@ -394,11 +399,15 @@ class OuroAgent:
 
         all_active_plans = []
         if team_id:
-            store = PlanStore(self._workspace / "teams" / team_id / "plans", team_id=team_id)
+            store = PlanStore(
+                self._workspace / "teams" / team_id / "plans", team_id=team_id
+            )
             all_active_plans.extend(store.load_all_active())
         else:
             for tid in self._sorted_team_ids():
-                store = PlanStore(self._workspace / "teams" / tid / "plans", team_id=tid)
+                store = PlanStore(
+                    self._workspace / "teams" / tid / "plans", team_id=tid
+                )
                 all_active_plans.extend(store.load_all_active())
         plans_index_text = format_plans_index_for_prompt(all_active_plans)
 
@@ -626,7 +635,9 @@ class OuroAgent:
 
         team_ids = self._sorted_team_ids()
         if not team_ids:
-            logger.warning("OuroDocStore: no teams discovered from platform — check network and org membership")
+            logger.warning(
+                "OuroDocStore: no teams discovered from platform — check network and org membership"
+            )
             return
 
         client = self._get_ouro_client()
@@ -1061,7 +1072,9 @@ class OuroAgent:
         delegate.description += f"\n\nAvailable subagents: {_subagent_names_str}"
 
         delegate_tools = (
-            [] if profile.restricted_servers or not profile.allow_delegation else [delegate]
+            []
+            if profile.restricted_servers or not profile.allow_delegation
+            else [delegate]
         )
 
         _has_memory_filter = profile.memory_tool_filter is not None
@@ -1169,7 +1182,11 @@ class OuroAgent:
         plans_index_text = shared_context["plans_index"]
 
         delegatable_profiles = self.delegatable_profiles
-        if not profile.lightweight and profile.allow_delegation and delegatable_profiles:
+        if (
+            not profile.lightweight
+            and profile.allow_delegation
+            and delegatable_profiles
+        ):
             subagent_directory = "\n".join(
                 f"- **{p.name}**: {p.description}"
                 for p in delegatable_profiles.values()
@@ -1548,7 +1565,9 @@ class OuroAgent:
             lines.append("- (none; leave team_ids = [])")
         else:
             for team in teams:
-                lines.append(f"- {team['id']} · {team.get('slug', '')} · {team.get('name', '')}")
+                lines.append(
+                    f"- {team['id']} · {team.get('slug', '')} · {team.get('name', '')}"
+                )
         return "\n".join(lines)
 
     def _maybe_reflect_post_turn(
@@ -1905,7 +1924,10 @@ class OuroAgent:
             context_parts.append(
                 "## Advisory Action Plan\n"
                 "This preflight plan is not the deliverable. Use it to choose concrete "
-                "MCP calls and platform actions, then report the results of the work.\n\n"
+                "MCP calls and platform actions, then report the results of the work. "
+                "Reorder it if needed: create any durable artifact the request explicitly "
+                "names (quest, post, plan) before long research or execution steps, so the "
+                "requested deliverable exists even if later steps stall.\n\n"
                 f"{preflight.plan}"
             )
 
@@ -2096,8 +2118,14 @@ class OuroAgent:
                 logger.warning("Failed to append conversation turn: %s", e)
 
         def _do_post_run():
-            worth_remembering = preflight.worth_remembering if preflight else not is_trivial
-            if not profile.skip_post_reflection and not skip_memory and worth_remembering:
+            worth_remembering = (
+                preflight.worth_remembering if preflight else not is_trivial
+            )
+            if (
+                not profile.skip_post_reflection
+                and not skip_memory
+                and worth_remembering
+            ):
                 self._post_run_reflect(
                     task,
                     str(result),
@@ -2116,7 +2144,9 @@ class OuroAgent:
                         self.config.heartbeat.model or self.config.agent.model,
                         heartbeat=True,
                     )
-                    new_conv_state = update_state(conv_state, task, str(result), state_model)
+                    new_conv_state = update_state(
+                        conv_state, task, str(result), state_model
+                    )
                     conversations_dir = self.config.agent.workspace / "conversations"
                     save_state(conversations_dir, conversation_id, new_conv_state)
                     logger.info(

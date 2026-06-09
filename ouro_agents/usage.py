@@ -422,10 +422,52 @@ class TrackedOpenAIModel(OpenAIModel):
                 tracker,
                 reasoning_callback=self._reasoning_callback,
             )
+            _ensure_usage_present(response)
             return response
 
         client.chat.completions.create = tracked_create
         return client
+
+
+def _ensure_usage_present(response: Any) -> None:
+    """Guarantee ``response.usage`` is non-None for downstream consumers.
+
+    Some OpenRouter providers return a completion with ``usage=None`` (or omit
+    it entirely). smolagents' ``OpenAIModel.generate`` reads
+    ``response.usage.prompt_tokens`` unconditionally, so a missing usage object
+    raises ``AttributeError: 'NoneType' object has no attribute 'prompt_tokens'``
+    and crashes the (sub)agent run. We backfill a zero-valued usage object so the
+    run continues; real token accounting already happened in ``_record_response``
+    (which tolerates missing usage), so this only affects the smolagents path.
+    """
+    try:
+        if getattr(response, "usage", None) is not None:
+            return
+    except Exception:
+        return
+
+    fallback: Any
+    try:
+        from openai.types import CompletionUsage
+
+        fallback = CompletionUsage(
+            prompt_tokens=0, completion_tokens=0, total_tokens=0
+        )
+    except Exception:
+        from types import SimpleNamespace
+
+        fallback = SimpleNamespace(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            prompt_tokens_details=None,
+            completion_tokens_details=None,
+        )
+
+    try:
+        response.usage = fallback
+    except Exception:
+        logger.debug("Could not backfill missing usage on response", exc_info=True)
 
 
 def _record_response(

@@ -11,6 +11,7 @@ from ouro_agents.usage import (
     MirroredUsageTracker,
     RunUsage,
     UsageTracker,
+    _ensure_usage_present,
     _wrap_stream,
     record_usage_from_response,
     residual_main_usage,
@@ -90,6 +91,35 @@ class TestVisibleReasoningLogging(unittest.TestCase):
         self.assertEqual(seen, ["inspect the workspace"])
         self.assertEqual(tracker.total_input_tokens, 7)
         self.assertEqual(tracker.total_output_tokens, 3)
+
+
+class TestEnsureUsagePresent(unittest.TestCase):
+    """Some OpenRouter providers return completions with ``usage=None``.
+
+    smolagents' ``OpenAIModel.generate`` reads ``response.usage.prompt_tokens``
+    unconditionally, which used to crash the (sub)agent with
+    ``AttributeError: 'NoneType' object has no attribute 'prompt_tokens'``.
+    ``_ensure_usage_present`` backfills a zero usage object so the run survives.
+    """
+
+    def test_backfills_none_usage(self):
+        response = _response(usage=None)
+        _ensure_usage_present(response)
+        self.assertIsNotNone(response.usage)
+        self.assertEqual(response.usage.prompt_tokens, 0)
+        self.assertEqual(response.usage.completion_tokens, 0)
+
+    def test_backfills_missing_usage_attribute(self):
+        response = SimpleNamespace()
+        _ensure_usage_present(response)
+        self.assertEqual(response.usage.prompt_tokens, 0)
+
+    def test_preserves_existing_usage(self):
+        existing = SimpleNamespace(prompt_tokens=11, completion_tokens=5)
+        response = _response(usage=existing)
+        _ensure_usage_present(response)
+        self.assertIs(response.usage, existing)
+        self.assertEqual(response.usage.prompt_tokens, 11)
 
 
 class TestReasoningRoundTrip(unittest.TestCase):

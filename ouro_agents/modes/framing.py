@@ -27,7 +27,18 @@ AUTONOMOUS_FRAMING = (
     "Work through the task step by step, using MCP tools to produce concrete progress: "
     "created assets, transformed datasets/files, executed routes, updated quests, "
     "comments, or durable findings. Planning is only a means to action; keep it short, "
-    "then do the work. Report what you actually accomplished when finished."
+    "then do the work. Report what you actually accomplished when finished.\n\n"
+    "Sequencing: when a task bundles a durable artifact the user explicitly asked for "
+    "(a quest, post, plan, dataset) with longer follow-on work (research, outreach, "
+    "multi-step execution), create that artifact FIRST with your best current draft, "
+    "then do the remaining work and update it. A cheap, explicitly-requested deliverable "
+    "should never be left unmade because you spent your step budget on the work around it. "
+    "If you run low on steps, make sure the requested artifact exists before you stop.\n\n"
+    "Do not loop: never repeat a tool call that already failed or returned truncated/empty "
+    "output more than once. If you need the content an asset or subagent produced, read it "
+    "directly by id (e.g. get_asset) instead of re-searching or re-running the work. Every "
+    "step should be a real tool call or the final answer — do not emit plans or narration "
+    "without an accompanying tool call."
 )
 
 HEARTBEAT_FRAMING = (
