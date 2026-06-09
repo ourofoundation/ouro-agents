@@ -165,6 +165,34 @@ class TestConfigModeOverrides(unittest.TestCase):
         self.assertEqual(config.event_pooling.events["mention"].max_wait_seconds, 90.0)
         self.assertNotIn("unknown-event", config.event_pooling.events)
 
+    def test_display_serve_progress_defaults_and_overrides(self):
+        config = self._load_config(_base_config())
+
+        self.assertTrue(config.display.serve_progress.enabled)
+        self.assertEqual(config.display.serve_progress.style, "timeline")
+        self.assertTrue(config.display.serve_progress.show_subagents)
+
+        data = _base_config()
+        data["display"] = {
+            "serve_progress": {
+                "enabled": False,
+                "style": "compact",
+                "show_spinner": False,
+                "show_prefetch": False,
+                "show_token_updates": False,
+                "show_subagents": False,
+            }
+        }
+
+        config = self._load_config(data)
+
+        self.assertFalse(config.display.serve_progress.enabled)
+        self.assertEqual(config.display.serve_progress.style, "compact")
+        self.assertFalse(config.display.serve_progress.show_spinner)
+        self.assertFalse(config.display.serve_progress.show_prefetch)
+        self.assertFalse(config.display.serve_progress.show_token_updates)
+        self.assertFalse(config.display.serve_progress.show_subagents)
+
     def test_loads_event_pooling_per_event_config(self):
         data = _base_config()
         data["event_pooling"] = {

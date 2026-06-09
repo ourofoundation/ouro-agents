@@ -404,8 +404,18 @@ class UsageTableConfig(BaseModel):
     show_reasoning: bool = False
 
 
+class ServeProgressConfig(BaseModel):
+    enabled: bool = True
+    style: Literal["compact", "timeline", "debug"] = "timeline"
+    show_spinner: bool = True
+    show_prefetch: bool = True
+    show_token_updates: bool = True
+    show_subagents: bool = True
+
+
 class DisplayConfig(BaseModel):
     usage_table: UsageTableConfig = Field(default_factory=UsageTableConfig)
+    serve_progress: ServeProgressConfig = Field(default_factory=ServeProgressConfig)
 
 
 class RefinementConfig(BaseModel):

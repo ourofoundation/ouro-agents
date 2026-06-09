@@ -104,6 +104,14 @@
   "display": {
     "usage_table": {
       "show_reasoning": false
+    },
+    "serve_progress": {
+      "enabled": true,
+      "style": "timeline",
+      "show_spinner": true,
+      "show_prefetch": true,
+      "show_token_updates": true,
+      "show_subagents": true
     }
   }
 }

@@ -425,6 +425,7 @@ class AgentScheduler:
             return
         try:
             from .memory.dream import (
+                has_recent_dream_activity,
                 read_dream_marker,
                 run_dream,
                 write_dream_marker,
@@ -459,15 +460,19 @@ class AgentScheduler:
                 config=agent.config.memory,
                 model=hb_model,
                 doc_store=agent.doc_store,
+                mode="scheduled",
             )
 
             previous_period = period_key_offset(rhythm, -1)
 
             for team_id, doc_store in sorted(agent._team_doc_stores.items()):
                 # Skip teams with no log in the current or previous period.
-                has_activity = (
-                    doc_store.exists(doc_store.log_name(agent.config.agent.name, current_period))
-                    or doc_store.exists(doc_store.log_name(agent.config.agent.name, previous_period))
+                has_activity = has_recent_dream_activity(
+                    doc_store,
+                    agent.config.agent.name,
+                    rhythm,
+                    current_period=current_period,
+                    previous_period=previous_period,
                 )
                 if not has_activity:
                     logger.debug("Dream: skipping team %s (no recent activity)", team_id)
@@ -481,6 +486,7 @@ class AgentScheduler:
                     model=hb_model,
                     doc_store=doc_store,
                     team_id=team_id,
+                    mode="scheduled",
                 )
 
             write_dream_marker(workspace, current_period)

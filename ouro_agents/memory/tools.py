@@ -82,7 +82,9 @@ def make_memory_tools(
     allowed_categories = set(memory_categories or [])
     run_team_id = team_id
     run_mode = mode or ""
-    session_store = SessionMemoryStore(workspace) if workspace and conversation_id else None
+    session_store = (
+        SessionMemoryStore(workspace) if workspace and conversation_id else None
+    )
     team_ids = set(available_team_ids or ([] if not run_team_id else [run_team_id]))
     team_lookup: dict[str, str] = {}
     for team in available_teams or []:
@@ -160,7 +162,11 @@ def make_memory_tools(
             }
             queries = [
                 {
-                    **{k: v for k, v in defaults.items() if v is not None and k not in spec},
+                    **{
+                        k: v
+                        for k, v in defaults.items()
+                        if v is not None and k not in spec
+                    },
                     **spec,
                 }
                 for spec in queries
@@ -185,7 +191,14 @@ def make_memory_tools(
 
             explicit_filters = any(
                 spec.get(key)
-                for key in ["subject_type", "subject_id", "asset_id", "team_id", "mode", "since"]
+                for key in [
+                    "subject_type",
+                    "subject_id",
+                    "asset_id",
+                    "team_id",
+                    "mode",
+                    "since",
+                ]
             )
             results = []
             if run_mode.startswith("chat") and not explicit_filters:
@@ -241,7 +254,11 @@ def make_memory_tools(
                 results = backend.search(
                     query=query,
                     agent_id=agent_id,
-                    user_id=user_id if scope == "personal" or spec_subject_type == "user" else None,
+                    user_id=(
+                        user_id
+                        if scope == "personal" or spec_subject_type == "user"
+                        else None
+                    ),
                     limit=limit,
                     team_id=spec_team_id,
                     scope=scope,
@@ -282,8 +299,14 @@ def make_memory_tools(
                 cat_str = f" [{r.category}]" if r.category != "general" else ""
                 refs = getattr(r, "asset_ids", []) or []
                 if not refs and hasattr(r, "metadata"):
-                    raw_refs = getattr(r, "metadata", {}).get("asset_ids") or getattr(r, "metadata", {}).get("asset_refs", "")
-                    refs = [x for x in raw_refs.split(",") if x] if isinstance(raw_refs, str) else raw_refs
+                    raw_refs = getattr(r, "metadata", {}).get("asset_ids") or getattr(
+                        r, "metadata", {}
+                    ).get("asset_refs", "")
+                    refs = (
+                        [x for x in raw_refs.split(",") if x]
+                        if isinstance(raw_refs, str)
+                        else raw_refs
+                    )
                 ref_str = f" refs={','.join(refs)}" if refs else ""
                 lines.append(f"- {r.text}{cat_str}{score_str}{ref_str}")
                 if len(lines) >= limit:
@@ -306,9 +329,9 @@ def make_memory_tools(
 
         for query, lines in ordered:
             if lines:
-                all_sections.append(f"## Query: \"{query}\"\n" + "\n".join(lines))
+                all_sections.append(f'## Query: "{query}"\n' + "\n".join(lines))
             else:
-                all_sections.append(f"## Query: \"{query}\"\nNo relevant memories found.")
+                all_sections.append(f'## Query: "{query}"\nNo relevant memories found.')
 
         return "\n\n".join(all_sections)
 
@@ -372,12 +395,19 @@ def make_memory_tools(
             log_content = doc_store.read(log_name)
             if log_content:
                 entry_count = sum(
-                    1 for line in log_content.split("\n") if line.strip().startswith("-")
+                    1
+                    for line in log_content.split("\n")
+                    if line.strip().startswith("-")
                 )
                 lines.append(f"Current log: {entry_count} entries")
 
             from .ouro_docs import OuroDocStore
-            storage = "Ouro posts (shared)" if isinstance(doc_store, OuroDocStore) else "local files"
+
+            storage = (
+                "Ouro posts (shared)"
+                if isinstance(doc_store, OuroDocStore)
+                else "local files"
+            )
             lines.append(f"Storage: {storage}")
 
         if workspace:
@@ -413,7 +443,9 @@ def make_memory_tools(
             reason: Required explanation for why this should be durable.
         """
         if not enable_remember:
-            return json.dumps({"status": "error", "error": "remember is not enabled for this run"})
+            return json.dumps(
+                {"status": "error", "error": "remember is not enabled for this run"}
+            )
         if not reason.strip():
             return json.dumps({"status": "error", "error": "reason is required"})
 
@@ -465,6 +497,7 @@ def make_memory_tools(
             run_id=run_id or conversation_id,
             metadata=to_metadata(item),
             team_id=item.team_ids[0] if item.team_ids else None,
+            infer=False,
         )
         return json.dumps({"status": "ok", "content_hash": item.content_hash})
 

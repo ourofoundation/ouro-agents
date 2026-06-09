@@ -311,6 +311,11 @@ def dream(
     team_id: Optional[str] = typer.Option(
         None, "--team-id", help="Run dream for a specific team only."
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Preview dream changes and write an audit log without mutating memory.",
+    ),
 ) -> None:
     """Run the dream cycle."""
     state = _state(ctx)
@@ -330,8 +335,9 @@ def dream(
             None if selected_team_id == _ALL_TEAMS_SENTINEL else selected_team_id
         )
         scope = f" for team {resolved_team_id}" if resolved_team_id else " (all teams)"
-        state.display.info(f"Running dream cycle{scope}...")
-        results = agent.dream(team_id=resolved_team_id)
+        mode = "dry-run " if dry_run else ""
+        state.display.info(f"Running {mode}dream cycle{scope}...")
+        results = agent.dream(team_id=resolved_team_id, dry_run=dry_run)
     for scope, summary in results.items():
         state.display.info(f"  [{scope}] {summary}")
 

@@ -66,7 +66,16 @@ class _FakeMemoryBackend:
     def __init__(self):
         self.items = []
 
-    def add(self, text, agent_id=None, user_id=None, run_id=None, metadata=None, team_id=None):
+    def add(
+        self,
+        text,
+        agent_id=None,
+        user_id=None,
+        run_id=None,
+        metadata=None,
+        team_id=None,
+        infer=True,
+    ):
         self.items.append(
             {
                 "text": text,
@@ -75,6 +84,7 @@ class _FakeMemoryBackend:
                 "run_id": run_id,
                 "metadata": metadata or {},
                 "team_id": team_id,
+                "infer": infer,
             }
         )
 
@@ -93,7 +103,9 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertIn('"direction"', REFLECTOR_PROMPT)
         self.assertIn("durable work-direction guidance", REFLECTOR_PROMPT)
         self.assertIn("influence future planning", REFLECTOR_PROMPT)
-        self.assertIn("Ambient platform discoveries are evidence, not direction", REFLECTOR_PROMPT)
+        self.assertIn(
+            "Ambient platform discoveries are evidence, not direction", REFLECTOR_PROMPT
+        )
 
     def test_returns_none_when_reflector_hits_max_steps(self):
         self.assertIsNone(parse_reflection_result("Reached max steps."))
@@ -185,10 +197,16 @@ class TestReflectionParsing(unittest.TestCase):
     def test_validated_daily_log_entries_keep_distinct_team_entries(self):
         result = ReflectionResult(
             daily_log_entries=[
-                DailyLogEntry(team_id="team-materials", entry="[heartbeat] Materials work"),
-                DailyLogEntry(team_id="team-super", entry="[heartbeat] Superconductor work"),
+                DailyLogEntry(
+                    team_id="team-materials", entry="[heartbeat] Materials work"
+                ),
+                DailyLogEntry(
+                    team_id="team-super", entry="[heartbeat] Superconductor work"
+                ),
                 DailyLogEntry(team_id="unknown", entry="[heartbeat] Invalid team"),
-                DailyLogEntry(team_id="team-super", entry="[heartbeat] Superconductor work"),
+                DailyLogEntry(
+                    team_id="team-super", entry="[heartbeat] Superconductor work"
+                ),
             ],
         )
 
@@ -231,7 +249,9 @@ class TestReflectionParsing(unittest.TestCase):
         task = build_run_reflection_task(
             task="Comment on a post if useful.",
             result="Left a comment on asset abc.",
-            tool_summary=[{"tool": "ouro:create_comment", "result": "commented on asset abc"}],
+            tool_summary=[
+                {"tool": "ouro:create_comment", "result": "commented on asset abc"}
+            ],
             run_mode="heartbeat",
         )
 
@@ -325,6 +345,7 @@ class TestApplyReflection(unittest.TestCase):
 
             self.assertEqual(len(backend.items), 1)
             self.assertEqual(backend.items[0]["text"], "User prefers concise updates.")
+            self.assertIs(backend.items[0]["infer"], False)
             self.assertEqual(
                 (conversations_dir / "conv-1.reflected").read_text(),
                 "12",

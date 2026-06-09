@@ -14,13 +14,14 @@ from pydantic import BaseModel
 
 from .agent import OuroAgent
 from .cancellation import RunCancelled
+from .cli_progress import TerminalRunProgress
 from .config import OuroAgentsConfig, RunMode
 from .display import OuroDisplay, get_display, set_display
 from .event_pool import EventPool
 from .event_registry import is_chat_event
 from .events import EventRunContext, build_event_run_context
 from .logging_config import uvicorn_log_config
-from .observer import AgentObserver
+from .observer import AgentObserver, CompositeAgentObserver
 from .provenance import resolve_event_provenance
 from .publisher import OuroReplyPublisher
 from .utils.message_persistence import (
@@ -315,9 +316,16 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         return
 
     stream_message_id = uuid7_str()
-    observer = ServerAgentObserver(event_run, stream_message_id, reply_publisher)
+    server_observer = ServerAgentObserver(event_run, stream_message_id, reply_publisher)
+    terminal_progress = TerminalRunProgress(
+        event_run,
+        get_display(),
+        config=agent_instance.config.display.serve_progress,
+    )
+    observer = CompositeAgentObserver(server_observer, terminal_progress)
 
     try:
+        terminal_progress.start()
         with (
             reply_publisher.realtime_session()
             if reply_publisher and is_chat_event(event_run.event_type)
@@ -340,9 +348,11 @@ async def _run_event_task(event_run: EventRunContext) -> None:
             )
 
             observer.on_activity("typing", None, False)
+            terminal_progress.finish(result)
             get_display().flush_pending_run_summary()
     except asyncio.CancelledError:
         observer.on_activity("typing", None, False)
+        terminal_progress.cancel("cancelled")
         if agent_instance:
             agent_instance.cancel_active_runs("event task cancelled")
         if reply_publisher and is_chat_event(event_run.event_type):
@@ -355,6 +365,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         raise
     except RunCancelled:
         observer.on_activity("typing", None, False)
+        terminal_progress.cancel("cancelled")
         if reply_publisher and is_chat_event(event_run.event_type):
             reply_publisher.emit_llm_response_end(
                 conversation_id=event_run.conversation_id,
@@ -364,6 +375,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         logger.info("Cancelled webhook event run: %s", event_run.event_type)
     except Exception:
         observer.on_activity("typing", None, False)
+        terminal_progress.fail("failed")
         if reply_publisher and is_chat_event(event_run.event_type):
             reply_publisher.emit_llm_response_end(
                 conversation_id=event_run.conversation_id,

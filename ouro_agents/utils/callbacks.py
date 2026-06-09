@@ -6,11 +6,13 @@ from typing import Callable, Optional
 from smolagents import ActionStep
 
 from ..display import OuroDisplay, get_display
+from ..observer import ProgressEvent
 from ..usage import UsageTracker
 
 logger = logging.getLogger(__name__)
 
 RunStatusCallback = Callable[[str, Optional[str], bool], None]
+RunProgressCallback = Callable[[ProgressEvent], None]
 
 
 def tool_activity_message(tool_name: str) -> str:
@@ -29,6 +31,7 @@ def build_step_callback(
     tracker: UsageTracker,
     status_callback: Optional[RunStatusCallback] = None,
     display: Optional[OuroDisplay] = None,
+    progress_callback: Optional[RunProgressCallback] = None,
 ) -> Callable[[ActionStep], None]:
     last_message: dict[str, Optional[str]] = {"value": None}
     _display = display or get_display()
@@ -75,6 +78,24 @@ def build_step_callback(
             duration_s=duration_s,
             cost_usd=cost,
         )
+        if progress_callback:
+            try:
+                progress_callback(
+                    ProgressEvent(
+                        "token_update",
+                        state="active",
+                        detail={
+                            "step": step_num,
+                            "input_tokens": in_tok,
+                            "output_tokens": out_tok,
+                            "cached_input_tokens": tracker.total_cached_input_tokens,
+                            "total_tokens": in_tok + out_tok,
+                            "cost_usd": cost,
+                        },
+                    )
+                )
+            except Exception:
+                logger.exception("Failed to emit progress update")
 
         if getattr(step, "is_final_answer", False):
             return

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Protocol, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -52,37 +52,48 @@ class MemoryResult(BaseModel):
 class MemoryBackend(Protocol):
     """Interface all memory backends must implement."""
 
-    def search(self, query: str, agent_id: str,
-               user_id: Optional[str] = None, limit: int = 10,
-               team_id: Optional[str] = None,
-               scope: str = "team",
-               category: Optional[str] = None,
-               subject_type: Optional[str] = None,
-               subject_id: Optional[str] = None,
-               asset_id: Optional[str] = None,
-               mode: Optional[str] = None,
-               since: Optional[datetime] = None) -> List[MemoryResult]:
-        ...
+    def search(
+        self,
+        query: str,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        limit: int = 10,
+        team_id: Optional[str] = None,
+        scope: str = "team",
+        category: Optional[str] = None,
+        subject_type: Optional[str] = None,
+        subject_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        since: Optional[datetime] = None,
+    ) -> List[MemoryResult]: ...
 
-    def add(self, content: str | list[dict], agent_id: str,
-            user_id: Optional[str] = None, run_id: Optional[str] = None,
-            metadata: Optional[dict] = None,
-            team_id: Optional[str] = None) -> None:
-        ...
+    def add(
+        self,
+        content: str | list[dict],
+        agent_id: str,
+        user_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        team_id: Optional[str] = None,
+        infer: bool = True,
+    ) -> None: ...
 
-    def get_all(self, agent_id: str, user_id: Optional[str] = None,
-                limit: int = 100,
-                team_id: Optional[str] = None,
-                subject_type: Optional[str] = None,
-                subject_id: Optional[str] = None,
-                asset_id: Optional[str] = None,
-                category: Optional[str] = None,
-                mode: Optional[str] = None,
-                since: Optional[datetime] = None) -> List[MemoryResult]:
-        ...
+    def get_all(
+        self,
+        agent_id: str,
+        user_id: Optional[str] = None,
+        limit: int = 100,
+        team_id: Optional[str] = None,
+        subject_type: Optional[str] = None,
+        subject_id: Optional[str] = None,
+        asset_id: Optional[str] = None,
+        category: Optional[str] = None,
+        mode: Optional[str] = None,
+        since: Optional[datetime] = None,
+    ) -> List[MemoryResult]: ...
 
-    def update_metadata(self, memory_id: str, metadata: dict) -> None:
-        ...
+    def update_metadata(self, memory_id: str, metadata: dict) -> None: ...
 
     def delete(self, memory_id: str) -> None:
         """Permanently remove a memory by id. Best-effort; logs and swallows errors."""
@@ -98,11 +109,9 @@ class MemoryBackend(Protocol):
         """Find every memory whose asset_ids includes ``asset_id``."""
         ...
 
-    def reset_usage(self) -> None:
-        ...
+    def reset_usage(self) -> None: ...
 
-    def usage_ledger(self) -> list[tuple[str, Any]]:
-        ...
+    def usage_ledger(self) -> list[tuple[str, Any]]: ...
 
 
 CATEGORY_LABELS = {
@@ -116,9 +125,7 @@ CATEGORY_LABELS = {
 }
 
 
-def format_memories(
-    memories: List[MemoryResult], min_score: float = 0.5
-) -> str:
+def format_memories(memories: List[MemoryResult], min_score: float = 0.5) -> str:
     """Format memory results grouped by category, filtering low-relevance ones."""
     relevant = [r for r in memories if r.score >= min_score]
     if not relevant:
@@ -162,5 +169,6 @@ def expand_query(task: str, state: ConversationState) -> str:
 def create_memory_backend(config, usage_tracker=None) -> MemoryBackend:
     if config.provider == "mem0":
         from .mem0 import Mem0Backend
+
         return Mem0Backend(config, usage_tracker=usage_tracker)
     raise ValueError(f"Unknown memory provider: {config.provider}")

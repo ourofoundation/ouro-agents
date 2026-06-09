@@ -2,7 +2,8 @@ from datetime import datetime, timedelta, timezone
 
 from ouro_agents.config import MemoryConfig
 from ouro_agents.memory import MemoryResult
-from ouro_agents.memory.dream import decay_old_memories
+from ouro_agents.memory.dream import _IMPORTANCE_DECAY_PERIOD_KEY, decay_old_memories
+from ouro_agents.memory.naming import period_key
 
 
 class _FakeBackend:
@@ -51,7 +52,15 @@ def test_decay_filters_by_team_and_updates_memory_id():
 
     assert count == 1
     assert backend.get_all_calls[0]["team_id"] == "team-42"
-    assert backend.updated == [("mem-1", {"importance": 0.4})]
+    assert backend.updated == [
+        (
+            "mem-1",
+            {
+                "importance": 0.4,
+                _IMPORTANCE_DECAY_PERIOD_KEY: period_key("daily"),
+            },
+        )
+    ]
 
 
 def test_decay_preserves_direction_memories():

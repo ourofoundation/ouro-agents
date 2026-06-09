@@ -404,7 +404,9 @@ def _status_from_api(value: object) -> str:
         aliases=_PLAN_ITEM_STATUS_ALIASES,
         default="pending",
     )
-    return status if status in {"pending", "in_progress", "done", "skipped"} else "pending"
+    return (
+        status if status in {"pending", "in_progress", "done", "skipped"} else "pending"
+    )
 
 
 def _plan_items_from_api_objects(api_items: object) -> list[PlanItem]:

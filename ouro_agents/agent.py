@@ -50,7 +50,7 @@ from .memory.tools import make_memory_tools
 from .teams import TeamContext, TeamRegistry
 
 from .modes import ModeProfile, apply_mode_override, resolve_mode_profile
-from .observer import AgentObserver
+from .observer import AgentObserver, ProgressEvent, emit_progress
 from .skills import get_skill_directory, load_startup_skills
 from .soul import build_prompt
 from .subagents.context import SubAgentUsage
@@ -881,6 +881,7 @@ class OuroAgent:
         run_mode: str = "",
         event_type: str = "",
         cancellation_token: Optional[RunCancellationToken] = None,
+        observer: Optional[AgentObserver] = None,
     ):
         """Build the tool list and directory string for a single run.
 
@@ -980,6 +981,7 @@ class OuroAgent:
                 team_id=team_id,
                 doc_store=active_doc_store,
                 cancellation_token=cancellation_token,
+                progress_observer=observer,
             )
             return result, profile
 
@@ -1258,6 +1260,7 @@ class OuroAgent:
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
+        progress_observer: Optional[AgentObserver] = None,
     ) -> "SubAgentContext":
         from .subagents.context import SubAgentContext
 
@@ -1310,6 +1313,7 @@ class OuroAgent:
             python_package_versions=self._python_package_versions or {},
             record_subagent_usage=self._record_subagent_usage,
             cancellation_token=cancellation_token,
+            progress_observer=progress_observer,
             delegatable_profiles=self.delegatable_profiles,
         )
 
@@ -1328,6 +1332,7 @@ class OuroAgent:
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
+        progress_observer: Optional[AgentObserver] = None,
     ):
         """Build context and dispatch a subagent through the unified runner.
 
@@ -1358,6 +1363,7 @@ class OuroAgent:
             team_id=team_id,
             doc_store=doc_store,
             cancellation_token=cancellation_token,
+            progress_observer=progress_observer,
         )
 
         return run_subagent(effective_profile, task, ctx)
@@ -1372,6 +1378,7 @@ class OuroAgent:
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
+        progress_observer: Optional[AgentObserver] = None,
     ) -> list:
         """Run multiple subagents in parallel.
 
@@ -1412,6 +1419,7 @@ class OuroAgent:
                 team_id=team_id,
                 doc_store=doc_store,
                 cancellation_token=cancellation_token,
+                progress_observer=progress_observer,
             )
             dispatch_list.append((effective_profile, task_str, ctx))
 
@@ -1421,11 +1429,13 @@ class OuroAgent:
         self,
         status_callback: Optional[RunStatusCallback],
         display: Optional[OuroDisplay] = None,
+        progress_callback: Optional[Callable[[ProgressEvent], None]] = None,
     ) -> Callable[[ActionStep], None]:
         return build_step_callback(
             self._usage_tracker,
             status_callback=status_callback,
             display=display,
+            progress_callback=progress_callback,
         )
 
     def _run_preflight(
@@ -1440,6 +1450,7 @@ class OuroAgent:
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
+        observer: Optional[AgentObserver] = None,
     ) -> PreflightResult:
         """Run the preflight subagent as a visible step 0.
 
@@ -1450,6 +1461,7 @@ class OuroAgent:
 
         _display = display or get_display()
         _display.step("Step 0: preflight")
+        emit_progress(observer, "preflight", "analyzing request")
         if status_callback:
             try:
                 status_callback("thinking", "is analyzing the task...", True)
@@ -1467,6 +1479,7 @@ class OuroAgent:
             team_id=team_id,
             doc_store=doc_store,
             cancellation_token=cancellation_token,
+            progress_observer=observer,
         )
         duration_s = time.monotonic() - t0
 
@@ -1481,8 +1494,10 @@ class OuroAgent:
 
         if not result.success:
             logger.warning("Preflight subagent failed: %s", result.error)
+            emit_progress(observer, "preflight", result.error or "failed", state="failed")
             return PreflightResult()
 
+        emit_progress(observer, "preflight", "analysis complete", state="complete")
         return parse_preflight_result(result.text)
 
     def _run_reflection(
@@ -1496,6 +1511,7 @@ class OuroAgent:
         status_callback: Optional[RunStatusCallback] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        observer: Optional[AgentObserver] = None,
     ) -> Optional[ReflectionResult]:
         """Run the reflector subagent as a visible step.
 
@@ -1510,6 +1526,7 @@ class OuroAgent:
 
         _display = display or get_display()
         _display.step("reflecting...")
+        emit_progress(observer, "reflecting", "post-run reflection")
         if status_callback:
             try:
                 status_callback("thinking", "is reflecting...", True)
@@ -1526,6 +1543,7 @@ class OuroAgent:
             run_id=run_id,
             team_id=team_id,
             doc_store=doc_store,
+            progress_observer=observer,
         )
         duration_s = time.monotonic() - t0
 
@@ -1539,8 +1557,10 @@ class OuroAgent:
 
         if not result.success:
             logger.warning("Reflector subagent failed: %s", result.error)
+            emit_progress(observer, "reflecting", result.error or "failed", state="failed")
             return None
 
+        emit_progress(observer, "reflecting", "reflection complete", state="complete")
         return parse_reflection_result(result.text)
 
     def _available_memory_teams(self, team_id: Optional[str] = None) -> list[dict]:
@@ -1852,6 +1872,10 @@ class OuroAgent:
             if observer:
                 observer.on_activity(status, message, active)
 
+        def _progress_cb(event: ProgressEvent) -> None:
+            if observer:
+                observer.on_progress(event)
+
         if not is_trivial and not skip_memory and not profile.skip_preflight:
             preflight = self._run_preflight(
                 task,
@@ -1864,6 +1888,7 @@ class OuroAgent:
                 team_id=team_id,
                 doc_store=active_doc_store,
                 cancellation_token=token,
+                observer=observer,
             )
             logger.info(
                 "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d",
@@ -1877,6 +1902,7 @@ class OuroAgent:
         # --- Build tools ---
         # Do this after preflight so parent-run preloads do not appear to be
         # part of the preflight step in logs or side effects.
+        emit_progress(observer, "building_tools", "loading available tools")
         all_tools, deferred_tool_directory, agent_ref, preloaded_names = (
             self._build_agent_tools(
                 profile,
@@ -1891,12 +1917,20 @@ class OuroAgent:
                 run_mode=mode.value,
                 event_type=event_type or "",
                 cancellation_token=token,
+                observer=observer,
             )
         )
         if extra_tools:
             all_tools.extend(extra_tools)
+        emit_progress(
+            observer,
+            "building_tools",
+            f"{len(all_tools)} tools ready",
+            state="complete",
+        )
 
         # Build system prompt (static, cacheable) + dynamic context (per-turn).
+        emit_progress(observer, "building_prompt", "assembling context")
         system_prompt, dynamic_context = self._build_system_prompt(
             task=task,
             profile=profile,
@@ -1909,15 +1943,23 @@ class OuroAgent:
             team_id=team_id,
             doc_store=active_doc_store,
         )
+        emit_progress(observer, "building_prompt", "prompt ready", state="complete")
 
         # Assemble the effective task: dynamic context + prefetched data + preflight + request
         context_parts: list[str] = []
         if dynamic_context:
             context_parts.append(dynamic_context)
         if prefetch:
+            emit_progress(observer, "prefetching_context", "loading referenced context")
             prefetch_context = resolve_prefetch(self._deferred_tools, prefetch)
             if prefetch_context:
                 context_parts.append(prefetch_context)
+            emit_progress(
+                observer,
+                "prefetching_context",
+                "context loaded" if prefetch_context else "no context loaded",
+                state="complete",
+            )
         if preflight and preflight.briefing:
             context_parts.append(f"## Context Briefing\n{preflight.briefing}")
         if preflight and preflight.plan:
@@ -1939,7 +1981,11 @@ class OuroAgent:
         else:
             effective_task = task
 
-        step_callback = self._build_step_callback(_status_cb, display)
+        step_callback = self._build_step_callback(
+            _status_cb,
+            display,
+            progress_callback=_progress_cb,
+        )
         main_max_steps = profile.max_steps
         compactor_model = self._build_model(
             self.config.heartbeat.model or self.config.agent.model,
@@ -1999,6 +2045,11 @@ class OuroAgent:
         use_reset = not has_history
 
         token.raise_if_cancelled()
+        emit_progress(
+            observer,
+            "running_agent",
+            f"running {mode.value} agent (max_steps={main_max_steps})",
+        )
         if observer:
             final_result = None
             streamer = FinalAnswerStreamer()
@@ -2068,6 +2119,7 @@ class OuroAgent:
         else:
             result = agent.run(effective_task, reset=use_reset)
         token.raise_if_cancelled()
+        emit_progress(observer, "running_agent", "agent loop complete", state="complete")
 
         if debug_markdown_path:
             try:
@@ -2081,8 +2133,21 @@ class OuroAgent:
 
         if observer:
             try:
+                emit_progress(observer, "persisting_response", "saving response")
                 observer.on_result_ready(str(result))
+                emit_progress(
+                    observer,
+                    "persisting_response",
+                    "response saved",
+                    state="complete",
+                )
             except Exception as e:
+                emit_progress(
+                    observer,
+                    "persisting_response",
+                    str(e),
+                    state="failed",
+                )
                 logger.warning("observer.on_result_ready failed: %s", e)
 
         if conversation_id and profile.append_conversation_turns:
@@ -2228,7 +2293,12 @@ class OuroAgent:
 
         return await force_review_heartbeat(self, plan_id=plan_id)
 
-    def dream(self, team_id: str | None = None) -> dict[str, dict]:
+    def dream(
+        self,
+        team_id: str | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, dict]:
         """Run the dream cycle (memory maintenance) immediately.
 
         If *team_id* is provided, only that team is processed. Otherwise runs
@@ -2252,6 +2322,8 @@ class OuroAgent:
                 model=model,
                 doc_store=doc_store,
                 team_id=team_id,
+                dry_run=dry_run,
+                mode="manual",
             )
         else:
             results["shared"] = run_dream(
@@ -2261,6 +2333,8 @@ class OuroAgent:
                 config=self.config.memory,
                 model=model,
                 doc_store=self.doc_store,
+                dry_run=dry_run,
+                mode="manual",
             )
             for tid, doc_store in sorted(self._team_doc_stores.items()):
                 results[tid] = run_dream(
@@ -2271,6 +2345,8 @@ class OuroAgent:
                     model=model,
                     doc_store=doc_store,
                     team_id=tid,
+                    dry_run=dry_run,
+                    mode="manual",
                 )
         return results
 

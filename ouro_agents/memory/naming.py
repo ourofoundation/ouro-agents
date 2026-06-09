@@ -8,7 +8,7 @@ import naming utilities without dragging in the doc store implementations.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal, get_args
 
 _TEAM_SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -138,6 +138,20 @@ def current_period_heading(rhythm: str) -> str:
         "weekly": "This Week's Log",
         "biweekly": "This Period's Log",
     }.get(normalize_rhythm(rhythm), "Today's Log")
+
+
+def log_entry_timestamp(rhythm: str, when: datetime | None = None) -> str:
+    """Format a log-line timestamp for the given memory rhythm.
+
+  Daily logs cover a single day, so time-only is enough. Weekly and biweekly
+  logs span multiple days, so include the calendar date for disambiguation.
+    """
+    when = when or datetime.now()
+    rhythm = normalize_rhythm(rhythm)
+    if rhythm == "daily":
+        return when.strftime("%H:%M")
+    return when.strftime("%Y-%m-%d %H:%M")
+
 
 # Identity prefixes are pinned to the local filesystem — they're per-machine
 # state (agent identity, machine-local notes) and never persist to Ouro.

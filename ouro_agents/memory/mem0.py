@@ -1,7 +1,9 @@
 import logging
 import os
-from functools import wraps
+import sqlite3
 from datetime import datetime, timezone
+from functools import wraps
+from pathlib import Path
 from typing import List, Optional
 
 from ..config import MemoryConfig
@@ -10,6 +12,8 @@ from . import MemoryBackend, MemoryResult
 from .model import content_hash, memory_item_from_raw, to_metadata
 
 logger = logging.getLogger(__name__)
+
+_CHROMA_BLOB_SEQ_ID_FIX_MARKER = ".seq_id_blob_fix_v2"
 
 
 def _get_openrouter_api_key() -> str:
@@ -27,17 +31,41 @@ def _extract_metadata(raw: dict) -> dict:
     """Pull our custom fields out of a mem0 result's metadata."""
     meta = raw.get("metadata", {}) or {}
     extracted = dict(meta)
+    for key in ("created_at", "user_id", "agent_id", "run_id"):
+        if raw.get(key) not in {"", None} and extracted.get(key) in {"", None}:
+            extracted[key] = raw[key]
     text = str(raw.get("memory") or raw.get("text") or "")
     item = memory_item_from_raw(text, extracted)
     normalized = to_metadata(item)
     extracted.update(
-        {k: v for k, v in normalized.items() if k not in extracted or extracted[k] in {"", None}}
+        {
+            k: v
+            for k, v in normalized.items()
+            if k not in extracted or extracted[k] in {"", None}
+        }
     )
     return extracted
 
 
 def _raw_results(results) -> list[dict]:
     return results.get("results", []) if isinstance(results, dict) else results
+
+
+def _mem0_get_all_compat(mem, **kwargs):
+    """Call mem0.get_all across versions that use either top_k or limit."""
+    try:
+        return mem.get_all(**kwargs)
+    except TypeError as e:
+        if "top_k" not in kwargs or "top_k" not in str(e):
+            raise
+        fallback = dict(kwargs)
+        fallback["limit"] = fallback.pop("top_k")
+        filters = dict(fallback.get("filters") or {})
+        for namespace_key in ("user_id", "agent_id", "run_id"):
+            if namespace_key in filters and namespace_key not in fallback:
+                fallback[namespace_key] = filters.pop(namespace_key)
+        fallback["filters"] = filters
+        return mem.get_all(**fallback)
 
 
 def _build_filters(
@@ -122,6 +150,69 @@ def _expanded_limit(limit: int, has_post_filters: bool) -> int:
     return max(limit * 5, min(100, limit + 25))
 
 
+def _repair_chroma_blob_seq_ids(chroma_path: Path) -> int:
+    """Repair legacy Chroma rows before the 1.x Rust compactor initializes.
+
+    Chroma 0.6-era stores can leave ``seq_id`` values as big-endian BLOBs.
+    Chroma 1.x expects INTEGER there and crashes during compaction otherwise.
+    """
+    db_path = chroma_path / "chroma.sqlite3"
+    marker_path = chroma_path / _CHROMA_BLOB_SEQ_ID_FIX_MARKER
+    if marker_path.exists() or not db_path.exists():
+        return 0
+
+    repaired = 0
+    try:
+        with sqlite3.connect(db_path) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            for table in ("embeddings", "max_seq_id"):
+                if table not in tables:
+                    continue
+
+                columns = {
+                    row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                if "seq_id" not in columns:
+                    continue
+
+                rows = conn.execute(
+                    f"SELECT rowid, seq_id FROM {table} WHERE typeof(seq_id) = 'blob'"
+                ).fetchall()
+                updates = []
+                for rowid, seq_id in rows:
+                    if not isinstance(seq_id, (bytes, bytearray)):
+                        continue
+                    # Chroma 1.5 can use sentinel-prefixed max_seq_id BLOBs;
+                    # legacy 0.6 values are plain big-endian u64s.
+                    if len(seq_id) != 8 or bytes(seq_id).startswith(b"\x11\x11"):
+                        logger.warning(
+                            "Skipping unexpected Chroma seq_id BLOB in %s at rowid %s",
+                            table,
+                            rowid,
+                        )
+                        continue
+                    updates.append((int.from_bytes(seq_id, byteorder="big"), rowid))
+
+                if updates:
+                    conn.executemany(
+                        f"UPDATE {table} SET seq_id = ? WHERE rowid = ?", updates
+                    )
+                    repaired += len(updates)
+            conn.commit()
+
+        marker_path.write_text(datetime.now(timezone.utc).isoformat())
+        if repaired:
+            logger.info("Repaired %d legacy Chroma embeddings seq_id values", repaired)
+    except Exception as e:
+        logger.warning("Failed to repair legacy Chroma seq_id values: %s", e)
+    return repaired
+
+
 class Mem0Backend:
     def __init__(
         self,
@@ -138,6 +229,7 @@ class Mem0Backend:
 
         chroma_path = config.path / "chroma"
         chroma_path.mkdir(parents=True, exist_ok=True)
+        _repair_chroma_blob_seq_ids(chroma_path)
         openrouter_api_key = _get_openrouter_api_key()
         openrouter_base_url = _get_openrouter_base_url()
 
@@ -262,24 +354,22 @@ class Mem0Backend:
         mode: Optional[str] = None,
         since: Optional[datetime] = None,
     ) -> List[MemoryResult]:
-        has_post_filters = bool(team_id or asset_id)
-        kwargs: dict = {
-            "query": query,
-            "agent_id": agent_id,
-            "limit": _expanded_limit(limit, has_post_filters),
-        }
-        if user_id:
-            kwargs["user_id"] = user_id
-
         effective_team_id = team_id if scope in {"personal", "team"} else None
+        has_post_filters = bool(effective_team_id or asset_id)
         filters = _build_filters(
             category=category,
             subject_type=subject_type,
             subject_id=subject_id,
             mode=mode,
         )
-        if filters:
-            kwargs["filters"] = filters
+        filters["agent_id"] = agent_id
+        if user_id:
+            filters["user_id"] = user_id
+        kwargs: dict = {
+            "query": query,
+            "top_k": _expanded_limit(limit, has_post_filters),
+            "filters": filters,
+        }
 
         results = self._mem.search(**kwargs)
         res_list = _raw_results(results)
@@ -287,13 +377,10 @@ class Mem0Backend:
         out: list[MemoryResult] = []
         for r in res_list:
             result = _to_result(r, score=r.get("score", 0))
-            if (
-                _after_since(result, since)
-                and _matches_associations(
-                    result,
-                    team_id=effective_team_id,
-                    asset_id=asset_id,
-                )
+            if _after_since(result, since) and _matches_associations(
+                result,
+                team_id=effective_team_id,
+                asset_id=asset_id,
             ):
                 out.append(result)
                 if len(out) >= limit:
@@ -308,6 +395,7 @@ class Mem0Backend:
         run_id: Optional[str] = None,
         metadata: Optional[dict] = None,
         team_id: Optional[str] = None,
+        infer: bool = True,
     ) -> None:
         meta = dict(metadata or {})
         meta.setdefault("created_at", datetime.now(timezone.utc).isoformat())
@@ -333,7 +421,9 @@ class Mem0Backend:
             content_hash_value=str(meta.get("content_hash") or ""),
             user_id=user_id,
         ):
-            logger.debug("Skipping duplicate memory write for hash %s", meta["content_hash"])
+            logger.debug(
+                "Skipping duplicate memory write for hash %s", meta["content_hash"]
+            )
             return
 
         kwargs: dict = {"agent_id": agent_id, "metadata": meta}
@@ -341,7 +431,7 @@ class Mem0Backend:
             kwargs["user_id"] = user_id
         if run_id:
             kwargs["run_id"] = run_id
-        self._mem.add(content, **kwargs)
+        self._mem.add(content, infer=infer, **kwargs)
 
     def _has_content_hash(
         self,
@@ -352,15 +442,15 @@ class Mem0Backend:
     ) -> bool:
         if not content_hash_value:
             return False
-        kwargs: dict = {
-            "agent_id": agent_id,
-            "limit": 1,
-            "filters": {"content_hash": content_hash_value},
-        }
+        filters = {"agent_id": agent_id, "content_hash": content_hash_value}
         if user_id:
-            kwargs["user_id"] = user_id
+            filters["user_id"] = user_id
+        kwargs: dict = {
+            "top_k": 1,
+            "filters": filters,
+        }
         try:
-            results = self._mem.get_all(**kwargs)
+            results = _mem0_get_all_compat(self._mem, **kwargs)
             return bool(_raw_results(results))
         except Exception as e:
             logger.debug("Memory dedupe check failed: %s", e)
@@ -380,28 +470,26 @@ class Mem0Backend:
         since: Optional[datetime] = None,
     ) -> List[MemoryResult]:
         has_post_filters = bool(team_id or asset_id)
-        kwargs: dict = {
-            "agent_id": agent_id,
-            "limit": _expanded_limit(limit, has_post_filters),
-        }
-        if user_id:
-            kwargs["user_id"] = user_id
         filters = _build_filters(
             category=category,
             subject_type=subject_type,
             subject_id=subject_id,
             mode=mode,
         )
-        if filters:
-            kwargs["filters"] = filters
-        results = self._mem.get_all(**kwargs)
+        filters["agent_id"] = agent_id
+        if user_id:
+            filters["user_id"] = user_id
+        kwargs: dict = {
+            "top_k": _expanded_limit(limit, has_post_filters),
+            "filters": filters,
+        }
+        results = _mem0_get_all_compat(self._mem, **kwargs)
         res_list = _raw_results(results)
         out: list[MemoryResult] = []
         for r in res_list:
             result = _to_result(r)
-            if (
-                _after_since(result, since)
-                and _matches_associations(result, team_id=team_id, asset_id=asset_id)
+            if _after_since(result, since) and _matches_associations(
+                result, team_id=team_id, asset_id=asset_id
             ):
                 out.append(result)
                 if len(out) >= limit:
@@ -410,7 +498,13 @@ class Mem0Backend:
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
         try:
-            self._mem.update(memory_id, metadata=metadata)
+            raw = self._mem.get(memory_id)
+            if not raw:
+                raise ValueError(f"Memory with id {memory_id} not found")
+            text = str(raw.get("memory") or raw.get("text") or raw.get("data") or "")
+            merged_metadata = _extract_metadata(raw)
+            merged_metadata.update(metadata)
+            self._mem.update(memory_id, text, metadata=merged_metadata)
         except Exception as e:
             logger.warning("Failed to update memory metadata %s: %s", memory_id, e)
 

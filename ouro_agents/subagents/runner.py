@@ -21,6 +21,7 @@ from smolagents import ActionStep
 
 from ..artifacts import fetch_asset_content, parse_asset_result
 from ..constants import GLOBAL_ORG_UUID
+from ..observer import emit_progress
 from ..platform_context_prompt import format_platform_context_for_prompt
 from ..skills import resolve_skills
 from ..soul import build_shared_prompt_sections
@@ -139,6 +140,12 @@ def run_subagent(
 ) -> SubAgentResult:
     """Dispatch a subagent. Returns a structured SubAgentResult with usage metrics."""
     logger.info("Running subagent '%s' (max_steps=%d)", profile.name, profile.max_steps)
+    emit_progress(
+        ctx.progress_observer,
+        "subagent_started",
+        profile.name,
+        detail={"name": profile.name, "max_steps": profile.max_steps},
+    )
 
     before = _snapshot_tracker(ctx.model)
     t0 = time.monotonic()
@@ -162,6 +169,24 @@ def run_subagent(
             ctx.record_subagent_usage(profile.name, usage)
 
         asset = parse_asset_result(text)
+        asset_label = None
+        if asset:
+            asset_label = (
+                f"{asset['asset_type']}:{asset['asset_id'][:8]}..."
+                if asset.get("asset_id")
+                else asset.get("asset_type")
+            )
+        emit_progress(
+            ctx.progress_observer,
+            "subagent_completed",
+            profile.name,
+            state="complete",
+            detail={
+                "name": profile.name,
+                "usage": _usage_detail(usage),
+                "asset": asset_label,
+            },
+        )
         if asset:
             return SubAgentResult(
                 text=text,
@@ -180,6 +205,13 @@ def run_subagent(
         if ctx.record_subagent_usage:
             ctx.record_subagent_usage(profile.name, usage)
         logger.error("Subagent '%s' failed: %s", profile.name, e, exc_info=True)
+        emit_progress(
+            ctx.progress_observer,
+            "subagent_failed",
+            profile.name,
+            state="failed",
+            detail={"name": profile.name, "error": str(e), "usage": _usage_detail(usage)},
+        )
         return SubAgentResult(
             text="",
             success=False,
@@ -282,6 +314,7 @@ def _build_chain_delegate(
             python_package_versions=dict(ctx.python_package_versions),
             record_subagent_usage=ctx.record_subagent_usage,
             cancellation_token=ctx.cancellation_token,
+            progress_observer=ctx.progress_observer,
             delegatable_profiles=ctx.delegatable_profiles,
         )
 
@@ -530,12 +563,36 @@ def _run_agent(
         _display,
     )
 
+    def _subagent_step_callback(step: ActionStep) -> None:
+        tool_name = _first_tool_name(step)
+        step_number = getattr(step, "step_number", 0)
+        if getattr(step, "error", None):
+            emit_progress(
+                ctx.progress_observer,
+                "subagent_step",
+                f"{profile.name}: retrying after error",
+                detail={"name": profile.name, "step": step_number},
+            )
+            return
+        if tool_name:
+            emit_progress(
+                ctx.progress_observer,
+                "subagent_step",
+                f"{profile.name}: using {tool_name}",
+                detail={
+                    "name": profile.name,
+                    "step": step_number,
+                    "tool": tool_name,
+                },
+            )
+
     agent = _SanitizedToolCallingAgent(
         tools=tools,
         model=ctx.model,
         compactor_model=ctx.compactor_model,
         max_steps=profile.max_steps,
         logger=subagent_logger,
+        step_callbacks=[_subagent_step_callback],
         is_chat_mode=False,
         cancellation_token=ctx.cancellation_token,
     )
@@ -596,3 +653,23 @@ def _run_agent(
         logger.exception("Subagent '%s' agent loop failed", profile.name)
         raise
     return str(result), agent
+
+
+def _usage_detail(usage: SubAgentUsage) -> dict:
+    detail = usage.to_dict()
+    detail["total_tokens"] = usage.total_tokens
+    return detail
+
+
+def _first_tool_name(step: ActionStep) -> str:
+    tool_calls = getattr(step, "tool_calls", None) or []
+    if not tool_calls:
+        return ""
+    tc = tool_calls[0]
+    if isinstance(tc, dict):
+        if isinstance(tc.get("function"), dict):
+            return str(tc["function"].get("name", ""))
+        return str(tc.get("name", ""))
+    if getattr(tc, "function", None) is not None:
+        return str(getattr(tc.function, "name", ""))
+    return str(getattr(tc, "name", ""))

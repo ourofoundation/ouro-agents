@@ -9,14 +9,13 @@ integrates naturally with the conversation state tracker.
 """
 
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from ..subagents.reflector import ReflectionResult, normalize_daily_log_entry
 from .conversation_state import ConversationState
 from .model import to_metadata
-from .naming import period_key, period_log_title, store_rhythm
+from .naming import log_entry_timestamp, period_key, period_log_title, store_rhythm
 from .validator import MemoryRunContext, validate_memory_candidates
 
 logger = logging.getLogger(__name__)
@@ -39,7 +38,7 @@ def write_log(
 
     rhythm = store_rhythm(doc_store)
     period = period_key(rhythm)
-    ts = datetime.now().strftime("%H:%M")
+    ts = log_entry_timestamp(rhythm)
     entry = f"- {ts} — {entry_text}\n"
 
     post_name = doc_store.log_name(agent_name, period)
@@ -168,7 +167,9 @@ def store_reflection_memories(
         mode=mode,
         event_type=event_type,
         team_id=team_id or "",
-        available_team_ids=set(available_team_ids or ([] if not team_id else [team_id])),
+        available_team_ids=set(
+            available_team_ids or ([] if not team_id else [team_id])
+        ),
     )
     items, errors = validate_memory_candidates(
         _reflection_candidates(result),
@@ -176,7 +177,9 @@ def store_reflection_memories(
         source=source,
     )
     for error in errors:
-        logger.warning("Rejected reflected memory (%s): %s", error.reason, error.text[:80])
+        logger.warning(
+            "Rejected reflected memory (%s): %s", error.reason, error.text[:80]
+        )
 
     stored = 0
     for item in items:
@@ -188,9 +191,12 @@ def store_reflection_memories(
                 run_id=run_id or conversation_id,
                 metadata=to_metadata(item),
                 team_id=item.team_ids[0] if item.team_ids else None,
+                infer=False,
             )
             stored += 1
-            logger.info("Reflection stored memory [%s]: %s", item.category, item.text[:80])
+            logger.info(
+                "Reflection stored memory [%s]: %s", item.category, item.text[:80]
+            )
         except Exception as e:
             logger.warning("Failed to store reflected memory: %s", e)
     return stored
