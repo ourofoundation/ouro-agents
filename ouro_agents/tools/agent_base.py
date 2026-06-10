@@ -285,10 +285,6 @@ _MINIMAX_PARAMETER_RE = re.compile(
 _MINIMAX_ITEM_RE = re.compile(r"<item>(?P<value>.*?)</item>", re.DOTALL)
 _MINIMAX_TAG_RE = re.compile(r"<(?P<close>/?)(?P<name>[A-Za-z_][\w:.-]*)[^>]*>")
 _CALLING_TOOLS_RE = re.compile(r"Calling tools:\s*", re.IGNORECASE)
-_INLINE_TOOL_CALL_RE = re.compile(
-    r"(?:^|[\n\r`:]|\btool\s+)\s*(?P<name>[a-z][a-z0-9_:-]*)\s*\(",
-    re.IGNORECASE,
-)
 
 
 @dataclass
@@ -758,55 +754,6 @@ def _parse_structured_tool_calls(content: str) -> list[ChatMessageToolCall] | No
     return recovery.tool_calls if recovery else None
 
 
-def _python_literal(node: ast.AST):
-    return ast.literal_eval(node)
-
-
-def _parse_inline_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
-    for match in _INLINE_TOOL_CALL_RE.finditer(content):
-        func_name = match.group("name").strip()
-        open_idx = content.find("(", match.start("name"))
-        payload = _extract_balanced_block(content, open_idx, "(", ")")
-        if not payload:
-            continue
-
-        try:
-            parsed = ast.parse(f"f{payload}", mode="eval")
-        except Exception:
-            continue
-
-        call = parsed.body
-        if not isinstance(call, ast.Call):
-            continue
-
-        try:
-            if len(call.args) > 1:
-                continue
-            if any(keyword.arg is None for keyword in call.keywords):
-                continue
-
-            arguments = {}
-            if call.args:
-                only_arg = _python_literal(call.args[0])
-                if not isinstance(only_arg, dict):
-                    continue
-                arguments.update(only_arg)
-
-            for keyword in call.keywords:
-                arguments[keyword.arg] = _python_literal(keyword.value)
-        except Exception:
-            continue
-
-        return _ToolCallRecovery([_make_tool_call(func_name, arguments)])
-
-    return None
-
-
-def _parse_inline_tool_call(content: str) -> list[ChatMessageToolCall] | None:
-    recovery = _parse_inline_tool_call_recovery(content)
-    return recovery.tool_calls if recovery else None
-
-
 def _message_preview(content: str, max_chars: int = 600) -> str:
     preview = content.strip()
     if len(preview) > max_chars:
@@ -974,7 +921,6 @@ def _run_recovery_cascade(content: str) -> _ToolCallRecovery | None:
         _parse_xml_tool_call_recovery,
         _parse_narrated_tool_call_recovery,
         _parse_structured_tool_call_recovery,
-        _parse_inline_tool_call_recovery,
     ):
         recovery = parser(content)
         if recovery:

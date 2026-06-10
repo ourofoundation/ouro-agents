@@ -17,7 +17,6 @@ from ouro_agents.tools.agent_base import (
     _parse_kimi_tool_call_recovery,
     _parse_minimax_tool_call_recovery,
     _parse_minimax_tool_calls,
-    _parse_inline_tool_call,
     _parse_structured_tool_call_recovery,
     _parse_structured_tool_calls,
     _patch_model_for_xml_tool_calls,
@@ -217,20 +216,6 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertEqual(
             parsed.tool_calls[0].function.arguments, {"answer": "NO_ACTION"}
         )
-
-    def test_recovers_keyword_style_call(self):
-        tool_calls = _parse_inline_tool_call('get_comments(parent_id="abc-123")')
-
-        self.assertIsNotNone(tool_calls)
-        self.assertEqual(tool_calls[0].function.name, "get_comments")
-        self.assertEqual(tool_calls[0].function.arguments, {"parent_id": "abc-123"})
-
-    def test_recovers_dict_style_call(self):
-        tool_calls = _parse_inline_tool_call("get_comments({'parent_id': 'abc-123'})")
-
-        self.assertIsNotNone(tool_calls)
-        self.assertEqual(tool_calls[0].function.name, "get_comments")
-        self.assertEqual(tool_calls[0].function.arguments, {"parent_id": "abc-123"})
 
     def test_recovers_structured_payload_without_prefix(self):
         tool_calls = _parse_structured_tool_calls(
@@ -852,6 +837,35 @@ class TestPreambleNudgePath(unittest.TestCase):
         )
         self.assertIsNone(
             getattr(parsed, "_ouro_preamble_nudge_observation", None),
+        )
+
+    def test_chat_mode_does_not_treat_markdown_function_mention_as_tool_call(self):
+        # Hermes mentioned `open()` while summarizing a completed memory update.
+        # Inline function-call recovery interpreted that prose as an `open` tool
+        # call, causing duplicate follow-up work and "unknown tool" confusion.
+        model = _AlwaysFailsModel()
+        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
+
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=(
+                "All set. The stale `open()` fact was replaced with the current "
+                "sandbox status."
+            ),
+        )
+
+        parsed = model.parse_tool_calls(message)
+
+        self.assertEqual(len(parsed.tool_calls), 1)
+        self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
+        self.assertEqual(
+            parsed.tool_calls[0].function.arguments,
+            {
+                "answer": (
+                    "All set. The stale `open()` fact was replaced with the current "
+                    "sandbox status."
+                )
+            },
         )
 
     def test_autonomous_mode_preamble_also_routes_to_nudge_path(self):
