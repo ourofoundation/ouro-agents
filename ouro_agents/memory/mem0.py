@@ -283,12 +283,18 @@ class Mem0Backend:
         *,
         gen_id_prefix: str,
     ) -> None:
-        record_usage_from_response(response, tracker, gen_id_prefix=gen_id_prefix)
+        record_usage_from_response(
+            response,
+            tracker,
+            gen_id_prefix=gen_id_prefix,
+            record_context=False,
+        )
         if self._shared_usage_tracker is not None:
             record_usage_from_response(
                 response,
                 self._shared_usage_tracker,
                 gen_id_prefix=gen_id_prefix,
+                record_context=False,
             )
 
     def _wrap_embedding_client(self) -> None:

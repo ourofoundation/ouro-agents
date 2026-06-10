@@ -1487,6 +1487,7 @@ class OuroAgent:
             _display.token_summary(
                 input_tokens=result.usage.input_tokens,
                 output_tokens=result.usage.output_tokens,
+                current_context_tokens=result.usage.current_context_tokens,
                 step_number=0,
                 duration_s=duration_s,
                 cost_usd=result.usage.cost_usd,
@@ -1551,6 +1552,7 @@ class OuroAgent:
             _display.token_summary(
                 input_tokens=result.usage.input_tokens,
                 output_tokens=result.usage.output_tokens,
+                current_context_tokens=result.usage.current_context_tokens,
                 duration_s=duration_s,
                 cost_usd=result.usage.cost_usd,
             )

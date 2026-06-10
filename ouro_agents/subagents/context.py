@@ -25,6 +25,7 @@ class SubAgentUsage:
 
     model_id: str = ""
     input_tokens: int = 0
+    current_context_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
@@ -48,6 +49,7 @@ class SubAgentUsage:
         d = {
             "model": self.model_id,
             "input_tokens": self.input_tokens,
+            "current_context_tokens": self.current_context_tokens,
             "output_tokens": self.output_tokens,
             "cached_input_tokens": self.cached_input_tokens,
             "uncached_input_tokens": self.uncached_input_tokens,

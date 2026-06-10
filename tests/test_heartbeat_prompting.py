@@ -437,6 +437,7 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
         model_id="main-model",
         steps=3,
         input_tokens=120,
+        current_context_tokens=90,
         output_tokens=30,
         cost_usd=0.12,
     ).finalize()
@@ -444,6 +445,7 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
         model_id="preflight-model",
         steps=1,
         input_tokens=40,
+        current_context_tokens=35,
         output_tokens=10,
         llm_calls=1,
         wall_time_ms=250,
@@ -455,8 +457,10 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
     assert rows[0][1] == "main-model"
     assert rows[1][0] == "sub:preflight"
     assert rows[1][1] == "preflight-model"
+    assert rows[1][3] == "35"
     assert rows[-1][0] == "total"
     assert rows[-1][1] == "main-model"
+    assert rows[-1][3] == "90"
 
 
 def test_usage_rows_hide_reasoning_by_default():
@@ -465,7 +469,8 @@ def test_usage_rows_hide_reasoning_by_default():
 
     rows = display._usage_rows(total, duration_s=1.5)
 
-    assert len(rows[0]) == 9
+    assert len(rows[0]) == 10
+    assert "Context" in display._usage_table_headers()
     assert "Reasoning" not in display._usage_table_headers()
 
 
@@ -480,6 +485,6 @@ def test_usage_rows_can_show_reasoning_when_enabled():
 
     rows = display._usage_rows(total, duration_s=1.5)
 
-    assert len(rows[0]) == 10
+    assert len(rows[0]) == 11
     assert "Reasoning" in display._usage_table_headers()
-    assert rows[0][7] == "3"
+    assert rows[0][8] == "3"

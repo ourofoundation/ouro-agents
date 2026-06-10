@@ -5,7 +5,7 @@
   },
   "agent": {
     "name": "hermes",
-    "model": "xiaomi/mimo-v2.5-pro",
+    "model": "minimax/minimax-m3",
     "reasoning": {
       "effort": "high"
     },
@@ -27,21 +27,21 @@
   },
   "subagents": {
     "preflight": {
-      "model": "xiaomi/mimo-v2.5-pro",
+      "model": "minimax/minimax-m3",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 4
     },
     "research": {
-      "model": "xiaomi/mimo-v2.5-pro",
+      "model": "minimax/minimax-m3",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 10
     },
     "writer": {
-      "model": "xiaomi/mimo-v2.5-pro"
+      "model": "minimax/minimax-m3"
     },
     "executor": {
       "max_steps": 24
@@ -50,7 +50,7 @@
   "modes": {
     "planning": {
       "enabled": false,
-      "model": "xiaomi/mimo-v2.5-pro",
+      "model": "minimax/minimax-m3",
       "max_steps": 20,
       "cadence": "4h",
       "min_heartbeats": 4,
@@ -60,8 +60,8 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "xiaomi/mimo-v2.5-pro",
-      "max_steps": 20,
+      "model": "minimax/minimax-m3",
+      "max_steps": 40,
       "active_hours": {
         "start": "09:00",
         "end": "22:00",
@@ -79,7 +79,7 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/hermes/workspace/memory",
-    "extraction_model": "xiaomi/mimo-v2.5-pro",
+    "extraction_model": "minimax/minimax-m3",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "retrieval_queries": 3,

@@ -303,6 +303,44 @@ class TestMirroredUsageTracking(unittest.TestCase):
         self.assertEqual(local_b.total_output_tokens, 3)
         self.assertEqual(shared.total_input_tokens, 17)
         self.assertEqual(shared.total_output_tokens, 7)
+        self.assertEqual(shared.current_context_tokens, 7)
+        self.assertEqual(local_a.current_context_tokens, 10)
+        self.assertEqual(local_b.current_context_tokens, 7)
+
+    def test_run_usage_tracks_latest_input_as_current_context(self):
+        tracker = UsageTracker()
+
+        record_usage_from_response(
+            _response(id="resp_a", usage={"prompt_tokens": 100, "completion_tokens": 4}, choices=[]),
+            tracker,
+        )
+        record_usage_from_response(
+            _response(id="resp_b", usage={"prompt_tokens": 150, "completion_tokens": 6}, choices=[]),
+            tracker,
+        )
+
+        usage = RunUsage.from_tracker(tracker, model_id="main")
+
+        self.assertEqual(usage.input_tokens, 250)
+        self.assertEqual(usage.current_context_tokens, 150)
+        self.assertEqual(usage.dict()["current_context_tokens"], 150)
+        self.assertEqual(usage.dict()["input"]["current_context_tokens"], 150)
+
+    def test_non_context_usage_does_not_replace_current_context(self):
+        tracker = UsageTracker()
+
+        record_usage_from_response(
+            _response(id="main", usage={"prompt_tokens": 12_000, "completion_tokens": 100}, choices=[]),
+            tracker,
+        )
+        record_usage_from_response(
+            _response(id="embed", usage={"prompt_tokens": 4, "completion_tokens": 0}, choices=[]),
+            tracker,
+            record_context=False,
+        )
+
+        self.assertEqual(tracker.total_input_tokens, 12_004)
+        self.assertEqual(tracker.current_context_tokens, 12_000)
 
     def test_residual_main_usage_stays_zero_when_total_equals_parallel_subagents(self):
         shared = UsageTracker()

@@ -17,6 +17,7 @@ ReasoningCallback = Callable[[str], None]
 
 TRACKER_INT_FIELDS = {
     "input_tokens": "total_input_tokens",
+    "current_context_tokens": "current_context_tokens",
     "cached_input_tokens": "total_cached_input_tokens",
     "cache_write_tokens": "total_cache_write_tokens",
     "input_audio_tokens": "total_input_audio_tokens",
@@ -52,6 +53,7 @@ class RunUsage:
     model_id: str = ""
     steps: int = 0
     input_tokens: int = 0
+    current_context_tokens: int = 0
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
     input_audio_tokens: int = 0
@@ -101,6 +103,7 @@ class RunUsage:
             "model": self.model_id,
             "steps": self.steps,
             "input_tokens": self.input_tokens,
+            "current_context_tokens": self.current_context_tokens,
             "cached_input_tokens": self.cached_input_tokens,
             "uncached_input_tokens": self.uncached_input_tokens,
             "cache_write_tokens": self.cache_write_tokens,
@@ -110,6 +113,7 @@ class RunUsage:
             "num_api_calls": self.num_api_calls,
             "input": {
                 "tokens": self.input_tokens,
+                "current_context_tokens": self.current_context_tokens,
                 "cached_tokens": self.cached_input_tokens,
                 "uncached_tokens": self.uncached_input_tokens,
                 "cache_write_tokens": self.cache_write_tokens,
@@ -166,15 +170,28 @@ class UsageTracker:
         self,
         gen_id: str,
         usage: Optional[dict[str, Any]] = None,
+        *,
+        record_context: bool = True,
     ):
         """Record a generation with token and cost metadata from the response."""
         generation = {"id": gen_id}
         if usage:
             generation.update(usage)
+            if record_context:
+                generation["context_input_tokens"] = usage.get("input_tokens", 0)
         self._generations.append(generation)
 
     def _sum_int(self, field: str) -> int:
         return sum(int(g.get(field, 0) or 0) for g in self._generations)
+
+    def _latest_int(self, field: str) -> int:
+        for generation in reversed(self._generations):
+            if field in generation:
+                try:
+                    return int(generation.get(field, 0) or 0)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
 
     def _sum_float(self, field: str) -> Optional[float]:
         values = [float(v) for g in self._generations if (v := g.get(field)) is not None]
@@ -195,6 +212,10 @@ class UsageTracker:
     @property
     def total_input_tokens(self) -> int:
         return self._sum_int("input_tokens")
+
+    @property
+    def current_context_tokens(self) -> int:
+        return self._latest_int("context_input_tokens")
 
     @property
     def total_output_tokens(self) -> int:
@@ -289,10 +310,12 @@ class MirroredUsageTracker:
         self,
         gen_id: str,
         usage: Optional[dict[str, Any]] = None,
+        *,
+        record_context: bool = True,
     ):
-        self._primary.record(gen_id, usage)
+        self._primary.record(gen_id, usage, record_context=record_context)
         for tracker in self._mirrors:
-            tracker.record(gen_id, usage)
+            tracker.record(gen_id, usage, record_context=record_context)
 
     def reset(self):
         self._primary.reset()
@@ -304,6 +327,10 @@ class MirroredUsageTracker:
     @property
     def total_input_tokens(self) -> int:
         return self._primary.total_input_tokens
+
+    @property
+    def current_context_tokens(self) -> int:
+        return self._primary.current_context_tokens
 
     @property
     def total_output_tokens(self) -> int:
@@ -490,6 +517,7 @@ def record_usage_from_response(
     *,
     gen_id_prefix: str = "usage",
     reasoning_callback: Optional[ReasoningCallback] = None,
+    record_context: bool = True,
 ) -> Optional[str]:
     """Record usage from an OpenAI-compatible response object."""
     gen_id = _usage_field(response, "id")
@@ -501,7 +529,7 @@ def record_usage_from_response(
     if not gen_id and _stream_usage_has_tokens(usage_data):
         gen_id = f"{gen_id_prefix}-{uuid.uuid4().hex}"
     if gen_id:
-        tracker.record(gen_id, usage_data)
+        tracker.record(gen_id, usage_data, record_context=record_context)
     return gen_id
 
 
@@ -806,6 +834,8 @@ def _usage_summary_parts(
         parts.append(f"model={usage.model_id}")
     if include_steps:
         parts.append(f"steps={usage.steps}")
+    if getattr(usage, "current_context_tokens", 0):
+        parts.append(f"ctx={usage.current_context_tokens:,}tok")
 
     parts.extend(
         [
@@ -908,6 +938,7 @@ def residual_main_usage(
         model_id=total.model_id,
         steps=total.steps,
         input_tokens=max(0, total.input_tokens - _sum_ledger_attr(ledger, "input_tokens")),
+        current_context_tokens=total.current_context_tokens,
         cached_input_tokens=max(
             0, total.cached_input_tokens - _sum_ledger_attr(ledger, "cached_input_tokens")
         ),

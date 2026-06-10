@@ -155,6 +155,7 @@ class OuroDisplay:
         self,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        current_context_tokens: int = 0,
         cached_input_tokens: int = 0,
         step_number: int = 0,
         duration_s: float | None = None,
@@ -167,6 +168,8 @@ class OuroDisplay:
         if duration_s is not None:
             parts.append(f"{duration_s:.2f}s")
         parts.append(f"{total:,} tok")
+        if current_context_tokens:
+            parts.append(f"ctx {current_context_tokens:,}")
         if input_tokens:
             parts.append(f"in {input_tokens:,}")
         if cached_input_tokens:
@@ -183,6 +186,8 @@ class OuroDisplay:
         parts: list[str] = []
         if usage.total_tokens:
             parts.append(f"{usage.total_tokens:,} tok")
+        if usage.current_context_tokens:
+            parts.append(f"ctx {usage.current_context_tokens:,}")
         if usage.input_tokens:
             parts.append(f"in {usage.input_tokens:,}")
         if usage.cached_input_tokens:
@@ -208,6 +213,8 @@ class OuroDisplay:
         total_tok = u.total_tokens
         if total_tok:
             parts.append(f"{total_tok:,} tok")
+        if u.current_context_tokens:
+            parts.append(f"ctx {u.current_context_tokens:,}")
         if u.input_tokens:
             parts.append(f"in {u.input_tokens:,}")
         if u.cached_input_tokens:
@@ -248,6 +255,7 @@ class OuroDisplay:
             "Scope",
             "Model",
             "Steps",
+            "Context",
             "Input",
             "Cached",
             "Uncached",
@@ -259,7 +267,7 @@ class OuroDisplay:
         return headers
 
     def _usage_table_alignments(self) -> list[str]:
-        alignments = ["---", "---", "---:", "---:", "---:", "---:", "---:"]
+        alignments = ["---", "---", "---:", "---:", "---:", "---:", "---:", "---:"]
         if self.show_reasoning_in_summary:
             alignments.append("---:")
         alignments.extend(["---:", "---:"])
@@ -283,6 +291,7 @@ class OuroDisplay:
                 self._escape_md_cell(scope),
                 self._escape_md_cell(row_usage.model_id or "-"),
                 self._format_usage_number(row_usage.steps),
+                self._format_usage_number(row_usage.current_context_tokens),
                 self._format_usage_number(row_usage.input_tokens),
                 self._format_usage_number(row_usage.cached_input_tokens),
                 self._format_usage_number(row_usage.uncached_input_tokens),
@@ -291,7 +300,7 @@ class OuroDisplay:
                 self._format_usage_duration(row_duration_s),
             ]
             if self.show_reasoning_in_summary:
-                values.insert(7, self._format_usage_number(row_usage.reasoning_tokens))
+                values.insert(8, self._format_usage_number(row_usage.reasoning_tokens))
             return tuple(values)
 
         def _subagent_row(
@@ -302,6 +311,7 @@ class OuroDisplay:
                 self._escape_md_cell(scope),
                 self._escape_md_cell(row_usage.model_id or "-"),
                 self._format_usage_number(row_usage.steps),
+                self._format_usage_number(row_usage.current_context_tokens),
                 self._format_usage_number(row_usage.input_tokens),
                 self._format_usage_number(row_usage.cached_input_tokens),
                 self._format_usage_number(row_usage.uncached_input_tokens),
@@ -310,7 +320,7 @@ class OuroDisplay:
                 self._format_usage_duration(row_usage.wall_time_ms / 1000),
             ]
             if self.show_reasoning_in_summary:
-                values.insert(7, self._format_usage_number(row_usage.reasoning_tokens))
+                values.insert(8, self._format_usage_number(row_usage.reasoning_tokens))
             return tuple(values)
 
         if not subagent_ledger and not memory_ledger:

@@ -255,6 +255,8 @@ class TerminalRunProgress(AgentObserver):
                 parts.append(f"{usage['steps']} steps")
             if usage.get("total_tokens"):
                 parts.append(f"{usage['total_tokens']:,} tok")
+            if usage.get("current_context_tokens"):
+                parts.append(f"ctx {usage['current_context_tokens']:,}")
             if usage.get("cost_usd") is not None:
                 parts.append(f"${usage['cost_usd']:.6f}")
             asset = event.detail.get("asset")
@@ -272,6 +274,8 @@ class TerminalRunProgress(AgentObserver):
         if total is None:
             return event.message or "token update"
         parts = [f"{total:,} tok"]
+        if detail.get("current_context_tokens"):
+            parts.append(f"ctx {detail['current_context_tokens']:,}")
         if detail.get("input_tokens"):
             parts.append(f"in {detail['input_tokens']:,}")
         if detail.get("output_tokens"):

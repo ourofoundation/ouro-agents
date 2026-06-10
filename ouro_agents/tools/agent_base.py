@@ -67,7 +67,9 @@ _PREAMBLE_PREFIX_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^hmm,?\s+", re.IGNORECASE),
     re.compile(r"^actually,?\s+", re.IGNORECASE),
     re.compile(r"^one\s+(?:moment|sec(?:ond)?)\b", re.IGNORECASE),
-    re.compile(r"^(?:give|just)\s+me\s+(?:a\s+)?(?:moment|sec(?:ond)?|minute)\b", re.IGNORECASE),
+    re.compile(
+        r"^(?:give|just)\s+me\s+(?:a\s+)?(?:moment|sec(?:ond)?|minute)\b", re.IGNORECASE
+    ),
     re.compile(r"^thinking\b", re.IGNORECASE),
     re.compile(r"^working\s+on\b", re.IGNORECASE),
     re.compile(r"^checking\b", re.IGNORECASE),
@@ -80,16 +82,25 @@ _PREAMBLE_PREFIX_PATTERNS: tuple[re.Pattern[str], ...] = (
 # Substring fragments that, if present anywhere, strongly indicate an
 # intermediate thought rather than a complete reply.
 _PREAMBLE_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"\blet\s+me\s+(?:check|look|search|pull|surface|see|verify|confirm|grab|fetch|run|try)\b", re.IGNORECASE),
-    re.compile(r"\bi'?ll\s+(?:check|look|search|pull|surface|see|verify|confirm|grab|fetch|run|try|now)\b", re.IGNORECASE),
-    re.compile(r"\bi'?m\s+going\s+to\s+(?:check|look|search|pull|surface|verify|run|try)\b", re.IGNORECASE),
+    re.compile(
+        r"\blet\s+me\s+(?:check|look|search|pull|surface|see|verify|confirm|grab|fetch|run|try)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bi'?ll\s+(?:check|look|search|pull|surface|see|verify|confirm|grab|fetch|run|try|now)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bi'?m\s+going\s+to\s+(?:check|look|search|pull|surface|verify|run|try)\b",
+        re.IGNORECASE,
+    ),
 )
 
 _PREAMBLE_NUDGE_OBSERVATION = (
     "[runtime] Your previous step ended on a preamble — content without a tool call "
     "and without final_answer:\n"
     "    {preview}\n"
-    "That looked like an intermediate thought (e.g. \"let me…\", \"I'll…\"), so "
+    'That looked like an intermediate thought (e.g. "let me…", "I\'ll…"), so '
     "it has been treated as an unfinished step rather than a final reply.\n\n"
     "Now do exactly one of:\n"
     "  - call the actual tool you intended (e.g. memory_recall, search_assets, send_message); "
@@ -118,6 +129,15 @@ _EMPTY_RESPONSE_NUDGE_OBSERVATION = (
     "  - call the tool you intended to call next, or\n"
     "  - call final_answer with your result if you are done.\n\n"
     "Do not repeat work you have already completed."
+)
+_REASONING_ONLY_NUDGE_OBSERVATION = (
+    "[runtime] Your previous model response was an interleaved-thinking step: "
+    "it had reasoning, but no assistant content and no tool calls yet:\n"
+    "    {preview}\n"
+    "Continue from that reasoning and end this step at an action boundary.\n\n"
+    "Now do exactly one of:\n"
+    "  - call the actual tool you intended, or\n"
+    "  - call final_answer with your result if you are done."
 )
 
 
@@ -464,9 +484,7 @@ def _parse_kimi_tool_call_recovery(content: str) -> _ToolCallRecovery | None:
             if arguments is None:
                 continue
 
-            result.append(
-                _make_tool_call(func_name, arguments, tool_id=tool_call_id)
-            )
+            result.append(_make_tool_call(func_name, arguments, tool_id=tool_call_id))
 
     if not result:
         return None
@@ -938,6 +956,13 @@ def _build_empty_narrated_tool_call_nudge_observation(content: str) -> str:
     return _EMPTY_NARRATED_TOOL_CALL_NUDGE_OBSERVATION.format(preview=preview)
 
 
+def _build_reasoning_only_nudge_observation(content: str) -> str:
+    preview = content.strip()
+    if len(preview) > _PREAMBLE_NUDGE_PREVIEW_CHARS:
+        preview = preview[:_PREAMBLE_NUDGE_PREVIEW_CHARS].rstrip() + "…"
+    return _REASONING_ONLY_NUDGE_OBSERVATION.format(preview=preview)
+
+
 def _run_recovery_cascade(content: str) -> _ToolCallRecovery | None:
     """Try every salvage parser in priority order on a single text blob."""
     if not content:
@@ -968,17 +993,26 @@ def _raw_reasoning_text_for_salvage(message) -> str:
     if raw_message is None:
         return ""
     parts: list[str] = []
+    seen: set[str] = set()
+
+    def append_part(value: str) -> None:
+        text = value.strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        parts.append(text)
+
     for field in ("reasoning", "reasoning_content"):
         value = _object_field(raw_message, field)
         if isinstance(value, str) and value:
-            parts.append(value)
+            append_part(value)
     details = _object_field(raw_message, "reasoning_details")
     if isinstance(details, list):
         for entry in details:
             if isinstance(entry, dict):
                 text = entry.get("text") or entry.get("summary")
                 if isinstance(text, str) and text:
-                    parts.append(text)
+                    append_part(text)
     return "\n".join(parts)
 
 
@@ -1025,12 +1059,31 @@ def _patch_model_for_xml_tool_calls(model, is_chat_mode=False):
                     _install_recovered_tool_calls(message, reasoning_recovery)
                     return message
 
-                model._ouro_empty_response_streak += 1
-                _debug_empty_model_response(message, exc)
-                raw_reasoning = _extract_raw_reasoning_text(message)
-                if raw_reasoning:
-                    get_display().thought(_message_preview(raw_reasoning))
+                if reasoning_text.strip():
+                    # This is not truly empty. Newer reasoning models can emit
+                    # an interleaved thinking step after tool results before
+                    # committing to the next tool call or final answer. The
+                    # smolagents loop needs each step to end at an action
+                    # boundary, so surface the reasoning back as an observation
+                    # and ask the model to continue from it.
+                    get_display().thought(_message_preview(reasoning_text))
+                    logger.info(
+                        "Model returned interleaved-thinking output without "
+                        "content or tool calls; continuing to next action "
+                        "boundary: %r",
+                        _message_preview(reasoning_text),
+                    )
+                    model._ouro_empty_response_streak = 0
+                    message.role = MessageRole.ASSISTANT
+                    message.tool_calls = []
+                    message.content = ""
+                    message._ouro_preamble_nudge_observation = (
+                        _build_reasoning_only_nudge_observation(reasoning_text)
+                    )
+                    return message
 
+                _debug_empty_model_response(message, exc)
+                model._ouro_empty_response_streak += 1
                 if model._ouro_empty_response_streak < _EMPTY_RESPONSE_MAX_RETRIES:
                     logger.warning(
                         "Model returned no content and no tool calls "
@@ -1204,6 +1257,9 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
     # steps. Five is enough to flag a stuck loop without firing on the
     # occasional one-off where a strong model genuinely needed to think.
     _REASONING_ONLY_WARN_THRESHOLD = 5
+    # Inject step-budget guidance only near the end so normal runs are not
+    # cluttered, but the model still gets explicit pressure to close.
+    _STEP_BUDGET_WARNING_THRESHOLD = 5
 
     def __init__(
         self,
@@ -1217,7 +1273,11 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         self._cancellation_token = cancellation_token
         self._reasoning_only_streak = 0
         self._reasoning_only_warned = False
+        configured_max_steps = kwargs.get("max_steps")
         super().__init__(*args, **kwargs)
+        self._step_budget_max_steps = configured_max_steps or getattr(
+            self, "max_steps", None
+        )
         _patch_model_for_xml_tool_calls(self.model, is_chat_mode=is_chat_mode)
 
     def write_memory_to_messages(self, summary_mode: bool = False) -> list[ChatMessage]:
@@ -1250,10 +1310,9 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
             yield output
         self._track_reasoning_only_step(memory_step)
         self._inject_preamble_nudge_observation(memory_step)
+        self._inject_step_budget_observation(memory_step)
 
-    def _inject_preamble_nudge_observation(
-        self, memory_step: ActionStep
-    ) -> None:
+    def _inject_preamble_nudge_observation(self, memory_step: ActionStep) -> None:
         """Surface a nudge when the patched parser flagged preamble content.
 
         The patched ``parse_tool_calls`` cannot itself add to the agent's
@@ -1279,6 +1338,63 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
             delattr(message, "_ouro_preamble_nudge_observation")
         except AttributeError:
             pass
+
+    def _inject_step_budget_observation(self, memory_step: ActionStep) -> None:
+        """Tell the next inference how much of its step budget remains.
+
+        Smolagents enforces ``max_steps`` outside the prompt. Some models, especially
+        interleaved-thinking models, will keep planning useful work right up to the
+        cap unless the budget is explicit in-band. We add a terse observation only
+        in the final few steps so the model can choose a closing action instead of
+        starting another search/tool chain.
+        """
+        if getattr(memory_step, "is_final_answer", False):
+            return
+        max_steps = self._step_budget_max_steps
+        if not isinstance(max_steps, int) or max_steps <= 0:
+            return
+        step_number = getattr(memory_step, "step_number", 0)
+        if not isinstance(step_number, int) or step_number <= 0:
+            return
+        remaining = max_steps - step_number
+        if remaining < 0 or remaining > self._STEP_BUDGET_WARNING_THRESHOLD:
+            return
+
+        if remaining == 0:
+            guidance = (
+                "No steps remain after this one. Do not start new work; the run "
+                "must end now."
+            )
+        elif remaining == 1:
+            guidance = (
+                "This is the last available next step. Do not start a new search "
+                "or multi-tool chain; call final_answer, or make one decisive "
+                "create/update/comment call only if that single call completes "
+                "the deliverable."
+            )
+        elif remaining <= 3:
+            guidance = (
+                "You are near the end. Stop broad exploration; make the next "
+                "tool call produce or save the artifact, then finish."
+            )
+        else:
+            guidance = (
+                "Begin converging now: prioritize a concrete artifact, platform "
+                "update, comment, or final_answer over further exploration."
+            )
+
+        observation = (
+            "[runtime] Step budget: completed "
+            f"{step_number}/{max_steps}; {remaining} step"
+            f"{'' if remaining == 1 else 's'} "
+            f"{'remains' if remaining == 1 else 'remain'}. {guidance}"
+        )
+        existing = getattr(memory_step, "observations", None) or ""
+        if observation in existing:
+            return
+        memory_step.observations = (
+            f"{existing}\n\n{observation}".strip() if existing else observation
+        )
 
     def _track_reasoning_only_step(self, memory_step: ActionStep) -> None:
         """Warn once when the model loops on reasoning without ever calling tools.
@@ -1359,8 +1475,6 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                 f"\n\n[Output truncated: {len(result):,} chars total,"
                 f" showing first {_MAX_TOOL_OUTPUT_CHARS:,}]"
             )
-            logger.warning(
-                "Fell back to truncation for tool '%s'", tool_name
-            )
+            logger.warning("Fell back to truncation for tool '%s'", tool_name)
             return truncated + suffix
         return result

@@ -53,6 +53,7 @@ def _snapshot_tracker(model):
     return {
         "calls": tracker.num_calls,
         "input_tokens": tracker.total_input_tokens,
+        "current_context_tokens": tracker.current_context_tokens,
         "output_tokens": tracker.total_output_tokens,
         "cached_input_tokens": tracker.total_cached_input_tokens,
         "cache_write_tokens": tracker.total_cache_write_tokens,
@@ -84,6 +85,11 @@ def _compute_usage(model, before: Optional[dict], wall_ms: int) -> SubAgentUsage
     return SubAgentUsage(
         model_id=model_id,
         input_tokens=tracker.total_input_tokens - before["input_tokens"],
+        current_context_tokens=(
+            tracker.current_context_tokens
+            if tracker.num_calls > before["calls"]
+            else 0
+        ),
         output_tokens=tracker.total_output_tokens - before["output_tokens"],
         cached_input_tokens=tracker.total_cached_input_tokens
         - before["cached_input_tokens"],

@@ -141,3 +141,30 @@ def test_terminal_progress_summarizes_event_context():
         kind == "success" and message.startswith("ok complete: run no action")
         for kind, message in display.calls
     )
+
+
+def test_token_progress_includes_current_context_size():
+    display = _FakeDisplay()
+    event_run = EventRunContext(
+        event_type="mention",
+        task="reply",
+        mode=RunMode.CHAT_REPLY,
+        conversation_id="conversation-1",
+        user_id="user-1",
+    )
+    progress = TerminalRunProgress(event_run, display)
+
+    label = progress._token_label(
+        ProgressEvent(
+            "token_update",
+            detail={
+                "total_tokens": 1_250,
+                "current_context_tokens": 900,
+                "input_tokens": 1_000,
+                "output_tokens": 250,
+                "cost_usd": 0.01,
+            },
+        )
+    )
+
+    assert label == "1,250 tok | ctx 900 | in 1,000 | out 250 | $0.010000"

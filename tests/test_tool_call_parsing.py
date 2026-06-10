@@ -137,6 +137,48 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertIn("reasoning_details:", reasoning)
         self.assertIn("provider-specific trace", reasoning)
 
+    def test_interleaved_thinking_step_continues_without_terminating(self):
+        model = _EmptyResponseModel()
+        _patch_model_for_xml_tool_calls(model)
+
+        raw = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=None,
+                        reasoning="Let me check the team feeds next.",
+                        reasoning_details=[
+                            {
+                                "type": "reasoning.text",
+                                "text": "Let me check the team feeds next.",
+                                "format": "unknown",
+                            }
+                        ],
+                    ),
+                )
+            ]
+        )
+
+        for _ in range(_EMPTY_RESPONSE_MAX_RETRIES + 1):
+            message = ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content="",
+                raw=raw,
+            )
+            parsed = model.parse_tool_calls(message)
+
+            self.assertEqual(parsed.role, MessageRole.ASSISTANT)
+            self.assertEqual(parsed.tool_calls, [])
+            self.assertEqual(parsed.content, "")
+            nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
+            self.assertIsNotNone(nudge)
+            self.assertIn("interleaved-thinking step", nudge)
+            self.assertIn("end this step at an action boundary", nudge)
+            self.assertIn("Let me check the team feeds next.", nudge)
+            self.assertEqual(model._ouro_empty_response_streak, 0)
+
     def test_recovers_raw_no_action_as_final_answer(self):
         model = _AlwaysFailsModel()
         _patch_model_for_xml_tool_calls(model)
@@ -151,7 +193,9 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(len(parsed.tool_calls), 1)
         self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
-        self.assertEqual(parsed.tool_calls[0].function.arguments, {"answer": "NO_ACTION"})
+        self.assertEqual(
+            parsed.tool_calls[0].function.arguments, {"answer": "NO_ACTION"}
+        )
 
     def test_recovers_terminal_no_action_after_reasoning(self):
         model = _AlwaysFailsModel()
@@ -170,7 +214,9 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(len(parsed.tool_calls), 1)
         self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
-        self.assertEqual(parsed.tool_calls[0].function.arguments, {"answer": "NO_ACTION"})
+        self.assertEqual(
+            parsed.tool_calls[0].function.arguments, {"answer": "NO_ACTION"}
+        )
 
     def test_recovers_keyword_style_call(self):
         tool_calls = _parse_inline_tool_call('get_comments(parent_id="abc-123")')
@@ -268,7 +314,9 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertIsNotNone(tool_calls)
         self.assertEqual(tool_calls[0].function.name, "execute_route")
         self.assertEqual(
-            tool_calls[0].function.arguments["body"]["input"]["structure"]["sites"][1]["element"],
+            tool_calls[0].function.arguments["body"]["input"]["structure"]["sites"][1][
+                "element"
+            ],
             "Fe",
         )
         self.assertEqual(
@@ -314,11 +362,15 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertIsNotNone(recovery)
         self.assertEqual(recovery.tool_calls[0].function.name, "execute_route")
         self.assertEqual(
-            recovery.tool_calls[0].function.arguments["body"]["input"]["structure"]["formula"],
+            recovery.tool_calls[0].function.arguments["body"]["input"]["structure"][
+                "formula"
+            ],
             "Ce2Fe17",
         )
         self.assertFalse(
-            recovery.tool_calls[0].function.arguments["body"]["input"]["options"]["relax"]
+            recovery.tool_calls[0].function.arguments["body"]["input"]["options"][
+                "relax"
+            ]
         )
 
     def test_recovers_structured_payload_with_contaminated_list_arguments(self):
@@ -365,7 +417,9 @@ class TestToolCallParsing(unittest.TestCase):
 
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(parsed.tool_calls, [])
-        self.assertEqual(parsed.content, "I'll inspect the thread next and then report back.")
+        self.assertEqual(
+            parsed.content, "I'll inspect the thread next and then report back."
+        )
 
     def test_chat_mode_recovers_raw_text_with_angle_brackets(self):
         model = _AlwaysFailsModel()
@@ -411,9 +465,9 @@ class TestToolCallParsing(unittest.TestCase):
         # bypassed by the reasoning parser.
         recovery = _parse_dsml_tool_call_recovery(
             "<｜DSML｜function_calls>\n"
-            "<｜DSML｜invoke name=\"get_asset\">\n"
-            "<｜DSML｜parameter name=\"id\" string=\"true\">019de031-c2a0-7d2f-a818-a6480296e4ab</｜DSML｜parameter>\n"
-            "<｜DSML｜parameter name=\"detail\" string=\"true\">full</｜DSML｜parameter>\n"
+            '<｜DSML｜invoke name="get_asset">\n'
+            '<｜DSML｜parameter name="id" string="true">019de031-c2a0-7d2f-a818-a6480296e4ab</｜DSML｜parameter>\n'
+            '<｜DSML｜parameter name="detail" string="true">full</｜DSML｜parameter>\n'
             "</｜DSML｜invoke>\n"
             "</｜DSML｜function_calls>"
         )
@@ -434,10 +488,10 @@ class TestToolCallParsing(unittest.TestCase):
         # decoded as JSON so booleans/numbers/lists come through correctly.
         tool_calls = _parse_dsml_tool_calls(
             "<｜DSML｜function_calls>"
-            "<｜DSML｜invoke name=\"execute_route\">"
-            "<｜DSML｜parameter name=\"dry_run\">true</｜DSML｜parameter>"
-            "<｜DSML｜parameter name=\"limit\">10</｜DSML｜parameter>"
-            "<｜DSML｜parameter name=\"tags\">[\"a\",\"b\"]</｜DSML｜parameter>"
+            '<｜DSML｜invoke name="execute_route">'
+            '<｜DSML｜parameter name="dry_run">true</｜DSML｜parameter>'
+            '<｜DSML｜parameter name="limit">10</｜DSML｜parameter>'
+            '<｜DSML｜parameter name="tags">["a","b"]</｜DSML｜parameter>'
             "</｜DSML｜invoke>"
             "</｜DSML｜function_calls>"
         )
@@ -454,17 +508,15 @@ class TestToolCallParsing(unittest.TestCase):
         # in transit. Make sure either form parses.
         recovery = _parse_dsml_tool_call_recovery(
             "<|DSML|function_calls>"
-            "<|DSML|invoke name=\"final_answer\">"
-            "<|DSML|parameter name=\"answer\" string=\"true\">done</|DSML|parameter>"
+            '<|DSML|invoke name="final_answer">'
+            '<|DSML|parameter name="answer" string="true">done</|DSML|parameter>'
             "</|DSML|invoke>"
             "</|DSML|function_calls>"
         )
 
         self.assertIsNotNone(recovery)
         self.assertEqual(recovery.tool_calls[0].function.name, "final_answer")
-        self.assertEqual(
-            recovery.tool_calls[0].function.arguments, {"answer": "done"}
-        )
+        self.assertEqual(recovery.tool_calls[0].function.arguments, {"answer": "done"})
 
     def test_recovers_tool_call_from_reasoning_when_content_empty(self):
         # vLLM #36654: the model's tool call leaks into the ``reasoning``
@@ -477,8 +529,8 @@ class TestToolCallParsing(unittest.TestCase):
         leaked = (
             "I should look up the asset first.\n\n"
             "<｜DSML｜function_calls>"
-            "<｜DSML｜invoke name=\"get_asset\">"
-            "<｜DSML｜parameter name=\"id\" string=\"true\">abc-123</｜DSML｜parameter>"
+            '<｜DSML｜invoke name="get_asset">'
+            '<｜DSML｜parameter name="id" string="true">abc-123</｜DSML｜parameter>'
             "</｜DSML｜invoke>"
             "</｜DSML｜function_calls>"
         )
@@ -506,9 +558,7 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(len(parsed.tool_calls), 1)
         self.assertEqual(parsed.tool_calls[0].function.name, "get_asset")
-        self.assertEqual(
-            parsed.tool_calls[0].function.arguments, {"id": "abc-123"}
-        )
+        self.assertEqual(parsed.tool_calls[0].function.arguments, {"id": "abc-123"})
 
     def test_recovers_tool_call_from_reasoning_details_text(self):
         # When the leaked tokens live inside ``reasoning_details[].text``
@@ -519,9 +569,9 @@ class TestToolCallParsing(unittest.TestCase):
 
         leaked = (
             "<｜DSML｜function_calls>"
-            "<｜DSML｜invoke name=\"create_comment\">"
-            "<｜DSML｜parameter name=\"parent_id\" string=\"true\">post-1</｜DSML｜parameter>"
-            "<｜DSML｜parameter name=\"content\" string=\"true\">ok</｜DSML｜parameter>"
+            '<｜DSML｜invoke name="create_comment">'
+            '<｜DSML｜parameter name="parent_id" string="true">post-1</｜DSML｜parameter>'
+            '<｜DSML｜parameter name="content" string="true">ok</｜DSML｜parameter>'
             "</｜DSML｜invoke>"
             "</｜DSML｜function_calls>"
         )
@@ -534,7 +584,11 @@ class TestToolCallParsing(unittest.TestCase):
                         tool_calls=None,
                         reasoning=None,
                         reasoning_details=[
-                            {"type": "reasoning.text", "text": leaked, "format": "unknown"}
+                            {
+                                "type": "reasoning.text",
+                                "text": leaked,
+                                "format": "unknown",
+                            }
                         ],
                     ),
                 )
@@ -576,7 +630,9 @@ class TestToolCallParsing(unittest.TestCase):
 
         # Below threshold: no warning fires.
         with self.assertNoLogs(agent_base_logger, level=WARNING):
-            for _ in range(SanitizedToolCallingAgent._REASONING_ONLY_WARN_THRESHOLD - 1):
+            for _ in range(
+                SanitizedToolCallingAgent._REASONING_ONLY_WARN_THRESHOLD - 1
+            ):
                 agent._track_reasoning_only_step(SimpleNamespace(tool_calls=None))
 
         # Crossing the threshold fires exactly one warning.
@@ -679,9 +735,7 @@ class TestPreambleDetection(unittest.TestCase):
         self.assertTrue(
             _looks_like_preamble("Pulling up the results from last week...")
         )
-        self.assertTrue(
-            _looks_like_preamble("Pulling up the results from last week…")
-        )
+        self.assertTrue(_looks_like_preamble("Pulling up the results from last week…"))
         self.assertTrue(
             _looks_like_preamble("Here are the candidates I want to check:")
         )
@@ -692,7 +746,7 @@ class TestPreambleDetection(unittest.TestCase):
             "Sure - use {'key': 'value'} as an example payload.",
             (
                 "Correct — no active quests. The last three plans all hit "
-                "\"success\" and wrapped up. Want me to scope a new direction?"
+                '"success" and wrapped up. Want me to scope a new direction?'
             ),
             "The screening returned 4 candidates: Mn2Sb, MnAlGe, MgMnGe, KMnP.",
             "Done. Posted the update at https://example.com/post/abc.",
@@ -737,9 +791,7 @@ class TestRecoverChatFinalAnswer(unittest.TestCase):
         )
 
     def test_returns_none_when_tool_calls_present(self):
-        self.assertIsNone(
-            _recover_chat_final_answer("any text", ["tool"])
-        )
+        self.assertIsNone(_recover_chat_final_answer("any text", ["tool"]))
 
     def test_returns_none_for_empty(self):
         self.assertIsNone(_recover_chat_final_answer("", None))
@@ -936,6 +988,87 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
 
         self.assertIsNone(memory_step.observations)
 
+    def test_step_budget_observation_warns_near_end(self):
+        from smolagents import tool
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        @tool
+        def sample_tool() -> str:
+            """Sample tool that exists so the agent can be constructed."""
+            return "ok"
+
+        agent = SanitizedToolCallingAgent(
+            tools=[sample_tool],
+            model=_FakeModelWithToolCalls(),
+            max_steps=20,
+        )
+        memory_step = SimpleNamespace(
+            step_number=15,
+            observations=None,
+            is_final_answer=False,
+        )
+
+        agent._inject_step_budget_observation(memory_step)
+
+        self.assertIn("completed 15/20", memory_step.observations)
+        self.assertIn("5 steps remain", memory_step.observations)
+        self.assertIn("Begin converging now", memory_step.observations)
+
+    def test_step_budget_observation_tells_last_step_to_close(self):
+        from smolagents import tool
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        @tool
+        def sample_tool() -> str:
+            """Sample tool that exists so the agent can be constructed."""
+            return "ok"
+
+        agent = SanitizedToolCallingAgent(
+            tools=[sample_tool],
+            model=_FakeModelWithToolCalls(),
+            max_steps=20,
+        )
+        memory_step = SimpleNamespace(
+            step_number=19,
+            observations="prior",
+            is_final_answer=False,
+        )
+
+        agent._inject_step_budget_observation(memory_step)
+
+        self.assertIn("prior", memory_step.observations)
+        self.assertIn("completed 19/20", memory_step.observations)
+        self.assertIn("1 step remains", memory_step.observations)
+        self.assertIn("last available next step", memory_step.observations)
+        self.assertIn("call final_answer", memory_step.observations)
+
+    def test_step_budget_observation_is_quiet_before_threshold(self):
+        from smolagents import tool
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        @tool
+        def sample_tool() -> str:
+            """Sample tool that exists so the agent can be constructed."""
+            return "ok"
+
+        agent = SanitizedToolCallingAgent(
+            tools=[sample_tool],
+            model=_FakeModelWithToolCalls(),
+            max_steps=20,
+        )
+        memory_step = SimpleNamespace(
+            step_number=14,
+            observations=None,
+            is_final_answer=False,
+        )
+
+        agent._inject_step_budget_observation(memory_step)
+
+        self.assertIsNone(memory_step.observations)
+
 
 class TestMiniMaxToolCallParsing(unittest.TestCase):
     """MiniMax M2/M2.1 emit XML tool calls that some OpenRouter routes fail to
@@ -1005,7 +1138,7 @@ class TestMiniMaxToolCallParsing(unittest.TestCase):
             "]<]minimax[>[<to>]<]minimax[>[<item>matt@ouro.foundation]<]minimax[>[</item>"
             "]<]minimax[>[</to>]<]minimax[>[<subject>Test from Hermes]<]minimax[>[</subject>"
             "]<]minimax[>[<text>Hey Matt — test 🚀\n\n— Hermes]<]minimax[>[</text>"
-            "]<]minimax[>[<html><!DOCTYPE html>\n<html>\n  <body style=\"padding: 24px;\">"
+            ']<]minimax[>[<html><!DOCTYPE html>\n<html>\n  <body style="padding: 24px;">'
             "<h2>Hey Matt</h2></body>\n</html>]<]minimax[>[</html>"
             "]<]minimax[>[<cc>]<]minimax[>[</cc>]<]minimax[>[<bcc>]<]minimax[>[</bcc>"
             "]<]minimax[>[<scheduledAt>]<]minimax[>[</scheduledAt>"
@@ -1031,7 +1164,15 @@ class TestMiniMaxToolCallParsing(unittest.TestCase):
         self.assertIn("<h2>Hey Matt</h2>", args["html"])
         self.assertTrue(args["html"].rstrip().endswith("</html>"))
         # Empty schema fields are dropped, not sent as blank strings.
-        for blank in ("cc", "bcc", "scheduledAt", "attachments", "tags", "topicId", "replyTo"):
+        for blank in (
+            "cc",
+            "bcc",
+            "scheduledAt",
+            "attachments",
+            "tags",
+            "topicId",
+            "replyTo",
+        ):
             self.assertNotIn(blank, args)
 
     def test_ignores_non_minimax_content(self):

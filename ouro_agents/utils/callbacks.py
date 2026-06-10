@@ -51,6 +51,7 @@ def build_step_callback(
     def _callback(step: ActionStep) -> None:
         in_tok = tracker.total_input_tokens
         out_tok = tracker.total_output_tokens
+        context_tok = tracker.current_context_tokens
         step_num = getattr(step, "step_number", 0)
         timing = getattr(step, "timing", None)
         duration_s = None
@@ -63,8 +64,9 @@ def build_step_callback(
                 duration_s = max(0.0, end_time - start_time)
 
         logger.info(
-            "[Step %d] Tokens so far: in=%s out=%s total=%s",
+            "[Step %d] Tokens so far: ctx=%s in=%s out=%s total=%s",
             step_num,
+            f"{context_tok:,}",
             f"{in_tok:,}",
             f"{out_tok:,}",
             f"{in_tok + out_tok:,}",
@@ -73,6 +75,7 @@ def build_step_callback(
         _display.token_summary(
             input_tokens=in_tok,
             output_tokens=out_tok,
+            current_context_tokens=context_tok,
             cached_input_tokens=tracker.total_cached_input_tokens,
             step_number=step_num,
             duration_s=duration_s,
@@ -86,6 +89,7 @@ def build_step_callback(
                         state="active",
                         detail={
                             "step": step_num,
+                            "current_context_tokens": context_tok,
                             "input_tokens": in_tok,
                             "output_tokens": out_tok,
                             "cached_input_tokens": tracker.total_cached_input_tokens,
