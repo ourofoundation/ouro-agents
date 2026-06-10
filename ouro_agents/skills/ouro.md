@@ -1,7 +1,8 @@
 ---
-
-## description: Creating, sharing, and discovering assets on the Ouro platform
+name: ouro platform
+description: Creating, sharing, and discovering assets on the Ouro platform
 load: always
+---
 
 # Ouro Platform
 

@@ -11,7 +11,7 @@ The four sources of tools:
 2. **Scheduler tools** — built by `make_scheduler_tools` (skipped when
    `restricted_servers=True`).
 3. **Built-in tools** — `delegate`, `load_tool`, `load_skill`,
-   `run_python`.
+   `run_python`, and optionally `run_shell`.
 4. **MCP tools** — exposed as deferred entries in a directory; the agent
    pulls specific ones via `load_tool`, or some are preloaded by the mode
    profile so they're immediately callable.
@@ -84,20 +84,45 @@ into its context to satisfy a request.
 
 ## run_python
 
-A sandboxed Python tool wrapping smolagents'
-`LocalPythonExecutor`. Always available in chat / autonomous modes;
-included in subagents that set `needs_python_tool=True` (e.g.
-`developer`).
+A persistent Python sandbox. Always available in chat / autonomous modes;
+included in subagents that set `needs_python_tool=True` (e.g. `developer`).
 
-The executor:
+The backend is selected by `agent.sandbox.mode`:
 
-- Imports only the packages listed in `agent.python_packages` and
-  validates them at agent startup. Use wildcard entries such as
-  `pymatgen.*` or `ase.*` when submodule imports should be available.
-- Receives the agent's Ouro SDK client (`OURO_API_KEY` required) under
-  the global name `ouro`, so subagents can do
-  `ouro.posts.create(...)`, `ouro.routes.execute(...)`, etc.
-- Resolves paths relative to the workspace, so reads/writes stay scoped.
+- `local` preserves the existing restricted smolagents
+  `LocalPythonExecutor`. It uses an import allowlist and legacy workspace
+  helpers such as `read_file` and `write_file`.
+- `docker` runs a Python worker inside `agent.sandbox.image` with the
+  workspace bind-mounted at `/workspace` by default. In this mode, the
+  container is the sandbox boundary, so code can use normal Python APIs:
+  `pathlib.Path`, `open`, `shutil`, `glob`, `zipfile`, installed packages,
+  and `subprocess.run(...)`.
+
+In both modes, Python state persists across calls within one run and is
+discarded afterwards. Files written under the workspace persist across runs.
+
+`agent.sandbox.python_packages` entries are advertised in the tool description.
+In local mode they are added to the import allowlist; in Docker mode they are
+validated inside the configured image at startup. Use wildcard entries such as
+`pymatgen.*` or `ase.*` when submodule imports should be available.
+
+When Ouro credentials are available, the tool exposes `get_ouro_client()`
+for SDK access. In Docker mode, the container receives only the environment
+variables listed in `agent.sandbox.env_allowlist` (by default
+`OURO_API_KEY` and `OURO_BASE_URL`).
+
+## run_shell
+
+`run_shell(command)` is available only when `agent.sandbox.mode` is `docker`
+and `agent.sandbox.enable_shell` is `true`. It executes a non-interactive shell
+command in the same Docker sandbox container used by `run_python`, with the
+workspace mounted as the working directory.
+
+The command inherits the Docker sandbox limits: configured image, network mode,
+environment allowlist, memory/CPU/pid limits, `timeout_seconds`, and
+`max_output_chars`. The result includes exit code, stdout, stderr, and a timeout
+marker when applicable. Use it for short CLI commands and tests; use
+`run_python` for persistent Python state or workflows that need `get_ouro_client()`.
 
 ## MCP tools
 

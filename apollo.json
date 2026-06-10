@@ -11,13 +11,15 @@
     },
     "workspace": "./agents/apollo",
     "org_id": "00000000-0000-0000-0000-000000000000",
-    "python_packages": [
-      "numpy.*",
-      "scipy.*",
-      "ase.*",
-      "pymatgen.*",
-      "spglib.*"
-    ]
+    "sandbox": {
+      "python_packages": [
+        "numpy.*",
+        "scipy.*",
+        "ase.*",
+        "pymatgen.*",
+        "spglib.*"
+      ]
+    }
   },
   "openrouter_provider": {
     "ignore": [

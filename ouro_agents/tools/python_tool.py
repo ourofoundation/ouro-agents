@@ -1,4 +1,4 @@
-"""Sandboxed Python execution tool wrapping smolagents' LocalPythonExecutor."""
+"""Python execution tool with local and Docker sandbox backends."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from smolagents import tool
 from smolagents.local_python_executor import LocalPythonExecutor
 
 if TYPE_CHECKING:
+    from ..config import SandboxConfig
     from ouro.client import Ouro
 
 logger = logging.getLogger(__name__)
@@ -252,31 +253,46 @@ def make_python_tool(
     ouro_client: Optional["Ouro"] = None,
     python_packages: list[str] | None = None,
     package_versions: dict[str, str | None] | None = None,
+    sandbox_config: Optional["SandboxConfig"] = None,
+    agent_name: str = "agent",
+    run_id: str = "",
 ):
-    authorized = DEFAULT_AUTHORIZED_IMPORTS + (additional_authorized_imports or [])
+    use_docker = sandbox_config is not None and sandbox_config.mode == "docker"
 
-    if python_packages:
-        authorized += python_packages
+    if use_docker:
+        from .docker_sandbox import DockerSandboxSession
 
-    if ouro_client is not None:
-        authorized += OURO_AUTHORIZED_IMPORTS
-        logger.info("Ouro SDK client injected into Python sandbox")
+        executor = DockerSandboxSession(
+            config=sandbox_config,
+            workspace=workspace or Path.cwd(),
+            agent_name=agent_name,
+            run_id=run_id,
+        )
+    else:
+        authorized = DEFAULT_AUTHORIZED_IMPORTS + (additional_authorized_imports or [])
 
-    fs_funcs = _make_workspace_fs(workspace) if workspace else {}
+        if python_packages:
+            authorized += python_packages
 
-    if ouro_client is not None:
-        fs_funcs.update(_make_ouro_helpers(ouro_client))
+        if ouro_client is not None:
+            authorized += OURO_AUTHORIZED_IMPORTS
+            logger.info("Ouro SDK client injected into Python sandbox")
 
-    executor = LocalPythonExecutor(
-        additional_authorized_imports=authorized,
-        max_print_outputs_length=max_print_outputs_length,
-        additional_functions=fs_funcs,
-    )
-    # Initialize static_tools (BASE_PYTHON_TOOLS + additional_functions).
-    # Without this, static_tools stays None because send_tools() is only
-    # called automatically when an agent manages the executor — not when
-    # it's used standalone.
-    executor.send_tools({})
+        fs_funcs = _make_workspace_fs(workspace) if workspace else {}
+
+        if ouro_client is not None:
+            fs_funcs.update(_make_ouro_helpers(ouro_client))
+
+        executor = LocalPythonExecutor(
+            additional_authorized_imports=authorized,
+            max_print_outputs_length=max_print_outputs_length,
+            additional_functions=fs_funcs,
+        )
+        # Initialize static_tools (BASE_PYTHON_TOOLS + additional_functions).
+        # Without this, static_tools stays None because send_tools() is only
+        # called automatically when an agent manages the executor — not when
+        # it's used standalone.
+        executor.send_tools({})
 
     ouro_docs = ""
     if ouro_client is not None:
@@ -296,11 +312,11 @@ def make_python_tool(
             ds = ouro.datasets.retrieve("<uuid>")
             rows = ouro.datasets.query("<uuid>")
         - To publish a workspace file: use MCP `ouro:create_file` with `file_path` equal to the same
-          relative path you passed to `write_file` (WORKSPACE_ROOT matches the run_python workspace)."""
+          relative path you wrote under WORKSPACE_ROOT (the run_python workspace)."""
 
     @tool
     def run_python(code: str) -> str:
-        """Execute Python code in a sandboxed environment with restricted imports.
+        """Execute Python code in a persistent sandbox.
 
         Use for calculations, data transformation, text processing, JSON manipulation,
         or any logic that is easier to express in code than plain text.
@@ -308,13 +324,45 @@ def make_python_tool(
         State persists between calls within a single run — variables defined in one
         call are available in later calls. Print output is captured alongside the result.
 
-        In-memory Python state (variables, loaded objects) is discarded when the run
-        ends, but workspace files written via `write_file` persist across runs and
-        restarts. To carry data forward, serialize it to a file under `scratch/`
-        (e.g. `write_file('scratch/state.json', json.dumps(data))`) and read it back
-        on the next run with `read_file`.
+        Args:
+            code: Valid Python code to execute.
+        """
+        try:
+            result = executor(code)
+        except Exception as e:
+            return f"Execution error: {type(e).__name__}: {e}"
 
-        Important sandbox rules:
+        parts = []
+        if result.logs:
+            parts.append(f"[stdout]\n{result.logs}")
+        stderr = getattr(result, "stderr", "")
+        if stderr:
+            parts.append(f"[stderr]\n{stderr}")
+        if result.output is not None:
+            parts.append(f"[result]\n{result.output}")
+        return "\n".join(parts) if parts else "(no output)"
+
+    if use_docker:
+        run_python.description += f"""
+
+        Docker sandbox mode:
+        - Code runs inside the configured container image, not on the host.
+        - The workspace is bind-mounted at `{sandbox_config.workspace_mount}` and
+          the worker starts with cwd set to that directory.
+        - Use normal Python APIs: `pathlib.Path`, `open()`, `shutil`, `glob`,
+          `zipfile`, installed packages, and `subprocess.run(...)`.
+        - Keep file reads and writes under `WORKSPACE_ROOT` / `{sandbox_config.workspace_mount}`.
+        - In-memory state is discarded when the run ends, but workspace files persist.
+
+        Common patterns:
+        - Read JSON: `data = json.loads(Path("data.json").read_text())`
+        - Write text: `Path("out/report.csv").write_text(csv_text)`
+        - Shell command: `subprocess.run(["python", "--version"], capture_output=True, text=True)`
+        """
+    else:
+        run_python.description += """
+
+        Local compatibility sandbox mode:
         - Do NOT use open(), pathlib.Path, os, pandas, or other unlisted libraries.
         - Only the imports listed below are allowed. If you need filesystem access, use the helpers below instead of imports.
         - Paths for file helpers are relative to the workspace root.
@@ -323,7 +371,7 @@ def make_python_tool(
         itertools, functools, csv, io, textwrap, hashlib, base64, urllib.parse,
         plus any configured packages listed below.
 
-        Workspace file helpers (no import needed, paths relative to workspace):
+        Legacy workspace file helpers (no import needed, paths relative to workspace):
         - read_file(path) -> str: Read a file.
         - write_file(path, content) -> str: Write/overwrite a file (creates parent dirs).
         - append_file(path, content) -> str: Append to a file (creates if needed).
@@ -340,21 +388,7 @@ def make_python_tool(
         - Read JSON: data = json.loads(read_file('data.json'))
         - Write CSV/text: write_file('out/report.csv', csv_text)
         - Check files: list_dir('.'), file_exists('foo.txt'), get_file_info('foo.txt')
-
-        Args:
-            code: Valid Python code to execute.
         """
-        try:
-            result = executor(code)
-        except Exception as e:
-            return f"Execution error: {type(e).__name__}: {e}"
-
-        parts = []
-        if result.logs:
-            parts.append(f"[stdout]\n{result.logs}")
-        if result.output is not None:
-            parts.append(f"[result]\n{result.output}")
-        return "\n".join(parts) if parts else "(no output)"
 
     if ouro_docs:
         run_python.description += ouro_docs
@@ -375,3 +409,86 @@ def make_python_tool(
             run_python.description += pkg_docs
 
     return run_python, executor
+
+
+def make_shell_tool(executor, sandbox_config: "SandboxConfig"):
+    """Create a Docker-backed shell tool bound to an existing sandbox session."""
+
+    @tool
+    def run_shell(command: str) -> str:
+        """Execute a non-interactive shell command in the Docker sandbox.
+
+        Use for inspecting files, running installed CLI tools, or short build/test
+        commands that are easier to express as shell than Python. The command runs
+        from the sandbox workspace directory and returns stdout, stderr, and exit
+        code. It is not interactive.
+
+        Args:
+            command: Shell command to run with `/bin/sh -c` semantics.
+        """
+        if not command.strip():
+            return "Execution error: command must not be empty"
+        if not hasattr(executor, "execute_shell"):
+            return "Execution error: run_shell requires Docker sandbox mode"
+        try:
+            result = executor.execute_shell(command)
+        except Exception as e:
+            return f"Execution error: {type(e).__name__}: {e}"
+
+        parts = [f"[exit_code]\n{result.exit_code if result.exit_code is not None else 'timeout'}"]
+        if result.timed_out:
+            parts.append(
+                f"[timeout]\nCommand exceeded {sandbox_config.timeout_seconds} seconds"
+            )
+        if result.stdout:
+            parts.append(f"[stdout]\n{result.stdout}")
+        if result.stderr:
+            parts.append(f"[stderr]\n{result.stderr}")
+        return "\n".join(parts)
+
+    run_shell.description += f"""
+
+        Docker sandbox shell mode:
+        - Commands run inside `{sandbox_config.image}`, not on the host.
+        - The workspace is bind-mounted at `{sandbox_config.workspace_mount}` and
+          commands start from that directory.
+        - The configured timeout is {sandbox_config.timeout_seconds} seconds and
+          output is truncated at {sandbox_config.max_output_chars} characters.
+        - Keep reads and writes under `{sandbox_config.workspace_mount}`.
+        - Avoid interactive commands, long-running daemons, and commands requiring TTY input.
+        """
+    return run_shell
+
+
+def make_code_tools(
+    workspace: Optional[Path] = None,
+    additional_authorized_imports: list[str] | None = None,
+    max_print_outputs_length: int = 50_000,
+    ouro_client: Optional["Ouro"] = None,
+    python_packages: list[str] | None = None,
+    package_versions: dict[str, str | None] | None = None,
+    sandbox_config: Optional["SandboxConfig"] = None,
+    agent_name: str = "agent",
+    run_id: str = "",
+):
+    """Create code execution tools for the configured sandbox."""
+
+    python_tool, executor = make_python_tool(
+        workspace=workspace,
+        additional_authorized_imports=additional_authorized_imports,
+        max_print_outputs_length=max_print_outputs_length,
+        ouro_client=ouro_client,
+        python_packages=python_packages,
+        package_versions=package_versions,
+        sandbox_config=sandbox_config,
+        agent_name=agent_name,
+        run_id=run_id,
+    )
+    tools = [python_tool]
+    if (
+        sandbox_config is not None
+        and sandbox_config.mode == "docker"
+        and getattr(sandbox_config, "enable_shell", False)
+    ):
+        tools.append(make_shell_tool(executor, sandbox_config))
+    return tools, executor

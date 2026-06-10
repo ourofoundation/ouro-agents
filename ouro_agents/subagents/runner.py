@@ -318,6 +318,7 @@ def _build_chain_delegate(
             ouro_client=ctx.ouro_client,
             python_packages=list(ctx.python_packages),
             python_package_versions=dict(ctx.python_package_versions),
+            sandbox_config=ctx.sandbox_config,
             record_subagent_usage=ctx.record_subagent_usage,
             cancellation_token=ctx.cancellation_token,
             progress_observer=ctx.progress_observer,
@@ -540,16 +541,22 @@ def _run_agent(
                 "Preloaded tool '%s' for subagent '%s'", qualified_name, profile.name
             )
 
+    closeables = []
     if profile.needs_python_tool:
-        from ..tools.python_tool import make_python_tool
+        from ..tools.python_tool import make_code_tools
 
-        python_tool, _executor = make_python_tool(
+        code_tools, python_executor = make_code_tools(
             workspace=ctx.workspace,
             ouro_client=ctx.ouro_client,
             python_packages=ctx.python_packages or None,
             package_versions=ctx.python_package_versions or None,
+            sandbox_config=ctx.sandbox_config,
+            agent_name=f"{ctx.agent_id}-{profile.name}",
+            run_id=ctx.run_id,
         )
-        tools.append(python_tool)
+        tools.extend(code_tools)
+        if hasattr(python_executor, "close"):
+            closeables.append(python_executor)
 
     chain_delegate = _build_chain_delegate(profile, ctx)
     if chain_delegate:
@@ -658,6 +665,12 @@ def _run_agent(
     except Exception:
         logger.exception("Subagent '%s' agent loop failed", profile.name)
         raise
+    finally:
+        for closeable in closeables:
+            try:
+                closeable.close()
+            except Exception:
+                logger.warning("Failed to close subagent tool session", exc_info=True)
     return str(result), agent
 
 

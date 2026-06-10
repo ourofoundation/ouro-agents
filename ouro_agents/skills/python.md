@@ -18,7 +18,6 @@ You have a `run_python` tool that executes code in a sandboxed Python environmen
 ## When NOT to Use
 
 - Simple factual answers you already know — just answer directly.
-- Reading/writing files — use the workspace file helpers (see the **filesystem** skill).
 - Fetching web content — use the `search` MCP tools instead.
 - Interacting with Ouro — use the `ouro` MCP tools instead.
 
@@ -27,12 +26,15 @@ You have a `run_python` tool that executes code in a sandboxed Python environmen
 - State persists across calls within a single run. Define a variable in one call, use it in the next.
 - In-memory state does NOT survive past the end of a run. To carry data forward, write it to the workspace (e.g. `scratch/state.json`) — see the **filesystem** skill.
 - Print statements are captured — use `print()` to inspect intermediate values.
-- Authorized imports: `json`, `math`, `statistics`, `datetime`, `re`, `collections`, `itertools`, `functools`, `csv`, `io`, `textwrap`, `hashlib`, `base64`, `urllib.parse`.
-- No network access, no `os`/`subprocess` from within code. Use your other tools for those.
+- In Docker sandbox mode, code runs inside a container with the workspace at `WORKSPACE_ROOT` (normally `/workspace`). You can use normal Python APIs like `pathlib`, `open`, `zipfile`, installed packages, and `subprocess.run(...)`.
+- In local compatibility mode, imports are restricted and legacy workspace helpers may be required.
 
 ## Workspace File Helpers
 
-Built-in file helpers (`read_file`, `write_file`, `append_file`, `list_dir`, etc.) are available inside `run_python` with no import needed. See the **filesystem** skill for the full reference and workspace conventions.
+In Docker sandbox mode, prefer standard Python file APIs (`Path.read_text()`,
+`Path.write_text()`, `Path.glob()`, `zipfile.ZipFile`, etc.). Legacy helpers
+(`read_file`, `write_file`, `append_file`, `list_dir`, etc.) are only for local
+compatibility mode. See the **filesystem** skill for workspace conventions.
 
 ## Patterns
 
@@ -45,11 +47,14 @@ print(f"Mean: {mean(values):.2f}, StdDev: {stdev(values):.2f}")
 
 **Read, transform, and write a file:**
 ```python
-import csv, json, io
-raw = read_file("data/measurements.csv")
-reader = csv.DictReader(io.StringIO(raw))
-rows = [r for r in reader if float(r["value"]) > 100]
-write_file("data/filtered.json", json.dumps(rows, indent=2))
+import csv, json
+from pathlib import Path
+
+with Path("data/measurements.csv").open() as f:
+    reader = csv.DictReader(f)
+    rows = [r for r in reader if float(r["value"]) > 100]
+
+Path("data/filtered.json").write_text(json.dumps(rows, indent=2))
 print(f"Filtered {len(rows)} rows")
 ```
 

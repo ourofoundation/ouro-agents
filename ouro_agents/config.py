@@ -55,9 +55,31 @@ class AgentConfig(BaseModel):
     model: str
     workspace: Path = Path("./workspace")
     org_id: Optional[str] = None
-    python_packages: List[str] = Field(default_factory=list)
+    sandbox: "SandboxConfig" = Field(default_factory=lambda: SandboxConfig())
     # Default OpenRouter reasoning for the main agent model (see ``ReasoningConfig``).
     reasoning: Optional[ReasoningConfig] = None
+
+
+class SandboxConfig(BaseModel):
+    """Execution sandbox settings for ``run_python``."""
+
+    mode: Literal["local", "docker"] = "local"
+    python_packages: List[str] = Field(default_factory=list)
+    image: str = "ouro-agents-sandbox:latest"
+    workspace_mount: str = "/workspace"
+    network: str = "bridge"
+    memory: Optional[str] = "1g"
+    cpus: Optional[float] = 1.0
+    pids_limit: Optional[int] = 256
+    timeout_seconds: int = Field(default=30, ge=1)
+    max_output_chars: int = Field(default=50_000, ge=1)
+    enable_shell: bool = False
+    env_allowlist: List[str] = Field(
+        default_factory=lambda: ["OURO_API_KEY", "OURO_BASE_URL"]
+    )
+    user: Optional[str] = None
+    no_new_privileges: bool = True
+    drop_capabilities: bool = True
 
 
 class PromptCachingConfig(BaseModel):
@@ -561,6 +583,12 @@ class OuroAgentsConfig(BaseSettings):
                 "at runtime from the platform. Remove the team_id field from "
                 "your config.json."
             )
+
+        legacy_python_packages = agent_section.pop("python_packages", None)
+        if legacy_python_packages:
+            sandbox_section = agent_section.setdefault("sandbox", {})
+            if isinstance(sandbox_section, dict):
+                sandbox_section.setdefault("python_packages", legacy_python_packages)
 
         # ``reasoning`` belongs under ``agent``; migrate legacy top-level field.
         legacy_reasoning = expanded_data.pop("reasoning", None)

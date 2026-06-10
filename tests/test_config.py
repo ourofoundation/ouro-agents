@@ -258,6 +258,56 @@ class TestConfigModeOverrides(unittest.TestCase):
 
         self.assertEqual(config.agent.reasoning.effort, "medium")
 
+    def test_agent_sandbox_defaults_to_local_mode(self):
+        config = self._load_config(_base_config())
+
+        self.assertEqual(config.agent.sandbox.mode, "local")
+        self.assertEqual(config.agent.sandbox.image, "ouro-agents-sandbox:latest")
+        self.assertEqual(config.agent.sandbox.workspace_mount, "/workspace")
+        self.assertEqual(config.agent.sandbox.python_packages, [])
+        self.assertEqual(
+            config.agent.sandbox.env_allowlist,
+            ["OURO_API_KEY", "OURO_BASE_URL"],
+        )
+
+    def test_agent_sandbox_docker_overrides_load(self):
+        data = _base_config()
+        data["agent"]["sandbox"] = {
+            "mode": "docker",
+            "python_packages": ["numpy.*"],
+            "image": "custom-sandbox:dev",
+            "workspace_mount": "/work",
+            "network": "none",
+            "memory": "512m",
+            "cpus": 0.5,
+            "pids_limit": 64,
+            "timeout_seconds": 7,
+            "max_output_chars": 1234,
+            "env_allowlist": ["OURO_API_KEY"],
+        }
+
+        config = self._load_config(data)
+
+        self.assertEqual(config.agent.sandbox.mode, "docker")
+        self.assertEqual(config.agent.sandbox.python_packages, ["numpy.*"])
+        self.assertEqual(config.agent.sandbox.image, "custom-sandbox:dev")
+        self.assertEqual(config.agent.sandbox.workspace_mount, "/work")
+        self.assertEqual(config.agent.sandbox.network, "none")
+        self.assertEqual(config.agent.sandbox.memory, "512m")
+        self.assertEqual(config.agent.sandbox.cpus, 0.5)
+        self.assertEqual(config.agent.sandbox.pids_limit, 64)
+        self.assertEqual(config.agent.sandbox.timeout_seconds, 7)
+        self.assertEqual(config.agent.sandbox.max_output_chars, 1234)
+        self.assertEqual(config.agent.sandbox.env_allowlist, ["OURO_API_KEY"])
+
+    def test_migrates_legacy_agent_python_packages_into_sandbox(self):
+        data = _base_config()
+        data["agent"]["python_packages"] = ["numpy.*", "ase.*"]
+
+        config = self._load_config(data)
+
+        self.assertEqual(config.agent.sandbox.python_packages, ["numpy.*", "ase.*"])
+
     def test_migrates_legacy_top_level_reasoning_into_agent(self):
         data = _base_config()
         data["reasoning"] = {"effort": "low"}

@@ -42,7 +42,7 @@ You typically write `heartbeat` and `planning` *inside* the `modes` block
 | `model` | str | required | Default OpenRouter model id. |
 | `workspace` | path | `./workspace` | Workspace directory. |
 | `org_id` | str | none | Ouro organization the agent operates in. Required when using teams. |
-| `python_packages` | list[str] | `[]` | Packages exposed inside the `run_python` sandbox. Use `package.*` to allow submodules such as `pymatgen.symmetry.analyzer`; entries are validated at startup. |
+| `sandbox` | SandboxConfig | see below | Selects the `run_python` execution backend. |
 | `reasoning` | ReasoningConfig | none | Default OpenRouter reasoning for the main agent model (see below). |
 
 `agent.team_id` is **not** supported anymore — teams are discovered at
@@ -50,6 +50,68 @@ runtime. The loader raises if it sees one.
 
 A legacy top-level `reasoning` block is migrated into `agent.reasoning` on
 load.
+
+### `agent.sandbox`
+
+Controls how code execution tools run.
+
+```json
+"sandbox": {
+  "mode": "local",
+  "python_packages": [],
+  "image": "ouro-agents-sandbox:latest",
+  "workspace_mount": "/workspace",
+  "network": "bridge",
+  "memory": "1g",
+  "cpus": 1.0,
+  "pids_limit": 256,
+  "timeout_seconds": 30,
+  "max_output_chars": 50000,
+  "enable_shell": false,
+  "env_allowlist": ["OURO_API_KEY", "OURO_BASE_URL"]
+}
+```
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `mode` | `local` \| `docker` | `local` | `local` preserves the existing restricted smolagents executor. `docker` runs code in an isolated container. |
+| `python_packages` | list[str] | `[]` | Packages advertised to `run_python`. In local mode they are added to the smolagents import allowlist; in Docker mode they are validated inside `image`. Use `package.*` to describe submodule packages such as `pymatgen.symmetry.analyzer`. |
+| `image` | str | `ouro-agents-sandbox:latest` | Docker image used when `mode` is `docker`. |
+| `workspace_mount` | str | `/workspace` | Container path where the agent workspace is bind-mounted. |
+| `network` | str | `bridge` | Docker network mode. Use `none` for offline sandboxes. |
+| `memory` | str \| null | `1g` | Docker memory limit. |
+| `cpus` | float \| null | `1.0` | Docker CPU quota. |
+| `pids_limit` | int \| null | `256` | Docker process limit. |
+| `timeout_seconds` | int | `30` | Per-call timeout for Docker sandbox tools. Timed-out Python calls stop the container session; timed-out shell commands return a timeout result. |
+| `max_output_chars` | int | `50000` | Captured stdout/stderr/result truncation limit. |
+| `enable_shell` | bool | `false` | When `mode` is `docker`, expose a `run_shell(command)` tool that executes non-interactive shell commands inside the same sandbox container. Ignored in local mode. |
+| `env_allowlist` | list[str] | `["OURO_API_KEY", "OURO_BASE_URL"]` | Host environment variables passed through to the container. |
+| `user` | str \| null | current uid/gid | Docker `--user` override. |
+| `no_new_privileges` | bool | `true` | Adds Docker's `no-new-privileges` security option. |
+| `drop_capabilities` | bool | `true` | Drops Linux capabilities in the sandbox container. |
+
+Docker mode is isolated at the container boundary. Code can use normal Python
+file and process APIs (`pathlib`, `open`, `zipfile`, `subprocess`, installed
+packages) as long as reads and writes stay under `WORKSPACE_ROOT` /
+`workspace_mount`.
+
+When `enable_shell` is true, `run_shell` uses the same container, bind mount,
+environment allowlist, timeout, and output limit. Keep commands short and
+non-interactive; use a custom Docker image when the command needs extra CLI
+dependencies.
+
+#### Build the Docker sandbox image
+
+Build the bundled Docker image from the `ouro-agents` directory:
+
+```bash
+docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
+```
+
+If you add packages to `agent.sandbox.python_packages`, make sure the configured
+Docker image installs them. For custom package sets, either edit
+`Dockerfile.sandbox` and rebuild the same tag or point `agent.sandbox.image` at
+your own image.
 
 ### `agent.reasoning`
 

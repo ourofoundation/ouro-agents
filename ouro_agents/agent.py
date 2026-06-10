@@ -70,7 +70,7 @@ from .subagents.reflector import (
 )
 from .tool_prompt import build_tool_calling_system_prompt
 from .tools.agent_base import SanitizedToolCallingAgent as _SanitizedToolCallingAgent
-from .tools.python_tool import make_python_tool
+from .tools.python_tool import make_code_tools
 from .tools.scheduler_tools import make_scheduler_tools
 from .tools.skills_tools import make_load_skill_tool
 from .usage import (
@@ -165,17 +165,42 @@ class OuroAgent:
 
     def _validate_python_packages(self) -> dict[str, str | None]:
         """Validate configured python_packages at startup and return version map."""
-        packages = self.config.agent.python_packages
+        packages = self.config.agent.sandbox.python_packages
         if not packages:
             return {}
-        from .tools.python_tool import validate_python_packages
+        if self.config.agent.sandbox.mode == "docker":
+            from .tools.docker_sandbox import validate_python_packages_in_docker
 
-        versions = validate_python_packages(packages)
+            try:
+                versions = validate_python_packages_in_docker(
+                    packages,
+                    config=self.config.agent.sandbox,
+                    workspace=self.config.agent.workspace,
+                    agent_name=self.config.agent.name,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to validate python packages in Docker sandbox image %s: %s",
+                    self.config.agent.sandbox.image,
+                    e,
+                )
+                return {p: None for p in packages}
+        else:
+            from .tools.python_tool import validate_python_packages
+
+            versions = validate_python_packages(packages)
+
         missing = [p for p, v in versions.items() if v is None]
         if missing:
+            target = (
+                f"Docker image {self.config.agent.sandbox.image}"
+                if self.config.agent.sandbox.mode == "docker"
+                else "the agent's Python environment"
+            )
             logger.warning(
-                "Missing python packages: %s — install them to enable in the sandbox",
+                "Missing python packages: %s — install them in %s to enable in the sandbox",
                 ", ".join(missing),
+                target,
             )
         return versions
 
@@ -941,12 +966,16 @@ class OuroAgent:
             allowed = set(profile.memory_tool_filter)
             memory_tools = [t for t in memory_tools if t.name in allowed]
 
-        python_tool, _executor = make_python_tool(
+        code_tools, python_executor = make_code_tools(
             workspace=self.config.agent.workspace,
             ouro_client=self._get_ouro_client(),
-            python_packages=self.config.agent.python_packages or None,
+            python_packages=self.config.agent.sandbox.python_packages or None,
             package_versions=self._python_package_versions or None,
+            sandbox_config=self.config.agent.sandbox,
+            agent_name=self.config.agent.name,
+            run_id=run_id,
         )
+        closeables = [python_executor] if hasattr(python_executor, "close") else []
         load_skill = make_load_skill_tool(self.config.agent.workspace)
         scheduler_tools = (
             make_scheduler_tools(self.scheduler, team_id=team_id)
@@ -1087,7 +1116,8 @@ class OuroAgent:
                 list(memory_tools)
                 + scheduler_tools
                 + delegate_tools
-                + [load_tool, load_skill, python_tool]
+                + [load_tool, load_skill]
+                + code_tools
             )
 
         preloaded_names: list[str] = []
@@ -1119,7 +1149,7 @@ class OuroAgent:
                 for item in deferred_index
             )
 
-        return all_tools, deferred_tool_directory, agent_ref, preloaded_names
+        return all_tools, deferred_tool_directory, agent_ref, preloaded_names, closeables
 
     def _build_system_prompt(
         self,
@@ -1309,8 +1339,9 @@ class OuroAgent:
             asset_refs=list(asset_refs or []),
             memory_scopes=getattr(profile, "memory_scopes", []) or [],
             ouro_client=ouro_client,
-            python_packages=self.config.agent.python_packages or [],
+            python_packages=self.config.agent.sandbox.python_packages or [],
             python_package_versions=self._python_package_versions or {},
+            sandbox_config=self.config.agent.sandbox,
             record_subagent_usage=self._record_subagent_usage,
             cancellation_token=cancellation_token,
             progress_observer=progress_observer,
@@ -1905,7 +1936,7 @@ class OuroAgent:
         # Do this after preflight so parent-run preloads do not appear to be
         # part of the preflight step in logs or side effects.
         emit_progress(observer, "building_tools", "loading available tools")
-        all_tools, deferred_tool_directory, agent_ref, preloaded_names = (
+        all_tools, deferred_tool_directory, agent_ref, preloaded_names, tool_closeables = (
             self._build_agent_tools(
                 profile,
                 user_id=user_id,
@@ -2053,73 +2084,87 @@ class OuroAgent:
             f"running {mode.value} agent (max_steps={main_max_steps})",
         )
         if observer:
-            final_result = None
-            streamer = FinalAnswerStreamer()
-            intermediate_streamer = IntermediateContentStreamer()
-            current_intermediate_message_id: str | None = None
+            try:
+                final_result = None
+                streamer = FinalAnswerStreamer()
+                intermediate_streamer = IntermediateContentStreamer()
+                current_intermediate_message_id: str | None = None
 
-            def _flush_intermediate(*, drop: bool = False) -> None:
-                """Close out the current step's commentary stream, if any.
+                def _flush_intermediate(*, drop: bool = False) -> None:
+                    """Close out the current step's commentary stream, if any.
 
-                Called on every step boundary. When ``drop`` is True the
-                buffered text is discarded instead of persisted (used when a
-                step ends with no real content — typically the final-answer
-                step whose only "content" is the answer itself, streamed
-                separately via on_stream_chunk).
-                """
-                nonlocal current_intermediate_message_id
-                if current_intermediate_message_id is None:
-                    intermediate_streamer.reset()
-                    return
-                full_text = intermediate_streamer.flush()
-                msg_id = current_intermediate_message_id
-                current_intermediate_message_id = None
-                if drop or not full_text.strip():
-                    return
-                try:
-                    observer.on_intermediate_end(msg_id, full_text)
-                except Exception:
-                    logger.warning(
-                        "observer.on_intermediate_end failed",
-                        exc_info=True,
-                    )
+                    Called on every step boundary. When ``drop`` is True the
+                    buffered text is discarded instead of persisted (used when a
+                    step ends with no real content — typically the final-answer
+                    step whose only "content" is the answer itself, streamed
+                    separately via on_stream_chunk).
+                    """
+                    nonlocal current_intermediate_message_id
+                    if current_intermediate_message_id is None:
+                        intermediate_streamer.reset()
+                        return
+                    full_text = intermediate_streamer.flush()
+                    msg_id = current_intermediate_message_id
+                    current_intermediate_message_id = None
+                    if drop or not full_text.strip():
+                        return
+                    try:
+                        observer.on_intermediate_end(msg_id, full_text)
+                    except Exception:
+                        logger.warning(
+                            "observer.on_intermediate_end failed",
+                            exc_info=True,
+                        )
 
-            for event in agent.run(effective_task, stream=True, reset=use_reset):
-                if isinstance(event, ChatMessageStreamDelta):
-                    chunk = streamer.consume(event)
-                    if chunk:
-                        observer.on_stream_chunk(chunk)
-                    inter_chunk = intermediate_streamer.consume(event)
-                    if inter_chunk:
-                        if current_intermediate_message_id is None:
-                            current_intermediate_message_id = uuid7_str()
-                        try:
-                            observer.on_intermediate_chunk(
-                                current_intermediate_message_id, inter_chunk
-                            )
-                        except Exception:
-                            logger.warning(
-                                "observer.on_intermediate_chunk failed",
-                                exc_info=True,
-                            )
-                elif isinstance(event, ActionStep):
-                    # Step boundary. Persist the step's commentary unless
-                    # the step ended on a final_answer (in which case the
-                    # final-answer stream is already covering the user-
-                    # facing reply via on_stream_chunk + on_result_ready).
-                    _flush_intermediate(
-                        drop=bool(getattr(event, "is_final_answer", False))
-                    )
-                elif isinstance(event, FinalAnswerStep):
-                    final_result = event.output
+                for event in agent.run(effective_task, stream=True, reset=use_reset):
+                    if isinstance(event, ChatMessageStreamDelta):
+                        chunk = streamer.consume(event)
+                        if chunk:
+                            observer.on_stream_chunk(chunk)
+                        inter_chunk = intermediate_streamer.consume(event)
+                        if inter_chunk:
+                            if current_intermediate_message_id is None:
+                                current_intermediate_message_id = uuid7_str()
+                            try:
+                                observer.on_intermediate_chunk(
+                                    current_intermediate_message_id, inter_chunk
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "observer.on_intermediate_chunk failed",
+                                    exc_info=True,
+                                )
+                    elif isinstance(event, ActionStep):
+                        # Step boundary. Persist the step's commentary unless
+                        # the step ended on a final_answer (in which case the
+                        # final-answer stream is already covering the user-
+                        # facing reply via on_stream_chunk + on_result_ready).
+                        _flush_intermediate(
+                            drop=bool(getattr(event, "is_final_answer", False))
+                        )
+                    elif isinstance(event, FinalAnswerStep):
+                        final_result = event.output
 
-            # Safety net: if the run terminated without a trailing ActionStep
-            # (e.g. AgentMaxStepsError path), make sure we don't leak buffered
-            # commentary that was streamed but never flushed for persistence.
-            _flush_intermediate()
-            result = final_result if final_result is not None else ""
+                # Safety net: if the run terminated without a trailing ActionStep
+                # (e.g. AgentMaxStepsError path), make sure we don't leak buffered
+                # commentary that was streamed but never flushed for persistence.
+                _flush_intermediate()
+                result = final_result if final_result is not None else ""
+            finally:
+                for closeable in tool_closeables:
+                    try:
+                        closeable.close()
+                    except Exception:
+                        logger.warning("Failed to close tool session", exc_info=True)
         else:
-            result = agent.run(effective_task, reset=use_reset)
+            try:
+                result = agent.run(effective_task, reset=use_reset)
+            finally:
+                for closeable in tool_closeables:
+                    try:
+                        closeable.close()
+                    except Exception:
+                        logger.warning("Failed to close tool session", exc_info=True)
         token.raise_if_cancelled()
         emit_progress(observer, "running_agent", "agent loop complete", state="complete")
 

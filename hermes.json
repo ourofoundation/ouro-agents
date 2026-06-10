@@ -5,19 +5,34 @@
   },
   "agent": {
     "name": "hermes",
-    "model": "minimax/minimax-m3",
+    "model": "xiaomi/mimo-v2.5-pro",
     "reasoning": {
       "effort": "high"
     },
     "workspace": "./agents/hermes",
     "org_id": "00000000-0000-0000-0000-000000000000",
-    "python_packages": [
-      "numpy.*",
-      "scipy.*",
-      "ase.*",
-      "pymatgen.*",
-      "spglib.*"
-    ]
+    "sandbox": {
+      "mode": "docker",
+      "enable_shell": true,
+      "python_packages": [
+        "numpy.*",
+        "scipy.*",
+        "ase.*",
+        "pymatgen.*"
+      ],
+      "image": "ouro-agents-sandbox:latest",
+      "workspace_mount": "/workspace",
+      "network": "bridge",
+      "memory": "4g",
+      "cpus": 2.0,
+      "pids_limit": 512,
+      "timeout_seconds": 60,
+      "max_output_chars": 50000,
+      "env_allowlist": [
+        "OURO_API_KEY",
+        "OURO_BASE_URL"
+      ]
+    }
   },
   "openrouter_provider": {
     "ignore": [
@@ -27,21 +42,21 @@
   },
   "subagents": {
     "preflight": {
-      "model": "minimax/minimax-m3",
+      "model": "xiaomi/mimo-v2.5-pro",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 4
     },
     "research": {
-      "model": "minimax/minimax-m3",
+      "model": "xiaomi/mimo-v2.5-pro",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 10
     },
     "writer": {
-      "model": "minimax/minimax-m3"
+      "model": "xiaomi/mimo-v2.5-pro"
     },
     "executor": {
       "max_steps": 24
@@ -50,7 +65,7 @@
   "modes": {
     "planning": {
       "enabled": false,
-      "model": "minimax/minimax-m3",
+      "model": "xiaomi/mimo-v2.5-pro",
       "max_steps": 20,
       "cadence": "4h",
       "min_heartbeats": 4,
@@ -60,7 +75,7 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "minimax/minimax-m3",
+      "model": "xiaomi/mimo-v2.5-pro",
       "max_steps": 40,
       "active_hours": {
         "start": "09:00",
@@ -79,7 +94,7 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/hermes/workspace/memory",
-    "extraction_model": "minimax/minimax-m3",
+    "extraction_model": "xiaomi/mimo-v2.5-pro",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "retrieval_queries": 3,

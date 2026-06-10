@@ -79,7 +79,7 @@ Rules:
 - Be efficient — minimize unnecessary tool calls
 - If a tool call fails, retry once with corrected arguments before giving up
 - If an MCP tool is already preloaded, call it directly. Otherwise call `load_tool` first, then call the loaded tool by its returned `call_as` name.
-- If you use run_python for files, use its workspace helpers instead of open(), os, pathlib, or unlisted imports."""
+- If you use run_python for files in Docker mode, use standard Python APIs like pathlib/open under WORKSPACE_ROOT. In local compatibility mode, use the legacy workspace helpers."""
 
 
 WRITER_PROMPT = """\

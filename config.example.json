@@ -5,7 +5,21 @@
     "reasoning": { "effort": "medium" },
     "workspace": "./workspace",
     "org_id": "00000000-0000-0000-0000-000000000000",
-    "team_id": "00000000-0000-0000-0000-000000000000"
+    "team_id": "00000000-0000-0000-0000-000000000000",
+    "sandbox": {
+      "mode": "local",
+      "python_packages": [],
+      "image": "ouro-agents-sandbox:latest",
+      "workspace_mount": "/workspace",
+      "network": "bridge",
+      "memory": "1g",
+      "cpus": 1.0,
+      "pids_limit": 256,
+      "timeout_seconds": 30,
+      "max_output_chars": 50000,
+      "enable_shell": false,
+      "env_allowlist": ["OURO_API_KEY", "OURO_BASE_URL"]
+    }
   },
   "controller": {
     "username": "your-handle"

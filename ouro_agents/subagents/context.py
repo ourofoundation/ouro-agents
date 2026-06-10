@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
-    from ..config import MemoryConfig
+    from ..config import MemoryConfig, SandboxConfig
     from ..memory import MemoryBackend
     from ..memory.conversation_state import ConversationState
     from .profiles import SubAgentProfile
@@ -131,9 +131,10 @@ class SubAgentContext:
     # with direct platform access (e.g. the developer subagent).
     ouro_client: Any = None
 
-    # Extra Python packages authorized in the sandbox (from config.agent.python_packages).
+    # Extra Python packages authorized in the sandbox (from config.agent.sandbox.python_packages).
     python_packages: list[str] = field(default_factory=list)
     python_package_versions: dict = field(default_factory=dict)
+    sandbox_config: Optional["SandboxConfig"] = None
 
     # When set (by OuroAgent), every completed subagent run records usage here
     # (top-level and nested delegate chains share the same ledger).

@@ -94,11 +94,13 @@ ouro = get_ouro_client()
 ## Important notes
 - All resource methods use `retrieve(id)`, not `get(id)`
 - `datasets.query(id)` returns a pandas DataFrame — you can use standard pandas
-  operations on it (the sandbox allows pandas through the SDK)
+  operations on it when pandas is installed in the configured sandbox
 - For creating assets, always pass `org_id` and `team_id` from the Platform context
 - `description` params accept a plain string or a Content object
 - When creating datasets, `data` must be non-empty (at least 1 row, 1 column)
-- Workspace file helpers (`read_file`, `write_file`, etc.) are available alongside the SDK
+- In Docker sandbox mode, use normal Python filesystem APIs under `WORKSPACE_ROOT`;
+  local compatibility mode may still require workspace helpers (`read_file`,
+  `write_file`, etc.)
 
 ## Strategy
 1. Use `run_python` for ALL Ouro interactions — write code that does the full workflow

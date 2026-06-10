@@ -1,29 +1,27 @@
 ---
-description: Read/write access to workspace files via the run_python sandbox helpers
+description: Read/write access to workspace files from the run_python sandbox
 load: stub
 ---
 
 # Local Filesystem Skill
 
-You have read/write access to your local workspace via built-in helpers inside `run_python`. All paths are relative to the workspace root.
+You have read/write access to your local workspace from inside `run_python`. In Docker sandbox mode, the workspace is mounted at `WORKSPACE_ROOT` (normally `/workspace`) and the worker starts there, so relative paths resolve to the workspace root.
 
 ## Available Operations
 
-Inside any `run_python` call (no import needed):
+In Docker sandbox mode, use standard Python APIs:
 
-- `read_file(path)` — read a file's contents as a string
-- `write_file(path, content)` — create or overwrite a file (creates parent dirs)
-- `append_file(path, content)` — append to a file (creates it if needed)
-- `list_dir(path='.')` — list files and subdirectories (dirs have trailing `/`)
-- `file_exists(path)` — check if a file or directory exists
-- `get_file_info(path)` — file metadata dict (size_bytes, modified, is_dir, is_file)
-- `create_directory(path)` — create a directory and parents
-- `move_file(src, dst)` — move or rename a file within the workspace
-- `search_files(pattern, path='.')` — find files whose content contains a substring
-- `glob_files(pattern, path='.')` — find files matching a glob pattern (e.g. `*.csv`, `**/*.json`)
-- `extract_zip(zip_path, output_dir=None)` — safely extract a zip archive inside the workspace
+- `Path(path).read_text()` — read text
+- `Path(path).write_text(content)` — create or overwrite text
+- `Path(path).parent.mkdir(parents=True, exist_ok=True)` — create parent directories
+- `Path(".").iterdir()` / `Path(".").glob("*.csv")` — list or glob files
+- `shutil.move(src, dst)` — move or rename
+- `zipfile.ZipFile(zip_path).extractall(output_dir)` — extract archives
 
-These are sandboxed — path traversal outside the workspace is blocked.
+Local compatibility mode still exposes legacy helpers (`read_file`,
+`write_file`, `append_file`, `list_dir`, `file_exists`, `get_file_info`,
+`create_directory`, `move_file`, `search_files`, `glob_files`, `extract_zip`).
+Prefer standard Python APIs whenever Docker mode is available.
 
 ## When to Use the Filesystem
 
@@ -48,9 +46,13 @@ serialize state to JSON (or any text format) and read it back on the next run.
 
 ```python
 import json
-state = json.loads(read_file("scratch/state.json")) if file_exists("scratch/state.json") else {}
+from pathlib import Path
+
+state_path = Path("scratch/state.json")
+state = json.loads(state_path.read_text()) if state_path.exists() else {}
 state["last_seen"] = "2026-05-06"
-write_file("scratch/state.json", json.dumps(state, indent=2))
+state_path.parent.mkdir(parents=True, exist_ok=True)
+state_path.write_text(json.dumps(state, indent=2))
 ```
 
 ## File Organization
@@ -62,10 +64,10 @@ Keep the workspace tidy:
 
 ## Upload Pattern
 
-`ouro-agents` sets **`WORKSPACE_ROOT`** on the Ouro MCP process to the **same resolved directory** as the `run_python` workspace. Relative `file_path` values in `ouro:create_file` are joined to that root (`resolve_local_path` in ouro-mcp), so a file written with `write_file('data/out.cif', ...)` is uploaded with **`file_path='data/out.cif'`** (or the absolute path under that workspace).
+`ouro-agents` sets **`WORKSPACE_ROOT`** on the Ouro MCP process to the **same resolved directory** as the `run_python` workspace. Relative `file_path` values in `ouro:create_file` are joined to that root (`resolve_local_path` in ouro-mcp), so a file written at `Path('data/out.cif')` is uploaded with **`file_path='data/out.cif'`** (or the absolute path under that workspace).
 
 Steps:
 
-1. Write the artifact with `write_file` (path relative to workspace root).
+1. Write the artifact under the workspace (path relative to workspace root).
 2. `load_tool(["ouro:create_file"])` and pass **`file_path`** using that same relative path. Alternatively, use **`file_content_text` + `file_name`** or **`file_content_base64` + `file_name`** when inline payload is preferable.
 3. Include `org_id`, `team_id`, `name`, and optional `description` / `visibility`.
