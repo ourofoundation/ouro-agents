@@ -296,7 +296,11 @@ class OuroDocStore:
 
     def _cached_uuid(self, name: str, *, require_owned: bool = False) -> Optional[str]:
         """Return a usable cached UUID, optionally requiring ownership."""
-        for key in log_name_lookup_keys(name) if is_log_prefix(name.split(":", 1)[0]) else [name]:
+        for key in (
+            log_name_lookup_keys(name)
+            if is_log_prefix(name.split(":", 1)[0])
+            else [name]
+        ):
             uuid = self._uuid_cache.get(key)
             if not uuid:
                 continue
@@ -371,7 +375,9 @@ class OuroDocStore:
             return []
         return [item for item in results if item.get("name", "") == remote_name]
 
-    def _select_exact_match_item(self, name: str, matches: list[dict]) -> Optional[dict]:
+    def _select_exact_match_item(
+        self, name: str, matches: list[dict]
+    ) -> Optional[dict]:
         """Pick the most recent exact match item when duplicates already exist."""
         if not matches:
             return None
@@ -380,7 +386,9 @@ class OuroDocStore:
 
         def sort_key(item: dict) -> tuple[bool, datetime]:
             ts = self._coerce_timestamp(
-                item.get("last_updated") or item.get("updated_at") or item.get("created_at")
+                item.get("last_updated")
+                or item.get("updated_at")
+                or item.get("created_at")
             )
             return (ts is not None, ts or datetime.min.replace(tzinfo=timezone.utc))
 
@@ -888,7 +896,9 @@ class LocalDocStore:
         into the trailing list of the current file body.
         """
         if not self.exists(name):
-            return self.write(name, initial_md if initial_md is not None else markdown_item)
+            return self.write(
+                name, initial_md if initial_md is not None else markdown_item
+            )
         current = self.read(name)
         return self.write(name, _append_markdown_list_item(current, markdown_item))
 

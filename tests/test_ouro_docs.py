@@ -436,9 +436,7 @@ class TestOuroDocStore(unittest.TestCase):
         name = "REPORT:hermes:weekly"
 
         with TemporaryDirectory() as tmpdir:
-            client = _FakeClient(
-                search_results=[[{"id": "found-post", "name": name}]]
-            )
+            client = _FakeClient(search_results=[[{"id": "found-post", "name": name}]])
             store = self._make_store(client, tmpdir)
             self.assertEqual(store._resolve(name), "found-post")
             self.assertFalse(store.is_owner(name))
@@ -455,9 +453,7 @@ class TestOuroDocStore(unittest.TestCase):
             registry_path.write_text(
                 _registry_payload({name: {"uuid": "dead-uuid", "owned": True}})
             )
-            client = _FakeClient(
-                search_results=[[{"id": "live-uuid", "name": name}]]
-            )
+            client = _FakeClient(search_results=[[{"id": "live-uuid", "name": name}]])
             client.posts.retrieve_errors["dead-uuid"] = coerce
             client.posts.contents["live-uuid"] = "## Live"
             store = self._make_store(client, tmpdir)
@@ -528,9 +524,7 @@ class TestOuroDocStore(unittest.TestCase):
             # Recovery search finds an exact-name match owned by someone
             # else; the second update also 403s. The retry guard must stop
             # us before we recurse forever.
-            client = _FakeClient(
-                search_results=[[{"id": "stranger", "name": name}]]
-            )
+            client = _FakeClient(search_results=[[{"id": "stranger", "name": name}]])
             client.posts.update_errors["dead-uuid"] = forbidden
             client.posts.update_errors["stranger"] = forbidden
             store = self._make_store(client, tmpdir)
@@ -830,9 +824,7 @@ class TestCompositeDocStore(unittest.TestCase):
 
             self.assertEqual(ouro.reads, ["MEMORY:hermes:research"])
             self.assertEqual(ouro.writes, [("MEMORY:hermes:research", "fact")])
-            self.assertEqual(
-                ouro.appends, [("LOG:hermes:research:2026-04-05", "- x")]
-            )
+            self.assertEqual(ouro.appends, [("LOG:hermes:research:2026-04-05", "- x")])
             self.assertEqual(ouro.searches, ["query"])
 
     def test_no_ouro_falls_back_to_local_for_everything(self):

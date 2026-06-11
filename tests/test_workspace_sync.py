@@ -37,7 +37,9 @@ sync_workspace = _workspace_sync_module.sync_workspace
 
 
 class _FakeDocStore:
-    def __init__(self, remote_content: str = "", remote_last_updated: datetime | None = None):
+    def __init__(
+        self, remote_content: str = "", remote_last_updated: datetime | None = None
+    ):
         self.remote_content = remote_content
         self.remote_last_updated = remote_last_updated
         self.write_calls: list[tuple[str, str]] = []

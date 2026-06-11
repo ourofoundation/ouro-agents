@@ -1149,7 +1149,13 @@ class OuroAgent:
                 for item in deferred_index
             )
 
-        return all_tools, deferred_tool_directory, agent_ref, preloaded_names, closeables
+        return (
+            all_tools,
+            deferred_tool_directory,
+            agent_ref,
+            preloaded_names,
+            closeables,
+        )
 
     def _build_system_prompt(
         self,
@@ -1526,7 +1532,9 @@ class OuroAgent:
 
         if not result.success:
             logger.warning("Preflight subagent failed: %s", result.error)
-            emit_progress(observer, "preflight", result.error or "failed", state="failed")
+            emit_progress(
+                observer, "preflight", result.error or "failed", state="failed"
+            )
             return PreflightResult()
 
         emit_progress(observer, "preflight", "analysis complete", state="complete")
@@ -1590,7 +1598,9 @@ class OuroAgent:
 
         if not result.success:
             logger.warning("Reflector subagent failed: %s", result.error)
-            emit_progress(observer, "reflecting", result.error or "failed", state="failed")
+            emit_progress(
+                observer, "reflecting", result.error or "failed", state="failed"
+            )
             return None
 
         emit_progress(observer, "reflecting", "reflection complete", state="complete")
@@ -1936,22 +1946,26 @@ class OuroAgent:
         # Do this after preflight so parent-run preloads do not appear to be
         # part of the preflight step in logs or side effects.
         emit_progress(observer, "building_tools", "loading available tools")
-        all_tools, deferred_tool_directory, agent_ref, preloaded_names, tool_closeables = (
-            self._build_agent_tools(
-                profile,
-                user_id=user_id,
-                allowed_servers=allowed_servers,
-                preload_tools=preload_tools,
-                conversation_state=conv_state,
-                conversation_id=conversation_id,
-                run_id=run_id,
-                team_id=team_id,
-                doc_store=active_doc_store,
-                run_mode=mode.value,
-                event_type=event_type or "",
-                cancellation_token=token,
-                observer=observer,
-            )
+        (
+            all_tools,
+            deferred_tool_directory,
+            agent_ref,
+            preloaded_names,
+            tool_closeables,
+        ) = self._build_agent_tools(
+            profile,
+            user_id=user_id,
+            allowed_servers=allowed_servers,
+            preload_tools=preload_tools,
+            conversation_state=conv_state,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            team_id=team_id,
+            doc_store=active_doc_store,
+            run_mode=mode.value,
+            event_type=event_type or "",
+            cancellation_token=token,
+            observer=observer,
         )
         if extra_tools:
             all_tools.extend(extra_tools)
@@ -2166,7 +2180,9 @@ class OuroAgent:
                     except Exception:
                         logger.warning("Failed to close tool session", exc_info=True)
         token.raise_if_cancelled()
-        emit_progress(observer, "running_agent", "agent loop complete", state="complete")
+        emit_progress(
+            observer, "running_agent", "agent loop complete", state="complete"
+        )
 
         if debug_markdown_path:
             try:
