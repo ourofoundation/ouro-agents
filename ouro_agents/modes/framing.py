@@ -85,19 +85,21 @@ REVIEW_FRAMING = (
 # ---------------------------------------------------------------------------
 
 EXTENDED_MARKDOWN_INSTRUCTIONS = """
-Write `final_answer` content with standard Markdown plus the Ouro Markdown syntax from loaded skills when mentioning users, linking assets, embedding assets, or referencing route actions.
+Write final replies with standard Markdown plus the Ouro Markdown syntax from loaded skills when mentioning users, linking assets, embedding assets, or referencing route actions.
 """.strip()
 
 CHAT_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Chat mode: respond with `final_answer` only.\n\n"
+    "Chat mode: answer directly. If you need tools, attach the tool calls to the "
+    "same assistant message. When finished, return final assistant content with "
+    "no tool calls.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
 AUTONOMOUS_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "For simple replies (greetings, acknowledgments, or when no tools are needed), "
-    "call the `final_answer` tool directly with your response.\n\n"
+    "When the work is done, end the turn by returning final assistant content "
+    "with no tool calls: a report of what you actually accomplished.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
@@ -105,21 +107,24 @@ HEARTBEAT_OUTPUT = AUTONOMOUS_OUTPUT
 
 PLAN_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Create or update your plan quest, then call `final_answer` with structured JSON. "
+    "Create or update your plan quest, then end the turn with a final message "
+    "containing the required structured JSON and no tool calls. "
     "In fresh planning runs, use `create_quest`. In continuation/review runs, you may use "
     "`update_quest`, `list_quest_items`, `create_quest_items`, `update_quest_item`, and "
-    "`delete_quest_item` as needed before `final_answer`."
+    "`delete_quest_item` as needed before finishing."
 )
 
 REVIEW_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Check for feedback, revise the plan if needed, then call `final_answer` with structured JSON. "
+    "Check for feedback, revise the plan if needed, then end the turn with a final "
+    "message containing the required structured JSON and no tool calls. "
 )
 
 CHAT_REPLY_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Your reply is posted to the conversation automatically when you call `final_answer`. "
-    "Do NOT call `send_message` — the server persists your response for you.\n\n"
+    "Your final assistant content is posted to the conversation automatically. "
+    "If you need tools, attach the tool calls to the same assistant message. "
+    "When finished, return final assistant content with no tool calls.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 

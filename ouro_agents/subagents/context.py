@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..config import MemoryConfig, SandboxConfig
     from ..memory import MemoryBackend
     from ..memory.conversation_state import ConversationState
+    from ..security.policy import Capability
     from .profiles import SubAgentProfile
 
 
@@ -119,6 +120,8 @@ class SubAgentContext:
     # MCP tool access (populated by OuroAgent._run_subagent for agent-mode subagents)
     deferred_tools: dict = field(default_factory=dict)
     deferred_index: list = field(default_factory=list)
+    server_descriptions: dict = field(default_factory=dict)
+    allowed_capabilities: Optional[frozenset["Capability"]] = None
 
     # Ouro asset refs (UUIDs) to fetch and inject as input context
     asset_refs: list[str] = field(default_factory=list)

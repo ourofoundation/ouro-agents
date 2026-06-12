@@ -12,10 +12,12 @@ The event names themselves are imported from ``ouro.events``
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
-from ouro.events import WEBHOOK_EVENT_TYPES, WebhookEventName
+from ouro.events import WEBHOOK_EVENT_TYPES
+
+from .security.policy import Capability, EventSurface, capabilities_for_surface
 
 if TYPE_CHECKING:
     from .events import EventRunContext
@@ -33,6 +35,12 @@ class EventSpec:
 
     tool_preloads: tuple[str, ...] = ()
     """MCP tool names eagerly loaded before the agent starts the task."""
+
+    surface: EventSurface = EventSurface.UNKNOWN
+    """Security surface used to cap capabilities before each run."""
+
+    max_capabilities: Optional[frozenset[Capability]] = None
+    """Optional explicit surface cap; defaults from ``surface`` when omitted."""
 
     pool_key_fn: Optional[PoolKeyFn] = None
     """Compute a pool key for debouncing. ``None`` means "do not pool"."""
@@ -89,20 +97,23 @@ _COMMENT_TOOL_PRELOADS: tuple[str, ...] = (
 EVENT_REGISTRY: dict[str, EventSpec] = {
     "comment": EventSpec(
         tool_preloads=_COMMENT_TOOL_PRELOADS,
+        surface=EventSurface.COMMENT,
         pool_key_fn=_thread_pool_key,
     ),
     "mention": EventSpec(
         tool_preloads=_COMMENT_TOOL_PRELOADS,
+        surface=EventSurface.MENTION,
         pool_key_fn=_thread_pool_key,
     ),
     "new-message": EventSpec(
         is_chat=True,
+        surface=EventSurface.DIRECT_CHAT,
         pool_key_fn=_conversation_pool_key,
     ),
-    "new-conversation": EventSpec(is_chat=True),
+    "new-conversation": EventSpec(is_chat=True, surface=EventSurface.DIRECT_CHAT),
     # Cleanup events: handled synchronously by the cleanup module before the
     # LLM run path ever sees them. No tool preloads, no pooling.
-    "asset.deleted": EventSpec(),
+    "asset.deleted": EventSpec(surface=EventSurface.CLEANUP),
 }
 
 
@@ -127,3 +138,12 @@ def is_chat_event(event_type: str) -> bool:
 
 def tool_preloads_for(event_type: str) -> tuple[str, ...]:
     return spec_for(event_type).tool_preloads
+
+
+def event_surface_for(event_type: str) -> EventSurface:
+    return spec_for(event_type).surface
+
+
+def max_capabilities_for(event_type: str) -> frozenset[Capability]:
+    spec = spec_for(event_type)
+    return spec.max_capabilities or capabilities_for_surface(spec.surface)

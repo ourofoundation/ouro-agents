@@ -1,16 +1,27 @@
 """Conversation turn persistence, formatting, and history-step building."""
 
+from __future__ import annotations
+
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from smolagents import ActionStep
-from smolagents.memory import TaskStep
 from smolagents.monitoring import Timing
 
+from ..tools.agent_base import PlainTaskStep
+
+if TYPE_CHECKING:
+    from ouro.resources.conversations import Messages
+
 logger = logging.getLogger(__name__)
+
+INTERRUPTED_REPLY_PREFIX = (
+    "[The user interrupted this response before it completed. "
+    "Treat the request as not fully answered.]"
+)
 
 
 def conversation_file(workspace: Path, conversation_id: str) -> Path:
@@ -69,6 +80,181 @@ def extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dic
                 args = getattr(tc, "arguments", {})
             summary.append({"tool": name, "args": args, "result": obs})
     return summary
+
+
+def _message_attr(message: dict[str, Any], name: str, default: Any = None) -> Any:
+    return message.get(name, default)
+
+
+def _message_metadata(message: dict[str, Any]) -> dict[str, Any]:
+    metadata = _message_attr(message, "metadata", {})
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _is_agent_message(message: dict[str, Any], agent_user_id: Optional[str]) -> bool:
+    if not agent_user_id:
+        return False
+    return str(_message_attr(message, "user_id", "")) == agent_user_id
+
+
+def _is_user_turn_group(
+    group: list[dict[str, Any]], agent_user_id: Optional[str]
+) -> bool:
+    if len(group) != 1:
+        return False
+    message = group[0]
+    return (
+        _message_attr(message, "type") == "message"
+        and int(_message_attr(message, "seq", 0) or 0) == 0
+        and not _is_agent_message(message, agent_user_id)
+    )
+
+
+def _tool_summary_from_group(group: list[dict[str, Any]]) -> Optional[list[dict]]:
+    summary: list[dict] = []
+    for message in group:
+        if _message_attr(message, "type") != "tool_call":
+            continue
+        payload = _message_attr(message, "json", {})
+        if not isinstance(payload, dict):
+            continue
+        summary.append(
+            {
+                "tool": payload.get("name", "unknown"),
+                "args": payload.get("arguments", {}),
+                "result": payload.get("result", ""),
+            }
+        )
+    return summary or None
+
+
+def _agent_reply_from_group(group: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Pick the agent's final (or interrupted) message from a turn group."""
+    candidates = [
+        message
+        for message in group
+        if _message_attr(message, "type") == "message"
+        and str(_message_attr(message, "text", "")).strip()
+    ]
+    if not candidates:
+        return None
+
+    def _priority(message: dict[str, Any]) -> tuple[int, int]:
+        metadata = _message_metadata(message)
+        if metadata.get("interrupted"):
+            return (2, int(_message_attr(message, "seq", 0) or 0))
+        if metadata.get("turn_final") is True:
+            return (1, int(_message_attr(message, "seq", 0) or 0))
+        if metadata.get("turn_final") is False:
+            return (-1, int(_message_attr(message, "seq", 0) or 0))
+        return (0, int(_message_attr(message, "seq", 0) or 0))
+
+    return max(candidates, key=_priority)
+
+
+def messages_to_turns(
+    messages: list[dict[str, Any]],
+    *,
+    agent_user_id: Optional[str] = None,
+    exclude_turn_ids: Optional[set[str]] = None,
+    limit: int = 24,
+) -> list[dict]:
+    """Convert platform ``messages`` rows into JSONL-compatible turn entries."""
+    excluded = exclude_turn_ids or set()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    group_order: list[str] = []
+
+    for message in messages:
+        turn_id = str(_message_attr(message, "turn_id") or _message_attr(message, "id", ""))
+        if not turn_id or turn_id in excluded:
+            continue
+        if turn_id not in grouped:
+            grouped[turn_id] = []
+            group_order.append(turn_id)
+        grouped[turn_id].append(message)
+
+    turns: list[dict] = []
+    for turn_id in group_order:
+        group = grouped[turn_id]
+        if _is_user_turn_group(group, agent_user_id):
+            message = group[0]
+            turns.append(
+                {
+                    "role": "user",
+                    "content": str(_message_attr(message, "text", "")).strip(),
+                    "timestamp": _message_attr(message, "created_at"),
+                }
+            )
+            continue
+
+        if not any(_is_agent_message(message, agent_user_id) for message in group):
+            continue
+
+        reply = _agent_reply_from_group(group)
+        if reply is None:
+            continue
+
+        turns.append(
+            {
+                "role": "assistant",
+                "content": str(_message_attr(reply, "text", "")).strip(),
+                "timestamp": _message_attr(reply, "created_at"),
+                "tool_summary": _tool_summary_from_group(group),
+            }
+        )
+
+    return turns[-limit:]
+
+
+def load_conversation_turns_from_db(
+    ouro_client,
+    conversation_id: str,
+    *,
+    agent_user_id: Optional[str] = None,
+    exclude_turn_ids: Optional[set[str]] = None,
+    limit: int = 24,
+) -> list[dict]:
+    """Load recent chat turns from the platform messages table."""
+    from ouro.resources.conversations import Messages
+
+    fetch_limit = min(200, max(limit * 3, 60))
+    raw_messages = Messages(ouro_client).list(conversation_id, limit=fetch_limit)
+    if not raw_messages:
+        return []
+    return messages_to_turns(
+        list(raw_messages),
+        agent_user_id=agent_user_id,
+        exclude_turn_ids=exclude_turn_ids,
+        limit=limit,
+    )
+
+
+def resolve_conversation_turns(
+    workspace: Path,
+    conversation_id: str,
+    *,
+    ouro_client=None,
+    agent_user_id: Optional[str] = None,
+    exclude_turn_ids: Optional[set[str]] = None,
+    limit: int = 24,
+) -> list[dict]:
+    """Load turns from the DB when possible, else fall back to local JSONL."""
+    if ouro_client and conversation_id:
+        try:
+            return load_conversation_turns_from_db(
+                ouro_client,
+                conversation_id,
+                agent_user_id=agent_user_id,
+                exclude_turn_ids=exclude_turn_ids,
+                limit=limit,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to load conversation turns from DB for %s",
+                conversation_id,
+                exc_info=True,
+            )
+    return load_conversation_turns(workspace, conversation_id, limit=limit)
 
 
 def load_conversation_turns(
@@ -175,6 +361,31 @@ def format_conversation_turns(
     return f"Earlier context: {summary}\n\nRecent:\n{recent}"
 
 
+# Verbatim history window: at least MIN turns are always shown, and the
+# window start only moves once every STEP turns. A plain "last N" window
+# shifts by one on every turn, which changes the first history message and
+# busts the prompt-prefix cache immediately after the system prompt for the
+# rest of the conversation. Anchoring the start index keeps the replayed
+# history byte-stable between moves, so the cache only misses once per STEP
+# turns while the window size oscillates between MIN and MIN + STEP - 1.
+HISTORY_WINDOW_MIN = 8
+HISTORY_WINDOW_STEP = 8
+
+# Upper bound on turns fetched for windowing. Beyond this the anchor
+# saturates and the window degrades to sliding — acceptable for very long
+# conversations, where older context lives in the conversation summary.
+HISTORY_FETCH_LIMIT = 64
+
+
+def select_history_window(turns: list[dict]) -> list[dict]:
+    """Return the cache-friendly verbatim suffix of ``turns``."""
+    n = len(turns)
+    if n <= HISTORY_WINDOW_MIN:
+        return turns
+    anchor = HISTORY_WINDOW_STEP * ((n - HISTORY_WINDOW_MIN) // HISTORY_WINDOW_STEP)
+    return turns[anchor:]
+
+
 def build_history_steps(turns: list[dict]) -> list:
     """Convert JSONL conversation turns into smolagents memory steps.
 
@@ -190,7 +401,7 @@ def build_history_steps(turns: list[dict]) -> list:
         content = turn.get("content", "")
 
         if role == "user":
-            steps.append(TaskStep(task=content))
+            steps.append(PlainTaskStep(task=content))
             if i + 1 < len(turns) and turns[i + 1].get("role") == "assistant":
                 assistant_turn = turns[i + 1]
                 assistant_content = assistant_turn.get("content", "")

@@ -51,12 +51,26 @@ class AgentObserver:
         """
         pass
 
+    def on_intermediate_drop(self, message_id: str) -> None:
+        """Called when streamed intermediate content should be discarded.
+
+        This happens when a step resolves as the final answer: some model
+        deltas may have already streamed over the intermediate/commentary
+        channel, but they should not remain visible once the final-answer
+        message is emitted.
+        """
+        pass
+
     def on_step_persist(self, step: dict) -> None:
         """Called when a tool step is completed and should be persisted."""
         pass
 
     def on_reasoning_persist(self, content: str) -> None:
         """Called when a reasoning block is completed and should be persisted."""
+        pass
+
+    def on_reasoning_stream(self, content: str) -> None:
+        """Called when a reasoning chunk streams and should be shown in realtime."""
         pass
 
     def on_progress(self, event: ProgressEvent) -> None:
@@ -102,11 +116,17 @@ class CompositeAgentObserver(AgentObserver):
     def on_intermediate_end(self, message_id: str, full_text: str) -> None:
         self._call("on_intermediate_end", message_id, full_text)
 
+    def on_intermediate_drop(self, message_id: str) -> None:
+        self._call("on_intermediate_drop", message_id)
+
     def on_step_persist(self, step: dict) -> None:
         self._call("on_step_persist", step)
 
     def on_reasoning_persist(self, content: str) -> None:
         self._call("on_reasoning_persist", content)
+
+    def on_reasoning_stream(self, content: str) -> None:
+        self._call("on_reasoning_stream", content)
 
     def on_progress(self, event: ProgressEvent) -> None:
         self._call("on_progress", event)

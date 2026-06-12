@@ -11,19 +11,10 @@ from smolagents import ActionStep
 logger = logging.getLogger(__name__)
 
 
-def _tiptap_text_doc(text: str) -> dict:
-    """Build a minimal TipTap JSON doc wrapping plain text."""
-    paragraphs = text.split("\n") if text else [""]
-    return {
-        "type": "doc",
-        "content": [
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": line}] if line else [],
-            }
-            for line in paragraphs
-        ],
-    }
+def should_persist_tool_call_payload(payload: dict) -> bool:
+    # Subagent progress is persisted as its own `subagent` row; the delegate
+    # tool call is just the dispatch mechanism behind that UI.
+    return str(payload.get("name", "")).lower() != "delegate"
 
 
 def build_persistence_step_callback(
@@ -34,33 +25,15 @@ def build_persistence_step_callback(
     from ouro.resources.conversations import Messages
 
     def _callback(step: ActionStep) -> None:
-        if getattr(step, "is_final_answer", False) or step.error:
-            return
-        for tc in getattr(step, "tool_calls", None) or []:
-            if isinstance(tc, dict):
-                if "function" in tc:
-                    name = tc["function"].get("name", "unknown")
-                    args = tc["function"].get("arguments", {})
-                else:
-                    name = tc.get("name", "unknown")
-                    args = tc.get("arguments", {})
-            elif hasattr(tc, "function") and tc.function is not None:
-                name = getattr(tc.function, "name", "unknown")
-                args = getattr(tc.function, "arguments", {})
-            else:
-                name = getattr(tc, "name", "unknown")
-                args = getattr(tc, "arguments", {})
-            if isinstance(args, str):
-                try:
-                    args = json.loads(args)
-                except (json.JSONDecodeError, TypeError):
-                    args = {"raw": args}
-            obs = step.observations or ""
-            text = f"Called {name}"
+        for payload in extract_tool_call_payloads(step):
+            if not should_persist_tool_call_payload(payload):
+                continue
+
+            text = f"Called {payload['name']}"
             tool_data = {
-                "name": name,
-                "arguments": args,
-                "result": obs[:4000],
+                "name": payload["name"],
+                "arguments": payload["arguments"],
+                "result": payload["result"],
             }
             try:
                 Messages(ouro_client).create(
@@ -73,6 +46,44 @@ def build_persistence_step_callback(
                 logger.warning("Failed to persist tool_call message", exc_info=True)
 
     return _callback
+
+
+def extract_tool_call_payloads(step: ActionStep) -> list[dict]:
+    if getattr(step, "is_final_answer", False) or step.error:
+        return []
+
+    payloads: list[dict] = []
+    obs = step.observations or ""
+    for tc in getattr(step, "tool_calls", None) or []:
+        if isinstance(tc, dict):
+            if "function" in tc:
+                name = tc["function"].get("name", "unknown")
+                args = tc["function"].get("arguments", {})
+            else:
+                name = tc.get("name", "unknown")
+                args = tc.get("arguments", {})
+        elif hasattr(tc, "function") and tc.function is not None:
+            name = getattr(tc.function, "name", "unknown")
+            args = getattr(tc.function, "arguments", {})
+        else:
+            name = getattr(tc, "name", "unknown")
+            args = getattr(tc, "arguments", {})
+
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (json.JSONDecodeError, TypeError):
+                args = {"raw": args}
+
+        payloads.append(
+            {
+                "name": name,
+                "arguments": args,
+                "result": obs[:4000],
+            }
+        )
+
+    return payloads
 
 
 def build_persistence_reasoning_callback(

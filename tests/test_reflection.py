@@ -59,6 +59,9 @@ parse_reflection_result = _reflector_module.parse_reflection_result
 build_run_reflection_task = _reflector_module.build_run_reflection_task
 REFLECTOR_PROMPT = _reflector_module.REFLECTOR_PROMPT
 apply_reflection = _reflection_module.apply_reflection
+record_reflection_turn = _reflection_module.record_reflection_turn
+should_reflect = _reflection_module.should_reflect
+should_reflect_for_conversation = _reflection_module.should_reflect_for_conversation
 validated_daily_log_entries = _reflection_module.validated_daily_log_entries
 
 
@@ -92,6 +95,74 @@ class _FakeMemoryBackend:
 class _ConversationState:
     def __init__(self, turn_count):
         self.turn_count = turn_count
+
+
+class TestConversationTurnCount(unittest.TestCase):
+    def test_update_state_increments_once_per_exchange(self):
+        conversation_state_spec = importlib.util.spec_from_file_location(
+            "ouro_agents.memory.conversation_state",
+            Path(__file__).resolve().parents[1]
+            / "ouro_agents"
+            / "memory"
+            / "conversation_state.py",
+        )
+        conversation_state_module = importlib.util.module_from_spec(
+            conversation_state_spec
+        )
+        assert conversation_state_spec and conversation_state_spec.loader
+        conversation_state_spec.loader.exec_module(conversation_state_module)
+
+        ConversationState = conversation_state_module.ConversationState
+        update_state = conversation_state_module.update_state
+
+        class _Model:
+            def __call__(self, _messages):
+                return types.SimpleNamespace(
+                    content=(
+                        '{"current_topic": "topic", "active_goals": [], '
+                        '"decisions_made": [], "open_questions": [], '
+                        '"key_entities": [], "key_moments": [], '
+                        '"conversation_summary": "summary", "turn_count": 99}'
+                    )
+                )
+
+        previous = ConversationState(turn_count=4)
+        updated = update_state(previous, "hello", "hi there", _Model())
+        self.assertEqual(updated.turn_count, 5)
+
+
+class TestShouldReflect(unittest.TestCase):
+    def test_reflects_every_n_user_turns_not_steps(self):
+        state = _ConversationState(turn_count=5)
+        self.assertFalse(should_reflect(state, reflection_interval=5, last_reflected_turn=1))
+        self.assertTrue(should_reflect(state, reflection_interval=5, last_reflected_turn=0))
+
+    def test_skips_until_interval_passed_since_last_reflection(self):
+        state = _ConversationState(turn_count=9)
+        self.assertFalse(should_reflect(state, reflection_interval=5, last_reflected_turn=5))
+        self.assertTrue(should_reflect(state, reflection_interval=5, last_reflected_turn=4))
+
+    def test_should_reflect_for_conversation_reads_marker(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            conversations_dir = Path(tmpdir)
+            conversation_id = "conv-1"
+            record_reflection_turn(conversations_dir, conversation_id, 5)
+            self.assertFalse(
+                should_reflect_for_conversation(
+                    conversations_dir,
+                    conversation_id,
+                    _ConversationState(turn_count=9),
+                    reflection_interval=5,
+                )
+            )
+            self.assertTrue(
+                should_reflect_for_conversation(
+                    conversations_dir,
+                    conversation_id,
+                    _ConversationState(turn_count=10),
+                    reflection_interval=5,
+                )
+            )
 
 
 class TestReflectionParsing(unittest.TestCase):

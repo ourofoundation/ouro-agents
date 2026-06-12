@@ -112,6 +112,9 @@ class MCPServerConfig(BaseModel):
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None
     url: Optional[str] = None
+    # One-line summary shown in the tool directory when this server is collapsed
+    # to a single entry. Keep it to the capabilities an agent would scan for.
+    description: Optional[str] = None
 
 
 class GraphMemoryConfig(BaseModel):
@@ -241,8 +244,91 @@ class PlanningConfig(BaseModel):
     auto_approve: bool = True
 
 
-class ControllerConfig(BaseModel):
-    username: Optional[str] = None
+class SecurityConfig(BaseModel):
+    """Who the agent trusts, and the shared secret guarding ``/run``.
+
+    ``controllers`` and ``trusted`` accept either Ouro usernames or user ids
+    (UUIDs), mixed freely. These lists are treated as static input: they are
+    never mutated. At startup the agent resolves any usernames to ids (caching
+    the lookups) and stores the results in the ``resolved_*`` fields below,
+    which is what the runtime authorization checks actually read.
+    """
+
+    controllers: List[str] = Field(default_factory=list)
+    trusted: List[str] = Field(default_factory=list)
+    run_secret: Optional[str] = None
+
+    # Runtime-resolved, never read from / written to config files. Populated by
+    # the agent at startup from ``controllers`` / ``trusted``.
+    resolved_controller_ids: List[str] = Field(default_factory=list, exclude=True)
+    resolved_trusted_ids: List[str] = Field(default_factory=list, exclude=True)
+    # First username-form controller entry, used to @mention the controller
+    # (e.g. when a plan is ready for review).
+    controller_username: Optional[str] = Field(default=None, exclude=True)
+
+
+def _dedupe_preserve_order(values: Any) -> List[str]:
+    seen: set[str] = set()
+    result: List[str] = []
+    for value in values or []:
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _migrate_security_section(expanded_data: dict[str, Any]) -> None:
+    """Fold the legacy ``controller`` block and old key names into ``security``.
+
+    Old config shape::
+
+        "controller": {"username": "handle"},
+        "security": {
+            "controller_user_ids": [...],
+            "trusted_user_ids": [...],
+            "run_shared_secret": "..."
+        }
+
+    becomes::
+
+        "security": {
+            "controllers": ["handle", ...],
+            "trusted": [...],
+            "run_secret": "..."
+        }
+    """
+    security = expanded_data.get("security")
+    if not isinstance(security, dict):
+        security = {}
+
+    legacy_controller_ids = security.pop("controller_user_ids", None)
+    if legacy_controller_ids and not security.get("controllers"):
+        security["controllers"] = legacy_controller_ids
+
+    legacy_trusted_ids = security.pop("trusted_user_ids", None)
+    if legacy_trusted_ids and not security.get("trusted"):
+        security["trusted"] = legacy_trusted_ids
+
+    legacy_secret = security.pop("run_shared_secret", None)
+    if legacy_secret is not None and security.get("run_secret") is None:
+        security["run_secret"] = legacy_secret
+
+    controller_block = expanded_data.pop("controller", None)
+    if isinstance(controller_block, dict):
+        legacy_username = controller_block.get("username")
+        if legacy_username:
+            # Controller username leads so it remains the @mention target.
+            security["controllers"] = [legacy_username, *(security.get("controllers") or [])]
+
+    if security.get("controllers"):
+        security["controllers"] = _dedupe_preserve_order(security["controllers"])
+    if security.get("trusted"):
+        security["trusted"] = _dedupe_preserve_order(security["trusted"])
+
+    if security:
+        expanded_data["security"] = security
 
 
 class SubAgentOverride(BaseModel):
@@ -471,7 +557,7 @@ class OuroAgentsConfig(BaseSettings):
     event_pooling: EventPoolingConfig = Field(default_factory=EventPoolingConfig)
     subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
-    controller: ControllerConfig = Field(default_factory=ControllerConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
     modes: ModeConfig = Field(default_factory=ModeConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
@@ -594,5 +680,7 @@ class OuroAgentsConfig(BaseSettings):
         legacy_reasoning = expanded_data.pop("reasoning", None)
         if legacy_reasoning and not agent_section.get("reasoning"):
             agent_section["reasoning"] = legacy_reasoning
+
+        _migrate_security_section(expanded_data)
 
         return cls(**expanded_data)

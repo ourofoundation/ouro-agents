@@ -19,9 +19,10 @@ MCP_TOOL_RULES = (
     "- Omit optional params you don't need (don't pass null).\n"
     "- Batch where possible: load_tool, load_skill, memory_recall, and delegate all accept arrays.\n"
     "- File paths are always relative to the workspace root (e.g. 'data/file.json', not 'workspace/data/file.json').\n"
-    "- Memory is curated automatically after each run — facts, daily log entries, and asset references "
-    "are extracted from your actions. Focus on the task; memory handles itself.\n"
-    "- When memory_recall returns results with asset refs, use get_asset to load the referenced assets if needed.\n"
+    "- Memory writes are automatic: after each run, facts, daily log entries, and asset references are "
+    "extracted from your actions. You do not need to call memory-write tools or hand-edit MEMORY.md — "
+    "focus on the task. To retrieve prior context, call `memory_recall`; when it returns asset refs, "
+    "use get_asset to load them if needed.\n"
     "- For complex multi-step workflows or batch operations, delegate to the `developer` subagent — "
     "it has direct access to the Ouro Python SDK."
 )
@@ -31,10 +32,12 @@ SUBAGENT_RULES = (
     "(multiple tasks run in parallel). Each spec: `subagent`, `task`, optional `asset_refs` and `return_mode`.\n\n"
     "**Delegate to accelerate real work, not to avoid it.** A delegation is only useful if you use the returned "
     "asset/action/result to complete the user's task.\n"
-    "**MUST delegate:** web search → `research` (never call search tools yourself), "
+    "**MUST delegate:** multi-source research that warrants a written deliverable → `research`, "
     "long-form writing → `writer`, SDK/batch workflows → `developer`, "
     "focused self-contained sub-tasks → `executor`.\n"
-    "**Handle yourself:** simple questions, single tool calls, chat replies, quick lookups.\n\n"
+    "**Handle yourself:** simple questions, single tool calls, chat replies, quick lookups — "
+    "including a quick factual web search (call the search tool directly; don't spin up `research` "
+    "for one fact, since it publishes a post).\n\n"
     "Subagents save output as Ouro assets and return JSON with `asset_id`, `name`, `description`, "
     "and a ready-to-use `link`. The asset is already created and published — **do NOT create or "
     "publish another asset for the same work, and do NOT paste the subagent's full body into your reply.** "
@@ -283,7 +286,10 @@ def build_prompt(
                 f"Call them directly. Use `load_tool` only for additional MCP tools."
             )
         tool_rules_text += (
-            f"\n\n## DEFERRED TOOL DIRECTORY (name + short description)\n"
+            f"\n\n## DEFERRED TOOL DIRECTORY\n"
+            f"Primary servers list one line per tool. Secondary servers are collapsed to a "
+            f"single summary line — call `load_tool([\"<server>\"])` to list that server's "
+            f"tools, then `load_tool` the specific ones you need.\n\n"
             f"{deferred_tool_directory}"
         )
         sections["tool_rules"] = tool_rules_text

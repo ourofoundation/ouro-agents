@@ -122,6 +122,8 @@ class TestResolvePrefetchComments(unittest.TestCase):
             "Second comment [id: comment-2] **[current comment to answer]**",
             result,
         )
+        self.assertIn("Untrusted Evidence: prefetched top-level comments", result)
+        self.assertIn("<untrusted-evidence>", result)
 
     def test_includes_thread_parent_before_ordered_replies(self):
         def get_comments(**kwargs):
@@ -163,6 +165,7 @@ class TestResolvePrefetchComments(unittest.TestCase):
             "Latest reply [id: reply-2] **[current comment to answer]**",
             result,
         )
+        self.assertIn("Untrusted Evidence: prefetched current thread", result)
 
 
 if __name__ == "__main__":

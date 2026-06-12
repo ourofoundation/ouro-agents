@@ -4,11 +4,12 @@ from typing import Any, Dict, List, Optional
 
 from ouro.events import WebhookEvent, parse_webhook_event
 
-from .artifacts import PrefetchSpec
+from .artifacts import PrefetchSpec, format_untrusted_evidence
 from .config import RunMode
 from .constants import FETCHABLE_ASSET_TYPES
-from .event_registry import tool_preloads_for
+from .event_registry import event_surface_for, max_capabilities_for, tool_preloads_for
 from .provenance import AssetProvenance
+from .security.policy import Capability, EventSurface
 
 # Shared guidance injected into comment tasks so agents default to silence
 # unless a reply genuinely adds value.
@@ -59,6 +60,19 @@ def _ready_hint(preload_names: list[str]) -> str:
     return (
         f"The following tools are already loaded and ready to call directly: "
         f"{', '.join(call_names)}. No need to call load_tool for these."
+    )
+
+
+def _untrusted_comment_evidence(ctx: "CommentContext", title: str) -> str:
+    return format_untrusted_evidence(
+        title,
+        ctx.comment_text,
+        {
+            "comment_id": ctx.source_id,
+            "author": ctx.commenter,
+            "root_asset_id": ctx.root_asset_id,
+            "root_asset_type": ctx.root_asset_type,
+        },
     )
 
 
@@ -214,6 +228,7 @@ class CommentContext:
 
 def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str:
     pc = provenance.plan_cycle
+    feedback = _untrusted_comment_evidence(ctx, "plan feedback comment")
     reply_instruction = (
         f"Reply in the same thread by calling create_comment with parent_id "
         f"`{ctx.reply_parent_id}`."
@@ -224,7 +239,7 @@ def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str
         f"You received feedback on your current plan "
         f"(cycle {pc.cycle_id[:8]}, status: {pc.status}, "
         f"quest id: {pc.quest_id or ctx.root_asset_id}).\n\n"
-        f"## Feedback\n{ctx.comment_text}\n\n"
+        f"## Feedback\n{feedback}\n\n"
         f"## Your Current Plan\n{pc.plan_text}\n\n"
         f"Review the feedback, revise your plan if needed, and update "
         f"the quest (update_quest). Manage task items directly with "
@@ -244,10 +259,11 @@ def _historical_feedback_task(
     preload_names: list[str],
 ) -> str:
     pc = provenance.plan_cycle
+    feedback = _untrusted_comment_evidence(ctx, "historical plan feedback comment")
     return (
         f"You received feedback on a completed plan "
         f"(cycle {pc.cycle_id[:8]}, quest id: {pc.quest_id or ctx.root_asset_id}).\n\n"
-        f"## Feedback\n{ctx.comment_text}\n\n"
+        f"## Feedback\n{feedback}\n\n"
         f"This plan has already been executed. Acknowledge the feedback "
         f"and note any insights that should inform future planning.\n\n"
         f"{_ready_hint(preload_names)}"
@@ -271,7 +287,8 @@ def _default_comment_task(
 
     parts = [
         f"Received a {event_type} on a {ctx.root_asset_type} (id: {ctx.root_asset_id}).\n\n"
-        f"**@{ctx.commenter}** wrote:\n> {ctx.comment_text}\n\n"
+        f"**@{ctx.commenter}** wrote:\n\n"
+        f"{_untrusted_comment_evidence(ctx, 'triggering comment')}\n\n"
         f"{context_hint}",
     ]
 
@@ -326,10 +343,14 @@ class EventRunContext:
     actor_user_id: Optional[str] = None
     actor_username: Optional[str] = None
     actor_is_agent: Optional[bool] = None
+    surface: EventSurface = EventSurface.UNKNOWN
+    surface_capabilities: frozenset[Capability] = field(default_factory=frozenset)
     event_text: Optional[str] = None
     received_at: Optional[str] = None
     team_id: Optional[str] = None
     notification_ids: tuple[str, ...] = ()
+    # User message turn to omit from history (the message this run is answering).
+    trigger_turn_id: Optional[str] = None
     # The event's primary asset (when one is present in the payload). Always
     # populated from ``data.asset`` if the webhook includes it. Used by
     # cleanup handlers (asset.deleted) and by future asset-scoped routes.
@@ -426,6 +447,12 @@ def build_event_run_context(
             or comment_ctx.target_id
         )
 
+    trigger_turn_id = None
+    if event.event_type == "new-message":
+        trigger_turn_id = data.get("turn_id") or data.get("id")
+        if trigger_turn_id is not None:
+            trigger_turn_id = str(trigger_turn_id)
+
     return EventRunContext(
         event_type=event.event_type,
         task=task,
@@ -446,10 +473,13 @@ def build_event_run_context(
         actor_user_id=event.actor_user_id,
         actor_username=actor_username,
         actor_is_agent=actor_is_agent,
+        surface=event_surface_for(event.event_type),
+        surface_capabilities=max_capabilities_for(event.event_type),
         event_text=event_text,
         received_at=event.timestamp,
         team_id=event_team_id,
         notification_ids=event.notification_ids,
+        trigger_turn_id=trigger_turn_id,
         asset_id=event.asset.id if event.asset else None,
         asset_type=event.asset.type if event.asset else None,
     )

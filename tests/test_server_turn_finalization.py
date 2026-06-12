@@ -1,0 +1,144 @@
+from unittest.mock import MagicMock
+
+from ouro_agents.config import RunMode
+from ouro_agents.events import EventRunContext
+from ouro_agents.server import ServerAgentObserver, _is_trivial_final_result
+
+
+def _observer() -> tuple[ServerAgentObserver, MagicMock]:
+    publisher = MagicMock()
+    event_run = EventRunContext(
+        event_type="new-message",
+        task="hello",
+        conversation_id="conv-1",
+        user_id="user-1",
+        team_id=None,
+        actor_user_id="agent-1",
+        actor_username="hermes",
+        mode=RunMode.CHAT_REPLY,
+        asset_id=None,
+        asset_type=None,
+        root_asset_id=None,
+        root_asset_type=None,
+        preload_tools=[],
+        prefetch=None,
+        provenance=None,
+        trigger_turn_id=None,
+    )
+    observer = ServerAgentObserver(
+        event_run,
+        stream_message_id="stream-1",
+        turn_id="turn-1",
+        reply_publisher=publisher,
+    )
+    return observer, publisher
+
+
+def test_is_trivial_final_result():
+    assert _is_trivial_final_result("")
+    assert _is_trivial_final_result("NO_ACTION")
+    assert _is_trivial_final_result(
+        "MODEL_EMPTY_RESPONSE: model returned no content and no tool calls."
+    )
+    assert not _is_trivial_final_result("Here is the actual answer.")
+
+
+def test_promotes_last_substantial_intermediate_on_empty_final_answer(monkeypatch):
+    observer, publisher = _observer()
+    updated = {}
+
+    def fake_update(_conversation_id, message_id, **kwargs):
+        updated["message_id"] = message_id
+        updated["metadata"] = kwargs.get("metadata")
+        return {
+            "id": message_id,
+            "metadata": kwargs.get("metadata"),
+            "text": "Here's the latest on the Iran war.",
+        }
+
+    publisher.client = MagicMock()
+    monkeypatch.setattr(
+        "ouro_agents.server.Messages",
+        lambda _client: MagicMock(
+            create=MagicMock(),
+            update=fake_update,
+        ),
+    )
+
+    observer._intermediate_messages.append(
+        {
+            "id": "commentary-1",
+            "text": "Looking at recent quests first.",
+            "msg": {
+                "id": "commentary-1",
+                "metadata": {"turn_final": False},
+                "text": "Looking at recent quests first.",
+            },
+        }
+    )
+    observer._intermediate_messages.append(
+        {
+            "id": "commentary-2",
+            "text": (
+                "Here's the latest on the Iran war — day 104 with major "
+                "escalation on June 7-8."
+            ),
+            "msg": {
+                "id": "commentary-2",
+                "metadata": {"turn_final": False},
+                "text": (
+                    "Here's the latest on the Iran war — day 104 with major "
+                    "escalation on June 7-8."
+                ),
+            },
+        }
+    )
+
+    observer.on_result_ready("")
+
+    assert updated["message_id"] == "commentary-2"
+    assert updated["metadata"] == {"turn_final": True}
+    publisher.emit_llm_response_end.assert_called_once()
+    assert (
+        publisher.emit_llm_response_end.call_args.kwargs["message_id"]
+        == "commentary-2"
+    )
+    assert publisher.emit_llm_response_end.call_args.kwargs["message"]["metadata"] == {
+        "turn_final": True
+    }
+
+
+def test_keeps_normal_final_answer_when_present(monkeypatch):
+    observer, publisher = _observer()
+    created = {}
+
+    def fake_create(_conversation_id, **kwargs):
+        created.update(kwargs)
+        return {"id": kwargs["id"], **kwargs}
+
+    publisher.client = MagicMock()
+    monkeypatch.setattr(
+        "ouro_agents.server.Messages",
+        lambda _client: MagicMock(create=fake_create, update=MagicMock()),
+    )
+    monkeypatch.setattr(
+        "ouro_agents.server.content_from_markdown",
+        lambda _ouro, text: MagicMock(text=text, json={"type": "doc", "content": []}),
+    )
+
+    observer._intermediate_messages.append(
+        {
+            "id": "commentary-1",
+            "text": "Short note.",
+            "msg": {"id": "commentary-1", "metadata": {"turn_final": False}},
+        }
+    )
+
+    observer.on_result_ready("The finished reply.")
+
+    assert created["id"] == "stream-1"
+    assert created["metadata"] == {"turn_final": True}
+    publisher.emit_llm_response_end.assert_called_once()
+    assert (
+        publisher.emit_llm_response_end.call_args.kwargs["message_id"] == "stream-1"
+    )

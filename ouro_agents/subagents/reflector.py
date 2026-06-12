@@ -98,7 +98,7 @@ Rules:
 - If entity files provide background, use them to add richer context to facts \
   (e.g. "User prefers X for project Y" instead of just "User prefers X").
 
-When finished, call final_answer with ONLY the JSON."""
+When finished, end the turn with a final message containing ONLY the JSON."""
 
 
 @dataclass

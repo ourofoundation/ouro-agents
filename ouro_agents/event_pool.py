@@ -51,6 +51,8 @@ class EventPool:
         self._monotonic = monotonic
         self._lock = asyncio.Lock()
         self._pending: dict[str, _PendingBatch] = {}
+        self._running_keys: set[str] = set()
+        self._running_done_events: dict[str, asyncio.Event] = {}
         self._tasks: set[asyncio.Task] = set()
 
     def timing_for(self, event_type: str) -> Optional[EventPoolTimingConfig]:
@@ -107,6 +109,21 @@ class EventPool:
             batch.deadline,
         )
         return True
+
+    async def discard(self, key: str) -> list[EventRunContext]:
+        """Drop a pending batch without dispatching it (e.g. user interrupt).
+
+        Returns the discarded events so the caller can record that they
+        happened (they will never reach the agent otherwise).
+        """
+        async with self._lock:
+            batch = self._pending.pop(key, None)
+        if not batch:
+            return []
+        if batch.task:
+            batch.task.cancel()
+        logger.info("Discarded pooled batch %s (size=%d)", key, len(batch.events))
+        return batch.events
 
     async def stop(self) -> None:
         async with self._lock:
@@ -172,8 +189,36 @@ class EventPool:
             if jitter_delay:
                 await self._sleep(jitter_delay)
 
-            await self._dispatcher(build_pooled_event_run(batch.events))
+            await self._acquire_run_slot(key)
+            try:
+                await self._dispatcher(build_pooled_event_run(batch.events))
+            finally:
+                await self._release_run_slot(key)
             return
+
+    async def _acquire_run_slot(self, key: str) -> None:
+        """Wait until no run is active for this key, then reserve the slot."""
+
+        while True:
+            async with self._lock:
+                if key not in self._running_keys:
+                    self._running_keys.add(key)
+                    return
+
+                done_event = self._running_done_events.get(key)
+                if done_event is None:
+                    done_event = asyncio.Event()
+                    self._running_done_events[key] = done_event
+
+            await done_event.wait()
+
+    async def _release_run_slot(self, key: str) -> None:
+        async with self._lock:
+            self._running_keys.discard(key)
+            done_event = self._running_done_events.pop(key, None)
+
+        if done_event is not None:
+            done_event.set()
 
 
 def build_pooled_event_run(events: Sequence[EventRunContext]) -> EventRunContext:
@@ -181,6 +226,9 @@ def build_pooled_event_run(events: Sequence[EventRunContext]) -> EventRunContext
         raise ValueError("Cannot build a pooled event run from an empty batch")
 
     latest = events[-1]
+    if len(events) == 1:
+        return latest
+
     summary = _format_pooled_context(events)
     feedback_text = (
         f"{latest.feedback_text}\n\n{summary}" if latest.feedback_text else None

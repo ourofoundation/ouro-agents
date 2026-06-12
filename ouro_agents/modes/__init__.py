@@ -9,6 +9,7 @@ from .profiles import (
     REVIEW,
     ModeProfile,
     RunMode,
+    apply_capability_envelope,
     apply_mode_override,
     resolve_mode_profile,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "MODE_REGISTRY",
     "resolve_mode_profile",
     "apply_mode_override",
+    "apply_capability_envelope",
     "build_output_format",
     "CHAT",
     "CHAT_REPLY",

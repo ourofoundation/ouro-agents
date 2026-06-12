@@ -214,8 +214,10 @@ class TerminalRunProgress(AgentObserver):
     def _should_render_event(self, event: ProgressEvent) -> bool:
         if self.style == "debug":
             return True
+        if event.phase == "subagent_step":
+            return False
         if event.phase == "token_update":
-            return self.show_token_updates
+            return False
         prior = self._phase_state.get(event.phase)
         if event.state == "active":
             return prior is None

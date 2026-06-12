@@ -8,6 +8,9 @@ from .conversation import (
     format_conversation_turns,
     format_turns_verbatim,
     load_conversation_turns,
+    load_conversation_turns_from_db,
+    messages_to_turns,
+    resolve_conversation_turns,
 )
 from .debug import (
     append_run_debug_markdown_trace,
@@ -35,6 +38,9 @@ __all__ = [
     "format_turns_verbatim",
     "IntermediateContentStreamer",
     "load_conversation_turns",
+    "load_conversation_turns_from_db",
+    "messages_to_turns",
+    "resolve_conversation_turns",
     "markdown_fence",
     "serialize_memory_step_for_debug",
     "tool_activity_message",

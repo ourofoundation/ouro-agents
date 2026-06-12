@@ -17,14 +17,14 @@ RunProgressCallback = Callable[[ProgressEvent], None]
 
 def tool_activity_message(tool_name: str) -> str:
     if tool_name == "load_tool":
-        return "is preparing a tool"
+        return "Preparing a tool"
     if tool_name == "delegate":
-        return "is delegating to a subagent"
+        return "Delegating to a subagent"
     if tool_name.startswith("memory_"):
-        return "is checking memory"
+        return "Checking memory"
     if tool_name in ("python_interpreter", "run_python"):
-        return "is running Python"
-    return f"is using {tool_name}"
+        return "Running Python"
+    return f"Using {tool_name}"
 
 
 def build_step_callback(
@@ -81,30 +81,24 @@ def build_step_callback(
             duration_s=duration_s,
             cost_usd=cost,
         )
-        if progress_callback:
-            try:
-                progress_callback(
-                    ProgressEvent(
-                        "token_update",
-                        state="active",
-                        detail={
-                            "step": step_num,
-                            "current_context_tokens": context_tok,
-                            "input_tokens": in_tok,
-                            "output_tokens": out_tok,
-                            "cached_input_tokens": tracker.total_cached_input_tokens,
-                            "total_tokens": in_tok + out_tok,
-                            "cost_usd": cost,
-                        },
-                    )
-                )
-            except Exception:
-                logger.exception("Failed to emit progress update")
 
         if getattr(step, "is_final_answer", False):
             return
         if step.error:
-            _emit("hit an error, retrying...")
+            tool_calls = getattr(step, "tool_calls", None) or []
+            if tool_calls:
+                tc = tool_calls[0]
+                if isinstance(tc, dict):
+                    if "function" in tc:
+                        failed_tool = tc["function"].get("name", "unknown")
+                    else:
+                        failed_tool = tc.get("name", "unknown")
+                elif hasattr(tc, "function") and tc.function is not None:
+                    failed_tool = getattr(tc.function, "name", "unknown")
+                else:
+                    failed_tool = getattr(tc, "name", "unknown")
+                _display.complete_tool_call(failed_tool, failed=True)
+            _emit("Hit an error, retrying...")
             return
         tool_calls = getattr(step, "tool_calls", None) or []
         if tool_calls:
@@ -118,7 +112,6 @@ def build_step_callback(
                 tool_name = getattr(tc.function, "name", "unknown")
             else:
                 tool_name = getattr(tc, "name", "unknown")
-            _display.tool_call(tool_name)
             if status_callback:
                 msg = tool_activity_message(tool_name)
                 if last_message["value"] != msg:
@@ -128,6 +121,6 @@ def build_step_callback(
                     except Exception:
                         logger.exception("Failed to emit activity update")
             return
-        _emit("thinking...")
+        _emit("Thinking about it...")
 
     return _callback

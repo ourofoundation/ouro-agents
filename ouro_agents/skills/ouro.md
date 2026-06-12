@@ -120,8 +120,8 @@ submissions or self-completion — publish first with `update_quest(status="open
 For quests planned by someone else, prefer `submit_quest_entry` with evidence
 and produced assets unless you clearly may self-complete. These are lifecycle
 updates, not deletion.
-- Conversations: use `send_message` only for explicit platform messaging. In
-chat-reply runs, do not call `send_message` — the host posts your `final_answer`.
+- Conversations: use `send_message` only when the task is explicitly to message
+someone on the platform (chat runs do not expose conversation tools at all).
 - Notifications: check `get_notifications(unread_only=true)` for mentions, inbox
 triage, or recent platform activity.
 

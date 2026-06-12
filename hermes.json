@@ -1,7 +1,9 @@
 {
   "env_file": ".env.hermes",
-  "controller": {
-    "username": "mmoderwell"
+  "security": {
+    "controllers": ["mmoderwell"],
+    "trusted": [],
+    "run_secret": null
   },
   "agent": {
     "name": "hermes",

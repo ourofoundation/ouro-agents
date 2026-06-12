@@ -30,7 +30,6 @@ Rules:
 - conversation_summary: A rolling 2-4 sentence summary of the ENTIRE conversation so far.
   Update it to incorporate the latest exchange. This is the agent's memory of everything
   that happened before the recent messages window. Be factual and concise.
-- turn_count: Increment by 1.
 
 Output ONLY valid JSON matching this schema, no markdown fences, no explanation:
 {
@@ -40,8 +39,7 @@ Output ONLY valid JSON matching this schema, no markdown fences, no explanation:
   "open_questions": ["string"],
   "key_entities": ["string"],
   "key_moments": ["string"],
-  "conversation_summary": "string",
-  "turn_count": int
+  "conversation_summary": "string"
 }"""
 
 
@@ -81,8 +79,13 @@ class ConversationState:
             turn_count=data.get("turn_count", 0),
         )
 
-    def format_for_prompt(self) -> str:
-        """Render the state as a compact orientation section for the system prompt."""
+    def format_for_prompt(self, include_summary: bool = True) -> str:
+        """Render the state as a compact orientation section for the system prompt.
+
+        Pass ``include_summary=False`` when the verbatim conversation history
+        is injected alongside this section — the prose summary would only
+        restate turns the model already sees.
+        """
         if not self.current_topic:
             return ""
 
@@ -106,7 +109,7 @@ class ConversationState:
             for moment in self.key_moments[-8:]:
                 lines.append(f"  - {moment}")
 
-        if self.conversation_summary:
+        if include_summary and self.conversation_summary:
             lines.append(f"\nConversation so far: {self.conversation_summary}")
 
         lines.append(f"Turn: {self.turn_count}")
@@ -174,7 +177,9 @@ def update_state(
         if text.startswith("```"):
             text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
         data = json.loads(text)
-        return ConversationState.from_dict(data)
+        state = ConversationState.from_dict(data)
+        state.turn_count = (previous_state.turn_count if previous_state else 0) + 1
+        return state
     except Exception as e:
         logger.warning("Conversation state update failed: %s", e)
         if previous_state:

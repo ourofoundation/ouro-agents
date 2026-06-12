@@ -14,6 +14,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from ..security.policy import Capability, CapabilityEnvelope
+from ..security.tool_capabilities import capability_for_tool
 from .framing import (
     AUTONOMOUS_FRAMING,
     AUTONOMOUS_OUTPUT,
@@ -51,11 +53,21 @@ class ModeProfile(BaseModel):
     # Tool access: when True, MCP tools are filtered to ``default_servers`` only
     restricted_servers: bool = False
     default_servers: list[str] = Field(default_factory=lambda: ["ouro"])
+    # Deferred MCP tools removed from this mode entirely (directory + load_tool)
+    excluded_tools: list[str] = Field(default_factory=list)
     allow_delegation: bool = True
+    # None means no capability envelope has been applied; otherwise this set
+    # is the authoritative upper bound for tools exposed by the profile.
+    allowed_capabilities: frozenset[Capability] | None = None
     # None = all memory tools available; list = restrict to these names
     memory_tool_filter: list[str] | None = None
 
     # Prompt assembly
+    # Conversational modes answer a person directly; the MODE framing governs
+    # when to act. The shared preamble drops its "produce the result before
+    # reporting back" work directive for these so the two don't pull opposite
+    # ways on casual messages.
+    conversational: bool = False
     lightweight: bool = False
     skip_preflight: bool = False
     skip_post_reflection: bool = False
@@ -70,6 +82,11 @@ class ModeProfile(BaseModel):
     # Chat-reply conversation-id annotation style (None = don't add)
     conversation_id_annotation: Optional[str] = None
 
+    def allows_capability(self, capability: Capability | str) -> bool:
+        if self.allowed_capabilities is None:
+            return True
+        return Capability(capability) in self.allowed_capabilities
+
 
 # ---------------------------------------------------------------------------
 # Built-in profiles
@@ -82,9 +99,30 @@ AUTONOMOUS_ACTION_PRELOADS = [
     "ouro:get_action",
 ]
 
-CHAT_DISCOVERY_PRELOADS = [
-    "ouro:get_organizations",
-    "ouro:get_teams",
+# The org/team membership the discovery tools return is already in the platform
+# context, so preloading them wastes the slot. Preload the genuine hot path
+# instead: find things, inspect them, run a route and read its result, and the
+# single most common chat side-effect (replying with a comment). Anything heavier
+# or rarer (create_post, query_dataset, dataset views) stays one load_tool away.
+CHAT_HOTPATH_PRELOADS = [
+    "ouro:search_assets",
+    "ouro:get_asset",
+    "ouro:execute_route",
+    "ouro:get_action",
+    "ouro:create_comment",
+]
+
+# Chat runs ARE the conversation: the host injects history and posts the
+# final reply, so platform messaging tools are pure foot-guns there
+# (double-posting, reading the conversation it's already in). Removing them
+# beats prompting "do not call send_message" in three places.
+CHAT_EXCLUDED_TOOLS = [
+    "ouro:list_conversations",
+    "ouro:get_conversation",
+    "ouro:get_conversations",
+    "ouro:create_conversation",
+    "ouro:send_message",
+    "ouro:list_messages",
 ]
 
 
@@ -93,17 +131,16 @@ CHAT = ModeProfile(
     framing=CHAT_FRAMING,
     output_format=CHAT_OUTPUT,
     max_steps=20,
-    preload_tools=CHAT_DISCOVERY_PRELOADS,
+    preload_tools=CHAT_HOTPATH_PRELOADS,
+    excluded_tools=CHAT_EXCLUDED_TOOLS,
+    conversational=True,
     load_conversation_state=True,
     include_chat_conversation_id=True,
     skip_preflight=True,
     skip_post_reflection=True,
-    append_conversation_turns=True,
+    append_conversation_turns=False,
     update_conversation_state=True,
-    conversation_id_annotation=(
-        "conversation memory/history only; respond with `final_answer` "
-        "unless explicitly told to post"
-    ),
+    conversation_id_annotation="conversation memory/history only",
 )
 
 CHAT_REPLY = ModeProfile(
@@ -111,15 +148,17 @@ CHAT_REPLY = ModeProfile(
     framing=CHAT_FRAMING,
     output_format="",  # dynamic — see framing.CHAT_REPLY_OUTPUT
     max_steps=20,
-    preload_tools=CHAT_DISCOVERY_PRELOADS,
+    preload_tools=CHAT_HOTPATH_PRELOADS,
+    excluded_tools=CHAT_EXCLUDED_TOOLS,
+    conversational=True,
     load_conversation_state=True,
     include_chat_conversation_id=True,
     skip_preflight=True,
     skip_post_reflection=True,
-    append_conversation_turns=True,
+    append_conversation_turns=False,
     update_conversation_state=True,
     conversation_id_annotation=(
-        "your reply will be posted automatically — just call `final_answer`"
+        "your final assistant content will be posted automatically"
     ),
 )
 
@@ -204,3 +243,45 @@ def apply_mode_override(profile: ModeProfile, override) -> ModeProfile:
     if updates:
         return profile.model_copy(update=updates)
     return profile
+
+
+def _filter_preload_tools(
+    preload_tools: list[str],
+    allowed_capabilities: frozenset[Capability],
+) -> list[str]:
+    filtered: list[str] = []
+    for tool_name in preload_tools:
+        capability = capability_for_tool(tool_name)
+        if capability is not None and capability in allowed_capabilities:
+            filtered.append(tool_name)
+    return filtered
+
+
+def apply_capability_envelope(
+    profile: ModeProfile,
+    envelope: CapabilityEnvelope,
+) -> ModeProfile:
+    """Return a profile narrowed by a capability envelope.
+
+    The envelope can only subtract. It never expands a profile's explicit
+    capability set, tool preloads, delegation, or memory-write behavior.
+    """
+    if profile.allowed_capabilities is None:
+        allowed = envelope.allowed_capabilities
+    else:
+        allowed = profile.allowed_capabilities & envelope.allowed_capabilities
+
+    updates: dict = {
+        "allowed_capabilities": frozenset(allowed),
+        "preload_tools": _filter_preload_tools(profile.preload_tools, frozenset(allowed)),
+    }
+
+    if Capability.DELEGATE not in allowed:
+        updates["allow_delegation"] = False
+
+    if Capability.MEMORY_WRITE not in allowed and profile.memory_tool_filter is not None:
+        updates["memory_tool_filter"] = [
+            name for name in profile.memory_tool_filter if name != "remember"
+        ]
+
+    return profile.model_copy(update=updates)

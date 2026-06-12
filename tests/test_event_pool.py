@@ -167,6 +167,13 @@ class TestEventPool(unittest.TestCase):
         self.assertIn("second", dispatched[0].task)
         self.assertIn("Reply at most once", dispatched[0].task)
 
+    def test_single_event_batch_has_no_pooled_context(self):
+        event = _event(text="solo", notification_ids=("n-1",))
+        pooled = build_pooled_event_run([event])
+        self.assertEqual(pooled.task, event.task)
+        self.assertNotIn("Pooled Event Batch", pooled.task)
+        self.assertEqual(pooled.notification_ids, ("n-1",))
+
     def test_different_keys_dispatch_separately(self):
         async def exercise() -> list[EventRunContext]:
             dispatched: list[EventRunContext] = []
@@ -185,6 +192,35 @@ class TestEventPool(unittest.TestCase):
 
         self.assertEqual(len(dispatched), 2)
         self.assertEqual({event.event_text for event in dispatched}, {"one", "two"})
+
+    def test_same_key_waits_for_active_dispatch(self):
+        async def exercise() -> list[str]:
+            dispatched: list[str] = []
+            first_started = asyncio.Event()
+            release_first = asyncio.Event()
+
+            async def dispatch(event_run: EventRunContext) -> None:
+                dispatched.append(event_run.event_text or "")
+                if event_run.event_text == "first":
+                    first_started.set()
+                    await release_first.wait()
+
+            pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
+            await pool.submit(_event(text="first"))
+            await first_started.wait()
+
+            await pool.submit(_event(text="second"))
+            await asyncio.sleep(0.04)
+            self.assertEqual(dispatched, ["first"])
+
+            release_first.set()
+            await asyncio.sleep(0.04)
+            await pool.stop()
+            return dispatched
+
+        dispatched = asyncio.run(exercise())
+
+        self.assertEqual(dispatched, ["first", "second"])
 
     def test_event_type_specific_windows_control_dispatch_order(self):
         async def exercise() -> list[str]:

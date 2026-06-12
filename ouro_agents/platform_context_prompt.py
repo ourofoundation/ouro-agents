@@ -63,10 +63,9 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
         username = profile.get("username", "?")
         display = profile.get("display_name")
         name_str = f"{display} (@{username})" if display else f"@{username}"
-        parts.append(
-            f"You are: {name_str} (id: {profile.get('id', '?')}, "
-            f"email: {profile.get('email', '?')})"
-        )
+        # Deliberately no email here: the agent never needs it, and leaking the
+        # owner's address into every prompt invites accidental disclosure.
+        parts.append(f"You are: {name_str} (id: {profile.get('id', '?')})")
 
     orgs = context.get("organizations", [])
     if orgs:

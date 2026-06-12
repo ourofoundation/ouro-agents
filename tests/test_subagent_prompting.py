@@ -6,8 +6,16 @@ from ouro_agents.skills import load_startup_skills, resolve_skill, resolve_skill
 from ouro_agents.subagents.context import SubAgentContext
 from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
 from ouro_agents.subagents.prompts import DEVELOPER_PROMPT, EXECUTOR_PROMPT
-from ouro_agents.subagents.profiles import DEVELOPER, EXECUTOR, HEARTBEAT_PREFLIGHT, PREFLIGHT, RESEARCH, WRITER
+from ouro_agents.subagents.profiles import (
+    DEVELOPER,
+    EXECUTOR,
+    HEARTBEAT_PREFLIGHT,
+    PREFLIGHT,
+    RESEARCH,
+    WRITER,
+)
 from ouro_agents.subagents.runner import _format_task_context
+from ouro_agents.tool_prompt import build_tool_calling_system_prompt
 
 
 def test_current_datetime_section_has_expected_fields():
@@ -81,20 +89,68 @@ def test_subagent_task_context_includes_shared_core_sections(tmp_path):
     assert "## Ouro asset placement" in prompt
 
 
-def test_preflight_prompts_require_final_answer_json():
+def test_preflight_task_context_is_slim_and_non_action_oriented(tmp_path):
+    ctx = SubAgentContext(
+        workspace=tmp_path,
+        backend=None,
+        agent_id="athena",
+        memory_config=None,
+        model=None,
+        soul="Do the work.",
+        notes="Deployment note.",
+        platform_context="You are @athena.",
+        working_memory="Recent anchor post: Day 9.",
+        user_model="Prefers concise updates.",
+        plans_index="- PLAN:athena:2026-04-06",
+    )
+
+    prompt = _format_task_context(
+        "Write a short poem as a post.",
+        ctx,
+        shared_context_sections=PREFLIGHT.shared_context_sections,
+        include_asset_placement=PREFLIGHT.include_asset_placement,
+    )
+
+    assert "## CURRENT DATE AND TIME" in prompt
+    assert "## PLATFORM CONTEXT\nYou are @athena." in prompt
+    assert "## Task\nWrite a short poem as a post." in prompt
+    assert "## IDENTITY AND RULES (SOUL)" not in prompt
+    assert "## USER CONTEXT" not in prompt
+    assert "## DEPLOYMENT CONTEXT" not in prompt
+    assert "## PLAN QUEST INDEX" not in prompt
+    assert "## WORKING MEMORY" not in prompt
+    assert "## Ouro asset placement" not in prompt
+
+
+def test_preflight_prompts_require_plain_json_final_message():
     for prompt in (PREFLIGHT_PROMPT, HEARTBEAT_PREFLIGHT_PROMPT):
-        assert "Finish by calling final_answer exactly once" in prompt
-        assert "Return the JSON only inside final_answer" in prompt
+        assert "Finish by ending the turn with a final message" in prompt
+        assert "JSON object alone" in prompt
+        assert "final_answer" not in prompt
+
+
+def test_preflight_system_prompt_starts_with_preflight_role():
+    prompt = build_tool_calling_system_prompt(
+        PREFLIGHT.system_prompt,
+        include_work_directive=PREFLIGHT.include_work_directive,
+        include_mechanics=PREFLIGHT.include_tool_mechanics,
+    )
+
+    assert prompt.startswith("You are a preflight analyst for an AI agent.")
+    assert "You are a capable work agent" not in prompt
+    assert "Prime directive: do the work" not in prompt
 
 
 def test_preflight_prompts_limit_tool_use_and_recover():
-    assert "simple or conversational, do not call tools" in PREFLIGHT_PROMPT
+    assert "memory cannot change the outcome, do not call tools" in PREFLIGHT_PROMPT
     assert "call memory_recall exactly once" in PREFLIGHT_PROMPT
     assert "memory_recall returns no useful context" in PREFLIGHT_PROMPT
     assert "previous response failed or was not accepted" in PREFLIGHT_PROMPT
     assert "Your job is analysis only" in PREFLIGHT_PROMPT
     assert "Never call side-effecting platform MCP tools" in PREFLIGHT_PROMPT
     assert "create_comment" in PREFLIGHT_PROMPT
+    assert "Include a memory only if it would change what the main agent" in PREFLIGHT_PROMPT
+    assert "End moderate/complex plans with a verification step" in PREFLIGHT_PROMPT
 
     assert "call memory_recall at most once" in HEARTBEAT_PREFLIGHT_PROMPT
     assert "memory_recall returns no useful context" in HEARTBEAT_PREFLIGHT_PROMPT
@@ -125,6 +181,13 @@ def test_preflight_profiles_only_allow_memory_recall():
     assert HEARTBEAT_PREFLIGHT.allowed_tools == ["memory_recall"]
     assert PREFLIGHT.preload_tools == []
     assert HEARTBEAT_PREFLIGHT.preload_tools == []
+    assert PREFLIGHT.include_work_directive is False
+    assert HEARTBEAT_PREFLIGHT.include_work_directive is False
+    assert PREFLIGHT.include_tool_mechanics is False
+    assert HEARTBEAT_PREFLIGHT.include_tool_mechanics is False
+    assert PREFLIGHT.include_asset_placement is False
+    assert HEARTBEAT_PREFLIGHT.include_asset_placement is False
+    assert "soul" not in PREFLIGHT.shared_context_sections
 
 
 def test_heartbeat_framing_does_not_require_unavailable_delegate_tool():

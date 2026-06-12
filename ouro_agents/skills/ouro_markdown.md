@@ -27,7 +27,7 @@ Use a fenced code block with the `assetComponent` language tag:
 
 Whenever you've just executed a route (or are writing about a specific past
 action) in a surface that renders Ouro markdown — posts, comments,
-conversation replies, chat `final_answer` content — prefer embedding the
+conversation replies, chat final replies — prefer embedding the
 route with the action pinned instead of describing the result in prose alone:
 
 ```assetComponent
@@ -44,7 +44,7 @@ usual typed link form (e.g. `[label](dataset:<uuid>)` using
 `output_assets[i].asset.id`).
 
 Skip the embed when the output will not be rendered as markdown (structured
-`final_answer` JSON payloads, quest items, tool call arguments, etc.).
+structured JSON handoff payloads, quest items, tool call arguments, etc.).
 
 ### Inline asset links
 

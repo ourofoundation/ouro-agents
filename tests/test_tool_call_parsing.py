@@ -8,10 +8,8 @@ from ouro_agents.tools.agent_base import (
     _EMPTY_RESPONSE_MAX_RETRIES,
     _EMPTY_RESPONSE_NUDGE_OBSERVATION,
     _build_empty_narrated_tool_call_nudge_observation,
-    _build_preamble_nudge_observation,
     _extract_raw_reasoning_text,
     _looks_like_empty_narrated_tool_call,
-    _looks_like_preamble,
     _parse_dsml_tool_call_recovery,
     _parse_dsml_tool_calls,
     _parse_kimi_tool_call_recovery,
@@ -20,7 +18,6 @@ from ouro_agents.tools.agent_base import (
     _parse_structured_tool_call_recovery,
     _parse_structured_tool_calls,
     _patch_model_for_xml_tool_calls,
-    _recover_chat_final_answer,
 )
 
 
@@ -58,7 +55,7 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(parsed.tool_calls, [])
         self.assertEqual(parsed.content, "")
-        nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
+        nudge = getattr(parsed, "_ouro_nudge_observation", None)
         self.assertIsNotNone(nudge)
         self.assertEqual(nudge, _EMPTY_RESPONSE_NUDGE_OBSERVATION)
         self.assertEqual(model._ouro_empty_response_streak, 1)
@@ -171,7 +168,7 @@ class TestToolCallParsing(unittest.TestCase):
             self.assertEqual(parsed.role, MessageRole.ASSISTANT)
             self.assertEqual(parsed.tool_calls, [])
             self.assertEqual(parsed.content, "")
-            nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
+            nudge = getattr(parsed, "_ouro_nudge_observation", None)
             self.assertIsNotNone(nudge)
             self.assertIn("interleaved-thinking step", nudge)
             self.assertIn("end this step at an action boundary", nudge)
@@ -267,7 +264,7 @@ class TestToolCallParsing(unittest.TestCase):
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(parsed.tool_calls, [])
         self.assertEqual(parsed.content, "")
-        nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
+        nudge = getattr(parsed, "_ouro_nudge_observation", None)
         self.assertIsNotNone(nudge)
         self.assertIn("empty tool list", nudge)
         self.assertIn("Do not write `Calling tools:`", nudge)
@@ -389,7 +386,7 @@ class TestToolCallParsing(unittest.TestCase):
 
         self.assertIsNone(tool_calls)
 
-    def test_parse_failure_includes_message_preview(self):
+    def test_unsalvageable_plain_content_ends_turn(self):
         model = _AlwaysFailsModel()
         _patch_model_for_xml_tool_calls(model)
 
@@ -401,47 +398,11 @@ class TestToolCallParsing(unittest.TestCase):
         parsed = model.parse_tool_calls(message)
 
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
-        self.assertEqual(parsed.tool_calls, [])
-        self.assertEqual(
-            parsed.content, "I'll inspect the thread next and then report back."
-        )
-
-    def test_chat_mode_recovers_raw_text_with_angle_brackets(self):
-        model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
-
-        message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content="Hey! I can help with <that> if you want.",
-        )
-
-        parsed = model.parse_tool_calls(message)
-
-        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
         self.assertEqual(len(parsed.tool_calls), 1)
         self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
         self.assertEqual(
             parsed.tool_calls[0].function.arguments,
-            {"answer": "Hey! I can help with <that> if you want."},
-        )
-
-    def test_chat_mode_recovers_raw_text_with_braces(self):
-        model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
-
-        message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content="Sure - use {'key': 'value'} as an example payload.",
-        )
-
-        parsed = model.parse_tool_calls(message)
-
-        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
-        self.assertEqual(len(parsed.tool_calls), 1)
-        self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
-        self.assertEqual(
-            parsed.tool_calls[0].function.arguments,
-            {"answer": "Sure - use {'key': 'value'} as an example payload."},
+            {"answer": "I'll inspect the thread next and then report back."},
         )
 
     def test_parses_deepseek_dsml_tool_call_block(self):
@@ -637,267 +598,44 @@ class TestToolCallParsing(unittest.TestCase):
         agent._track_reasoning_only_step(SimpleNamespace(tool_calls=["x"]))
         self.assertEqual(agent._reasoning_only_streak, 0)
 
-    def test_repatching_model_does_not_leak_chat_mode_recovery(self):
-        model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=False)
+class TestPlainContentEndsTurn(unittest.TestCase):
+    """Plain assistant content with no tool calls is the terminal reply.
 
-        message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content="I'll inspect the thread next and then report back.",
-        )
-
-        parsed = model.parse_tool_calls(message)
-
-        self.assertEqual(parsed.role, MessageRole.ASSISTANT)
-        self.assertEqual(parsed.tool_calls, [])
-        self.assertEqual(
-            parsed.content,
-            "I'll inspect the thread next and then report back.",
-        )
-
-
-class TestPreambleDetection(unittest.TestCase):
-    """The agent should not auto-finalize on intermediate-thought content.
-
-    Regression: hermes run 019dfdf9-6bf4-7fa8-a620-956309bf2962 emitted
-    "Not pulling enough detail from memory — let me surface the actual
-    results." as plain content; the chat-mode auto-coerce path turned that
-    into a final_answer and ended the run before the actual search_assets
-    call could execute.
+    The standard tool-calling convention in every mode: tool calls continue
+    the turn, content alone ends it (via the synthesized internal stop signal).
     """
 
-    def test_hermes_regression_phrase_is_preamble(self):
-        self.assertTrue(
-            _looks_like_preamble(
-                "Not pulling enough detail from memory — let me surface the actual results."
-            )
-        )
-
-    def test_classic_preamble_starts_match(self):
-        for text in (
-            "Let me check that.",
-            "Let me look up the asset first.",
-            "Let me pull up the screening data.",
-            "Let's see what memory has.",
-            "I'll search the team for related posts.",
-            "I will run that route now.",
-            "I'm going to verify the schema first.",
-            "I need to load search_assets first.",
-            "I should grab the latest results.",
-            "Now let me fetch that.",
-            "Next, I'll check the action logs.",
-            "First, I need to inspect the route.",
-            "Then I'll send the message.",
-            "Okay, let me try a different query.",
-            "Alright, I'll start by listing teams.",
-            "So I'll pull up the post first.",
-            "Wait, that's not quite right — let me retry.",
-            "Hmm, that returned nothing useful.",
-            "Actually, I should check memory first.",
-            "One moment while I look that up.",
-            "Give me a sec to pull that data.",
-            "Thinking through the next step…",
-            "Working on that now.",
-            "Checking the team list.",
-            "Looking up the route schema.",
-            "Pulling up the most recent runs.",
-            "Surfacing the actual screening data.",
-            "Searching memory for prior results.",
-        ):
-            with self.subTest(text=text):
-                self.assertTrue(
-                    _looks_like_preamble(text),
-                    f"Expected preamble: {text!r}",
-                )
-
-    def test_short_fragment_without_punctuation_is_preamble(self):
-        # Status-update style: short, no terminal punctuation, no clear reply.
-        self.assertTrue(_looks_like_preamble("checking memory now"))
-        self.assertTrue(_looks_like_preamble("one sec"))
-
-    def test_trailing_ellipsis_or_colon_is_preamble(self):
-        self.assertTrue(
-            _looks_like_preamble("Pulling up the results from last week...")
-        )
-        self.assertTrue(_looks_like_preamble("Pulling up the results from last week…"))
-        self.assertTrue(
-            _looks_like_preamble("Here are the candidates I want to check:")
-        )
-
-    def test_real_replies_are_not_preamble(self):
-        for text in (
-            "Hey! I can help with <that> if you want.",
-            "Sure - use {'key': 'value'} as an example payload.",
-            (
-                "Correct — no active quests. The last three plans all hit "
-                '"success" and wrapped up. Want me to scope a new direction?'
-            ),
-            "The screening returned 4 candidates: Mn2Sb, MnAlGe, MgMnGe, KMnP.",
-            "Done. Posted the update at https://example.com/post/abc.",
-            "No, that asset doesn't exist on this team.",
-            "Yes — Fe2AlB2 passed Gate 1 with hull energy 0.0 eV/atom.",
-        ):
-            with self.subTest(text=text):
-                self.assertFalse(
-                    _looks_like_preamble(text),
-                    f"Did not expect preamble: {text!r}",
-                )
-
-    def test_long_reply_with_incidental_let_me_phrase_is_not_preamble(self):
-        text = (
-            "Here's the summary: the Cu2Sb pipeline returned 4 candidates and "
-            "the MAB-phase work is complete. The next interesting direction is "
-            "Fe-based MAX phases, where Fe2AlB2 has a published hull energy of "
-            "0.0 eV/atom and a measured Tc above room temperature. Let me know "
-            "if you want me to scope a screening campaign there, or pick a "
-            "different family entirely. I'm happy to run either."
-        )
-        self.assertFalse(_looks_like_preamble(text))
-
-    def test_empty_or_whitespace_is_not_preamble(self):
-        self.assertFalse(_looks_like_preamble(""))
-        self.assertFalse(_looks_like_preamble("   \n\t  "))
-
-
-class TestRecoverChatFinalAnswer(unittest.TestCase):
-    def test_returns_none_for_preamble_text(self):
-        self.assertIsNone(
-            _recover_chat_final_answer(
-                "Not pulling enough detail from memory — let me surface the actual results.",
-                None,
-            )
-        )
-
-    def test_returns_text_for_real_reply(self):
-        self.assertEqual(
-            _recover_chat_final_answer("The answer is 42.", None),
-            "The answer is 42.",
-        )
-
-    def test_returns_none_when_tool_calls_present(self):
-        self.assertIsNone(_recover_chat_final_answer("any text", ["tool"]))
-
-    def test_returns_none_for_empty(self):
-        self.assertIsNone(_recover_chat_final_answer("", None))
-        self.assertIsNone(_recover_chat_final_answer("   ", None))
-
-
-class TestPreambleNudgePath(unittest.TestCase):
-    """The patched parser should route preamble content to the nudge path
-    (empty tool_calls + observation marker) instead of auto-finalizing.
-    """
-
-    def test_chat_mode_preamble_does_not_become_final_answer(self):
+    def _assert_plain_content_ends_turn(self, content: str):
         model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
+        _patch_model_for_xml_tool_calls(model)
 
-        message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content="Not pulling enough detail from memory — let me surface the actual results.",
+        parsed = model.parse_tool_calls(
+            ChatMessage(role=MessageRole.ASSISTANT, content=content)
         )
 
-        parsed = model.parse_tool_calls(message)
-
-        # Critical: NOT auto-coerced into final_answer.
         self.assertEqual(parsed.role, MessageRole.ASSISTANT)
-        self.assertEqual(parsed.tool_calls, [])
-        self.assertEqual(
-            parsed.content,
-            "Not pulling enough detail from memory — let me surface the actual results.",
-        )
-
-        # And: a nudge observation is stashed on the message for
-        # SanitizedToolCallingAgent to surface on the next inference.
-        nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
-        self.assertIsNotNone(nudge)
-        self.assertIn("[runtime]", nudge)
-        self.assertIn("intermediate thought", nudge)
-        self.assertIn("final_answer", nudge)
-        self.assertIn("Not pulling enough detail", nudge)
-
-    def test_chat_mode_real_reply_still_coerced_to_final_answer(self):
-        # Regression guard: the original auto-coerce still runs for genuine
-        # replies (e.g. simple chat answers that don't trip preamble heuristics).
-        model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
-
-        message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content="Hey! I can help with <that> if you want.",
-        )
-
-        parsed = model.parse_tool_calls(message)
-
         self.assertEqual(len(parsed.tool_calls), 1)
         self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
-        self.assertEqual(
-            parsed.tool_calls[0].function.arguments,
-            {"answer": "Hey! I can help with <that> if you want."},
-        )
-        self.assertIsNone(
-            getattr(parsed, "_ouro_preamble_nudge_observation", None),
-        )
+        self.assertEqual(parsed.tool_calls[0].function.arguments, {"answer": content})
 
-    def test_chat_mode_does_not_treat_markdown_function_mention_as_tool_call(self):
-        # Hermes mentioned `open()` while summarizing a completed memory update.
-        # Inline function-call recovery interpreted that prose as an `open` tool
-        # call, causing duplicate follow-up work and "unknown tool" confusion.
-        model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
-
-        message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content=(
-                "All set. The stale `open()` fact was replaced with the current "
-                "sandbox status."
-            ),
+    def test_plain_content_ends_turn(self):
+        self._assert_plain_content_ends_turn("Hey! I can help with that.")
+        self._assert_plain_content_ends_turn(
+            "The key change is that gold and silver both broke below their "
+            "200-day exponential moving averages, which makes the short-term "
+            "technical picture weaker than it looked during the Q1 advance."
+        )
+        self._assert_plain_content_ends_turn(
+            "Sure - use {'key': 'value'} as an example payload."
         )
 
-        parsed = model.parse_tool_calls(message)
-
-        self.assertEqual(len(parsed.tool_calls), 1)
-        self.assertEqual(parsed.tool_calls[0].function.name, "final_answer")
-        self.assertEqual(
-            parsed.tool_calls[0].function.arguments,
-            {
-                "answer": (
-                    "All set. The stale `open()` fact was replaced with the current "
-                    "sandbox status."
-                )
-            },
+    def test_markdown_function_mention_is_not_a_tool_call(self):
+        # Hermes mentioned `open()` while summarizing a completed memory
+        # update; inline recovery must not interpret prose as a tool call.
+        self._assert_plain_content_ends_turn(
+            "All set. The stale `open()` fact was replaced with the current "
+            "sandbox status."
         )
-
-    def test_autonomous_mode_preamble_also_routes_to_nudge_path(self):
-        # Preamble leakage is a model bug regardless of mode. In autonomous
-        # mode we previously hit the reasoning-only branch which silently
-        # continued; the nudge path is strictly better because it surfaces
-        # an actionable hint to the model on the next step.
-        model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=False)
-
-        message = ChatMessage(
-            role=MessageRole.ASSISTANT,
-            content="Let me check the action logs first.",
-        )
-
-        parsed = model.parse_tool_calls(message)
-
-        self.assertEqual(parsed.tool_calls, [])
-        nudge = getattr(parsed, "_ouro_preamble_nudge_observation", None)
-        self.assertIsNotNone(nudge)
-        self.assertIn("Let me check", nudge)
-
-    def test_nudge_observation_truncates_long_preview(self):
-        long_text = "Let me " + ("really " * 100) + "check that."
-        nudge = _build_preamble_nudge_observation(long_text)
-        self.assertIn("[runtime]", nudge)
-        self.assertIn("…", nudge)
-        # Preview itself must be capped (independent of surrounding template).
-        preview_marker = "    Let me really"
-        self.assertIn(preview_marker, nudge)
-        # The full original text is too long to fit in the preview.
-        self.assertNotIn(long_text, nudge)
 
     def test_empty_narrated_tool_call_nudge_truncates_long_preview(self):
         long_text = "Calling tools:\n[]" + (" extra" * 100)
@@ -931,7 +669,7 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
             role=MessageRole.ASSISTANT,
             content="Let me search the team next.",
         )
-        message._ouro_preamble_nudge_observation = (
+        message._ouro_nudge_observation = (
             "[runtime] preamble nudge for testing"
         )
         memory_step = SimpleNamespace(
@@ -939,7 +677,7 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
             observations=None,
         )
 
-        agent._inject_preamble_nudge_observation(memory_step)
+        agent._inject_nudge_observation(memory_step)
 
         self.assertEqual(
             memory_step.observations,
@@ -947,7 +685,7 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         )
         # Marker is consumed so a re-run does not stack duplicates.
         self.assertFalse(
-            hasattr(message, "_ouro_preamble_nudge_observation"),
+            hasattr(message, "_ouro_nudge_observation"),
         )
 
     def test_step_hook_appends_to_existing_observations(self):
@@ -966,13 +704,13 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         )
 
         message = ChatMessage(role=MessageRole.ASSISTANT, content="x")
-        message._ouro_preamble_nudge_observation = "NUDGE"
+        message._ouro_nudge_observation = "NUDGE"
         memory_step = SimpleNamespace(
             model_output_message=message,
             observations="prior observation",
         )
 
-        agent._inject_preamble_nudge_observation(memory_step)
+        agent._inject_nudge_observation(memory_step)
 
         self.assertIn("prior observation", memory_step.observations)
         self.assertIn("NUDGE", memory_step.observations)
@@ -998,7 +736,7 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
             observations=None,
         )
 
-        agent._inject_preamble_nudge_observation(memory_step)
+        agent._inject_nudge_observation(memory_step)
 
         self.assertIsNone(memory_step.observations)
 
@@ -1029,6 +767,27 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         self.assertIn("5 steps remain", memory_step.observations)
         self.assertIn("Begin converging now", memory_step.observations)
 
+    def test_final_answer_hidden_from_model_tool_schemas(self):
+        from smolagents import tool
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        @tool
+        def sample_tool() -> str:
+            """Sample tool that exists so the agent can be constructed."""
+            return "ok"
+
+        agent = SanitizedToolCallingAgent(
+            tools=[sample_tool],
+            model=_FakeModelWithToolCalls(),
+        )
+
+        advertised = {t.name for t in agent.tools_and_managed_agents}
+        self.assertIn("sample_tool", advertised)
+        self.assertNotIn("final_answer", advertised)
+        # The tool stays registered internally as smolagents' stop signal.
+        self.assertIn("final_answer", agent.tools)
+
     def test_step_budget_observation_tells_last_step_to_close(self):
         from smolagents import tool
 
@@ -1056,7 +815,9 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         self.assertIn("completed 19/20", memory_step.observations)
         self.assertIn("1 step remains", memory_step.observations)
         self.assertIn("last available next step", memory_step.observations)
-        self.assertIn("call final_answer", memory_step.observations)
+        self.assertIn("deliver your final reply", memory_step.observations)
+        self.assertNotIn("create/update/comment", memory_step.observations)
+        self.assertNotIn("save the artifact", memory_step.observations)
 
     def test_step_budget_observation_is_quiet_before_threshold(self):
         from smolagents import tool
@@ -1198,7 +959,7 @@ class TestMiniMaxToolCallParsing(unittest.TestCase):
         # The actual regression: in chat mode, a leaked MiniMax send_email must
         # be recovered as a real tool call, NOT coerced into final_answer text.
         model = _AlwaysFailsModel()
-        _patch_model_for_xml_tool_calls(model, is_chat_mode=True)
+        _patch_model_for_xml_tool_calls(model)
 
         content = (
             '<minimax:tool_call><invoke name="send_email">'

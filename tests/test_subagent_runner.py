@@ -1,12 +1,13 @@
 import json
 
 from ouro_agents.subagents import runner
+from ouro_agents.security.policy import Capability
 from ouro_agents.subagents.context import SubAgentContext, SubAgentResult
 from ouro_agents.subagents.profiles import SubAgentProfile
 
 
 def test_run_subagent_marks_agent_loop_exceptions_as_failure(monkeypatch, tmp_path):
-    def fail_agent(_profile, _task, _ctx):
+    def fail_agent(_profile, _task, _ctx, **_kwargs):
         raise RuntimeError("model exploded")
 
     monkeypatch.setattr(runner, "_run_agent", fail_agent)
@@ -68,6 +69,7 @@ def test_nested_delegate_inherits_parent_context_and_runs_in_order(
         python_packages=["ase"],
         python_package_versions={"ase": "1.0"},
         delegatable_profiles={"child": child_profile},
+        allowed_capabilities=frozenset({Capability.READ_PLATFORM}),
     )
 
     seen = []
@@ -106,3 +108,4 @@ def test_nested_delegate_inherits_parent_context_and_runs_in_order(
     assert child_ctx.memory_scopes == ["child-scope"]
     assert child_ctx.python_packages == ["ase"]
     assert child_ctx.python_package_versions == {"ase": "1.0"}
+    assert child_ctx.allowed_capabilities == frozenset({Capability.READ_PLATFORM})

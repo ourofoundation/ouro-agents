@@ -647,7 +647,7 @@ activity alone is not a reason to prioritize a topic.
 {context_section}
 
 IMPORTANT: You MUST do both of the following steps. Do NOT skip the quest creation.
-Do NOT use any tools besides create_quest and final_answer. Do NOT attempt to
+Do NOT use any tools besides create_quest. Do NOT attempt to
 execute any plan items or do actual work — only write and publish the plan.
 
 Step 1. Call create_quest to publish your plan{quest_instructions}.
@@ -658,7 +658,7 @@ Step 1. Call create_quest to publish your plan{quest_instructions}.
    - Pass items as a list of specific, actionable task descriptions (strings).
      Each item becomes a trackable task on the platform.
 
-Step 2. After create_quest succeeds, call final_answer with this JSON:
+Step 2. After create_quest succeeds, end the turn with a final message that is only this JSON:
 ```json
 {{"quest_id": "<the asset id from create_quest>"}}
 ```
@@ -686,7 +686,7 @@ You may add new items, remove items that are no longer relevant, or adjust prior
 Items that are already done stay done.
 
 IMPORTANT: Do NOT attempt to execute any plan items — only revise and update the plan.
-Use only the tools listed below and final_answer.
+Use only the tools listed below.
 
 Step 1. Update the plan description if context has changed:
    Call update_quest (id: {quest_id}){quest_instructions}.
@@ -701,7 +701,7 @@ Step 2. Manage items as needed:
    - delete_quest_item(quest_id, item_id): remove irrelevant items (only if no entries)
    - If the item list below seems stale, call list_quest_items(quest_id) before editing.
 
-Step 3. After all updates, call final_answer with this JSON:
+Step 3. After all updates, end the turn with a final message that is only this JSON:
 ```json
 {{"quest_id": "{quest_id}"}}
 ```
@@ -1092,7 +1092,7 @@ async def run_planning_heartbeat(
         notify_controller_plan_ready(
             ouro,
             cycle.quest_id,
-            agent.config.controller.username,
+            agent.config.security.controller_username,
         )
 
     kind_label = "goal " if cycle.kind == "goal" else ""
@@ -1124,6 +1124,7 @@ async def run_review_heartbeat(
     reply_parent_id: str | None = None,
     thread_parent_id: str | None = None,
     prefetch=None,
+    capability_envelope=None,
 ) -> Optional[PlanCycle]:
     """Check for human feedback on the plan quest and activate if reviewed.
 
@@ -1202,6 +1203,7 @@ async def run_review_heartbeat(
         preload_tools=review_preload,
         prefetch=prefetch,
         team_id=plan_store.team_id,
+        capability_envelope=capability_envelope,
     )
 
     parsed = parse_json_from_llm(result)

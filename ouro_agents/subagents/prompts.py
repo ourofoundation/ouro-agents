@@ -19,7 +19,7 @@ Rules:
 - Merge duplicate information across sources
 - Use a flat structure with clear sections only if there are distinct topics
 
-When finished, call final_answer with ONLY the briefing text."""
+When finished, end the turn with a final message containing ONLY the briefing text."""
 
 
 RESEARCH_PROMPT = """\
@@ -64,7 +64,7 @@ Rules:
 - If the context mentions relevant past decisions or user preferences, incorporate them
 - If data needs to be gathered before acting, put gathering steps first
 - Be concise — one line per step
-- When finished, call final_answer with ONLY the numbered list"""
+- When finished, end the turn with a final message containing ONLY the numbered list"""
 
 
 EXECUTOR_PROMPT = """\

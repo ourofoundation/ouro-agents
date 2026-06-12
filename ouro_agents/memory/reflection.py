@@ -124,6 +124,17 @@ def _save_reflected_turn(
     marker.write_text(str(turn_count))
 
 
+def record_reflection_turn(
+    conversations_dir: Path, conversation_id: str, turn_count: int
+) -> None:
+    """Mark reflection as attempted at this user-turn count.
+
+    Called before running the reflector so a failed attempt does not retrigger
+    on every subsequent run until another interval of turns has passed.
+    """
+    _save_reflected_turn(conversations_dir, conversation_id, turn_count)
+
+
 def _reflection_candidates(result: ReflectionResult) -> list[dict]:
     candidates = list(result.facts_to_store)
     for preference in result.user_preferences:

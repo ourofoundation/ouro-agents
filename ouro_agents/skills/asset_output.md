@@ -12,7 +12,7 @@ When your work produces reusable content, save it as an Ouro asset:
    `org_id`, `team_id`, and `visibility` from the Platform context and Ouro asset
    placement sections.
 
-2. Call `final_answer` with a JSON object containing the asset metadata:
+2. End your turn with a final message that is a JSON object containing the asset metadata:
    ```json
    {
      "asset_id": "<id from create call>",
@@ -27,7 +27,7 @@ When your work produces reusable content, save it as an Ouro asset:
    action (sharing, changing access) is needed.
 
 3. If the create tool is unavailable, return the full content directly in
-   `final_answer` as plain text.
+   your final message as plain text.
 
-4. If no asset was created (e.g. the task was informational), keep `final_answer`
-   brief — report what you did and key results.
+4. If no asset was created (e.g. the task was informational), keep your final
+   message brief — report what you did and key results.

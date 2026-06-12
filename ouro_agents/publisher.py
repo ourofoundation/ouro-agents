@@ -92,6 +92,8 @@ class OuroReplyPublisher:
         conversation_id: Optional[str],
         content: str,
         message_id: str,
+        turn_id: Optional[str] = None,
+        seq: Optional[int] = None,
     ) -> None:
         if not conversation_id or not content:
             return
@@ -100,6 +102,8 @@ class OuroReplyPublisher:
             conversation_id=conversation_id,
             content=content,
             message_id=message_id,
+            turn_id=turn_id,
+            seq=seq,
         )
 
     def emit_llm_response_end(
@@ -124,6 +128,8 @@ class OuroReplyPublisher:
         conversation_id: Optional[str],
         content: str,
         message_id: str,
+        turn_id: Optional[str] = None,
+        seq: Optional[int] = None,
     ) -> None:
         if not conversation_id or not content:
             return
@@ -132,6 +138,50 @@ class OuroReplyPublisher:
             conversation_id=conversation_id,
             content=content,
             message_id=message_id,
+            turn_id=turn_id,
+            seq=seq,
+        )
+
+    def emit_subagent_start(
+        self,
+        *,
+        conversation_id: Optional[str],
+        message_id: str,
+        subagent_name: str,
+        turn_id: Optional[str] = None,
+        seq: Optional[int] = None,
+    ) -> None:
+        if not conversation_id or not subagent_name:
+            return
+        self._safe_emit(
+            self.client.websocket.emit_subagent_start,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            subagent_name=subagent_name,
+            turn_id=turn_id,
+            seq=seq,
+        )
+
+    def emit_subagent_step(
+        self,
+        *,
+        conversation_id: Optional[str],
+        message_id: str,
+        subagent_name: str,
+        detail: str,
+        turn_id: Optional[str] = None,
+        seq: Optional[int] = None,
+    ) -> None:
+        if not conversation_id or not detail:
+            return
+        self._safe_emit(
+            self.client.websocket.emit_subagent_step,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            subagent_name=subagent_name,
+            detail=detail,
+            turn_id=turn_id,
+            seq=seq,
         )
 
     def emit_tool_start(
@@ -142,6 +192,8 @@ class OuroReplyPublisher:
         tool_name: str,
         tool_call_id: str,
         input_data: Optional[dict] = None,
+        turn_id: Optional[str] = None,
+        seq: Optional[int] = None,
     ) -> None:
         if not conversation_id:
             return
@@ -152,6 +204,8 @@ class OuroReplyPublisher:
             tool_name=tool_name,
             tool_call_id=tool_call_id,
             input_data=input_data,
+            turn_id=turn_id,
+            seq=seq,
         )
 
     def emit_tool_result(
@@ -161,6 +215,8 @@ class OuroReplyPublisher:
         message_id: str,
         tool_call_id: str,
         output_data: Optional[dict] = None,
+        turn_id: Optional[str] = None,
+        seq: Optional[int] = None,
     ) -> None:
         if not conversation_id:
             return
@@ -170,4 +226,6 @@ class OuroReplyPublisher:
             message_id=message_id,
             tool_call_id=tool_call_id,
             output_data=output_data,
+            turn_id=turn_id,
+            seq=seq,
         )

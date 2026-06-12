@@ -22,10 +22,14 @@ from smolagents import ActionStep
 from ..artifacts import fetch_asset_content, parse_asset_result
 from ..constants import GLOBAL_ORG_UUID
 from ..observer import emit_progress
+from ..uuid_v7 import uuid7_str
 from ..platform_context_prompt import format_platform_context_for_prompt
+from ..security.policy import Capability
+from ..security.tool_capabilities import filter_deferred_tools
 from ..skills import resolve_skills
 from ..soul import build_shared_prompt_sections
 from ..tool_prompt import build_tool_calling_system_prompt
+from ..tools.mcp_tools import format_deferred_directory
 from ..usage import format_subagent_usage_summary
 from .context import SubAgentContext, SubAgentResult, SubAgentUsage
 from .delegate_utils import (
@@ -146,18 +150,23 @@ def run_subagent(
 ) -> SubAgentResult:
     """Dispatch a subagent. Returns a structured SubAgentResult with usage metrics."""
     logger.info("Running subagent '%s' (max_steps=%d)", profile.name, profile.max_steps)
+    run_id = uuid7_str()
     emit_progress(
         ctx.progress_observer,
         "subagent_started",
         profile.name,
-        detail={"name": profile.name, "max_steps": profile.max_steps},
+        detail={
+            "name": profile.name,
+            "max_steps": profile.max_steps,
+            "run_id": run_id,
+        },
     )
 
     before = _snapshot_tracker(ctx.model)
     t0 = time.monotonic()
 
     try:
-        text, agent = _run_agent(profile, task, ctx)
+        text, agent = _run_agent(profile, task, ctx, run_id=run_id)
         wall_ms = int((time.monotonic() - t0) * 1000)
         usage = _compute_usage(ctx.model, before, wall_ms)
         usage.steps = _count_agent_steps(agent)
@@ -189,6 +198,7 @@ def run_subagent(
             state="complete",
             detail={
                 "name": profile.name,
+                "run_id": run_id,
                 "usage": _usage_detail(usage),
                 "asset": asset_label,
             },
@@ -216,7 +226,12 @@ def run_subagent(
             "subagent_failed",
             profile.name,
             state="failed",
-            detail={"name": profile.name, "error": str(e), "usage": _usage_detail(usage)},
+            detail={
+                "name": profile.name,
+                "run_id": run_id,
+                "error": str(e),
+                "usage": _usage_detail(usage),
+            },
         )
         return SubAgentResult(
             text="",
@@ -313,6 +328,7 @@ def _build_chain_delegate(
             team_id=ctx.team_id,
             deferred_tools=ctx.deferred_tools,
             deferred_index=ctx.deferred_index,
+            server_descriptions=ctx.server_descriptions,
             asset_refs=list(ctx.asset_refs),
             memory_scopes=child_profile.memory_scopes or ctx.memory_scopes,
             ouro_client=ctx.ouro_client,
@@ -323,6 +339,7 @@ def _build_chain_delegate(
             cancellation_token=ctx.cancellation_token,
             progress_observer=ctx.progress_observer,
             delegatable_profiles=ctx.delegatable_profiles,
+            allowed_capabilities=ctx.allowed_capabilities,
         )
 
     def _run_one(spec: dict) -> dict:
@@ -361,7 +378,7 @@ def _build_chain_delegate(
 
         When a child returns an `asset_id`, it has already created and published
         that asset on Ouro. Do NOT create another asset for the same work — reuse
-        the returned asset_id (and its `link`) in your own final_answer.
+        the returned asset_id (and its `link`) in your own final reply.
 
         Args:
             tasks: List of task specs. Each is a dict with keys:
@@ -409,6 +426,8 @@ def _format_task_context(
     task: str,
     ctx: SubAgentContext,
     extra_sections: Optional[list[str]] = None,
+    shared_context_sections: Optional[list[str]] = None,
+    include_asset_placement: bool = True,
 ) -> str:
     """Build a context string from SubAgentContext for the agent's task."""
     shared_sections = build_shared_prompt_sections(
@@ -423,7 +442,7 @@ def _format_task_context(
         plans_index=ctx.plans_index,
         workspace_root=str(ctx.workspace.resolve()),
     )
-    ordered_shared_keys = (
+    default_shared_keys = (
         "current_datetime",
         "soul",
         "platform_context",
@@ -433,6 +452,11 @@ def _format_task_context(
         "plans_index",
         "working_memory",
     )
+    ordered_shared_keys = (
+        tuple(shared_context_sections)
+        if shared_context_sections is not None
+        else default_shared_keys
+    )
     parts: list[str] = [
         shared_sections[key] for key in ordered_shared_keys if key in shared_sections
     ]
@@ -441,27 +465,28 @@ def _format_task_context(
     if asset_context:
         parts.append(f"## Input Assets\n{asset_context}")
 
-    platform_text = ctx.platform_context or format_platform_context_for_prompt(
-        ctx.workspace
-    )
-    if platform_text:
-        parts.append(
-            "## Ouro asset placement\n"
-            "When creating posts, files, or datasets on Ouro, choose the `org_id` and "
-            "`team_id` that best fit each artifact from the platform context above. "
-            "You may publish different outputs to different teams in the same run when appropriate. "
-            "If `agent_can_create` is false for a team, do not use it for API creates — pick another team "
-            "or call `get_teams` / `get_organizations` to refresh. "
-            "Default visibility: public unless the user or task requires otherwise."
+    if include_asset_placement:
+        platform_text = ctx.platform_context or format_platform_context_for_prompt(
+            ctx.workspace
         )
-    else:
-        parts.append(
-            "## Ouro asset placement\n"
-            "Platform context cache was empty. Call `get_teams` / `get_organizations` via `load_tool` "
-            "to choose `org_id` and `team_id`. If you need an org id before loading teams, use the "
-            f"global organization id `{GLOBAL_ORG_UUID}`. "
-            "Default visibility: public unless the user or task requires otherwise."
-        )
+        if platform_text:
+            parts.append(
+                "## Ouro asset placement\n"
+                "When creating posts, files, or datasets on Ouro, choose the `org_id` and "
+                "`team_id` that best fit each artifact from the platform context above. "
+                "You may publish different outputs to different teams in the same run when appropriate. "
+                "If `agent_can_create` is false for a team, do not use it for API creates — pick another team "
+                "or call `get_teams` / `get_organizations` to refresh. "
+                "Default visibility: public unless the user or task requires otherwise."
+            )
+        else:
+            parts.append(
+                "## Ouro asset placement\n"
+                "Platform context cache was empty. Call `get_teams` / `get_organizations` via `load_tool` "
+                "to choose `org_id` and `team_id`. If you need an org id before loading teams, use the "
+                f"global organization id `{GLOBAL_ORG_UUID}`. "
+                "Default visibility: public unless the user or task requires otherwise."
+            )
 
     if extra_sections:
         parts.extend(section for section in extra_sections if section)
@@ -471,7 +496,11 @@ def _format_task_context(
 
 
 def _run_agent(
-    profile: SubAgentProfile, task: str, ctx: SubAgentContext
+    profile: SubAgentProfile,
+    task: str,
+    ctx: SubAgentContext,
+    *,
+    run_id: str,
 ) -> tuple[str, object]:
     """Run a subagent as a ToolCallingAgent with restricted tools."""
     from ..memory.tools import make_memory_tools
@@ -482,6 +511,14 @@ def _run_agent(
     tools: list = []
     active_deferred_index: list[dict] = []
     preloaded_raw_names: list[str] = []
+    deferred_tools = ctx.deferred_tools
+    deferred_index = ctx.deferred_index
+    if ctx.allowed_capabilities is not None:
+        deferred_tools, deferred_index = filter_deferred_tools(
+            deferred_tools,
+            deferred_index,
+            ctx.allowed_capabilities,
+        )
 
     memory_tool_names = {"memory_recall", "memory_status"}
     if memory_tool_names & set(profile.allowed_tools):
@@ -500,9 +537,15 @@ def _run_agent(
         tools.extend(t for t in mem_tools if t.name in allowed)
 
     agent_ref: dict = {}
-    if profile.can_load_mcp_tools and ctx.deferred_tools:
-        deferred_tools = ctx.deferred_tools
-        active_deferred_index = ctx.deferred_index
+    if (
+        profile.can_load_mcp_tools
+        and deferred_tools
+        and (
+            ctx.allowed_capabilities is None
+            or Capability.LOAD_MCP_TOOL in ctx.allowed_capabilities
+        )
+    ):
+        active_deferred_index = deferred_index
 
         if profile.allowed_servers:
             allowed_servers = set(profile.allowed_servers)
@@ -518,18 +561,23 @@ def _run_agent(
 
         from ..tools.mcp_tools import make_load_tool
 
-        load_tool = make_load_tool(deferred_tools, active_deferred_index, agent_ref)
+        load_tool = make_load_tool(
+            deferred_tools,
+            active_deferred_index,
+            agent_ref,
+            server_descriptions=ctx.server_descriptions,
+        )
         tools.append(load_tool)
 
     # Preload MCP tools specified by the profile
     for qualified_name in profile.preload_tools:
-        tool_obj = ctx.deferred_tools.get(qualified_name)
+        tool_obj = deferred_tools.get(qualified_name)
         if tool_obj:
             tools.append(tool_obj)
             item = next(
                 (
                     entry
-                    for entry in ctx.deferred_index
+                    for entry in deferred_index
                     if entry["tool"] == qualified_name
                 ),
                 None,
@@ -542,7 +590,10 @@ def _run_agent(
             )
 
     closeables = []
-    if profile.needs_python_tool:
+    if profile.needs_python_tool and (
+        ctx.allowed_capabilities is None
+        or Capability.RUN_PYTHON in ctx.allowed_capabilities
+    ):
         from ..tools.python_tool import make_code_tools
 
         code_tools, python_executor = make_code_tools(
@@ -554,17 +605,27 @@ def _run_agent(
             agent_name=f"{ctx.agent_id}-{profile.name}",
             run_id=ctx.run_id,
         )
+        if ctx.allowed_capabilities is not None:
+            allowed_code_names = {"run_python"}
+            if Capability.RUN_SHELL in ctx.allowed_capabilities:
+                allowed_code_names.add("run_shell")
+            code_tools = [tool for tool in code_tools if tool.name in allowed_code_names]
         tools.extend(code_tools)
         if hasattr(python_executor, "close"):
             closeables.append(python_executor)
 
-    chain_delegate = _build_chain_delegate(profile, ctx)
+    chain_delegate = (
+        _build_chain_delegate(profile, ctx)
+        if ctx.allowed_capabilities is None
+        or Capability.DELEGATE in ctx.allowed_capabilities
+        else None
+    )
     if chain_delegate:
         tools.append(chain_delegate)
 
     if not tools:
         logger.warning(
-            "Subagent '%s' has no tools — running with final_answer only",
+            "Subagent '%s' has no tools — it can only produce a direct reply",
             profile.name,
         )
 
@@ -584,7 +645,7 @@ def _run_agent(
                 ctx.progress_observer,
                 "subagent_step",
                 f"{profile.name}: retrying after error",
-                detail={"name": profile.name, "step": step_number},
+                detail={"name": profile.name, "run_id": run_id, "step": step_number},
             )
             return
         if tool_name:
@@ -594,6 +655,7 @@ def _run_agent(
                 f"{profile.name}: using {tool_name}",
                 detail={
                     "name": profile.name,
+                    "run_id": run_id,
                     "step": step_number,
                     "tool": tool_name,
                 },
@@ -606,17 +668,21 @@ def _run_agent(
         max_steps=profile.max_steps,
         logger=subagent_logger,
         step_callbacks=[_subagent_step_callback],
-        is_chat_mode=False,
         cancellation_token=ctx.cancellation_token,
     )
     agent_ref["agent"] = agent
 
     if profile.system_prompt:
         agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
-            profile.system_prompt
+            profile.system_prompt,
+            include_work_directive=profile.include_work_directive,
+            include_mechanics=profile.include_tool_mechanics,
         )
     else:
-        agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt()
+        agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
+            include_work_directive=profile.include_work_directive,
+            include_mechanics=profile.include_tool_mechanics,
+        )
 
     task_sections: list[str] = []
 
@@ -641,10 +707,10 @@ def _run_agent(
             "- After `load_tool`, call the tool by the returned `call_as` name.\n"
             "- If a tool call fails, retry once with corrected arguments instead of describing the retry."
         )
-        directory = "\n".join(
-            f"- {item['tool']}: {item['description'][:240]}"
-            for item in active_deferred_index
-        )
+        # Subagents run with an already-curated, small server scope, so list
+        # every server in full (treat all present servers as primary).
+        present_servers = {item["server"] for item in active_deferred_index}
+        directory = format_deferred_directory(active_deferred_index, present_servers)
         task_sections.append(
             f"## Available Tools (use load_tool to activate)\n{directory}"
         )
@@ -658,7 +724,13 @@ def _run_agent(
             f'use `return_mode: "full_text"` only when you truly need the full body.'
         )
 
-    effective_task = _format_task_context(task, ctx, task_sections)
+    effective_task = _format_task_context(
+        task,
+        ctx,
+        task_sections,
+        shared_context_sections=profile.shared_context_sections,
+        include_asset_placement=profile.include_asset_placement,
+    )
 
     try:
         result = agent.run(effective_task)

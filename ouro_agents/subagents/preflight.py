@@ -21,15 +21,18 @@ call them during preflight.
 
 Strategy:
 - First, classify the intent and complexity of the request.
-- If the request is simple or conversational, do not call tools; immediately call final_answer with valid JSON.
-- Otherwise, call memory_recall exactly once with 1-3 batched queries. Try different angles: the direct topic, related entities, and past decisions/preferences.
-- If memory_recall returns no useful context, still call final_answer with briefing="" and a plan based on the request.
+- If the request is self-contained, conversational, or simple enough that memory cannot change the outcome, do not call tools; immediately reply with valid JSON.
+- Otherwise, call memory_recall exactly once with 1-3 batched queries. Try different angles: the direct topic, related entities/assets, and past decisions/preferences.
+- If memory_recall returns no useful context, still reply with briefing="" and a plan based on the request.
 - For moderate or complex tasks, synthesize a briefing and sketch a short execution plan
   that names likely platform actions: MCP tools to load, routes/services/assets to inspect,
   assets to create, or results to verify.
-- If a previous response failed or was not accepted, immediately call final_answer with the best valid JSON you can produce.
+- Prefer plans that create durable requested artifacts, execute existing Ouro routes/services,
+  query datasets directly, or inspect real outputs over plans that only produce prose about what
+  could be done.
+- If a previous response failed or was not accepted, immediately reply with the best valid JSON you can produce.
 
-Finish by calling final_answer exactly once. The final_answer answer must be \
+Finish by ending the turn with a final message that contains no tool calls and is \
 ONLY valid JSON matching this schema (no markdown fences, no explanation):
 {
   "intent": "question" | "create" | "analyze" | "research" | "manage" | "converse",
@@ -46,17 +49,20 @@ Rules:
 "complex" = multi-step, research + synthesis, or ambiguous scope
 - worth_remembering: false for greetings, acknowledgments, trivial follow-ups; true otherwise
 - briefing: Lead with the most relevant information. Preserve specific facts, names, IDs, \
-and decisions. Drop anything irrelevant. Empty string if no useful memories found.
+asset refs, URLs, and decisions. Include a memory only if it would change what the main agent \
+does on this task; when unsure, leave it out. Empty string if no useful memories found.
 - plan: Concrete steps the main agent can execute with MCP tools. Reference specific MCP \
 tools, route/service discovery, asset creation/transformation, or result inspection when relevant. \
-One line per step. Empty string if the task is simple enough to not need a plan.
+One line per step. End moderate/complex plans with a verification step that names the expected \
+evidence (asset ID, action ID, dataset rows, status, URL, or exact change). Empty string if the \
+task is simple enough to not need a plan.
 - plan ordering: if the request explicitly names a durable artifact to create (a quest, post, \
 plan, dataset), put that creation step FIRST — before web research, outreach, or other long \
 execution — so the requested deliverable exists even if later steps stall. Do not front-load \
 research ahead of an artifact the user directly asked for.
 - Be efficient with memory_recall — at most one call, with multiple queries batched into that call.
-- Available preflight MCP tools are only memory_recall and final_answer. Never call side-effecting platform MCP tools.
-- Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
+- The only available preflight tool is memory_recall. Never call side-effecting platform MCP tools.
+- Your final message must be the JSON object alone — no surrounding prose."""
 
 
 HEARTBEAT_PREFLIGHT_PROMPT = """\
@@ -79,7 +85,7 @@ For active plans or ambiguous choices, call memory_recall at most once with batc
 queries if recent context would materially improve the decision. Include a query
 for current work-direction guidance when plan choice is unclear. Otherwise, do
 not call tools.
-If memory_recall returns no useful context, still choose an action and call final_answer with valid JSON.
+If memory_recall returns no useful context, still choose an action and reply with valid JSON.
 
 Assume active plans can span multiple heartbeats. If you choose "work_on_plan",
 you are choosing the best next slice of progress for this tick, not asking the
@@ -88,7 +94,7 @@ If active plans are too under-specified to choose responsibly, prefer
 "general_heartbeat" so the main agent can ask for direction or publish a
 direction-proposal post instead of forcing arbitrary quest progress.
 
-Finish by calling final_answer exactly once. The final_answer answer must be \
+Finish by ending the turn with a final message that contains no tool calls and is \
 ONLY valid JSON matching this schema (no markdown fences, no explanation):
 {
   "action": "work_on_plan" | "general_heartbeat" | "skip",
@@ -96,9 +102,9 @@ ONLY valid JSON matching this schema (no markdown fences, no explanation):
   "reasoning": "Brief explanation of why you chose this action."
 }
 
-If a previous response failed or was not accepted, immediately call final_answer with the best valid JSON you can produce.
-Available heartbeat preflight MCP tools are only memory_recall and final_answer. Never call side-effecting platform MCP tools.
-Never emit raw JSON or plain text as an assistant message. Return the JSON only inside final_answer."""
+If a previous response failed or was not accepted, immediately reply with the best valid JSON you can produce.
+The only available heartbeat preflight tool is memory_recall. Never call side-effecting platform MCP tools.
+Your final message must be the JSON object alone — no surrounding prose."""
 
 
 @dataclass

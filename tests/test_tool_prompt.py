@@ -1,52 +1,55 @@
 import unittest
 
-from ouro_agents.tool_prompt import (
-    TOOL_CALLING_SYSTEM_PROMPT,
-    build_tool_calling_system_prompt,
-)
+from ouro_agents.tool_prompt import build_tool_calling_system_prompt
 
 
 class TestToolPrompt(unittest.TestCase):
-    def test_returns_base_prompt_without_extra_instructions(self):
-        self.assertEqual(
-            build_tool_calling_system_prompt(),
-            TOOL_CALLING_SYSTEM_PROMPT,
-        )
-
-    def test_appends_extra_instructions_to_base_prompt(self):
+    def test_appends_extra_instructions(self):
         extra = "You are operating inside Ouro."
 
         result = build_tool_calling_system_prompt(extra)
 
-        self.assertTrue(result.startswith(TOOL_CALLING_SYSTEM_PROMPT))
         self.assertTrue(result.endswith(extra))
         self.assertIn("\n\n" + extra, result)
 
-    def test_base_prompt_requires_tool_or_final_answer_turns(self):
-        self.assertIn(
-            "Every assistant turn must contain exactly one of: a real tool call, or a final_answer tool call.",
-            TOOL_CALLING_SYSTEM_PROMPT,
-        )
-        self.assertIn("Never emit an empty assistant message.", TOOL_CALLING_SYSTEM_PROMPT)
-        self.assertIn(
-            "Do not write `final_answer(...)` as text.",
-            TOOL_CALLING_SYSTEM_PROMPT,
-        )
-        self.assertIn(
-            "put that exact structured output in final_answer's answer argument",
-            TOOL_CALLING_SYSTEM_PROMPT,
+    def test_explains_tool_or_final_content_turns(self):
+        prompt = build_tool_calling_system_prompt()
+
+        self.assertIn("Turn mechanics", prompt)
+        self.assertIn("Continue:", prompt)
+        self.assertIn("Finish:", prompt)
+        self.assertIn("Never emit an empty message", prompt)
+        self.assertIn("never end a turn on a preamble", prompt)
+        self.assertIn("final answer as assistant content with no tool calls", prompt)
+        self.assertIn("put that exact output in the\n  final content", prompt)
+
+    def test_requires_evidence_for_platform_work(self):
+        prompt = build_tool_calling_system_prompt()
+
+        self.assertIn("include concrete evidence", prompt)
+        self.assertIn("asset IDs", prompt)
+        self.assertIn("action IDs", prompt)
+        self.assertIn("rather than presenting", prompt)
+
+    def test_work_directive_present_by_default_absent_in_conversational(self):
+        work = build_tool_calling_system_prompt()
+        chat = build_tool_calling_system_prompt(conversational=True)
+        analysis = build_tool_calling_system_prompt(include_work_directive=False)
+        scoped = build_tool_calling_system_prompt(
+            "You are a preflight analyst for an AI agent.",
+            include_work_directive=False,
+            include_mechanics=False,
         )
 
-    def test_base_prompt_prioritizes_completed_work(self):
-        self.assertIn("Do not substitute meta-work for work", TOOL_CALLING_SYSTEM_PROMPT)
-        self.assertIn("transform, analyze, execute, publish, or update", TOOL_CALLING_SYSTEM_PROMPT)
-        self.assertIn("requested artifact/action exists", TOOL_CALLING_SYSTEM_PROMPT)
+        self.assertIn("Prime directive: do the work", work)
+        self.assertIn("analyze, execute, publish, or update", work)
 
-    def test_base_prompt_requires_evidence_for_platform_work(self):
-        self.assertIn("include concrete evidence in final_answer", TOOL_CALLING_SYSTEM_PROMPT)
-        self.assertIn("asset IDs", TOOL_CALLING_SYSTEM_PROMPT)
-        self.assertIn("action IDs", TOOL_CALLING_SYSTEM_PROMPT)
-        self.assertIn("rather than presenting a plan as completion", TOOL_CALLING_SYSTEM_PROMPT)
+        self.assertNotIn("Prime directive", chat)
+        self.assertNotIn("Prime directive", analysis)
+        # Mechanics are shared by both.
+        self.assertIn("Turn mechanics", chat)
+        self.assertIn("Turn mechanics", analysis)
+        self.assertEqual(scoped, "You are a preflight analyst for an AI agent.")
 
 
 if __name__ == "__main__":

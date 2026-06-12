@@ -41,6 +41,7 @@ from .memory.naming import current_period_heading, period_key, store_rhythm
 from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
     apply_reflection,
+    record_reflection_turn,
     should_reflect_for_conversation,
     store_reflection_memories,
     validated_daily_log_entries,
@@ -49,8 +50,15 @@ from .memory.reflection import (
 from .memory.tools import make_memory_tools
 from .teams import TeamContext, TeamRegistry
 
-from .modes import ModeProfile, apply_mode_override, resolve_mode_profile
+from .modes import (
+    ModeProfile,
+    apply_capability_envelope,
+    apply_mode_override,
+    resolve_mode_profile,
+)
 from .observer import AgentObserver, ProgressEvent, emit_progress
+from .security.policy import Capability, CapabilityEnvelope
+from .security.tool_capabilities import filter_deferred_tools
 from .skills import get_skill_directory, load_startup_skills
 from .soul import build_prompt
 from .subagents.context import SubAgentUsage
@@ -83,12 +91,15 @@ from .usage import (
 )
 from .utils.callbacks import build_step_callback
 from .utils.conversation import (
+    HISTORY_FETCH_LIMIT,
     append_conversation_turn,
     build_history_steps,
     conversation_file,
     extract_tool_summary,
     format_conversation_turns,
     load_conversation_turns,
+    resolve_conversation_turns,
+    select_history_window,
 )
 from .utils.debug import (
     append_run_debug_markdown_trace,
@@ -102,6 +113,27 @@ if TYPE_CHECKING:
     from .subagents.context import SubAgentContext
 
 logger = logging.getLogger(__name__)
+
+
+def _dedup_bullet_lines(text: str) -> str:
+    """Drop exact-duplicate bullet lines, keeping first occurrence.
+
+    Automatic memory extraction accumulates repeats of the same fact,
+    preference, or log entry across runs. Deduping at render time keeps the
+    prompt lean without touching the stored documents. Only "- " bullets are
+    considered — headings, prose, and blank lines pass through untouched.
+    """
+    seen: set[str] = set()
+    lines: list[str] = []
+    for line in text.splitlines():
+        normalized = " ".join(line.split())
+        if normalized.startswith("- "):
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+        lines.append(line)
+    return "\n".join(lines)
+
 
 RunStatusCallback = Callable[[str, Optional[str], bool], None]
 RunResponseCallback = Callable[[str], None]
@@ -129,6 +161,7 @@ class OuroAgent:
         self._deferred_tools: dict = {}
         self._deferred_tools_by_raw_name: dict = {}
         self._deferred_index: list[dict] = []
+        self._server_descriptions: dict[str, str] = {}
         self._mcp_connected = False
         self._own_user_id: Optional[str] = None
         self._run_lock = threading.RLock()
@@ -238,7 +271,7 @@ class OuroAgent:
         return self._own_user_id
 
     def _refresh_platform_context(self) -> None:
-        """Fetch profile, org, and team info from the Ouro MCP server and cache it.
+        """Fetch profile, org, and team info via the Ouro SDK and cache it.
 
         Called at startup and on heartbeat. Other runs read from cache.
         """
@@ -251,33 +284,40 @@ class OuroAgent:
             or "https://ouro.foundation",
         }
 
-        me_tool = self._deferred_tools.get("ouro:get_me")
-        if me_tool:
+        ouro = self._get_ouro_client()
+        if ouro is None:
+            logger.warning("Platform context: Ouro SDK client unavailable")
+        else:
             try:
-                raw = me_tool()
-                context["profile"] = json.loads(raw) if isinstance(raw, str) else raw
+                profile = ouro.users.me() or {}
+                context["profile"] = {
+                    "id": str(profile.get("user_id") or getattr(ouro.user, "id", "")),
+                    "username": profile.get("username"),
+                    "display_name": profile.get("display_name"),
+                    "email": profile.get("email") or getattr(ouro.user, "email", None),
+                    "bio": profile.get("bio"),
+                }
             except Exception as e:
                 logger.warning("Platform context: failed to fetch profile: %s", e)
 
-        org_tool = self._deferred_tools.get("ouro:get_organizations")
-        if org_tool:
             try:
-                raw = org_tool()
-                data = json.loads(raw) if isinstance(raw, str) else raw
-                context["organizations"] = (
-                    data.get("results", data) if isinstance(data, dict) else data
-                )
+                context["organizations"] = [
+                    {
+                        "id": str(org.get("id") or ""),
+                        "name": org.get("name"),
+                        "display_name": org.get("display_name"),
+                        "role": (org.get("membership") or {}).get("role"),
+                    }
+                    for org in ouro.organizations.list()
+                ]
             except Exception as e:
                 logger.warning("Platform context: failed to fetch orgs: %s", e)
 
-        teams_tool = self._deferred_tools.get("ouro:get_teams")
-        if teams_tool:
             try:
-                raw = teams_tool()
-                data = json.loads(raw) if isinstance(raw, str) else raw
-                context["teams"] = (
-                    data.get("results", data) if isinstance(data, dict) else data
-                )
+                context["teams"] = [
+                    self._team_context_entry(team)
+                    for team in ouro.teams.list(joined=True)
+                ]
             except Exception as e:
                 logger.warning("Platform context: failed to fetch teams: %s", e)
 
@@ -286,6 +326,7 @@ class OuroAgent:
         cache_path.write_text(json.dumps(context, indent=2))
 
         self._own_user_id = (context.get("profile") or {}).get("id")
+        self._resolve_security_actors()
 
         self.team_registry.refresh(context, self.config.agent.org_id)
         logger.info(
@@ -295,6 +336,146 @@ class OuroAgent:
         )
         if self._mcp_connected:
             self._init_doc_store()
+
+    @staticmethod
+    def _team_context_entry(team) -> dict:
+        """Flatten an SDK Team into the cached platform-context shape."""
+        org = team.get("organization") or {}
+        source_policy = (
+            team.get("source_policy") or org.get("source_policy") or "any"
+        )
+        membership = team.get("userMembership") or {}
+        desc = team.get("description")
+        return {
+            "id": str(team.get("id") or ""),
+            "name": team.get("name"),
+            "slug": team.get("slug"),
+            "org_id": str(team.get("org_id") or ""),
+            "organization_name": org.get("name") or org.get("display_name"),
+            "role": membership.get("role"),
+            "source_policy": source_policy,
+            "agent_can_create": source_policy != "web_only",
+            "description": desc.get("text", "") if isinstance(desc, dict) else desc,
+        }
+
+    def _resolve_security_actors(self) -> None:
+        """Resolve ``security.controllers`` / ``security.trusted`` to user ids.
+
+        Entries may be Ouro usernames or user ids (UUIDs), mixed. Ids pass
+        through unchanged; usernames are looked up via ``search_users`` and
+        cached so subsequent startups skip the network round-trip. The original
+        config lists are never mutated — results land in the ``resolved_*``
+        fields the authorization layer reads.
+        """
+        security = self.config.security
+        cache = self._load_security_id_cache()
+
+        controller_ids, controller_username = self._resolve_actor_entries(
+            security.controllers, cache
+        )
+        trusted_ids, _ = self._resolve_actor_entries(security.trusted, cache)
+
+        security.resolved_controller_ids = controller_ids
+        security.resolved_trusted_ids = trusted_ids
+        security.controller_username = controller_username
+
+        self._save_security_id_cache(cache)
+        logger.info(
+            "Resolved security actors: %d controller id(s), %d trusted id(s)",
+            len(controller_ids),
+            len(trusted_ids),
+        )
+
+    @staticmethod
+    def _looks_like_user_id(value: str) -> bool:
+        from uuid import UUID
+
+        try:
+            UUID(value)
+            return True
+        except (ValueError, AttributeError, TypeError):
+            return False
+
+    def _resolve_actor_entries(
+        self, entries: list[str], cache: dict[str, str]
+    ) -> tuple[list[str], Optional[str]]:
+        """Return (resolved_ids, first_username) for a list of actor entries."""
+        resolved: list[str] = []
+        seen: set[str] = set()
+        first_username: Optional[str] = None
+
+        for raw_entry in entries or []:
+            entry = str(raw_entry or "").strip()
+            if not entry:
+                continue
+            if self._looks_like_user_id(entry):
+                if entry not in seen:
+                    seen.add(entry)
+                    resolved.append(entry)
+                continue
+
+            username = entry.lstrip("@")
+            if first_username is None:
+                first_username = username
+
+            user_id = cache.get(username) or self._lookup_user_id(username)
+            if not user_id:
+                logger.warning("Could not resolve username '%s' to a user id", username)
+                continue
+            cache[username] = user_id
+            if user_id not in seen:
+                seen.add(user_id)
+                resolved.append(user_id)
+
+        return resolved, first_username
+
+    def _lookup_user_id(self, username: str) -> Optional[str]:
+        ouro = self._get_ouro_client()
+        if ouro is None:
+            return None
+        try:
+            candidates = ouro.users.search(username)
+        except Exception as e:
+            logger.warning("Failed to resolve username '%s': %s", username, e)
+            return None
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_username = str(candidate.get("username") or "").strip()
+            candidate_id = str(
+                candidate.get("user_id") or candidate.get("id") or ""
+            ).strip()
+            if candidate_username == username and candidate_id:
+                logger.info("Resolved username '%s' to user id %s", username, candidate_id)
+                return candidate_id
+        return None
+
+    def _security_cache_path(self) -> Path:
+        return self._workspace / "data" / "security_resolved.json"
+
+    def _load_security_id_cache(self) -> dict[str, str]:
+        path = self._security_cache_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text())
+        except Exception as e:
+            logger.warning("Failed to read security id cache: %s", e)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {str(k): str(v) for k, v in data.items() if k and v}
+
+    def _save_security_id_cache(self, cache: dict[str, str]) -> None:
+        if not cache:
+            return
+        path = self._security_cache_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(cache, indent=2, sort_keys=True))
+        except Exception as e:
+            logger.warning("Failed to write security id cache: %s", e)
 
     def _load_platform_context(self) -> str:
         """Load cached platform context for inclusion in the system prompt."""
@@ -351,7 +532,7 @@ class OuroAgent:
             if shared_memory:
                 parts.append(f"## Shared Memory (cross-team)\n{shared_memory}")
 
-        return "\n\n".join(parts)
+        return _dedup_bullet_lines("\n\n".join(parts))
 
     def _load_shared_memory(self) -> str:
         """Load the root-level MEMORY.md for cross-team shared knowledge.
@@ -398,7 +579,6 @@ class OuroAgent:
         self,
         *,
         user_id: Optional[str] = None,
-        conversation_state: Optional[ConversationState] = None,
         include_scheduled_tasks: bool = False,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
@@ -442,9 +622,6 @@ class OuroAgent:
             "platform_context": self._load_platform_context(),
             "working_memory": working_memory,
             "user_model": user_model_text,
-            "conversation_state": (
-                conversation_state.format_for_prompt() if conversation_state else ""
-            ),
             "plans_index": plans_index_text,
         }
 
@@ -583,10 +760,10 @@ class OuroAgent:
         )
 
     def _get_ouro_client(self):
-        """Build or return a cached Ouro SDK client for the Python sandbox.
+        """Build or return a cached Ouro SDK client for runtime platform calls.
 
         Uses the same env vars as the MCP server (OURO_API_KEY, OURO_BASE_URL).
-        Returns None if credentials are unavailable so the sandbox degrades
+        Returns None if credentials are unavailable so callers degrade
         gracefully.
         """
         if hasattr(self, "_ouro_client"):
@@ -594,9 +771,7 @@ class OuroAgent:
 
         api_key = os.getenv("OURO_API_KEY")
         if not api_key:
-            logger.warning(
-                "OURO_API_KEY not set — Ouro SDK unavailable in Python sandbox"
-            )
+            logger.warning("OURO_API_KEY not set — Ouro SDK unavailable")
             self._ouro_client = None
             return None
 
@@ -607,12 +782,29 @@ class OuroAgent:
                 api_key=api_key,
                 base_url=os.getenv("OURO_BASE_URL"),
             )
-            logger.info("Ouro SDK client created for Python sandbox")
+            logger.info("Ouro SDK client created")
         except Exception as e:
             logger.warning("Failed to create Ouro SDK client: %s", e)
             self._ouro_client = None
 
         return self._ouro_client
+
+    def _resolve_conversation_turns(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 24,
+        trigger_turn_id: Optional[str] = None,
+    ) -> list[dict]:
+        exclude_turn_ids = {trigger_turn_id} if trigger_turn_id else None
+        return resolve_conversation_turns(
+            self._workspace,
+            conversation_id,
+            ouro_client=self._get_ouro_client(),
+            agent_user_id=self.own_user_id,
+            exclude_turn_ids=exclude_turn_ids,
+            limit=limit,
+        )
 
     def _summarize_turns(self, turns: list[dict]) -> str:
         """Compress older conversation turns into a brief summary via LLM."""
@@ -816,6 +1008,8 @@ class OuroAgent:
                 )
                 collection = ctx.__enter__()
                 self._mcp_contexts.append(ctx)
+                if server.description:
+                    self._server_descriptions[server.name] = server.description
                 for mcp_tool in collection.tools:
                     self._patch_tool_inputs(mcp_tool)
                     qualified_name = f"{server.name}:{mcp_tool.name}"
@@ -863,6 +1057,7 @@ class OuroAgent:
         self._deferred_tools.clear()
         self._deferred_tools_by_raw_name.clear()
         self._deferred_index.clear()
+        self._server_descriptions.clear()
         self._mcp_connected = False
 
     def __enter__(self):
@@ -932,16 +1127,40 @@ class OuroAgent:
                 k: v for k, v in self._deferred_tools.items() if k in filtered_names
             }
 
+        if profile.excluded_tools:
+            excluded = set(profile.excluded_tools)
+            deferred_index = [
+                item for item in deferred_index if item["tool"] not in excluded
+            ]
+            deferred_tools = {
+                k: v for k, v in deferred_tools.items() if k not in excluded
+            }
+
+        if profile.allowed_capabilities is not None:
+            deferred_tools, deferred_index = filter_deferred_tools(
+                deferred_tools,
+                deferred_index,
+                profile.allowed_capabilities,
+            )
+
         agent_self = self
         agent_ref: dict = {}
 
-        from .tools.mcp_tools import make_load_tool
+        from .tools.mcp_tools import (
+            _resolve_tool_name,
+            format_deferred_directory,
+            make_load_tool,
+        )
 
-        load_tool = make_load_tool(
-            deferred_tools,
-            deferred_index,
-            agent_ref,
-            resolve_fn=agent_self._resolve_tool_name,
+        load_tool = (
+            make_load_tool(
+                deferred_tools,
+                deferred_index,
+                agent_ref,
+                server_descriptions=self._server_descriptions,
+            )
+            if profile.allows_capability(Capability.LOAD_MCP_TOOL)
+            else None
         )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
@@ -960,11 +1179,16 @@ class OuroAgent:
             org_id=self.config.agent.org_id or "",
             available_team_ids=self._available_memory_team_ids(team_id),
             available_teams=self._available_memory_teams(team_id),
-            enable_remember=run_mode in {"heartbeat", "plan", "review"},
+            enable_remember=(
+                run_mode in {"heartbeat", "plan", "review"}
+                and profile.allows_capability(Capability.MEMORY_WRITE)
+            ),
         )
         if profile.memory_tool_filter is not None:
             allowed = set(profile.memory_tool_filter)
             memory_tools = [t for t in memory_tools if t.name in allowed]
+        elif not profile.allows_capability(Capability.MEMORY_WRITE):
+            memory_tools = [t for t in memory_tools if t.name != "remember"]
 
         code_tools, python_executor = make_code_tools(
             workspace=self.config.agent.workspace,
@@ -975,17 +1199,30 @@ class OuroAgent:
             agent_name=self.config.agent.name,
             run_id=run_id,
         )
+        if profile.allowed_capabilities is not None:
+            allowed_code_names: set[str] = set()
+            if profile.allows_capability(Capability.RUN_PYTHON):
+                allowed_code_names.add("run_python")
+            if profile.allows_capability(Capability.RUN_SHELL):
+                allowed_code_names.add("run_shell")
+            code_tools = [tool for tool in code_tools if tool.name in allowed_code_names]
         closeables = [python_executor] if hasattr(python_executor, "close") else []
-        load_skill = make_load_skill_tool(self.config.agent.workspace)
+        load_skill = (
+            make_load_skill_tool(self.config.agent.workspace)
+            if profile.allows_capability(Capability.LOAD_MCP_TOOL)
+            else None
+        )
         scheduler_tools = (
             make_scheduler_tools(self.scheduler, team_id=team_id)
             if not profile.restricted_servers
+            and profile.allows_capability(Capability.SCHEDULE)
             else []
         )
 
         # Build the delegate tool for subagent dispatch
         delegatable_profiles = agent_self.delegatable_profiles
         subagent_names = list(delegatable_profiles.keys())
+        parent_allowed_capabilities = profile.allowed_capabilities
 
         _subagent_names_str = ", ".join(subagent_names)
 
@@ -1011,6 +1248,7 @@ class OuroAgent:
                 doc_store=active_doc_store,
                 cancellation_token=cancellation_token,
                 progress_observer=observer,
+                allowed_capabilities=parent_allowed_capabilities,
             )
             return result, profile
 
@@ -1104,7 +1342,11 @@ class OuroAgent:
 
         delegate_tools = (
             []
-            if profile.restricted_servers or not profile.allow_delegation
+            if (
+                profile.restricted_servers
+                or not profile.allow_delegation
+                or not profile.allows_capability(Capability.DELEGATE)
+            )
             else [delegate]
         )
 
@@ -1116,13 +1358,17 @@ class OuroAgent:
                 list(memory_tools)
                 + scheduler_tools
                 + delegate_tools
-                + [load_tool, load_skill]
+                + [tool for tool in (load_tool, load_skill) if tool is not None]
                 + code_tools
             )
 
         preloaded_names: list[str] = []
         for qualified_name in preload_tools or []:
-            resolved, err = self._resolve_tool_name(qualified_name)
+            resolved, err = _resolve_tool_name(
+                qualified_name,
+                deferred_tools,
+                deferred_index,
+            )
             if err or not resolved:
                 logger.warning("Preload skipped for '%s': %s", qualified_name, err)
                 continue
@@ -1141,12 +1387,13 @@ class OuroAgent:
                     "Preloaded tool: %s (call as %s)", resolved, item["raw_name"]
                 )
 
-        if _has_memory_filter:
+        if _has_memory_filter or load_tool is None:
             deferred_tool_directory = ""
         else:
-            deferred_tool_directory = "\n".join(
-                f"- {item['tool']}: {item['description'][:80]}"
-                for item in deferred_index
+            deferred_tool_directory = format_deferred_directory(
+                deferred_index,
+                set(profile.default_servers),
+                self._server_descriptions,
             )
 
         return (
@@ -1169,18 +1416,30 @@ class OuroAgent:
         preloaded_tool_names: Optional[list[str]] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        trigger_turn_id: Optional[str] = None,
+        history_covers_conversation: bool = True,
     ) -> tuple[str, str]:
         """Build the system prompt and dynamic context.
 
         Returns (system_prompt, dynamic_context) where dynamic_context should
         be prepended to the task message for prompt-cache-friendly layout.
+
+        ``history_covers_conversation`` is False when the verbatim history
+        window injected into agent memory omits older turns; only then does
+        the conversation-state summary add information the model can't see.
         """
         conversation_context = ""
         conversation_state_text = ""
         if profile.load_conversation_state and conversation_state:
-            conversation_state_text = conversation_state.format_for_prompt()
+            conversation_state_text = conversation_state.format_for_prompt(
+                include_summary=not history_covers_conversation
+            )
         elif conversation_id and not profile.lightweight:
-            turns = load_conversation_turns(self._workspace, conversation_id, limit=24)
+            turns = self._resolve_conversation_turns(
+                conversation_id,
+                limit=24,
+                trigger_turn_id=trigger_turn_id,
+            )
             conversation_context = format_conversation_turns(
                 turns, summarize_fn=self._summarize_turns
             )
@@ -1190,22 +1449,20 @@ class OuroAgent:
         # compact directory so skill use is discoverable without inlining bodies.
         skill_directory = (
             self.skill_directory
-            if not profile.lightweight or profile.memory_tool_filter is None
+            if (not profile.lightweight or profile.memory_tool_filter is None)
+            and profile.allows_capability(Capability.LOAD_MCP_TOOL)
             else ""
         )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         shared_context = self._load_shared_prompt_context(
             user_id=user_id,
-            conversation_state=conversation_state,
             include_scheduled_tasks=profile.load_scheduled_tasks,
             team_id=team_id,
             doc_store=active_doc_store,
         )
         working_memory = shared_context["working_memory"]
         user_model_text = shared_context["user_model"]
-        if profile.load_conversation_state:
-            conversation_state_text = shared_context["conversation_state"]
 
         from .memory.context_loader import load_entity_context
 
@@ -1297,6 +1554,7 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
         progress_observer: Optional[AgentObserver] = None,
+        allowed_capabilities: Optional[frozenset[Capability]] = None,
     ) -> "SubAgentContext":
         from .subagents.context import SubAgentContext
 
@@ -1315,7 +1573,6 @@ class OuroAgent:
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
         shared_context = self._load_shared_prompt_context(
             user_id=user_id,
-            conversation_state=conversation_state,
             include_scheduled_tasks=False,
             team_id=team_id,
             doc_store=active_doc_store,
@@ -1333,6 +1590,7 @@ class OuroAgent:
             conversation_id=conversation_id,
             deferred_tools=self._deferred_tools,
             deferred_index=self._deferred_index,
+            server_descriptions=self._server_descriptions,
             run_id=run_id,
             soul=shared_context["soul"],
             notes=shared_context["notes"],
@@ -1352,6 +1610,7 @@ class OuroAgent:
             cancellation_token=cancellation_token,
             progress_observer=progress_observer,
             delegatable_profiles=self.delegatable_profiles,
+            allowed_capabilities=allowed_capabilities,
         )
 
     def _record_subagent_usage(self, name: str, usage: SubAgentUsage) -> None:
@@ -1370,6 +1629,7 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
         progress_observer: Optional[AgentObserver] = None,
+        allowed_capabilities: Optional[frozenset[Capability]] = None,
     ):
         """Build context and dispatch a subagent through the unified runner.
 
@@ -1401,6 +1661,7 @@ class OuroAgent:
             doc_store=doc_store,
             cancellation_token=cancellation_token,
             progress_observer=progress_observer,
+            allowed_capabilities=allowed_capabilities,
         )
 
         return run_subagent(effective_profile, task, ctx)
@@ -1416,6 +1677,7 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
         progress_observer: Optional[AgentObserver] = None,
+        allowed_capabilities: Optional[frozenset[Capability]] = None,
     ) -> list:
         """Run multiple subagents in parallel.
 
@@ -1457,6 +1719,7 @@ class OuroAgent:
                 doc_store=doc_store,
                 cancellation_token=cancellation_token,
                 progress_observer=progress_observer,
+                allowed_capabilities=allowed_capabilities,
             )
             dispatch_list.append((effective_profile, task_str, ctx))
 
@@ -1501,7 +1764,7 @@ class OuroAgent:
         emit_progress(observer, "preflight", "analyzing request")
         if status_callback:
             try:
-                status_callback("thinking", "is analyzing the task...", True)
+                status_callback("thinking", "Analyzing the task...", True)
             except Exception:
                 logger.exception("Failed to emit preflight status")
 
@@ -1569,7 +1832,7 @@ class OuroAgent:
         emit_progress(observer, "reflecting", "post-run reflection")
         if status_callback:
             try:
-                status_callback("thinking", "is reflecting...", True)
+                status_callback("thinking", "Reflecting...", True)
             except Exception:
                 logger.exception("Failed to emit reflection status")
 
@@ -1653,6 +1916,9 @@ class OuroAgent:
             self.config.memory.mid_session_reflection_interval,
         ):
             return
+
+        turn_count = conv_state.turn_count if conv_state else 0
+        record_reflection_turn(conversations_dir, conversation_id, turn_count)
 
         try:
             reflection_result = self._run_reflection(
@@ -1797,7 +2063,9 @@ class OuroAgent:
         preserve_existing_usage: bool = False,
         event_type: Optional[str] = None,
         team_id: Optional[str] = None,
+        capability_envelope: Optional[CapabilityEnvelope] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
+        trigger_turn_id: Optional[str] = None,
     ) -> str:
         token = cancellation_token or RunCancellationToken()
         with self._active_runs_lock:
@@ -1822,7 +2090,9 @@ class OuroAgent:
                     preserve_existing_usage=preserve_existing_usage,
                     event_type=event_type,
                     team_id=team_id,
+                    capability_envelope=capability_envelope,
                     cancellation_token=token,
+                    trigger_turn_id=trigger_turn_id,
                 )
             except asyncio.CancelledError:
                 token.cancel("async task cancelled")
@@ -1856,7 +2126,9 @@ class OuroAgent:
         preserve_existing_usage: bool = False,
         event_type: Optional[str] = None,
         team_id: Optional[str] = None,
+        capability_envelope: Optional[CapabilityEnvelope] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
+        trigger_turn_id: Optional[str] = None,
     ) -> str:
         token = cancellation_token or RunCancellationToken()
         token.raise_if_cancelled()
@@ -1865,9 +2137,15 @@ class OuroAgent:
         model = model_override or self._build_model(self.config.agent.model)
         active_doc_store = self._resolve_doc_store(team_id=team_id)
 
+        _patched_reasoning_callbacks = False
         _original_reasoning_cb = None
+        _original_reasoning_stream_cb = None
         if observer and hasattr(model, "_reasoning_callback"):
+            _patched_reasoning_callbacks = True
             _original_reasoning_cb = model._reasoning_callback
+            _original_reasoning_stream_cb = getattr(
+                model, "_reasoning_stream_callback", None
+            )
 
             def _composed_reasoning(text: str) -> None:
                 if _original_reasoning_cb:
@@ -1878,6 +2156,7 @@ class OuroAgent:
                     logger.warning("Failed to persist reasoning message", exc_info=True)
 
             model._reasoning_callback = _composed_reasoning
+            model._reasoning_stream_callback = observer.on_reasoning_stream
 
         if not preserve_existing_usage:
             self._usage_tracker.reset()
@@ -1890,6 +2169,16 @@ class OuroAgent:
         override = self.config.modes.profiles.get(profile.name)
         if override:
             profile = apply_mode_override(profile, override)
+        if capability_envelope is not None:
+            logger.info(
+                "Applying capability envelope: role=%s surface=%s capabilities=%s",
+                capability_envelope.role.value,
+                capability_envelope.surface.value,
+                ",".join(
+                    sorted(cap.value for cap in capability_envelope.allowed_capabilities)
+                ),
+            )
+            profile = apply_capability_envelope(profile, capability_envelope)
 
         # Merge profile preload tools with any explicit preload_tools.
         # Use dict.fromkeys for stable, first-seen dedup so order is
@@ -1976,6 +2265,21 @@ class OuroAgent:
             state="complete",
         )
 
+        # Resolve the verbatim history window up front: the prompt builder
+        # needs to know whether it covers the whole conversation (to decide
+        # if the state summary adds anything), and the same turns are injected
+        # as structured memory steps below.
+        history_turns: list[dict] = []
+        history_covers_conversation = True
+        if profile.load_conversation_state and conversation_id:
+            all_turns = self._resolve_conversation_turns(
+                conversation_id,
+                limit=HISTORY_FETCH_LIMIT,
+                trigger_turn_id=trigger_turn_id,
+            )
+            history_turns = select_history_window(all_turns)
+            history_covers_conversation = len(history_turns) == len(all_turns)
+
         # Build system prompt (static, cacheable) + dynamic context (per-turn).
         emit_progress(observer, "building_prompt", "assembling context")
         system_prompt, dynamic_context = self._build_system_prompt(
@@ -1989,6 +2293,8 @@ class OuroAgent:
             preloaded_tool_names=preloaded_names,
             team_id=team_id,
             doc_store=active_doc_store,
+            trigger_turn_id=trigger_turn_id,
+            history_covers_conversation=history_covers_conversation,
         )
         emit_progress(observer, "building_prompt", "prompt ready", state="complete")
 
@@ -2038,9 +2344,16 @@ class OuroAgent:
             self.config.heartbeat.model or self.config.agent.model,
             heartbeat=True,
         )
+        # NOTE: tool persistence/emission (observer.on_step_persist) is
+        # deliberately NOT registered as a smolagents step_callback. smolagents
+        # fires step_callbacks inside _finalize_step *before* yielding the
+        # ActionStep. The step's streamed commentary is only flushed (persisted +
+        # end-of-stream) when we receive that yielded ActionStep in the run loop
+        # below. Persisting tools in the callback would therefore order tool
+        # events ahead of a commentary message that chronologically came first.
+        # Instead we call observer.on_step_persist from the ActionStep branch of
+        # the streaming loop, after _flush_intermediate, to keep the order correct.
         step_callbacks = [step_callback]
-        if observer:
-            step_callbacks.append(observer.on_step_persist)
 
         agent = _SanitizedToolCallingAgent(
             tools=all_tools,
@@ -2050,13 +2363,14 @@ class OuroAgent:
             step_callbacks=step_callbacks,
             logger=create_logger(display=display),
             compactor_model=compactor_model,
-            is_chat_mode=(mode in (RunMode.CHAT, RunMode.CHAT_REPLY)),
             cancellation_token=token,
+            plain_task_messages=profile.conversational,
         )
         agent_ref["agent"] = agent
 
         agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
-            system_prompt
+            system_prompt,
+            conversational=profile.conversational,
         )
 
         if debug_markdown_path:
@@ -2076,18 +2390,16 @@ class OuroAgent:
         # In chat mode, inject recent turns as structured steps so the model
         # sees user/assistant pairs verbatim.
         has_history = False
-        if profile.load_conversation_state and conversation_id:
-            turns = load_conversation_turns(self._workspace, conversation_id, limit=8)
-            if turns:
-                history_steps = build_history_steps(turns)
-                agent.memory.steps.extend(history_steps)
-                has_history = True
-                logger.info(
-                    "Injected %d history steps from %d recent turns for conversation %s",
-                    len(history_steps),
-                    len(turns),
-                    conversation_id,
-                )
+        if history_turns:
+            history_steps = build_history_steps(history_turns)
+            agent.memory.steps.extend(history_steps)
+            has_history = True
+            logger.info(
+                "Injected %d history steps from %d recent turns for conversation %s",
+                len(history_steps),
+                len(history_turns),
+                conversation_id,
+            )
 
         use_reset = not has_history
 
@@ -2103,6 +2415,10 @@ class OuroAgent:
                 streamer = FinalAnswerStreamer()
                 intermediate_streamer = IntermediateContentStreamer()
                 current_intermediate_message_id: str | None = None
+                # Guards against double tool persistence: smolagents re-yields the
+                # last ActionStep when max_steps is reached (see _run_stream), and
+                # we must not emit/persist that step's tools twice.
+                last_persisted_step: object | None = None
 
                 def _flush_intermediate(*, drop: bool = False) -> None:
                     """Close out the current step's commentary stream, if any.
@@ -2120,7 +2436,16 @@ class OuroAgent:
                     full_text = intermediate_streamer.flush()
                     msg_id = current_intermediate_message_id
                     current_intermediate_message_id = None
-                    if drop or not full_text.strip():
+                    if drop:
+                        try:
+                            observer.on_intermediate_drop(msg_id)
+                        except Exception:
+                            logger.warning(
+                                "observer.on_intermediate_drop failed",
+                                exc_info=True,
+                            )
+                        return
+                    if not full_text.strip():
                         return
                     try:
                         observer.on_intermediate_end(msg_id, full_text)
@@ -2149,13 +2474,31 @@ class OuroAgent:
                                     exc_info=True,
                                 )
                     elif isinstance(event, ActionStep):
-                        # Step boundary. Persist the step's commentary unless
+                        # Step boundary. First flush this step's streamed
+                        # commentary (persist it + signal end-of-stream) unless
                         # the step ended on a final_answer (in which case the
                         # final-answer stream is already covering the user-
                         # facing reply via on_stream_chunk + on_result_ready).
+                        # Flushing before tool persistence below guarantees the
+                        # commentary message is ordered ahead of this step's
+                        # tools, matching the chronological order in which the
+                        # model produced them.
                         _flush_intermediate(
                             drop=bool(getattr(event, "is_final_answer", False))
                         )
+                        # Now emit/persist this step's tool calls. Done here
+                        # (rather than as a smolagents step_callback) so tools
+                        # are always ordered after the commentary that preceded
+                        # them. ``is`` guard dedupes the max-steps re-yield.
+                        if event is not last_persisted_step:
+                            last_persisted_step = event
+                            try:
+                                observer.on_step_persist(event)
+                            except Exception:
+                                logger.warning(
+                                    "observer.on_step_persist failed",
+                                    exc_info=True,
+                                )
                     elif isinstance(event, FinalAnswerStep):
                         final_result = event.output
 
@@ -2253,6 +2596,10 @@ class OuroAgent:
                 not profile.skip_post_reflection
                 and not skip_memory
                 and worth_remembering
+                and (
+                    capability_envelope is None
+                    or capability_envelope.allows(Capability.MEMORY_WRITE)
+                )
             ):
                 self._post_run_reflect(
                     task,
@@ -2334,8 +2681,9 @@ class OuroAgent:
             usage=usage,
         )
 
-        if _original_reasoning_cb is not None:
+        if _patched_reasoning_callbacks:
             model._reasoning_callback = _original_reasoning_cb
+            model._reasoning_stream_callback = _original_reasoning_stream_cb
 
         return str(result)
 
@@ -2413,7 +2761,11 @@ class OuroAgent:
                 )
         return results
 
-    async def handle_plan_feedback(self, event_run) -> Optional[str]:
+    async def handle_plan_feedback(
+        self,
+        event_run,
+        capability_envelope: Optional[CapabilityEnvelope] = None,
+    ) -> Optional[str]:
         """Handle feedback on a plan quest from an incoming event."""
         from .modes.planning import PlanStore, run_review_heartbeat
 
@@ -2450,6 +2802,7 @@ class OuroAgent:
                 reply_parent_id=event_run.reply_parent_id,
                 thread_parent_id=event_run.thread_parent_id,
                 prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
+                capability_envelope=capability_envelope,
             )
             if reviewed:
                 logger.info("Plan updated via event feedback (cycle %s)", reviewed.id)
@@ -2463,6 +2816,7 @@ class OuroAgent:
                 list(event_run.preload_tools) if event_run.preload_tools else None
             ),
             team_id=event_run.team_id,
+            capability_envelope=capability_envelope,
         )
 
     def _log_run(

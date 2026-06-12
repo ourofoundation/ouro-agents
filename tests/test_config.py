@@ -145,13 +145,51 @@ class TestConfigModeOverrides(unittest.TestCase):
         self.assertTrue(config.planning.enabled)
         self.assertEqual(config.planning.cadence, "6h")
 
-    def test_loads_controller_username(self):
+    def test_loads_security_config(self):
         data = _base_config()
-        data["controller"] = {"username": "mmoderwell"}
+        data["security"] = {
+            "controllers": ["mmoderwell"],
+            "trusted": ["trusted-1"],
+            "run_secret": "secret",
+        }
 
         config = self._load_config(data)
 
-        self.assertEqual(config.controller.username, "mmoderwell")
+        self.assertEqual(config.security.controllers, ["mmoderwell"])
+        self.assertEqual(config.security.trusted, ["trusted-1"])
+        self.assertEqual(config.security.run_secret, "secret")
+        # Runtime-resolved fields start empty; the agent fills them at startup.
+        self.assertEqual(config.security.resolved_controller_ids, [])
+        self.assertEqual(config.security.resolved_trusted_ids, [])
+        self.assertIsNone(config.security.controller_username)
+
+    def test_migrates_legacy_controller_block_into_security(self):
+        data = _base_config()
+        data["controller"] = {"username": "mmoderwell"}
+        data["security"] = {"controllers": ["00000000-0000-0000-0000-000000000001"]}
+
+        config = self._load_config(data)
+
+        self.assertFalse(hasattr(config, "controller"))
+        # Controller username leads so it stays the @mention target.
+        self.assertEqual(
+            config.security.controllers,
+            ["mmoderwell", "00000000-0000-0000-0000-000000000001"],
+        )
+
+    def test_migrates_legacy_security_key_names(self):
+        data = _base_config()
+        data["security"] = {
+            "controller_user_ids": ["controller-1"],
+            "trusted_user_ids": ["trusted-1"],
+            "run_shared_secret": "secret",
+        }
+
+        config = self._load_config(data)
+
+        self.assertEqual(config.security.controllers, ["controller-1"])
+        self.assertEqual(config.security.trusted, ["trusted-1"])
+        self.assertEqual(config.security.run_secret, "secret")
 
     def test_event_pooling_defaults_when_omitted(self):
         config = self._load_config(_base_config())

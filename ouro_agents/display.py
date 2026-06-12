@@ -75,10 +75,11 @@ class OuroDisplay:
             ]
             | None
         ) = None
+        self._active_tool: str | None = None
         self.console = Console(
             theme=THEME,
             highlight=False,
-            stderr=False,
+            stderr=True,
         )
 
     def rule(self, title: str = "") -> None:
@@ -123,17 +124,34 @@ class OuroDisplay:
         if self.verbosity >= Verbosity.NORMAL:
             self.console.print(f"[ouro.thought]Reasoning: {escape(message)}[/]")
 
-    def tool_call(self, tool_name: str) -> None:
-        if self.verbosity >= Verbosity.NORMAL:
-            self.console.print(f"[ouro.step]>[/] [ouro.tool]{escape(tool_name)}[/]")
-
-    def observation(self, text: str) -> None:
-        """Render tool observation/result as markdown."""
+    def begin_tool_call(self, tool_name: str, args: str = "") -> None:
         if self.verbosity < Verbosity.NORMAL:
             return
-        self.console.print(f"  [ouro.dim]Observation:[/]")
-        md = Markdown(text, code_theme="monokai")
-        self.console.print(md)
+        self._active_tool = tool_name
+        args_suffix = f"[ouro.dim]({escape(args)})[/]" if args else ""
+        self.console.print(
+            f"[ouro.step]>[/] [ouro.tool]{escape(tool_name)}[/]{args_suffix}"
+        )
+
+    def complete_tool_call(self, tool_name: str, *, failed: bool = False) -> None:
+        if self.verbosity < Verbosity.NORMAL:
+            return
+        mark = "✗" if failed else "✓"
+        style = "ouro.error" if failed else "ouro.success"
+        self.console.print(f"[{style}]{mark}[/] [ouro.tool]{escape(tool_name)}[/]")
+        if self._active_tool == tool_name:
+            self._active_tool = None
+
+    def tool_call(self, tool_name: str) -> None:
+        self.begin_tool_call(tool_name)
+
+    def observation(self, text: str) -> None:
+        """Render tool observation/result in muted gray."""
+        if self.verbosity < Verbosity.NORMAL:
+            return
+        self.console.print("  [ouro.dim]Observation:[/]")
+        for line in text.splitlines() or [""]:
+            self.console.print(f"  [ouro.dim]{escape(line)}[/]")
 
     def _log_tool_call(self, raw: str) -> None:
         """Parse smolagents' 'Calling tool:' text into our compact format."""
@@ -143,13 +161,7 @@ class OuroDisplay:
         name = m.group(1) if m else "unknown"
         args_match = re.search(r"with arguments:\s*(.+)", raw, re.DOTALL)
         args_str = args_match.group(1).strip() if args_match else ""
-        if args_str:
-            self.console.print(
-                f"[ouro.step]>[/] [ouro.tool]{escape(name)}[/]"
-                f"[ouro.dim]({escape(args_str)})[/]"
-            )
-        else:
-            self.tool_call(name)
+        self.begin_tool_call(name, args_str)
 
     def token_summary(
         self,
@@ -527,7 +539,9 @@ class OuroLogger(AgentLogger):
             if isinstance(arg, Text):
                 plain = arg.plain
                 if plain.startswith("Final answer:"):
-                    self._last_tool_name = None
+                    if self._last_tool_name:
+                        self._display.complete_tool_call(self._last_tool_name)
+                        self._last_tool_name = None
                     if self.show_final_answer:
                         body = plain[len("Final answer:") :].strip()
                         if body:
@@ -557,8 +571,11 @@ class OuroLogger(AgentLogger):
             if isinstance(arg, str):
                 if arg.startswith("Observations:"):
                     body = arg[len("Observations:") :].strip()
-                    if body and self._last_tool_name != "final_answer":
-                        self._display.observation(body)
+                    tool_name = self._last_tool_name
+                    if tool_name and tool_name != "final_answer":
+                        if body:
+                            self._display.observation(body)
+                        self._display.complete_tool_call(tool_name)
                     self._last_tool_name = None
                     return
 

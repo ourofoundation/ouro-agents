@@ -125,7 +125,7 @@ for run results.
 For chat-driven events, the `ServerAgentObserver`:
 
 - Emits `typing` and `thinking` activity through the realtime API.
-- Streams `final_answer` chunks back as `llm_response` messages keyed by
+- Streams final-reply chunks back as `llm_response` messages keyed by
   a server-generated `stream_message_id`.
 - Persists the final assistant message to the conversation when the run
   completes.

@@ -52,7 +52,7 @@ interval). Persists turns. Default `max_steps=20`.
 ### `chat-reply`
 Webhook-driven version of chat. Same behavior except the reply is posted
 back to the Ouro conversation automatically by the server's
-`ServerAgentObserver` — `final_answer` is enough.
+`ServerAgentObserver` — the final assistant reply is enough.
 
 ### `autonomous`
 The default for `ouro-agents run`. Preloads action-oriented Ouro tools

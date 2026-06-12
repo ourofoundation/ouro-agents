@@ -92,6 +92,38 @@ class TestVisibleReasoningLogging(unittest.TestCase):
         self.assertEqual(tracker.total_input_tokens, 7)
         self.assertEqual(tracker.total_output_tokens, 3)
 
+    def test_streaming_reasoning_emits_incremental_chunks(self):
+        tracker = UsageTracker()
+        persisted: list[str] = []
+        streamed: list[str] = []
+        chunks = [
+            _response(
+                id="resp_stream",
+                choices=[_choice(delta=_message(reasoning="inspect "))],
+            ),
+            _response(
+                id="resp_stream",
+                choices=[_choice(delta=_message(reasoning="inspect the workspace"))],
+            ),
+            _response(
+                id="resp_stream",
+                usage={"prompt_tokens": 7, "completion_tokens": 3},
+                choices=[_choice(delta=_message(content="done"))],
+            ),
+        ]
+
+        list(
+            _wrap_stream(
+                iter(chunks),
+                tracker,
+                reasoning_callback=persisted.append,
+                reasoning_stream_callback=streamed.append,
+            )
+        )
+
+        self.assertEqual(streamed, ["inspect ", "the workspace"])
+        self.assertEqual(persisted, ["inspect the workspace"])
+
 
 class TestEnsureUsagePresent(unittest.TestCase):
     """Some OpenRouter providers return completions with ``usage=None``.

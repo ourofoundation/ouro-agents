@@ -415,10 +415,12 @@ class TrackedOpenAIModel(OpenAIModel):
         *args,
         tracker: Optional[UsageTracker] = None,
         reasoning_callback: Optional[ReasoningCallback] = None,
+        reasoning_stream_callback: Optional[ReasoningCallback] = None,
         **kwargs,
     ):
         self._tracker = tracker or UsageTracker()
         self._reasoning_callback = reasoning_callback
+        self._reasoning_stream_callback = reasoning_stream_callback
         super().__init__(*args, **kwargs)
 
     @property
@@ -442,6 +444,7 @@ class TrackedOpenAIModel(OpenAIModel):
                     original_create(*args, **kwargs),
                     tracker,
                     reasoning_callback=self._reasoning_callback,
+                    reasoning_stream_callback=self._reasoning_stream_callback,
                 )
             response = original_create(*args, **kwargs)
             _record_response(
@@ -542,12 +545,14 @@ def _wrap_stream(
     tracker: UsageTracker,
     *,
     reasoning_callback: Optional[ReasoningCallback] = None,
+    reasoning_stream_callback: Optional[ReasoningCallback] = None,
 ):
     """Iterate over an OpenAI stream, capturing the generation ID and final
     usage chunk, then record them on the tracker."""
     gen_id = None
     usage_data: dict[str, Any] = {}
     reasoning_by_choice: dict[int, str] = {}
+    reasoning_finalized = False
     for chunk in stream:
         cid = _usage_field(chunk, "id")
         if not gen_id and cid:
@@ -555,16 +560,42 @@ def _wrap_stream(
         usage = _usage_field(chunk, "usage")
         if usage:
             usage_data = _extract_usage_data(usage)
-        _merge_stream_reasoning_chunk(reasoning_by_choice, chunk)
+        for text in _merge_stream_reasoning_chunk(reasoning_by_choice, chunk):
+            _emit_reasoning_stream_text(text, reasoning_stream_callback)
+        # Finalize reasoning at the reasoning -> content boundary instead of
+        # waiting for the whole stream to drain. This persists the reasoning
+        # message (and its duration) while the answer text is still streaming.
+        if (
+            not reasoning_finalized
+            and reasoning_by_choice
+            and _chunk_has_content_delta(chunk)
+        ):
+            reasoning_finalized = True
+            _emit_reasoning_texts(reasoning_by_choice.values(), reasoning_callback)
         yield chunk
     if not gen_id and _stream_usage_has_tokens(usage_data):
         gen_id = f"stream-{uuid.uuid4().hex}"
     if gen_id:
         tracker.record(gen_id, usage_data)
-    _emit_reasoning_texts(reasoning_by_choice.values(), reasoning_callback)
+    if not reasoning_finalized:
+        _emit_reasoning_texts(reasoning_by_choice.values(), reasoning_callback)
 
 
-def _merge_stream_reasoning_chunk(reasoning_by_choice: dict[int, str], chunk: Any) -> None:
+def _chunk_has_content_delta(chunk: Any) -> bool:
+    for choice in _usage_field(chunk, "choices") or []:
+        delta = _usage_field(choice, "delta")
+        if delta is None:
+            continue
+        content = _usage_field(delta, "content")
+        if isinstance(content, str) and content:
+            return True
+    return False
+
+
+def _merge_stream_reasoning_chunk(
+    reasoning_by_choice: dict[int, str], chunk: Any
+) -> list[str]:
+    deltas: list[str] = []
     choices = _usage_field(chunk, "choices") or []
     for index, choice in enumerate(choices):
         delta = _usage_field(choice, "delta")
@@ -576,10 +607,16 @@ def _merge_stream_reasoning_chunk(reasoning_by_choice: dict[int, str], chunk: An
         current = reasoning_by_choice.get(index, "")
         if current and text.startswith(current):
             reasoning_by_choice[index] = text
+            new_text = text[len(current) :]
+            if new_text:
+                deltas.append(new_text)
         elif not current:
             reasoning_by_choice[index] = text
+            deltas.append(text)
         elif text not in current:
             reasoning_by_choice[index] = current + text
+            deltas.append(text)
+    return deltas
 
 
 def _to_int(value: Any) -> int:
@@ -675,6 +712,18 @@ def _emit_reasoning_texts(
             reasoning_callback(cleaned)
         except Exception:
             logger.exception("Failed to emit visible reasoning text")
+
+
+def _emit_reasoning_stream_text(
+    text: str,
+    reasoning_callback: Optional[ReasoningCallback],
+) -> None:
+    if reasoning_callback is None or not text.strip():
+        return
+    try:
+        reasoning_callback(text)
+    except Exception:
+        logger.exception("Failed to emit streaming reasoning text")
 
 
 def _cost_details_as_dict(cost_details: Any) -> dict[str, Any]:

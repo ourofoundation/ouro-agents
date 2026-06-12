@@ -76,6 +76,13 @@ class SubAgentProfile(BaseModel):
     # the previous quiet behavior; use ``info`` or ``debug`` for visible traces.
     subagent_log_level: SubagentLogLevel = "off"
 
+    # Prompt/context controls. Analysis-only subagents should not inherit the
+    # main work-agent directive or side-effect-oriented context sections.
+    include_work_directive: bool = True
+    include_tool_mechanics: bool = True
+    shared_context_sections: Optional[list[str]] = None
+    include_asset_placement: bool = True
+
 
 # ---------------------------------------------------------------------------
 # Built-in profiles
@@ -89,6 +96,14 @@ PREFLIGHT = SubAgentProfile(
     max_steps=4,
     memory_scopes=[],
     subagent_log_level="info",
+    include_work_directive=False,
+    include_tool_mechanics=False,
+    shared_context_sections=[
+        "current_datetime",
+        "platform_context",
+        "conversation_state",
+    ],
+    include_asset_placement=False,
 )
 
 HEARTBEAT_PREFLIGHT = SubAgentProfile(
@@ -99,6 +114,15 @@ HEARTBEAT_PREFLIGHT = SubAgentProfile(
     max_steps=3,
     memory_scopes=[],
     subagent_log_level="info",
+    include_work_directive=False,
+    include_tool_mechanics=False,
+    shared_context_sections=[
+        "current_datetime",
+        "platform_context",
+        "conversation_state",
+        "plans_index",
+    ],
+    include_asset_placement=False,
 )
 
 CONTEXT_LOADER = SubAgentProfile(
@@ -108,6 +132,8 @@ CONTEXT_LOADER = SubAgentProfile(
     allowed_tools=["memory_recall"],
     max_steps=3,
     memory_scopes=[],
+    include_work_directive=False,
+    include_asset_placement=False,
 )
 
 REFLECTOR = SubAgentProfile(
@@ -116,6 +142,8 @@ REFLECTOR = SubAgentProfile(
     system_prompt=REFLECTOR_PROMPT,
     allowed_tools=["memory_recall"],
     max_steps=7,
+    include_work_directive=False,
+    include_asset_placement=False,
 )
 
 # Delegate-able profiles
@@ -144,6 +172,8 @@ PLANNER = SubAgentProfile(
     allowed_tools=["memory_recall"],
     delegatable=True,
     max_steps=3,
+    include_work_directive=False,
+    include_asset_placement=False,
 )
 
 EXECUTOR = SubAgentProfile(

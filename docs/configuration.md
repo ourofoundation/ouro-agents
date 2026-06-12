@@ -23,7 +23,7 @@ point.
   "mcp_servers":   [ ... ],
   "server":        { ... },
   "event_pooling": { ... },
-  "controller":    { ... },
+  "security":      { ... },
   "display":       { ... },
   "refinement":    { ... },
   "env_file":      "..."
@@ -327,11 +327,26 @@ Per-event timing config (`EventPoolTimingConfig`):
 Defaults are merged with the user's overrides per-event so missing fields
 keep sensible values.
 
-## `controller`
+## `security`
 
-| Field | Notes |
-|-------|-------|
-| `username` | Ouro username to mention as `{@username}` when a plan enters review. Tells the controller a quest is ready. |
+Controls who the agent treats as a privileged actor, plus the shared secret
+that guards the `/run` endpoint.
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `controllers` | list[str] | `[]` | Ouro usernames **or** user ids (UUIDs), mixed freely. Controllers get the full capability set. The first username-form entry is also the one mentioned as `{@username}` when a plan enters review. |
+| `trusted` | list[str] | `[]` | Ouro usernames **or** user ids (UUIDs). Trusted actors get a broader (but not full) capability set. |
+| `run_secret` | str \| null | `null` | Shared secret required to authenticate `/run` requests (via the `run_secret` body field or `x-ouro-run-secret` header). When `null`, only loopback callers are trusted. |
+
+`controllers` and `trusted` are static input — the agent never rewrites them.
+At startup any usernames are resolved to user ids and cached under
+`workspace/data/security_resolved.json`, so later restarts skip the lookup. The
+resolved ids are what the runtime authorization checks read.
+
+Legacy keys are still accepted and migrated automatically: the old
+`controller.username` block folds into `controllers`, and
+`security.controller_user_ids` / `security.trusted_user_ids` /
+`security.run_shared_secret` map to `controllers` / `trusted` / `run_secret`.
 
 ## `display`
 

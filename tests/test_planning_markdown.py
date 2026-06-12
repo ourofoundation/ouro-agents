@@ -449,7 +449,7 @@ def test_run_planning_heartbeat_mentions_controller_when_plan_needs_review():
                     cadence="4h",
                     model=None,
                 ),
-                controller=SimpleNamespace(username="@reviewer"),
+                security=SimpleNamespace(controller_username="reviewer"),
             )
             self.doc_store = None
             self._ouro_client = ouro_client
@@ -526,7 +526,7 @@ def test_run_planning_heartbeat_injects_recalled_direction_context():
                     cadence="4h",
                     model=None,
                 ),
-                controller=SimpleNamespace(username=None),
+                security=SimpleNamespace(controller_username=None),
             )
             self.doc_store = None
             self.memory = FakeMemory()

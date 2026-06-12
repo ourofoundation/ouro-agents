@@ -96,6 +96,7 @@ def _load_events_module():
 
 
 build_event_run_context = _load_events_module().build_event_run_context
+EventSurface = sys.modules["ouro_agents.security.policy"].EventSurface
 
 
 class TestBuildEventRunContext(unittest.TestCase):
@@ -208,6 +209,9 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.event_text, "What do you think?")
         self.assertEqual(event_run.root_asset_id, "asset-123")
         self.assertEqual(event_run.root_asset_type, "post")
+        self.assertEqual(event_run.surface, EventSurface.COMMENT)
+        self.assertIn("Untrusted Evidence: triggering comment", event_run.task)
+        self.assertIn("<untrusted-evidence>", event_run.task)
 
     def test_comment_carries_notification_ids(self):
         event_run = build_event_run_context(
