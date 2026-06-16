@@ -184,10 +184,7 @@ def _daily_time_trigger(time_str: str, tz: str = "UTC"):
 
 SYSTEM_HEARTBEAT_ID = "system:heartbeat"
 SYSTEM_DREAM_ID = "system:dream"
-SYSTEM_REFINEMENT_ID = "system:refinement"
-SYSTEM_PROTECTED_IDS = frozenset(
-    {SYSTEM_HEARTBEAT_ID, SYSTEM_DREAM_ID, SYSTEM_REFINEMENT_ID}
-)
+SYSTEM_PROTECTED_IDS = frozenset({SYSTEM_HEARTBEAT_ID, SYSTEM_DREAM_ID})
 
 
 class AgentScheduler:
@@ -213,24 +210,15 @@ class AgentScheduler:
             self._register_heartbeat(config.heartbeat)
         if config.memory.dream_enabled:
             self._register_dream(config.memory)
-        refinement_cfg = getattr(config, "refinement", None)
-        if refinement_cfg and refinement_cfg.enabled:
-            self._register_refinement(refinement_cfg)
-
         self._scheduler.start()
         task_count = len(self.store.load())
         logger.info(
-            "Scheduler started: %d user task(s), heartbeat=%s, dream=%s, refinement=%s",
+            "Scheduler started: %d user task(s), heartbeat=%s, dream=%s",
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
             (
                 f"{config.memory.rhythm}@{config.memory.dream_time}"
                 if config.memory.dream_enabled
-                else "disabled"
-            ),
-            (
-                refinement_cfg.schedule
-                if refinement_cfg and refinement_cfg.enabled
                 else "disabled"
             ),
         )
@@ -461,6 +449,7 @@ class AgentScheduler:
                 model=hb_model,
                 doc_store=agent.doc_store,
                 mode="scheduled",
+                agent=agent,
             )
 
             previous_period = period_key_offset(rhythm, -1)
@@ -487,6 +476,7 @@ class AgentScheduler:
                     doc_store=doc_store,
                     team_id=team_id,
                     mode="scheduled",
+                    agent=agent,
                 )
 
             write_dream_marker(workspace, current_period)
@@ -494,67 +484,6 @@ class AgentScheduler:
         except Exception:
             logger.exception("Dream cycle failed")
 
-
-    def _register_refinement(self, refinement_config) -> None:
-        try:
-            trigger = parse_trigger(refinement_config.schedule)
-        except ValueError:
-            logger.error(
-                "Invalid refinement schedule: %s", refinement_config.schedule
-            )
-            return
-
-        self._scheduler.add_job(
-            self._execute_refinement,
-            trigger=trigger,
-            id=SYSTEM_REFINEMENT_ID,
-            max_instances=1,
-            misfire_grace_time=600,
-            replace_existing=True,
-        )
-        logger.info("Registered refinement: %s", refinement_config.schedule)
-
-    async def _execute_refinement(self) -> None:
-        if not self._agent:
-            return
-        try:
-            logger.info("Running refinement pass...")
-            from .refinement import ChangeSetQueue, run_refinement
-
-            agent = self._agent
-            cfg = getattr(agent.config, "refinement", None)
-            queue = ChangeSetQueue(
-                agent.config.agent.workspace / "data" / "change_queue.jsonl"
-            )
-            summary = run_refinement(
-                agent=agent,
-                queue=queue,
-                max_changes_per_pass=cfg.max_changes_per_pass if cfg else 25,
-                max_docs_per_pass=cfg.max_docs_per_pass if cfg else 15,
-                window_lines=cfg.window_lines if cfg else 20,
-            )
-            logger.info(
-                "Refinement pass: %d pending, %d edits, %d mem0 deletes",
-                summary.pending_seen,
-                summary.windows_applied,
-                summary.memory_deletes,
-            )
-        except Exception:
-            logger.exception("Refinement pass failed")
-
-    def trigger_refinement_now(self) -> None:
-        """Schedule a one-shot refinement run as soon as the loop allows."""
-        if not self._agent or not self._scheduler.running:
-            return
-        try:
-            self._scheduler.add_job(
-                self._execute_refinement,
-                id=f"{SYSTEM_REFINEMENT_ID}:once:{uuid4().hex[:8]}",
-                max_instances=1,
-                misfire_grace_time=120,
-            )
-        except Exception:
-            logger.exception("Failed to schedule one-shot refinement")
 
     async def _execute_task(self, task_id: str) -> None:
         if not self._agent:

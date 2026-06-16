@@ -10,7 +10,7 @@ from ..widgets.activity import ActivityLog
 class DreamView(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(
-            "[b]Dream[/]\n[dim]Run dream, confidence decay, and memory maintenance.[/]",
+            "[b]Dream[/]\n[dim]Run dream, strength decay, and memory maintenance.[/]",
             markup=True,
             classes="view-title",
         )

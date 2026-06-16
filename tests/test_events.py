@@ -371,6 +371,50 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertIn("Thread reply caution", event_run.task)
         self.assertIn("let the thread end", event_run.task)
 
+    def test_mention_uses_direct_request_framing(self):
+        """Mentions are a direct summons, not ambient conversation."""
+        event_run = build_event_run_context(
+            {
+                "event": "mention",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "eve", "is_agent": False},
+                    "source_id": "comment-400",
+                    "source_asset_type": "comment",
+                    "root_asset_id": "post-1",
+                    "root_asset_type": "post",
+                    "text": "@agent write a summary post please",
+                },
+            }
+        )
+
+        self.assertIn("mentioned by name", event_run.task)
+        self.assertNotIn("Decision: Respond or Do Nothing", event_run.task)
+        self.assertIn("no closing offers", event_run.task)
+
+    def test_unknown_source_id_falls_back_to_root_for_reply(self):
+        """Never instruct create_comment on the literal id 'unknown'."""
+        event_run = build_event_run_context(
+            {
+                "event": "mention",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "frank", "is_agent": False},
+                    "root_asset_id": "post-9",
+                    "root_asset_type": "post",
+                    "text": "",
+                },
+            }
+        )
+
+        self.assertIn("`create_comment` on `post-9`", event_run.task)
+        self.assertNotIn("`unknown`", event_run.task)
+        # Empty comment text: no empty evidence block, point at the asset body.
+        self.assertIn("the request is in the asset content", event_run.task)
+        self.assertNotIn("comment_id: unknown", event_run.task)
+
     def test_top_level_comment_omits_thread_caution(self):
         """Top-level comments should NOT have thread-specific caution."""
         event_run = build_event_run_context(

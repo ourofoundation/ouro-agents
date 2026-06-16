@@ -1,6 +1,13 @@
 import sqlite3
 
-from ouro_agents.memory.mem0 import Mem0Backend, _repair_chroma_blob_seq_ids
+from ouro_agents.memory.mem0 import (
+    Mem0Backend,
+    _decode_linked_memory_ids,
+    _encode_linked_memory_ids,
+    _repair_chroma_blob_seq_ids,
+    _restore_chroma_entity_payload,
+    _sanitize_chroma_entity_payload,
+)
 
 
 class _FakeMem0:
@@ -39,8 +46,8 @@ class _FakeMem0:
             "memory": "Existing memory text",
             "created_at": "2026-04-15T04:11:41.404721-07:00",
             "metadata": {
-                "category": "observation",
-                "importance": 0.7,
+                "category": "fact",
+                "strength": 0.7,
                 "team_id": self.team_id,
             },
         }
@@ -242,17 +249,17 @@ def test_update_metadata_preserves_existing_memory_text_and_metadata():
     fake = _FakeMem0()
     backend = _backend_with_fake_mem(fake)
 
-    backend.update_metadata("memory-1", {"importance": 0.35})
+    backend.update_metadata("memory-1", {"strength": 0.35})
 
     assert fake.get_calls == ["memory-1"]
     assert fake.update_calls[0][0] == "memory-1"
     assert fake.update_calls[0][1] == "Existing memory text"
-    assert fake.update_calls[0][2]["category"] == "observation"
-    assert fake.update_calls[0][2]["importance"] == 0.35
+    assert fake.update_calls[0][2]["category"] == "fact"
+    assert fake.update_calls[0][2]["strength"] == 0.35
     assert fake.update_calls[0][2]["created_at"] == "2026-04-15T04:11:41.404721-07:00"
 
 
-def test_add_writes_schema_v2_metadata_and_legacy_fields():
+def test_add_writes_schema_v3_metadata():
     fake = _FakeMem0()
     backend = _backend_with_fake_mem(fake)
 
@@ -262,18 +269,19 @@ def test_add_writes_schema_v2_metadata_and_legacy_fields():
         user_id="user-1",
         run_id="run-1",
         team_id="team-42",
-        metadata={"category": "observation", "asset_refs": "asset-abc"},
+        metadata={"category": "fact", "asset_ids": "asset-abc"},
     )
 
     _, kwargs = fake.add_calls[0]
     metadata = kwargs["metadata"]
-    assert metadata["schema_version"] == 2
+    assert metadata["schema_version"] == 3
     assert metadata["team_ids"] == "team-42"
     assert metadata["team_ids_idx"] == ",team-42,"
     assert metadata["asset_ids"] == "asset-abc"
     assert metadata["asset_ids_idx"] == ",asset-abc,"
-    assert metadata["team_id"] == "team-42"
-    assert metadata["asset_refs"] == "asset-abc"
+    assert metadata["strength"] == 0.5
+    assert metadata["basis"] == "inferred"
+    assert metadata["stability"] == "stable"
     assert metadata["run_id"] == "run-1"
     assert kwargs["infer"] is True
     assert fake.get_all_calls[0]["top_k"] == 1
@@ -291,9 +299,27 @@ def test_add_can_skip_mem0_fact_inference_for_curated_memory():
         agent_id="hermes",
         user_id="user-1",
         run_id="run-1",
-        metadata={"category": "observation"},
+        metadata={"category": "fact"},
         infer=False,
     )
 
     _, kwargs = fake.add_calls[0]
     assert kwargs["infer"] is False
+
+
+def test_linked_memory_ids_roundtrip_for_chroma_metadata():
+    ids = ["81edc49a-a952-43df-bada-e33c9feb4ddf", "other-id"]
+    encoded = _encode_linked_memory_ids(ids)
+    assert encoded == ",81edc49a-a952-43df-bada-e33c9feb4ddf,other-id,"
+    assert _decode_linked_memory_ids(encoded) == ids
+
+
+def test_sanitize_chroma_entity_payload_converts_lists():
+    payload = {
+        "data": "Iran War",
+        "linked_memory_ids": ["81edc49a-a952-43df-bada-e33c9feb4ddf"],
+    }
+    sanitized = _sanitize_chroma_entity_payload(payload)
+    assert isinstance(sanitized["linked_memory_ids"], str)
+    restored = _restore_chroma_entity_payload(sanitized)
+    assert restored["linked_memory_ids"] == payload["linked_memory_ids"]

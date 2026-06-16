@@ -1,9 +1,9 @@
 # Refinement
 
 The refinement subsystem drains a typed **change-set queue** and uses a
-cheap LLM to revise affected workspace docs in place. It runs on the
-schedule set in `refinement.schedule` (default every six hours) when
-`refinement.enabled=true`.
+cheap LLM to revise affected workspace docs in place. It runs as the
+first phase of the dream cycle (see [Memory](./memory.md)), so
+corrections land before decay and compaction touch the same content.
 
 Implementation: `ouro_agents/refinement/queue.py` (the queue) and
 `ouro_agents/refinement/runner.py` (the LLM-driven runner).
@@ -86,9 +86,6 @@ free-form replacements for the whole file.
 
 | Field | Effect |
 |-------|--------|
-| `enabled` | Master switch. |
-| `schedule` | Cron expression (default `0 */6 * * *`). |
-| `min_batch_size` | Skip the pass if fewer than N entries are pending. |
 | `max_changes_per_pass` | Hard cap on entries drained in one pass. |
 | `max_docs_per_pass` | Hard cap on docs rewritten in one pass. |
 | `window_lines` | Context lines around each match in the LLM payload. |
@@ -100,5 +97,5 @@ free-form replacements for the whole file.
 python scripts/run_refinement.py --config config.json
 ```
 
-This is what `system:refinement` triggers internally; the script makes it
-easy to fire a pass on demand from a terminal.
+This runs the same pass the dream cycle triggers internally; the script
+makes it easy to fire one on demand from a terminal.

@@ -17,13 +17,12 @@ MemorySubjectType = Literal[
 ]
 MemoryCategory = Literal[
     "direction",
-    "decision",
     "fact",
     "preference",
-    "learning",
-    "observation",
-    "general",
+    "episode",
 ]
+MemoryBasis = Literal["stated", "inferred", "observed"]
+MemoryStability = Literal["stable", "evolving"]
 
 SUBJECT_TYPES = {
     "user",
@@ -36,12 +35,17 @@ SUBJECT_TYPES = {
 }
 CATEGORIES = {
     "direction",
-    "decision",
     "fact",
     "preference",
-    "learning",
-    "observation",
-    "general",
+    "episode",
+}
+BASIS_VALUES = {"stated", "inferred", "observed"}
+STABILITY_VALUES = {"stable", "evolving"}
+LEGACY_CATEGORY_MAP = {
+    "decision": "direction",
+    "learning": "fact",
+    "observation": "episode",
+    "general": "fact",
 }
 
 
@@ -99,21 +103,19 @@ class MemoryItem(BaseModel):
     subject_type: MemorySubjectType = "general"
     subject_id: str = ""
     category: MemoryCategory = "fact"
+    basis: MemoryBasis = "inferred"
+    stability: MemoryStability = "stable"
     team_ids: list[str] = Field(default_factory=list)
     asset_ids: list[str] = Field(default_factory=list)
     user_id: str = ""
     org_id: str = ""
     conversation_id: str = ""
     run_id: str = ""
-    mode: str = ""
-    event_type: str = ""
     source: str = ""
-    importance: float = 0.5
-    confidence: float = 0.7
-    volatility: float = 0.0
+    strength: float = 0.5
     verification_hint: str = ""
     content_hash: str = ""
-    schema_version: int = 2
+    schema_version: int = 3
     created_at: datetime = Field(default_factory=utc_now)
     last_accessed: datetime | None = None
     last_verified: datetime | None = None
@@ -121,7 +123,18 @@ class MemoryItem(BaseModel):
 
 def _safe_category(value: Any, default: str = "fact") -> str:
     text = str(value or default).strip()
+    text = LEGACY_CATEGORY_MAP.get(text, text)
     return text if text in CATEGORIES else default
+
+
+def _safe_basis(value: Any, default: str = "inferred") -> str:
+    text = str(value or default).strip()
+    return text if text in BASIS_VALUES else default
+
+
+def _safe_stability(value: Any, default: str = "stable") -> str:
+    text = str(value or default).strip()
+    return text if text in STABILITY_VALUES else default
 
 
 def _safe_subject_type(value: Any, default: str = "general") -> str:
@@ -144,15 +157,13 @@ def to_metadata(item: MemoryItem) -> dict[str, str | float | int]:
         "org_id": item.org_id,
         "conversation_id": item.conversation_id,
         "run_id": item.run_id,
-        "mode": item.mode,
-        "event_type": item.event_type,
         "source": item.source,
-        "importance": float(item.importance),
-        "confidence": float(item.confidence),
-        "volatility": float(item.volatility),
-        "verification_hint": item.verification_hint,
+        "basis": item.basis,
+        "stability": item.stability,
+        "strength": float(item.strength),
+        "verification_hint": item.verification_hint if item.stability == "evolving" else "",
         "content_hash": item.content_hash or content_hash(item.text),
-        "schema_version": 2,
+        "schema_version": 3,
         "created_at": item.created_at.isoformat(),
     }
     if item.last_accessed:
@@ -160,9 +171,6 @@ def to_metadata(item: MemoryItem) -> dict[str, str | float | int]:
     if item.last_verified:
         metadata["last_verified"] = item.last_verified.isoformat()
 
-    # Legacy fields stay populated for one release so old filters/readers work.
-    metadata["team_id"] = team_ids[0] if team_ids else ""
-    metadata["asset_refs"] = ",".join(asset_ids)
     return metadata
 
 
@@ -170,7 +178,7 @@ def memory_item_from_raw(text: str, raw_metadata: dict[str, Any] | None = None) 
     meta = dict(raw_metadata or {})
     team_ids = coerce_id_list(meta.get("team_ids") or meta.get("team_id"))
     asset_ids = coerce_id_list(meta.get("asset_ids") or meta.get("asset_refs"))
-    category = _safe_category(meta.get("category"), "general")
+    category = _safe_category(meta.get("category"), "fact")
     user_id = str(meta.get("user_id") or "")
     conversation_id = str(meta.get("conversation_id") or "")
 
@@ -203,10 +211,25 @@ def memory_item_from_raw(text: str, raw_metadata: dict[str, Any] | None = None) 
     except (TypeError, ValueError):
         schema_version = 1
 
+    basis = _safe_basis(meta.get("basis"))
+    if "basis" not in meta and "confidence" in meta:
+        try:
+            basis = "stated" if float(meta.get("confidence") or 0.0) >= 0.9 else "inferred"
+        except (TypeError, ValueError):
+            basis = "inferred"
+
+    stability = _safe_stability(meta.get("stability"))
+    if "stability" not in meta and "volatility" in meta:
+        try:
+            stability = "evolving" if float(meta.get("volatility") or 0.0) > 0.0 else "stable"
+        except (TypeError, ValueError):
+            stability = "stable"
+
     try:
-        volatility = float(meta.get("volatility") or 0.0)
+        strength = float(meta.get("strength", meta.get("importance", 0.5)) or 0.5)
     except (TypeError, ValueError):
-        volatility = 0.0
+        strength = 0.5
+    strength = max(0.0, min(1.0, strength))
 
     resolved_content_hash = str(meta.get("content_hash") or content_hash(text))
     if text.strip() and resolved_content_hash == EMPTY_CONTENT_HASH:
@@ -217,19 +240,17 @@ def memory_item_from_raw(text: str, raw_metadata: dict[str, Any] | None = None) 
         subject_type=subject_type,  # type: ignore[arg-type]
         subject_id=subject_id,
         category=category,  # type: ignore[arg-type]
+        basis=basis,  # type: ignore[arg-type]
+        stability=stability,  # type: ignore[arg-type]
         team_ids=team_ids,
         asset_ids=asset_ids,
         user_id=user_id,
         org_id=str(meta.get("org_id") or ""),
         conversation_id=conversation_id,
         run_id=str(meta.get("run_id") or ""),
-        mode=str(meta.get("mode") or ""),
-        event_type=str(meta.get("event_type") or ""),
         source=str(meta.get("source") or ""),
-        importance=float(meta.get("importance") or 0.5),
-        confidence=float(meta.get("confidence") or 0.7),
-        volatility=volatility,
-        verification_hint=str(meta.get("verification_hint") or ""),
+        strength=strength,
+        verification_hint=str(meta.get("verification_hint") or "") if stability == "evolving" else "",
         content_hash=resolved_content_hash,
         schema_version=schema_version,
         created_at=created_at,

@@ -141,18 +141,8 @@ class MemoryConfig(BaseModel):
     dream_time: str = "03:00"
     dream_review_enabled: bool = True
     dream_review_max_per_run: int = 5
-    confidence_decay_enabled: bool = True
     memory_md_max_tokens: int = 4000
-    mid_session_reflection_interval: int = 10
     decay_after_days: int = 30
-    decay_rules: Dict[str, Dict[str, Any]] = Field(default_factory=lambda: {
-        "direction": {"after_days": None, "factor": 1.0},
-        "decision": {"after_days": None, "factor": 1.0},
-        "fact": {"after_days": 180, "factor": 0.7},
-        "preference": {"after_days": 365, "factor": 0.8},
-        "learning": {"after_days": 180, "factor": 0.8},
-        "observation": {"after_days": 30, "factor": 0.5},
-    })
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
 
     @model_validator(mode="before")
@@ -527,16 +517,13 @@ class DisplayConfig(BaseModel):
 
 
 class RefinementConfig(BaseModel):
-    """LLM-driven refinement of agent learnings.
+    """Dream-phase refinement of agent learnings.
 
-    The refiner drains a typed change-set queue (corrections, guidance updates,
-    etc.) and uses a cheap model to revise affected workspace docs. Asset
-    deletion is handled by the cleanup module and never enters this queue.
+    The dream cycle drains a typed change-set queue (corrections, guidance
+    updates, etc.) and uses a cheap model to revise affected workspace docs.
+    Asset deletion is handled by the cleanup module and never enters this queue.
     """
 
-    enabled: bool = True
-    schedule: str = "0 */6 * * *"
-    min_batch_size: int = 5
     max_changes_per_pass: int = 25
     max_docs_per_pass: int = 15
     window_lines: int = 20

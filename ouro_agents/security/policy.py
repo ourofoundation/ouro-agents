@@ -49,6 +49,15 @@ READ_REPLY_CAPABILITIES = frozenset(
     }
 )
 NO_ACTION_CAPABILITIES: frozenset[Capability] = frozenset()
+# Mentions are direct summons — often "make me a post/dataset" — so the surface
+# allows asset creation. The role intersection still holds public commenters
+# and other agents to read + reply; only trusted/controller actors gain
+# CREATE_ASSET here. LOAD_MCP_TOOL is required because creation tools
+# (create_post, create_dataset, ...) live behind load_tool.
+MENTION_CAPABILITIES = READ_REPLY_CAPABILITIES | {
+    Capability.CREATE_ASSET,
+    Capability.LOAD_MCP_TOOL,
+}
 
 ROLE_CAPABILITIES: dict[ActorRole, frozenset[Capability]] = {
     ActorRole.CONTROLLER: ALL_CAPABILITIES,
@@ -73,7 +82,7 @@ SURFACE_CAPABILITIES: dict[EventSurface, frozenset[Capability]] = {
     EventSurface.DIRECT_CHAT: ALL_CAPABILITIES,
     EventSurface.API_RUN: ALL_CAPABILITIES,
     EventSurface.COMMENT: READ_REPLY_CAPABILITIES,
-    EventSurface.MENTION: READ_REPLY_CAPABILITIES,
+    EventSurface.MENTION: MENTION_CAPABILITIES,
     EventSurface.HEARTBEAT: ALL_CAPABILITIES,
     EventSurface.PLAN_REVIEW: frozenset(
         {
@@ -103,6 +112,43 @@ class CapabilityEnvelope:
     @property
     def is_restricted(self) -> bool:
         return self.allowed_capabilities != ALL_CAPABILITIES
+
+
+_CAPABILITY_PHRASES: dict[Capability, str] = {
+    Capability.READ_PLATFORM: "read platform content",
+    Capability.REPLY: "reply with comments",
+    Capability.CREATE_ASSET: "create new assets (posts, files, datasets)",
+    Capability.UPDATE_ASSET: "update existing assets",
+    Capability.MANAGE_QUEST: "manage quests",
+    Capability.EXECUTE_ROUTE: "execute routes",
+    Capability.SEND_MESSAGE: "send conversation messages",
+    Capability.SCHEDULE: "schedule tasks",
+    Capability.DELEGATE: "delegate to subagents",
+    Capability.RUN_PYTHON: "run Python code",
+    Capability.RUN_SHELL: "run shell commands",
+    Capability.MEMORY_WRITE: "write memory",
+    Capability.EXTERNAL_SEARCH: "search the web",
+    Capability.LOAD_MCP_TOOL: "load additional MCP tools",
+}
+
+
+def describe_capabilities(allowed: frozenset[Capability]) -> str:
+    """Render a capability set as a prompt section so the agent knows its
+    boundaries instead of inferring them from missing tools."""
+    if allowed == ALL_CAPABILITIES:
+        return ""
+    can = [_CAPABILITY_PHRASES[c] for c in Capability if c in allowed]
+    cannot = [_CAPABILITY_PHRASES[c] for c in Capability if c not in allowed]
+    lines = ["## Run Capabilities"]
+    lines.append(f"This run can: {'; '.join(can)}.")
+    if cannot:
+        lines.append(f"This run cannot: {'; '.join(cannot)}.")
+    lines.append(
+        "If the request needs something this run cannot do, say so plainly in "
+        "your reply instead of improvising a workaround or presenting a "
+        "partial substitute as the requested deliverable."
+    )
+    return "\n".join(lines)
 
 
 def _id_set(values: Iterable[str] | None) -> set[str]:

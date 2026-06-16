@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from ouro_agents.config import MemoryConfig
 from ouro_agents.memory import MemoryResult
-from ouro_agents.memory.dream import _IMPORTANCE_DECAY_PERIOD_KEY, decay_old_memories
+from ouro_agents.memory.dream import _STRENGTH_DECAY_PERIOD_KEY, decay_memory_strength
 from ouro_agents.memory.naming import period_key
 
 
@@ -13,12 +13,12 @@ class _FakeBackend:
 
     def get_all(self, **kwargs):
         self.get_all_calls.append(kwargs)
-        created = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        created = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
         return [
             MemoryResult(
                 id="mem-1",
                 text="Old team-specific learning",
-                importance=0.8,
+                strength=0.8,
                 created_at=created,
             )
         ]
@@ -38,7 +38,7 @@ def _config():
 def test_decay_skips_unscoped_shared_pass():
     backend = _FakeBackend()
 
-    count = decay_old_memories(backend, "hermes", _config())
+    count = decay_memory_strength(backend, "hermes", _config())
 
     assert count == 0
     assert backend.get_all_calls == []
@@ -48,19 +48,13 @@ def test_decay_skips_unscoped_shared_pass():
 def test_decay_filters_by_team_and_updates_memory_id():
     backend = _FakeBackend()
 
-    count = decay_old_memories(backend, "hermes", _config(), team_id="team-42")
+    count = decay_memory_strength(backend, "hermes", _config(), team_id="team-42")
 
     assert count == 1
     assert backend.get_all_calls[0]["team_id"] == "team-42"
-    assert backend.updated == [
-        (
-            "mem-1",
-            {
-                "importance": 0.4,
-                _IMPORTANCE_DECAY_PERIOD_KEY: period_key("daily"),
-            },
-        )
-    ]
+    assert backend.updated[0][0] == "mem-1"
+    assert backend.updated[0][1]["strength"] < 0.8
+    assert backend.updated[0][1][_STRENGTH_DECAY_PERIOD_KEY] == period_key("daily")
 
 
 def test_decay_preserves_direction_memories():
@@ -73,14 +67,14 @@ def test_decay_preserves_direction_memories():
                     id="mem-direction",
                     text="Always prioritize benchmark quality.",
                     category="direction",
-                    importance=0.8,
+                    strength=0.8,
                     created_at=created,
                 )
             ]
 
     backend = DirectionBackend()
 
-    count = decay_old_memories(backend, "hermes", _config(), team_id="team-42")
+    count = decay_memory_strength(backend, "hermes", _config(), team_id="team-42")
 
     assert count == 0
     assert backend.updated == []

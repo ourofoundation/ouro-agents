@@ -6,11 +6,9 @@ from types import SimpleNamespace
 from ouro_agents.config import MemoryConfig
 from ouro_agents.memory import MemoryResult
 from ouro_agents.memory.dream import (
-    _CONFIDENCE_DECAY_PERIOD_KEY,
-    _IMPORTANCE_DECAY_PERIOD_KEY,
     _REVIEW_PERIOD_KEY,
-    decay_old_memories,
-    decay_stale_confidence,
+    _STRENGTH_DECAY_PERIOD_KEY,
+    decay_memory_strength,
     has_recent_dream_activity,
     promote_log_entries,
     run_dream,
@@ -120,27 +118,19 @@ def test_promote_log_entries_uses_daily_logs_for_weekly_fallback(tmp_path: Path)
 
 def test_decay_passes_update_shared_memory_snapshot():
     backend = _UpdateBackend()
-    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
     memories = [
         MemoryResult(
             id="mem-1",
-            text="Old volatile observation",
-            category="observation",
-            importance=0.8,
-            confidence=0.8,
-            volatility=0.8,
+            text="Old evolving fact",
+            category="fact",
+            strength=0.8,
+            stability="evolving",
             created_at=old,
         )
     ]
 
-    importance_count = decay_old_memories(
-        backend,
-        "hermes",
-        _memory_config(),
-        team_id="team-42",
-        all_memories=memories,
-    )
-    confidence_count = decay_stale_confidence(
+    count = decay_memory_strength(
         backend,
         "hermes",
         _memory_config(),
@@ -148,30 +138,27 @@ def test_decay_passes_update_shared_memory_snapshot():
         all_memories=memories,
     )
 
-    assert importance_count == 1
-    assert confidence_count == 1
-    assert memories[0].importance == 0.4
-    assert memories[0].confidence < 0.5
-    assert backend.updated[0][1][_IMPORTANCE_DECAY_PERIOD_KEY] == period_key("daily")
-    assert backend.updated[1][1][_CONFIDENCE_DECAY_PERIOD_KEY] == period_key("daily")
+    assert count == 1
+    assert memories[0].strength < 0.8
+    assert backend.updated[0][1][_STRENGTH_DECAY_PERIOD_KEY] == period_key("daily")
 
 
 def test_decay_skips_when_period_marker_already_set():
     current_period = period_key("daily")
     backend = _UpdateBackend()
-    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
     memories = [
         MemoryResult(
             id="mem-1",
             text="Already decayed",
-            category="observation",
-            importance=0.8,
+                category="fact",
+                strength=0.8,
             created_at=old,
-            metadata={_IMPORTANCE_DECAY_PERIOD_KEY: current_period},
+                metadata={_STRENGTH_DECAY_PERIOD_KEY: current_period},
         )
     ]
 
-    count = decay_old_memories(
+    count = decay_memory_strength(
         backend,
         "hermes",
         _memory_config(),
@@ -185,16 +172,15 @@ def test_decay_skips_when_period_marker_already_set():
 
 
 def test_run_dream_dry_run_plans_without_backend_mutation_and_writes_audit(tmp_path: Path):
-    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
     backend = _UpdateBackend(
         [
             MemoryResult(
                 id="mem-1",
-                text="Old volatile observation",
-                category="observation",
-                importance=0.8,
-                confidence=0.8,
-                volatility=0.8,
+                text="Old evolving fact",
+                category="fact",
+                strength=0.8,
+                stability="evolving",
                 created_at=old,
             )
         ]
@@ -214,8 +200,7 @@ def test_run_dream_dry_run_plans_without_backend_mutation_and_writes_audit(tmp_p
     )
 
     assert summary["dry_run"] is True
-    assert summary["importance_decayed"] == 1
-    assert summary["confidence_decayed"] == 1
+    assert summary["strength_decayed"] == 1
     assert summary["dream_review"]["reviewed"] == 1
     assert backend.updated == []
     assert backend.deleted == []
@@ -225,17 +210,16 @@ def test_run_dream_dry_run_plans_without_backend_mutation_and_writes_audit(tmp_p
     assert {op["status"] for op in audit["operations"]} == {"planned"}
 
 
-def test_run_dream_reviews_confidence_decay_in_same_cycle(tmp_path: Path):
-    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+def test_run_dream_reviews_evolving_memory_in_same_cycle(tmp_path: Path):
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
     backend = _UpdateBackend(
         [
             MemoryResult(
                 id="mem-1",
-                text="Old volatile observation",
-                category="observation",
-                importance=0.8,
-                confidence=0.8,
-                volatility=0.8,
+                text="Old evolving fact",
+                category="fact",
+                strength=0.8,
+                stability="evolving",
                 created_at=old,
             )
         ]
@@ -253,13 +237,13 @@ def test_run_dream_reviews_confidence_decay_in_same_cycle(tmp_path: Path):
         team_id="team-42",
     )
 
-    assert summary["confidence_decayed"] == 1
+    assert summary["strength_decayed"] == 1
     assert summary["dream_review"]["confirmed"] == 1
     assert backend.updated[-1] == (
         "mem-1",
         {
-            "confidence": 0.8,
             "last_verified": backend.updated[-1][1]["last_verified"],
+            "stability": "stable",
             _REVIEW_PERIOD_KEY: period_key("daily"),
             "last_review_action": "keep",
             "last_review_evidence": "none",
@@ -271,16 +255,15 @@ def test_run_dream_reviews_confidence_decay_in_same_cycle(tmp_path: Path):
 
 
 def test_dream_review_does_not_delete_api_failure_without_explicit_evidence(tmp_path: Path):
-    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
     backend = _UpdateBackend(
         [
             MemoryResult(
                 id="mem-api",
                 text="ALIGNN Modal upstream is returning 500 errors",
-                category="observation",
-                importance=0.8,
-                confidence=0.2,
-                volatility=0.8,
+                category="fact",
+                strength=0.8,
+                stability="evolving",
                 created_at=old,
             )
         ]
@@ -319,16 +302,15 @@ def test_dream_review_does_not_delete_api_failure_without_explicit_evidence(tmp_
 
 
 def test_dream_review_can_delete_with_explicit_evidence(tmp_path: Path):
-    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
     backend = _UpdateBackend(
         [
             MemoryResult(
                 id="mem-api",
                 text="ALIGNN Modal upstream is returning 500 errors",
-                category="observation",
-                importance=0.8,
-                confidence=0.2,
-                volatility=0.8,
+                category="fact",
+                strength=0.8,
+                stability="evolving",
                 created_at=old,
             )
         ]

@@ -5,10 +5,9 @@ memory system healthy and prevent stale learnings from persisting:
 
 1. Working memory compaction — rewrite when over token budget to merge/prune
 2. Period log promotion — promote the previous period's important entries to working memory
-3. Importance decay — reduce importance of old unaccessed memories
-4. Confidence decay — reduce confidence on volatile memories not recently verified
-5. Dream review — LLM re-evaluation of stale volatile memories
-6. Comment consolidation — merge comments into owned USER:* posts
+3. Strength decay — weaken or delete old unaccessed memories
+4. Dream review — LLM re-evaluation of stale evolving memories
+5. Comment consolidation — merge comments into owned USER:* posts
 """
 
 import importlib.util
@@ -28,8 +27,7 @@ from .naming import period_key, period_key_offset, store_rhythm
 
 logger = logging.getLogger(__name__)
 
-_IMPORTANCE_DECAY_PERIOD_KEY = "last_importance_decay_period"
-_CONFIDENCE_DECAY_PERIOD_KEY = "last_confidence_decay_period"
+_STRENGTH_DECAY_PERIOD_KEY = "last_strength_decay_period"
 _REVIEW_PERIOD_KEY = "last_review_period"
 _OPTIONAL_DREAM_PACKAGES = ("scipy", "ase", "pymatgen", "spacy")
 
@@ -38,8 +36,14 @@ def _summary_template() -> dict[str, Any]:
     return {
         "compacted": False,
         "promoted": 0,
-        "importance_decayed": 0,
-        "confidence_decayed": 0,
+        "strength_decayed": 0,
+        "memories_deleted": 0,
+        "refinement": {
+            "pending": 0,
+            "edits": 0,
+            "memory_deletes": 0,
+            "queue_applied": 0,
+        },
         "dream_review": {
             "reviewed": 0,
             "confirmed": 0,
@@ -193,12 +197,22 @@ def _has_period_marker(mem: MemoryResult, marker: str, period: str) -> bool:
     return str((mem.metadata or {}).get(marker) or "") == period
 
 
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
 def _set_memory_metadata(mem: MemoryResult, metadata: dict[str, Any]) -> None:
     mem.metadata = {**(mem.metadata or {}), **metadata}
-    if "importance" in metadata:
-        mem.importance = float(metadata["importance"])
-    if "confidence" in metadata:
-        mem.confidence = float(metadata["confidence"])
+    if "strength" in metadata:
+        mem.strength = float(metadata["strength"])
+    if "stability" in metadata:
+        mem.stability = str(metadata["stability"])
     if "last_verified" in metadata:
         mem.last_verified = str(metadata["last_verified"])
 
@@ -219,7 +233,7 @@ def _review_evidence(verdict: dict[str, Any]) -> str:
 
 def _review_action(verdict: dict[str, Any]) -> str:
     action = str(verdict.get("action") or "").strip().lower()
-    allowed = {"keep", "lower_confidence", "mark_stale", "delete", "replace"}
+    allowed = {"keep", "lower_strength", "mark_stale", "delete", "replace"}
     return action if action in allowed else ""
 
 
@@ -376,6 +390,10 @@ working memory, rewrite it to be more concise and useful.
 Rules:
 - Remove duplicate or near-duplicate entries
 - Remove stale entries that are no longer relevant (outdated facts, completed one-off tasks)
+- When one entry records an explicit prohibition, ban, or reversal (e.g. "X is \
+blacklisted", "stop doing Y"), the latest stated directive wins: remove or rewrite \
+any other entries that recommend, promote, or give how-to guidance for the banned \
+thing, keeping only the prohibition itself
 - Merge related entries into single concise statements
 - Keep the same section structure: ## Facts, ## Preferences, ## Learnings
 - Keep entries that represent durable knowledge, ongoing preferences, or hard-won learnings
@@ -410,7 +428,7 @@ Memories to review:
 {memories_block}
 
 For each memory, output a JSON verdict:
-[{{"id": "memory_id", "status": "confirmed"|"contradicted"|"uncertain", "evidence": "none"|"newer_memory"|"recent_log"|"route_probe"|"doc_schema"|"user_correction"|"other_explicit", "action": "keep"|"lower_confidence"|"mark_stale"|"delete"|"replace", "reason": "brief explanation", "replacement": "corrected fact if contradicted, else null"}}]
+[{{"id": "memory_id", "status": "confirmed"|"contradicted"|"uncertain", "evidence": "none"|"newer_memory"|"recent_log"|"route_probe"|"doc_schema"|"user_correction"|"other_explicit", "action": "keep"|"lower_strength"|"mark_stale"|"delete"|"replace", "reason": "brief explanation", "replacement": "corrected fact if contradicted, else null"}}]
 
 Guidelines:
 - "confirmed": The fact is likely still true based on general knowledge and context.
@@ -420,7 +438,7 @@ Guidelines:
   Default to "uncertain" unless a newer memory, recent log, route probe, schema/doc check, \
   or user correction proves recovery or a changed contract.
 - Use action "delete" only when status is "contradicted" and evidence is not "none".
-- Use action "mark_stale" or "lower_confidence" for old operational claims without explicit evidence.
+- Use action "mark_stale" or "lower_strength" for old operational claims without explicit evidence.
 - Be conservative with "confirmed" — only confirm facts you're confident are durable.
 
 Output ONLY the JSON array, no markdown fences, no explanation."""
@@ -728,7 +746,7 @@ def promote_log_entries(
 # ---------------------------------------------------------------------------
 
 
-def decay_old_memories(
+def decay_memory_strength(
     backend: MemoryBackend,
     agent_id: str,
     config: MemoryConfig,
@@ -738,13 +756,12 @@ def decay_old_memories(
     dry_run: bool = False,
     plan: DreamPlan | None = None,
 ) -> int:
-    """Apply category-specific importance decay to old memories. Returns count."""
-    decay_rules = config.decay_rules or {}
-    if not decay_rules and not config.decay_after_days:
+    """Apply one use-based strength decay law. Returns decayed count."""
+    if not config.decay_after_days:
         return 0
     if not team_id:
         if plan:
-            plan.add_skip("importance_decay", "unscoped_shared_pass")
+            plan.add_skip("strength_decay", "unscoped_shared_pass")
         return 0
 
     if all_memories is None:
@@ -756,177 +773,81 @@ def decay_old_memories(
 
     current_period = period or period_key(config.rhythm)
     decayed = 0
+    deleted = 0
+    now = datetime.now(timezone.utc)
 
     for mem in all_memories:
         memory_id = _memory_id(mem)
-        if _has_period_marker(mem, _IMPORTANCE_DECAY_PERIOD_KEY, current_period):
+        if _has_period_marker(mem, _STRENGTH_DECAY_PERIOD_KEY, current_period):
             if plan:
                 plan.add_skip(
-                    "importance_decay",
+                    "strength_decay",
                     "already_applied_this_period",
                     memory_id=memory_id,
                     period=current_period,
                 )
             continue
-        if not mem.created_at:
+        if mem.category == "direction":
             continue
-        rule = decay_rules.get(mem.category)
-        if rule:
-            after_days = rule.get("after_days")
-            factor = float(rule.get("factor", 0.5))
-        else:
-            after_days = config.decay_after_days
-            factor = 0.5
-        if after_days is None:
-            continue
+        after_days = config.decay_after_days
         try:
-            created = datetime.fromisoformat(mem.created_at)
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+            reference_text = mem.last_accessed or mem.created_at
+            reference = datetime.fromisoformat(reference_text)
+            if reference.tzinfo is None:
+                reference = reference.replace(tzinfo=timezone.utc)
         except Exception:
             continue
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=int(after_days))
-        if created < cutoff and mem.importance > 0.1:
-            new_importance = max(0.1, mem.importance * factor)
+        days_since = (now - reference).total_seconds() / 86400
+        if days_since <= after_days:
+            continue
+
+        periods_elapsed = max(1.0, days_since / max(1, after_days))
+        old_strength = max(0.0, min(1.0, float(mem.strength or 0.5)))
+        new_strength = max(0.0, old_strength * (0.5 ** periods_elapsed))
+        if abs(new_strength - old_strength) < 0.01:
+            continue
+
+        old_metadata = _metadata_subset(
+            mem,
+            ("strength", _STRENGTH_DECAY_PERIOD_KEY),
+        )
+        if new_strength < 0.1:
             metadata = {
-                "importance": new_importance,
-                _IMPORTANCE_DECAY_PERIOD_KEY: current_period,
+                "deleted": True,
+                "strength": new_strength,
+                _STRENGTH_DECAY_PERIOD_KEY: current_period,
             }
-            old_metadata = _metadata_subset(
-                mem,
-                ("importance", _IMPORTANCE_DECAY_PERIOD_KEY),
-            )
             if plan:
                 plan.add_operation(
                     DreamOperation(
-                        kind="importance_decay",
+                        kind="strength_decay",
                         status="planned" if dry_run else "applied",
                         memory_id=memory_id,
                         old_metadata=old_metadata,
                         new_metadata=metadata,
-                        reason=f"older_than_{after_days}_days",
+                        reason=f"unused_for_{int(days_since)}_days",
                         excerpt=_short_excerpt(mem.text),
                     )
                 )
-            try:
-                if not dry_run:
-                    backend.update_metadata(memory_id, metadata)
-                _set_memory_metadata(mem, metadata)
-                decayed += 1
-            except Exception:
-                pass
-
-    if decayed:
-        logger.info("Decayed importance on %d old memories", decayed)
-    return decayed
-
-
-# ---------------------------------------------------------------------------
-# Confidence decay (volatility-based)
-# ---------------------------------------------------------------------------
-
-
-def decay_stale_confidence(
-    backend: MemoryBackend,
-    agent_id: str,
-    config: MemoryConfig,
-    team_id: str | None = None,
-    all_memories: list[MemoryResult] | None = None,
-    period: str | None = None,
-    dry_run: bool = False,
-    plan: DreamPlan | None = None,
-) -> int:
-    """Reduce confidence on volatile memories that haven't been re-verified.
-
-    Higher volatility means faster confidence decay. A memory with volatility=0.9
-    has a half-life of ~2 days; volatility=0.5 has ~7 days. Memories below the
-    volatility threshold (0.2) are considered stable and never decay in confidence.
-    """
-    if not config.confidence_decay_enabled:
-        return 0
-    if not team_id:
-        if plan:
-            plan.add_skip("confidence_decay", "unscoped_shared_pass")
-        return 0
-
-    if all_memories is None:
-        try:
-            all_memories = backend.get_all(agent_id=agent_id, limit=300, team_id=team_id)
-        except Exception as e:
-            logger.warning("Failed to load memories for confidence decay: %s", e)
-            return 0
-
-    now = datetime.now(timezone.utc)
-    current_period = period or period_key(config.rhythm)
-    decayed = 0
-
-    for mem in all_memories:
-        memory_id = _memory_id(mem)
-        if _has_period_marker(mem, _CONFIDENCE_DECAY_PERIOD_KEY, current_period):
-            if plan:
-                plan.add_skip(
-                    "confidence_decay",
-                    "already_applied_this_period",
-                    memory_id=memory_id,
-                    period=current_period,
-                )
-            continue
-        if mem.volatility <= 0.2:
-            continue
-        if mem.confidence <= 0.1:
-            continue
-
-        # Determine the reference point: last_verified or created_at
-        reference = None
-        if mem.last_verified:
-            try:
-                reference = datetime.fromisoformat(mem.last_verified)
-                if reference.tzinfo is None:
-                    reference = reference.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                reference = None
-        if reference is None and mem.created_at:
-            try:
-                reference = datetime.fromisoformat(mem.created_at)
-                if reference.tzinfo is None:
-                    reference = reference.replace(tzinfo=timezone.utc)
-            except (ValueError, TypeError):
-                continue
-
-        if reference is None:
-            continue
-
-        days_since = (now - reference).total_seconds() / 86400
-        # Half-life: volatility 0.9 → 2 days, 0.5 → 7 days, 0.3 → 10 days
-        half_life_days = max(2, int(14 * (1 - mem.volatility)))
-
-        if days_since <= half_life_days:
-            continue
-
-        decay_factor = 0.5 ** (days_since / half_life_days)
-        new_confidence = max(0.1, mem.confidence * decay_factor)
-
-        if abs(new_confidence - mem.confidence) < 0.01:
+            if not dry_run:
+                backend.delete(memory_id)
+            deleted += 1
             continue
 
         metadata = {
-            "confidence": new_confidence,
-            _CONFIDENCE_DECAY_PERIOD_KEY: current_period,
+            "strength": new_strength,
+            _STRENGTH_DECAY_PERIOD_KEY: current_period,
         }
-        old_metadata = _metadata_subset(
-            mem,
-            ("confidence", _CONFIDENCE_DECAY_PERIOD_KEY),
-        )
         if plan:
             plan.add_operation(
                 DreamOperation(
-                    kind="confidence_decay",
+                    kind="strength_decay",
                     status="planned" if dry_run else "applied",
                     memory_id=memory_id,
                     old_metadata=old_metadata,
                     new_metadata=metadata,
-                    reason=f"volatile_half_life_{half_life_days}_days",
+                    reason=f"unused_for_{int(days_since)}_days",
                     excerpt=_short_excerpt(mem.text),
                 )
             )
@@ -938,8 +859,12 @@ def decay_stale_confidence(
         except Exception:
             pass
 
-    if decayed:
-        logger.info("Decayed confidence on %d volatile memories", decayed)
+    if plan and deleted:
+        plan.health["memories_deleted_by_strength_decay"] = deleted
+    if decayed or deleted:
+        logger.info(
+            "Strength decay updated %d memories and deleted %d", decayed, deleted
+        )
     return decayed
 
 
@@ -959,8 +884,8 @@ def _select_review_candidates(
 ) -> list[MemoryResult]:
     """Select memories that are candidates for dream review.
 
-    Targets volatile memories whose confidence has decayed into the uncertain
-    zone but that still have enough importance to matter.
+    Targets evolving memories that have not been verified recently and still
+    have enough strength to matter.
     """
     if not team_id:
         if plan:
@@ -975,16 +900,21 @@ def _select_review_candidates(
             return []
 
     current_period = period or period_key(config.rhythm)
-    candidates = [
-        mem for mem in all_memories
-        if mem.volatility > 0.4
-        and mem.confidence < 0.5
-        and mem.importance > 0.2
-        and not _has_period_marker(mem, _REVIEW_PERIOD_KEY, current_period)
-    ]
+    now = datetime.now(timezone.utc)
+    candidates: list[MemoryResult] = []
+    for mem in all_memories:
+        if mem.stability != "evolving":
+            continue
+        if mem.strength <= 0.2:
+            continue
+        if _has_period_marker(mem, _REVIEW_PERIOD_KEY, current_period):
+            continue
+        last_verified = _parse_datetime(mem.last_verified)
+        if last_verified and (now - last_verified).days < config.decay_after_days:
+            continue
+        candidates.append(mem)
 
-    # Sort by importance descending — review the most impactful stale memories first
-    candidates.sort(key=lambda m: m.importance, reverse=True)
+    candidates.sort(key=lambda m: m.strength, reverse=True)
     return candidates[:config.dream_review_max_per_run]
 
 
@@ -1027,10 +957,9 @@ def review_stale_memories(
         age_days = 0
         if mem.created_at:
             try:
-                created = datetime.fromisoformat(mem.created_at)
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-                age_days = int((datetime.now(timezone.utc) - created).total_seconds() / 86400)
+                created = _parse_datetime(mem.created_at)
+                if created:
+                    age_days = int((datetime.now(timezone.utc) - created).total_seconds() / 86400)
             except (ValueError, TypeError):
                 pass
         memory_lines.append(
@@ -1038,8 +967,8 @@ def review_stale_memories(
             f"  Text: {mem.text}\n"
             f"  Category: {mem.category}\n"
             f"  Stored: {age_days} days ago\n"
-            f"  Volatility: {mem.volatility:.1f}\n"
-            f"  Current confidence: {mem.confidence:.2f}"
+            f"  Stability: {mem.stability}\n"
+            f"  Strength: {mem.strength:.2f}"
         )
 
     memories_block = "\n".join(memory_lines)
@@ -1113,8 +1042,8 @@ def review_stale_memories(
             if effective_status == "confirmed":
                 result["confirmed"] += 1
                 metadata = {
-                    "confidence": 0.8,
                     "last_verified": now_iso,
+                    "stability": "stable",
                     **verdict_metadata,
                 }
                 if plan:
@@ -1126,7 +1055,7 @@ def review_stale_memories(
                             old_metadata=(
                                 _metadata_subset(
                                     mem,
-                                    ("confidence", "last_verified", _REVIEW_PERIOD_KEY),
+                                    ("stability", "last_verified", _REVIEW_PERIOD_KEY),
                                 )
                                 if mem
                                 else {}
@@ -1151,7 +1080,7 @@ def review_stale_memories(
                             old_metadata=(
                                 _metadata_subset(
                                     mem,
-                                    ("confidence", "last_verified", _REVIEW_PERIOD_KEY),
+                                    ("stability", "strength", _REVIEW_PERIOD_KEY),
                                 )
                                 if mem
                                 else {}
@@ -1169,7 +1098,8 @@ def review_stale_memories(
             elif effective_status == "contradicted":
                 result["contradicted"] += 1
                 metadata = {
-                    "confidence": 0.1,
+                    "strength": 0.1,
+                    "stability": "evolving",
                     **verdict_metadata,
                 }
                 if plan:
@@ -1181,7 +1111,7 @@ def review_stale_memories(
                             old_metadata=(
                                 _metadata_subset(
                                     mem,
-                                    ("confidence", "last_verified", _REVIEW_PERIOD_KEY),
+                                    ("stability", "strength", _REVIEW_PERIOD_KEY),
                                 )
                                 if mem
                                 else {}
@@ -1198,6 +1128,13 @@ def review_stale_memories(
             else:
                 result["uncertain"] += 1
                 metadata = verdict_metadata
+                if action in {"mark_stale", "lower_strength"} and mem:
+                    metadata = {
+                        **metadata,
+                        "strength": max(0.1, mem.strength * 0.5),
+                    }
+                    if action == "mark_stale":
+                        metadata["stability"] = "stable"
                 if plan:
                     plan.add_operation(
                         DreamOperation(
@@ -1299,6 +1236,59 @@ def _consolidate_user_comments(
     return merged
 
 
+def run_refinement_phase(
+    agent: Any | None,
+    *,
+    dry_run: bool = False,
+    plan: DreamPlan | None = None,
+) -> dict[str, int]:
+    """Drain the refinement queue as the first interpretive dream phase."""
+    summary = {"pending": 0, "edits": 0, "memory_deletes": 0, "queue_applied": 0}
+    if agent is None:
+        if plan:
+            plan.add_skip("refinement", "no_agent")
+        return summary
+    if dry_run:
+        if plan:
+            plan.add_skip("refinement", "dry_run")
+        return summary
+    try:
+        from ..refinement import ChangeSetQueue, run_refinement
+
+        cfg = getattr(agent.config, "refinement", None)
+        queue = ChangeSetQueue(
+            agent.config.agent.workspace / "data" / "change_queue.jsonl"
+        )
+        result = run_refinement(
+            agent=agent,
+            queue=queue,
+            max_changes_per_pass=cfg.max_changes_per_pass if cfg else 25,
+            max_docs_per_pass=cfg.max_docs_per_pass if cfg else 15,
+            window_lines=cfg.window_lines if cfg else 20,
+        )
+        summary = {
+            "pending": result.pending_seen,
+            "edits": result.windows_applied,
+            "memory_deletes": result.memory_deletes,
+            "queue_applied": result.queue_marked_applied,
+        }
+        if plan:
+            plan.add_operation(
+                DreamOperation(
+                    kind="refinement",
+                    status="applied",
+                    new_metadata=summary,
+                    reason="drain_change_queue",
+                )
+            )
+        return summary
+    except Exception as e:
+        if plan:
+            plan.add_warning(f"Refinement phase failed: {e}")
+        logger.warning("Dream refinement phase failed: %s", e)
+        return summary
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -1314,6 +1304,7 @@ def run_dream(
     team_id: str | None = None,
     dry_run: bool = False,
     mode: str = "manual",
+    agent: Any | None = None,
 ) -> dict:
     """Run the full dream cycle: maintenance, decay, review. Returns a summary dict."""
     results = _summary_template()
@@ -1347,6 +1338,13 @@ def run_dream(
             doc_store,
             team_id,
             plan,
+        )
+
+    with _time_phase(dream_result, "refinement"):
+        results["refinement"] = run_refinement_phase(
+            agent,
+            dry_run=dry_run,
+            plan=plan,
         )
 
     # Doc-based maintenance (works with or without team_id)
@@ -1386,8 +1384,8 @@ def run_dream(
                 logger.warning(warning)
                 all_memories = []
 
-    with _time_phase(dream_result, "importance_decay"):
-        results["importance_decayed"] = decay_old_memories(
+    with _time_phase(dream_result, "strength_decay"):
+        results["strength_decayed"] = decay_memory_strength(
             backend,
             agent_id,
             config,
@@ -1397,16 +1395,8 @@ def run_dream(
             dry_run=dry_run,
             plan=plan,
         )
-    with _time_phase(dream_result, "confidence_decay"):
-        results["confidence_decayed"] = decay_stale_confidence(
-            backend,
-            agent_id,
-            config,
-            team_id=team_id,
-            all_memories=all_memories,
-            period=current_period,
-            dry_run=dry_run,
-            plan=plan,
+        results["memories_deleted"] = int(
+            plan.health.get("memories_deleted_by_strength_decay", 0)
         )
     with _time_phase(dream_result, "dream_review"):
         results["dream_review"] = review_stale_memories(

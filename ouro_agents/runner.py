@@ -154,7 +154,7 @@ def main():
         "review", help="Force a review heartbeat (check for feedback on current plan)"
     )
     dream_parser = subparsers.add_parser(
-        "dream", help="Run the dream cycle (memory maintenance, confidence decay, review)"
+        "dream", help="Run the dream cycle (memory maintenance, strength decay, review)"
     )
     dream_parser.add_argument(
         "--team-id",

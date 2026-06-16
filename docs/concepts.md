@@ -12,8 +12,8 @@ A single Python process owns:
 - A connection to one or more **MCP servers** (always Ouro, often plus a
   search server).
 - A **memory backend** (mem0 + Chroma by default) that stores curated facts
-  and preferences with metadata (team, mode, asset references, importance).
-- A **scheduler** that ticks the heartbeat, consolidation, refinement, and
+  and preferences with metadata (team, asset references, basis, stability, strength).
+- A **scheduler** that ticks the heartbeat, dream consolidation/refinement, and
   any user-defined recurring tasks.
 - A FastAPI **server** that exposes `/run`, `/health`, `/tasks`, and a
   webhook receiver for Ouro events.
@@ -63,10 +63,10 @@ Multiple delegations in one tool call run in parallel automatically.
 
 `ouro-agents` keeps memory at three different timescales:
 
-1. **Vector memory** (mem0 + Chroma) — fact-shaped, queryable by category,
-   subject, asset, mode, and team. Curated by the `reflector` subagent
-   after every run that's worth remembering. Decays by category over time
-   (see `memory.decay_rules` in config).
+1. **Vector memory** (mem0 + Chroma) — semantic, queryable by category,
+   subject, asset, and team. Curated by the `reflector` subagent after every
+   run that's worth remembering. Recall reinforces memory strength; dream
+   decays old unaccessed memories.
 2. **Working memory** (`MEMORY.md`, daily logs) — markdown the agent
    maintains itself. Gets injected into every system prompt. Mirrored to
    Ouro as posts via the **doc store**.

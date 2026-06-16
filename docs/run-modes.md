@@ -114,8 +114,8 @@ the background. It curates facts/preferences into vector memory and
 appends a daily-log entry. Failures are logged but never block the user
 response.
 
-For chat modes, mid-session reflection runs every
-`memory.mid_session_reflection_interval` turns instead.
+For chat modes, mid-session reflection runs when the conversation-state updater
+adds a new key moment.
 
 ## How a mode is resolved at runtime
 

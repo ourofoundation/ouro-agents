@@ -256,25 +256,10 @@ Vector memory backend + dream (consolidation) policy.
 | `dream_enabled` | `true` | Run the dream (memory consolidation) cycle. |
 | `dream_time` | `03:00` | Time of day (`HH:MM`, UTC) for the dream tick. The tick only does work when a new `rhythm` period has begun since the last run. |
 | `memory_md_max_tokens` | 4000 | Cap on `MEMORY.md` size after consolidation. |
-| `mid_session_reflection_interval` | 10 | Chat turns between mid-session reflections. |
-| `decay_after_days` | 30 | Global decay fallback. |
-| `decay_rules` | (see below) | Per-category decay policy. |
+| `decay_after_days` | 30 | Days since last access before strength decay and stale evolving-memory review. |
 | `graph.enabled` | `false` | Optional mem0 graph backend. |
 | `graph.provider` | none | Provider name when graph is enabled. |
 | `graph.config` | none | Provider-specific config dict. |
-
-Default `decay_rules`:
-
-```json
-{
-  "direction":   { "after_days": null, "factor": 1.0 },
-  "decision":    { "after_days": null, "factor": 1.0 },
-  "fact":        { "after_days": 180,  "factor": 0.7 },
-  "preference":  { "after_days": 365,  "factor": 0.8 },
-  "learning":    { "after_days": 180,  "factor": 0.8 },
-  "observation": { "after_days": 30,   "factor": 0.5 }
-}
-```
 
 ## `mcp_servers`
 
@@ -358,9 +343,6 @@ Legacy keys are still accepted and migrated automatically: the old
 
 | Field | Default | Notes |
 |-------|---------|-------|
-| `enabled` | `true` | Run the refinement scheduler job. |
-| `schedule` | `0 */6 * * *` | Cron for refinement passes. |
-| `min_batch_size` | 5 | Minimum queued changes before a pass runs. |
 | `max_changes_per_pass` | 25 | Hard cap on changes processed in one pass. |
 | `max_docs_per_pass` | 15 | Hard cap on docs rewritten per pass. |
 | `window_lines` | 20 | Context lines around each match in the LLM payload. |

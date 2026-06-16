@@ -111,14 +111,15 @@ def test_build_focus_memory_context_filters_and_formats_guidance():
                     text="Focus on benchmarking model quality before adding more routes.",
                     category="direction",
                     score=0.1,
-                    importance=0.9,
+                    strength=0.9,
+                    basis="stated",
                     created_at="2026-04-01T00:00:00+00:00",
                 ),
                 SimpleNamespace(
                     text="The weather was nice.",
-                    category="observation",
+                    category="episode",
                     score=0.9,
-                    importance=0.5,
+                    strength=0.5,
                     created_at="2026-04-01T00:00:00+00:00",
                 ),
                 SimpleNamespace(
@@ -126,8 +127,8 @@ def test_build_focus_memory_context_filters_and_formats_guidance():
                     category="direction",
                     subject_type="asset",
                     score=0.99,
-                    importance=0.95,
-                    confidence=0.9,
+                    strength=0.95,
+                    basis="observed",
                     asset_ids=["asset-cif"],
                     source="team-feed",
                     created_at="2026-04-01T00:00:00+00:00",
@@ -252,6 +253,23 @@ def test_next_action_active_with_quest_but_no_local_items_still_executes():
     )
 
     assert action == "execute"
+
+
+def test_load_all_active_archives_deleted_quest_husks(tmp_path):
+    plan_store = PlanStore(tmp_path / "plans")
+    plan_store.save(
+        PlanCycle(id="cycle-good", status="active", kind="default", quest_id="q-1")
+    )
+    husk = tmp_path / "plans" / "active" / "goal-husk.json"
+    husk.write_text(
+        json.dumps({"id": "husk-1", "status": "active", "quest_id": "[deleted]"})
+    )
+
+    plans = plan_store.load_all_active()
+
+    assert [p.id for p in plans] == ["cycle-good"]
+    assert not husk.exists()
+    assert (tmp_path / "plans" / "history" / "goal-husk.json").exists()
 
 
 def test_reconcile_plan_with_remote_closed_quest_archives_without_update(tmp_path):
@@ -500,7 +518,8 @@ def test_run_planning_heartbeat_injects_recalled_direction_context():
                     text="Focus next planning on route reliability before new demos.",
                     category="direction",
                     score=0.2,
-                    importance=0.9,
+                    strength=0.9,
+                    basis="stated",
                     created_at="2026-04-01T00:00:00+00:00",
                 )
             ]
@@ -646,7 +665,7 @@ def test_run_review_heartbeat_stores_directional_feedback_memory():
             text, kwargs = agent.memory.added[0]
             assert "Planning guidance from review feedback" in text
             assert kwargs["metadata"]["category"] == "direction"
-            assert kwargs["metadata"]["asset_refs"] == "plan-quest-1"
+            assert kwargs["metadata"]["asset_ids"] == "plan-quest-1"
             assert kwargs["team_id"] == "team-1"
 
     asyncio.run(_exercise())

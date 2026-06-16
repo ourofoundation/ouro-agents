@@ -1,13 +1,18 @@
 {
   "env_file": ".env.hermes",
   "security": {
-    "controllers": ["mmoderwell"],
-    "trusted": [],
+    "controllers": [
+      "mmoderwell"
+    ],
+    "trusted": [
+      "athena",
+      "apollo"
+    ],
     "run_secret": null
   },
   "agent": {
     "name": "hermes",
-    "model": "minimax/minimax-m3",
+    "model": "qwen/qwen3.7-plus",
     "reasoning": {
       "effort": "high"
     },
@@ -44,21 +49,21 @@
   },
   "subagents": {
     "preflight": {
-      "model": "minimax/minimax-m3",
+      "model": "qwen/qwen3.7-plus",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 4
     },
     "research": {
-      "model": "minimax/minimax-m3",
+      "model": "qwen/qwen3.7-plus",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 10
     },
     "writer": {
-      "model": "minimax/minimax-m3"
+      "model": "qwen/qwen3.7-plus"
     },
     "executor": {
       "max_steps": 24
@@ -67,7 +72,7 @@
   "modes": {
     "planning": {
       "enabled": true,
-      "model": "minimax/minimax-m3",
+      "model": "qwen/qwen3.7-plus",
       "max_steps": 20,
       "cadence": "4h",
       "min_heartbeats": 4,
@@ -77,7 +82,7 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "minimax/minimax-m3",
+      "model": "qwen/qwen3.7-plus",
       "max_steps": 40,
       "active_hours": {
         "start": "09:00",
@@ -96,7 +101,7 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/hermes/memory",
-    "extraction_model": "minimax/minimax-m3",
+    "extraction_model": "qwen/qwen3.7-plus",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "retrieval_queries": 3,
@@ -104,7 +109,6 @@
     "dream_enabled": true,
     "rhythm": "weekly",
     "memory_md_max_tokens": 1500,
-    "mid_session_reflection_interval": 5,
     "decay_after_days": 30,
     "graph": {
       "enabled": false

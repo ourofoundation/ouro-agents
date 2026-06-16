@@ -17,8 +17,6 @@ __all__ = [
     "MemoryResult",
     "MemoryBackend",
     "MemoryItem",
-    "CATEGORY_LABELS",
-    "format_memories",
     "expand_query",
     "create_memory_backend",
 ]
@@ -28,24 +26,23 @@ class MemoryResult(BaseModel):
     id: str = ""
     text: str
     score: float = 0.0
-    category: str = "general"
-    importance: float = 0.5
+    category: str = "fact"
+    strength: float = 0.5
     created_at: str = ""
     source: str = ""
     last_accessed: str = ""
     team_id: str = ""
     subject_type: str = "general"
     subject_id: str = ""
+    basis: str = "inferred"
+    stability: str = "stable"
     team_ids: list[str] = Field(default_factory=list)
     asset_ids: list[str] = Field(default_factory=list)
     user_id: str = ""
-    mode: str = ""
-    confidence: float = 0.7
-    volatility: float = 0.0
     last_verified: str = ""
     verification_hint: str = ""
     content_hash: str = ""
-    schema_version: int = 1
+    schema_version: int = 3
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -64,7 +61,6 @@ class MemoryBackend(Protocol):
         subject_type: Optional[str] = None,
         subject_id: Optional[str] = None,
         asset_id: Optional[str] = None,
-        mode: Optional[str] = None,
         since: Optional[datetime] = None,
     ) -> List[MemoryResult]: ...
 
@@ -89,7 +85,6 @@ class MemoryBackend(Protocol):
         subject_id: Optional[str] = None,
         asset_id: Optional[str] = None,
         category: Optional[str] = None,
-        mode: Optional[str] = None,
         since: Optional[datetime] = None,
     ) -> List[MemoryResult]: ...
 
@@ -112,47 +107,6 @@ class MemoryBackend(Protocol):
     def reset_usage(self) -> None: ...
 
     def usage_ledger(self) -> list[tuple[str, Any]]: ...
-
-
-CATEGORY_LABELS = {
-    "fact": "Facts",
-    "preference": "Preferences",
-    "learning": "Learnings",
-    "decision": "Decisions",
-    "direction": "Direction Guidance",
-    "observation": "Observations",
-    "general": "Context",
-}
-
-
-def format_memories(memories: List[MemoryResult], min_score: float = 0.5) -> str:
-    """Format memory results grouped by category, filtering low-relevance ones."""
-    relevant = [r for r in memories if r.score >= min_score]
-    if not relevant:
-        return ""
-
-    grouped: dict[str, list[MemoryResult]] = {}
-    for m in relevant:
-        grouped.setdefault(m.category, []).append(m)
-
-    lines: list[str] = []
-    for cat in [
-        "direction",
-        "fact",
-        "decision",
-        "learning",
-        "preference",
-        "observation",
-        "general",
-    ]:
-        items = grouped.get(cat, [])
-        if not items:
-            continue
-        label = CATEGORY_LABELS.get(cat, cat.title())
-        lines.append(f"**{label}:**")
-        for item in items:
-            lines.append(f"- {item.text}")
-    return "\n".join(lines)
 
 
 def expand_query(task: str, state: ConversationState) -> str:

@@ -16,9 +16,10 @@ def test_memory_metadata_round_trips_legacy_team_and_asset_refs():
 
     assert item.team_ids == ["team-42"]
     assert item.asset_ids == ["asset-1", "asset-2"]
+    assert item.category == "episode"
     assert metadata["team_ids_idx"] == ",team-42,"
     assert metadata["asset_ids_idx"] == ",asset-1,asset-2,"
-    assert metadata["schema_version"] == 2
+    assert metadata["schema_version"] == 3
 
 
 def test_memory_item_recomputes_empty_hash_for_nonempty_text():
@@ -44,8 +45,9 @@ def test_validator_filters_unknown_team_ids_per_candidate():
         {
             "text": "Team 1 decided to focus on benchmarks.",
             "subject_type": "team",
-            "category": "decision",
+            "category": "direction",
             "team_ids": ["unknown", "team-2"],
+            "basis": "stated",
         },
         ctx,
         source="test",
@@ -53,6 +55,25 @@ def test_validator_filters_unknown_team_ids_per_candidate():
 
     assert item.team_ids == ["team-2"]
     assert item.subject_id == "team-2"
+    assert item.category == "direction"
+
+
+def test_validator_rejects_episode_memory_for_vector_store():
+    ctx = MemoryRunContext(agent_id="hermes", user_id="user-1")
+
+    try:
+        validate_memory_candidate(
+            {
+                "text": "The agent reviewed asset abc.",
+                "category": "episode",
+            },
+            ctx,
+            source="test",
+        )
+    except ValueError as exc:
+        assert "period logs" in str(exc)
+    else:
+        raise AssertionError("episode candidate should be rejected")
 
 
 def test_validator_allows_chat_user_memory_without_team():

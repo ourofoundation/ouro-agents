@@ -65,24 +65,28 @@ def memory_signal_score(
     ambient platform observations unless the caller asked for that asset/team.
     """
 
-    category = _text_attr(memory, "category", "general")
+    category = _text_attr(memory, "category", "fact")
     subject_type = _text_attr(memory, "subject_type", "general")
     source = _text_attr(memory, "source", "")
+    basis = _text_attr(memory, "basis", "inferred")
+    stability = _text_attr(memory, "stability", "stable")
     score = _as_float(getattr(memory, "score", 0.0), 0.0)
-    importance = _as_float(getattr(memory, "importance", 0.5), 0.5)
-    confidence = _as_float(getattr(memory, "confidence", 0.7), 0.7)
+    strength = _as_float(getattr(memory, "strength", 0.5), 0.5)
     team_ids = _list_attr(memory, "team_ids")
     asset_ids = _list_attr(memory, "asset_ids")
 
     category_weight = {
         "direction": 1.4,
-        "decision": 1.05,
         "preference": 0.85,
-        "learning": 0.45,
         "fact": 0.3,
-        "general": 0.0,
-        "observation": -0.35,
+        "episode": -0.35,
     }.get(category, 0.0)
+
+    basis_weight = {
+        "stated": 0.35,
+        "observed": 0.15,
+        "inferred": 0.0,
+    }.get(basis, 0.0)
 
     subject_weight = {
         "user": 0.45,
@@ -95,9 +99,10 @@ def memory_signal_score(
 
     total = 0.0
     total += min(max(score, 0.0), 1.0) * 0.9
-    total += importance * 0.45
-    total += confidence * 0.35
-    total += category_weight + subject_weight
+    total += min(max(strength, 0.0), 1.0) * 0.7
+    total += category_weight + subject_weight + basis_weight
+    if stability == "evolving":
+        total -= 0.1
 
     if team_id and team_id in team_ids:
         total += 0.35
@@ -106,10 +111,10 @@ def memory_signal_score(
         total += 0.35
 
     is_ambient = (
-        category == "observation"
+        category == "episode"
         or subject_type == "asset"
         or _source_has(source, _AMBIENT_SOURCE_HINTS)
-        or (asset_ids and category not in {"direction", "decision"})
+        or (asset_ids and category != "direction")
     )
     if is_ambient and not explicit_filter:
         total -= 0.9
@@ -120,11 +125,11 @@ def memory_signal_score(
 def is_focus_directive(memory: Any) -> bool:
     """Return whether a memory is allowed to steer planning focus."""
 
-    category = _text_attr(memory, "category", "general")
+    category = _text_attr(memory, "category", "fact")
     subject_type = _text_attr(memory, "subject_type", "general")
     source = _text_attr(memory, "source", "")
-    confidence = _as_float(getattr(memory, "confidence", 0.7), 0.7)
-    importance = _as_float(getattr(memory, "importance", 0.5), 0.5)
+    basis = _text_attr(memory, "basis", "inferred")
+    strength = _as_float(getattr(memory, "strength", 0.5), 0.5)
 
     if subject_type == "asset" or _source_has(source, _AMBIENT_SOURCE_HINTS):
         return False
@@ -132,9 +137,9 @@ def is_focus_directive(memory: Any) -> bool:
     if category == "direction":
         return True
 
-    if category == "decision":
+    if category == "fact":
         if _source_has(source, _DIRECTIVE_SOURCE_HINTS):
             return True
-        return confidence >= 0.65 and importance >= 0.6
+        return basis == "stated" and strength >= 0.6
 
     return False

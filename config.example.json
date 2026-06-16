@@ -101,7 +101,6 @@
     "dream_enabled": true,
     "dream_time": "03:00",
     "memory_md_max_tokens": 1500,
-    "mid_session_reflection_interval": 5,
     "decay_after_days": 30,
     "graph": {
       "enabled": false

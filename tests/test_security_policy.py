@@ -4,8 +4,44 @@ from ouro_agents.security.policy import (
     Capability,
     EventSurface,
     actor_role_for,
+    describe_capabilities,
     resolve_envelope,
 )
+
+
+def test_controller_mention_can_create_assets():
+    envelope = resolve_envelope(ActorRole.CONTROLLER, EventSurface.MENTION)
+
+    assert envelope.allows(Capability.CREATE_ASSET)
+    assert envelope.allows(Capability.LOAD_MCP_TOOL)
+    assert not envelope.allows(Capability.EXECUTE_ROUTE)
+    assert not envelope.allows(Capability.UPDATE_ASSET)
+
+
+def test_public_mention_stays_read_reply_only():
+    envelope = resolve_envelope(ActorRole.PUBLIC, EventSurface.MENTION)
+
+    assert envelope.allowed_capabilities == {
+        Capability.READ_PLATFORM,
+        Capability.REPLY,
+    }
+
+
+def test_describe_capabilities_renders_restrictions():
+    envelope = resolve_envelope(ActorRole.PUBLIC, EventSurface.COMMENT)
+
+    note = describe_capabilities(envelope.allowed_capabilities)
+
+    assert "## Run Capabilities" in note
+    assert "read platform content" in note
+    assert "create new assets" in note  # listed under "cannot"
+    assert "cannot" in note
+
+
+def test_describe_capabilities_empty_when_unrestricted():
+    envelope = resolve_envelope(ActorRole.CONTROLLER, EventSurface.DIRECT_CHAT)
+
+    assert describe_capabilities(envelope.allowed_capabilities) == ""
 
 
 def test_public_comment_is_read_reply_only():

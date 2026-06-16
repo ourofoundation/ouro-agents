@@ -35,8 +35,8 @@ class _FakeBackend:
     def search(self, **kwargs):
         self.search_calls.append(kwargs)
         return [
-            MemoryResult(text="Keep this decision", category="decision"),
-            MemoryResult(text="Drop this observation", category="observation"),
+            MemoryResult(text="Keep this direction", category="direction"),
+            MemoryResult(text="Drop this episode", category="episode"),
         ]
 
     def get_all(self, **kwargs):
@@ -51,9 +51,9 @@ class _RankedBackend(_FakeBackend):
             MemoryResult(
                 text="The 2:17 RE-Fe/Co structure family appears in a recent CIF.",
                 score=0.99,
-                category="observation",
-                importance=0.9,
-                confidence=0.9,
+                category="episode",
+                strength=0.9,
+                basis="observed",
                 subject_type="asset",
                 team_ids=["team-42"],
                 asset_ids=["asset-cif"],
@@ -63,8 +63,8 @@ class _RankedBackend(_FakeBackend):
                 text="Focus on benchmark quality before chasing newly uploaded assets.",
                 score=0.2,
                 category="direction",
-                importance=0.75,
-                confidence=0.8,
+                strength=0.75,
+                basis="stated",
                 subject_type="agent",
                 team_ids=["team-42"],
                 source="plan-feedback",
@@ -109,15 +109,15 @@ def test_memory_recall_applies_profile_memory_categories():
         agent_id="hermes",
         doc_store=_FakeDocStore(),
         team_id="team-42",
-        memory_categories=["decision"],
+        memory_categories=["direction"],
     )
 
     result = _tool_by_name(tools, "memory_recall").forward(
         [{"query": "team strategy"}]
     )
 
-    assert "Keep this decision" in result
-    assert "Drop this observation" not in result
+    assert "Keep this direction" in result
+    assert "Drop this episode" not in result
 
 
 def test_memory_recall_accepts_top_level_scope_defaults():

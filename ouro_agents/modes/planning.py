@@ -188,15 +188,33 @@ class PlanStore:
         return self._load_file(self._active_dir / "default.json")
 
     def load_all_active(self) -> list[PlanCycle]:
-        """Load every active plan (default + goals)."""
+        """Load every active plan (default + goals).
+
+        Self-heals legacy husks: plans whose ids were rewritten to
+        ``[deleted]`` by older asset-deleted sweeps are moved to history
+        instead of being returned (current sweeps archive them outright).
+        """
         if not self._active_dir.exists():
             return []
         plans: list[PlanCycle] = []
         for f in sorted(self._active_dir.glob("*.json")):
             cycle = self._load_file(f)
-            if cycle:
-                plans.append(cycle)
+            if not cycle:
+                continue
+            if "[deleted]" in (cycle.quest_id or "") or "[deleted]" in cycle.id:
+                self._archive_husk(f)
+                continue
+            plans.append(cycle)
         return plans
+
+    def _archive_husk(self, path: Path) -> None:
+        """Move a deleted-quest husk out of active/ into history/."""
+        try:
+            self._history_dir.mkdir(parents=True, exist_ok=True)
+            path.rename(self._history_dir / path.name)
+            logger.info("Archived deleted-quest plan husk: %s", path.name)
+        except OSError:
+            logger.warning("Failed to archive plan husk %s", path)
 
     def load_by_quest_id(self, quest_id: str) -> Optional[PlanCycle]:
         """Find an active plan by its Ouro quest ID."""
@@ -531,11 +549,13 @@ def remember_plan_feedback_direction(
 
     metadata = {
         "category": "direction",
-        "importance": 0.8,
+        "basis": "stated",
+        "stability": "stable",
+        "strength": 0.8,
         "source": f"plan-feedback:{cycle.quest_id or cycle.id}",
     }
     if cycle.quest_id:
-        metadata["asset_refs"] = cycle.quest_id
+        metadata["asset_ids"] = cycle.quest_id
 
     try:
         memory.add(

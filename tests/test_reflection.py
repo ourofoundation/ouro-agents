@@ -132,15 +132,16 @@ class TestConversationTurnCount(unittest.TestCase):
 
 
 class TestShouldReflect(unittest.TestCase):
-    def test_reflects_every_n_user_turns_not_steps(self):
+    def test_reflects_when_current_key_moment_turn_not_marked(self):
         state = _ConversationState(turn_count=5)
-        self.assertFalse(should_reflect(state, reflection_interval=5, last_reflected_turn=1))
-        self.assertTrue(should_reflect(state, reflection_interval=5, last_reflected_turn=0))
+        self.assertFalse(should_reflect(state, last_reflected_turn=5))
+        self.assertTrue(should_reflect(state, last_reflected_turn=4))
 
-    def test_skips_until_interval_passed_since_last_reflection(self):
+    def test_skips_empty_or_initial_state(self):
         state = _ConversationState(turn_count=9)
-        self.assertFalse(should_reflect(state, reflection_interval=5, last_reflected_turn=5))
-        self.assertTrue(should_reflect(state, reflection_interval=5, last_reflected_turn=4))
+        self.assertFalse(should_reflect(None, last_reflected_turn=0))
+        self.assertFalse(should_reflect(_ConversationState(turn_count=0), last_reflected_turn=0))
+        self.assertTrue(should_reflect(state, last_reflected_turn=8))
 
     def test_should_reflect_for_conversation_reads_marker(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -151,16 +152,14 @@ class TestShouldReflect(unittest.TestCase):
                 should_reflect_for_conversation(
                     conversations_dir,
                     conversation_id,
-                    _ConversationState(turn_count=9),
-                    reflection_interval=5,
+                    _ConversationState(turn_count=5),
                 )
             )
             self.assertTrue(
                 should_reflect_for_conversation(
                     conversations_dir,
                     conversation_id,
-                    _ConversationState(turn_count=10),
-                    reflection_interval=5,
+                    _ConversationState(turn_count=6),
                 )
             )
 
@@ -200,7 +199,8 @@ class TestReflectionParsing(unittest.TestCase):
                 {
                   "text": "User wants the agent to focus on benchmarking next.",
                   "category": "direction",
-                  "importance": 0.9
+                  "strength": 0.8,
+                  "basis": "stated"
                 }
               ],
               "user_preferences": [],
@@ -212,7 +212,7 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result.facts_to_store[0]["category"], "direction")
-        self.assertEqual(result.facts_to_store[0]["importance"], 0.9)
+        self.assertEqual(result.facts_to_store[0]["strength"], 0.8)
 
     def test_parses_new_candidate_schema(self):
         result = parse_reflection_result(
@@ -222,11 +222,13 @@ class TestReflectionParsing(unittest.TestCase):
                 {
                   "text": "Asset abc was reviewed and should not be revisited immediately.",
                   "subject_type": "asset",
-                  "category": "observation",
+                  "category": "fact",
+                  "basis": "observed",
+                  "stability": "evolving",
                   "team_ids": ["team-1"],
                   "asset_ids": ["abc"],
-                  "importance": 0.6,
-                  "confidence": 0.8
+                  "strength": 0.5,
+                  "verification_hint": "check asset activity"
                 }
               ],
               "user_preferences": [],
@@ -240,6 +242,7 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertEqual(result.facts_to_store[0]["subject_type"], "asset")
         self.assertEqual(result.facts_to_store[0]["team_ids"], ["team-1"])
         self.assertEqual(result.facts_to_store[0]["asset_ids"], ["abc"])
+        self.assertEqual(result.facts_to_store[0]["basis"], "observed")
 
     def test_parses_structured_daily_log_entries(self):
         result = parse_reflection_result(
@@ -396,8 +399,9 @@ class TestApplyReflection(unittest.TestCase):
                 facts_to_store=[
                     {
                         "text": "User prefers concise updates.",
-                        "category": "observation",
-                        "importance": 0.7,
+                        "category": "preference",
+                        "basis": "stated",
+                        "strength": 0.7,
                     }
                 ],
                 user_preferences=[],
@@ -431,8 +435,10 @@ class TestApplyReflection(unittest.TestCase):
                 facts_to_store=[
                     {
                         "text": "Team-specific preference.",
-                        "category": "observation",
-                        "importance": 0.8,
+                        "subject_type": "agent",
+                        "category": "fact",
+                        "basis": "observed",
+                        "strength": 0.8,
                     }
                 ],
                 user_preferences=[],
@@ -462,7 +468,8 @@ class TestApplyReflection(unittest.TestCase):
                     {
                         "text": "User wants the agent to stop posting low-signal updates.",
                         "category": "direction",
-                        "importance": 0.9,
+                        "basis": "stated",
+                        "strength": 0.8,
                     }
                 ],
                 user_preferences=[],

@@ -1,11 +1,8 @@
 """Turn-based reflection for curated memory storage.
 
-Instead of storing every turn pair in mem0 (noisy), reflection runs every N
-turns during a conversation and extracts only what's worth keeping: important
-facts, user preferences, and a daily log entry.
-
-This replaces the old idle-timer approach with a turn-count trigger that
-integrates naturally with the conversation state tracker.
+Instead of storing every turn pair in mem0 (noisy), reflection runs when the
+conversation state tracker surfaces a new key moment. That makes the state
+update the salience detector and keeps reflection tied to meaningful change.
 """
 
 import logging
@@ -87,20 +84,14 @@ def validated_daily_log_entries(
 
 def should_reflect(
     conversation_state: Optional[ConversationState],
-    reflection_interval: int = 10,
     last_reflected_turn: int = 0,
 ) -> bool:
-    """Check if enough turns have passed to trigger reflection.
-
-    Returns True if the conversation has advanced by at least
-    `reflection_interval` turns since the last reflection.
-    """
+    """Return True when the current key-moment turn has not been reflected."""
     if not conversation_state:
         return False
     if conversation_state.turn_count < 1:
         return False
-    turns_since = conversation_state.turn_count - last_reflected_turn
-    return turns_since >= reflection_interval
+    return conversation_state.turn_count > last_reflected_turn
 
 
 def _load_reflected_turn(conversations_dir: Path, conversation_id: str) -> int:
@@ -136,7 +127,11 @@ def record_reflection_turn(
 
 
 def _reflection_candidates(result: ReflectionResult) -> list[dict]:
-    candidates = list(result.facts_to_store)
+    candidates = [
+        candidate
+        for candidate in result.facts_to_store
+        if str(candidate.get("category", "fact")) != "episode"
+    ]
     for preference in result.user_preferences:
         if isinstance(preference, str) and preference.strip():
             candidates.append(
@@ -144,9 +139,10 @@ def _reflection_candidates(result: ReflectionResult) -> list[dict]:
                     "text": preference.strip(),
                     "subject_type": "user",
                     "category": "preference",
+                    "basis": "observed",
+                    "stability": "stable",
                     "team_ids": [],
-                    "importance": 0.6,
-                    "confidence": 0.8,
+                    "strength": 0.5,
                 }
             )
     return candidates
@@ -217,11 +213,10 @@ def should_reflect_for_conversation(
     conversations_dir: Path,
     conversation_id: str,
     conversation_state: Optional[ConversationState],
-    reflection_interval: int = 10,
 ) -> bool:
-    """Full check: load last reflected turn and compare to current state."""
+    """Full check: load last reflected key-moment turn and compare."""
     last_turn = _load_reflected_turn(conversations_dir, conversation_id)
-    return should_reflect(conversation_state, reflection_interval, last_turn)
+    return should_reflect(conversation_state, last_turn)
 
 
 def apply_reflection(

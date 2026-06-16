@@ -40,7 +40,7 @@ FOCUS_KEYWORDS = {
 
 def looks_like_focus_memory(memory) -> bool:
     """Return whether a memory is relevant to focus/planning decisions."""
-    category = getattr(memory, "category", "general") or "general"
+    category = getattr(memory, "category", "fact") or "fact"
     if category == "direction":
         return True
 
@@ -49,9 +49,9 @@ def looks_like_focus_memory(memory) -> bool:
         return False
 
     has_focus_language = any(keyword in text for keyword in FOCUS_KEYWORDS)
-    if category in {"decision", "preference"}:
+    if category == "preference":
         return has_focus_language
-    if category == "observation":
+    if category == "episode":
         return has_focus_language and getattr(memory, "score", 0.0) >= 0.35
     return has_focus_language and getattr(memory, "score", 0.0) >= 0.55
 
@@ -78,12 +78,12 @@ def is_directional_feedback(feedback: str) -> bool:
 
 
 def _focus_sort_key(memory) -> tuple[int, float, str]:
-    category = getattr(memory, "category", "general") or "general"
+    category = getattr(memory, "category", "fact") or "fact"
     priority = {
         "direction": 0,
-        "decision": 1,
-        "preference": 2,
-        "observation": 3,
+        "preference": 1,
+        "fact": 2,
+        "episode": 3,
     }.get(category, 4)
     signal = memory_signal_score(memory, explicit_filter=True)
     created_at = getattr(memory, "created_at", "") or ""
@@ -112,7 +112,7 @@ def build_focus_memory_context(
     results = []
     for query in queries:
         matches = []
-        for category in ("direction", "decision"):
+        for category in ("direction", "preference", "fact"):
             try:
                 matches.extend(
                     memory.search(
@@ -160,6 +160,6 @@ def build_focus_memory_context(
     results.sort(key=_focus_sort_key)
     lines = [f"### {heading}", guidance]
     for memory_item in results[:limit]:
-        category = getattr(memory_item, "category", "general") or "general"
+        category = getattr(memory_item, "category", "fact") or "fact"
         lines.append(f"- [{category}] {memory_item.text}")
     return "\n".join(lines)

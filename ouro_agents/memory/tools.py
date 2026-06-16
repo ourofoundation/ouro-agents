@@ -8,11 +8,10 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from smolagents import tool
 
-from . import MemoryBackend
+from . import MemoryBackend, expand_query
 from .model import to_metadata
 from .naming import period_key, store_rhythm
 from .relevance import memory_signal_score
-from .session import SessionMemoryStore
 from .validator import MemoryRunContext, validate_memory_candidate
 
 if TYPE_CHECKING:
@@ -78,13 +77,11 @@ def make_memory_tools(
     available_team_ids: Optional[set[str]] = None,
     available_teams: Optional[list[dict]] = None,
     enable_remember: bool = False,
+    conversation_state: Any = None,
 ) -> list:
     allowed_categories = set(memory_categories or [])
     run_team_id = team_id
     run_mode = mode or ""
-    session_store = (
-        SessionMemoryStore(workspace) if workspace and conversation_id else None
-    )
     team_ids = set(available_team_ids or ([] if not run_team_id else [run_team_id]))
     team_lookup: dict[str, str] = {}
     for team in available_teams or []:
@@ -104,7 +101,6 @@ def make_memory_tools(
         asset_id: Optional[str] = None,
         team_id: Optional[str] = None,
         category: Optional[str] = None,
-        mode: Optional[str] = None,
         since: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> str:
@@ -116,7 +112,7 @@ def make_memory_tools(
                 - category (str, optional): Per-query category filter. Omit for all.
                 - subject_type/subject_id (str, optional): What the memory is about.
                 - team_id/asset_id (str, optional): Association filters.
-                - mode/since (str, optional): Origin-mode and ISO timestamp filters.
+                - since (str, optional): ISO timestamp lower bound.
                 - limit (int, optional): Per-query max results.
                 - scope (str, optional): Per-query memory scope.
             scope: Default scope for every query: "team" (default, this team's memories) | "personal" (this user's memories in this team) | "org" (all teams) | "global" (everything).
@@ -124,13 +120,12 @@ def make_memory_tools(
             subject_id: Default subject id filter.
             asset_id: Default asset association filter.
             team_id: Default team association filter.
-            category: Default category filter for every query: fact, preference, learning, decision, direction, observation, or general.
-            mode: Default origin-mode filter: chat, heartbeat, event, plan, review.
+            category: Default category filter for every query: fact, preference, direction.
             since: Default ISO timestamp lower bound.
             limit: Default max results per query.
 
         Example single:  [{"query": "user's favorite language"}]
-        Example multi:   [{"query": "API preferences"}, {"query": "past decisions about auth", "category": "decision"}]
+        Example multi:   [{"query": "API preferences"}, {"query": "past decisions about auth", "category": "direction"}]
         """
         queries = _normalize_memory_queries(queries)
         if not queries:
@@ -144,7 +139,6 @@ def make_memory_tools(
                 asset_id,
                 team_id,
                 category,
-                mode,
                 since,
                 limit,
             ]
@@ -156,7 +150,6 @@ def make_memory_tools(
                 "asset_id": asset_id,
                 "team_id": team_id,
                 "category": category,
-                "mode": mode,
                 "since": since,
                 "limit": limit,
             }
@@ -181,7 +174,6 @@ def make_memory_tools(
             spec_subject_type = spec.get("subject_type", "")
             spec_subject_id = spec.get("subject_id", "")
             spec_asset_id = spec.get("asset_id", "")
-            spec_mode = spec.get("mode", "")
             since_dt = None
             if spec.get("since"):
                 try:
@@ -196,25 +188,20 @@ def make_memory_tools(
                     "subject_id",
                     "asset_id",
                     "team_id",
-                    "mode",
                     "since",
                 ]
             )
+            search_query = (
+                expand_query(query, conversation_state)
+                if conversation_state is not None
+                else query
+            )
             results = []
             if run_mode.startswith("chat") and not explicit_filters:
-                if session_store and conversation_id:
-                    results.extend(
-                        session_store.search(
-                            conversation_id,
-                            query,
-                            limit=limit,
-                            category=category or None,
-                        )
-                    )
                 if user_id:
                     results.extend(
                         backend.search(
-                            query=query,
+                            query=search_query,
                             agent_id=agent_id,
                             user_id=user_id,
                             limit=limit,
@@ -228,7 +215,7 @@ def make_memory_tools(
                 for default_subject in ["agent", "general"]:
                     results.extend(
                         backend.search(
-                            query=query,
+                            query=search_query,
                             agent_id=agent_id,
                             limit=limit,
                             team_id=spec_team_id if run_team_id else None,
@@ -241,7 +228,7 @@ def make_memory_tools(
                 if run_team_id:
                     results.extend(
                         backend.search(
-                            query=query,
+                            query=search_query,
                             agent_id=agent_id,
                             limit=limit,
                             team_id=run_team_id,
@@ -252,7 +239,7 @@ def make_memory_tools(
                     )
             else:
                 results = backend.search(
-                    query=query,
+                    query=search_query,
                     agent_id=agent_id,
                     user_id=(
                         user_id
@@ -266,7 +253,6 @@ def make_memory_tools(
                     subject_type=spec_subject_type or None,
                     subject_id=spec_subject_id or None,
                     asset_id=spec_asset_id or None,
-                    mode=spec_mode or None,
                     since=since_dt,
                 )
 
@@ -427,7 +413,10 @@ def make_memory_tools(
         subject_id: str = "",
         asset_ids: Optional[list[str]] = None,
         team_slug_or_id: str = "",
-        importance: float = 0.5,
+        basis: str = "stated",
+        stability: str = "stable",
+        strength: float = 0.5,
+        verification_hint: str = "",
         reason: str = "",
     ) -> str:
         """Store a durable memory through validation. Disabled unless the run opts in.
@@ -435,11 +424,14 @@ def make_memory_tools(
         Args:
             text: Memory text to store.
             subject_type: user, agent, team, asset, conversation, org, or general.
-            category: direction, decision, fact, preference, learning, or observation.
+            category: direction, fact, or preference.
             subject_id: Optional subject identifier. Use "self" for the current agent.
             asset_ids: Optional Ouro asset UUIDs referenced by this memory.
             team_slug_or_id: Optional available team slug or ID to associate.
-            importance: 0.0-1.0 memory importance.
+            basis: stated, observed, or inferred.
+            stability: stable or evolving.
+            strength: Coarse initial strength: 0.3 minor, 0.5 normal, 0.8 high.
+            verification_hint: How to re-check evolving memories.
             reason: Required explanation for why this should be durable.
         """
         if not enable_remember:
@@ -481,8 +473,10 @@ def make_memory_tools(
                     "category": category,
                     "asset_ids": asset_ids or [],
                     "team_ids": resolved_team_ids,
-                    "importance": importance,
-                    "confidence": 1.0,
+                    "basis": basis,
+                    "stability": stability,
+                    "strength": strength,
+                    "verification_hint": verification_hint,
                 },
                 ctx,
                 source="remember-tool",

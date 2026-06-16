@@ -31,6 +31,43 @@ _TEMPLATE = """\
 """
 
 
+def strip_empty_sections(text: str) -> str:
+    """Drop `## ...` sections with no content, for prompt rendering.
+
+    A fresh user model is all empty headers; rendering those wastes context
+    and invites the model to backfill them. Returns "" when nothing but the
+    title remains, so callers can omit the whole block.
+    """
+    if not text.strip():
+        return ""
+    lines = text.split("\n")
+    out: list[str] = []
+    section: list[str] = []
+
+    def flush() -> None:
+        if section and any(line.strip() for line in section[1:]):
+            out.extend(section)
+        section.clear()
+
+    in_section = False
+    for line in lines:
+        if line.startswith("## "):
+            flush()
+            in_section = True
+            section.append(line)
+        elif in_section:
+            section.append(line)
+        else:
+            out.append(line)
+    flush()
+
+    result = "\n".join(out).strip()
+    has_body = any(
+        line.strip() and not line.lstrip().startswith("#") for line in result.split("\n")
+    )
+    return result if has_body else ""
+
+
 def _user_model_path(workspace: Path, user_id: str) -> Path:
     return workspace / "memory" / "users" / f"{user_id}.md"
 

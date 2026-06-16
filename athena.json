@@ -1,13 +1,18 @@
 {
   "env_file": ".env.athena",
   "security": {
-    "controllers": ["mmoderwell"],
-    "trusted": [],
+    "controllers": [
+      "mmoderwell"
+    ],
+    "trusted": [
+      "hermes",
+      "apollo"
+    ],
     "run_secret": null
   },
   "agent": {
     "name": "athena",
-    "model": "xiaomi/mimo-v2.5-pro",
+    "model": "qwen/qwen3.7-plus",
     "reasoning": {
       "effort": "medium"
     },
@@ -16,7 +21,7 @@
   },
   "subagents": {
     "preflight": {
-      "model": "xiaomi/mimo-v2.5-pro",
+      "model": "qwen/qwen3.7-plus",
       "reasoning": {
         "effort": "none"
       },
@@ -30,7 +35,7 @@
       "max_steps": 10
     },
     "writer": {
-      "model": "xiaomi/mimo-v2.5-pro"
+      "model": "qwen/qwen3.7-plus"
     },
     "executor": {
       "max_steps": 24
@@ -39,7 +44,7 @@
   "modes": {
     "planning": {
       "enabled": true,
-      "model": "xiaomi/mimo-v2.5-pro",
+      "model": "qwen/qwen3.7-plus",
       "max_steps": 20,
       "cadence": "4h",
       "min_heartbeats": 4,
@@ -49,7 +54,7 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "xiaomi/mimo-v2.5-pro",
+      "model": "qwen/qwen3.7-plus",
       "max_steps": 20,
       "active_hours": {
         "start": "09:00",
@@ -75,7 +80,6 @@
     "max_retrieval_tokens": 1500,
     "dream_enabled": true,
     "memory_md_max_tokens": 1500,
-    "mid_session_reflection_interval": 5,
     "decay_after_days": 30,
     "graph": {
       "enabled": false

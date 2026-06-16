@@ -20,8 +20,8 @@ The four sources of tools:
 
 | Tool | Available when | Effect |
 |------|----------------|--------|
-| `memory_recall(query, ...)` | Always (subject to `memory_tool_filter`). | Vector search with filters: category, subject, asset, mode, team, time window. |
-| `remember(text, category, importance, ...)` | Only `heartbeat`, `plan`, `review` (other modes use the reflector). | Add a curated memory. |
+| `memory_recall(query, ...)` | Always (subject to `memory_tool_filter`). | Vector search with filters: category, subject, asset, team, time window. |
+| `remember(text, category, basis, stability, strength, ...)` | Any mode with `Capability.MEMORY_WRITE`. | Add a curated semantic memory. |
 | `recall_team_memories(team_id, ...)` | When the team is available. | Convenience wrapper for `memory_recall` scoped to a team. |
 | `read_doc / write_doc / append_doc` | When the doc store has the doc. | Doc-store CRUD on `MEMORY.md`, daily logs, entity files. |
 | `read_user_model / write_user_model` | When `user_id` is set. | Read/write the per-user `USER:<id>` doc. |

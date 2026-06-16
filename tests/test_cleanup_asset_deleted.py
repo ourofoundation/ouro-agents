@@ -200,6 +200,31 @@ def test_sweep_rewrites_markdown_and_plan_only_for_target_uuid():
         assert "archived" not in new_plan
 
 
+def test_sweep_archives_plan_when_its_own_quest_is_deleted():
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        plans_active = root / "teams" / "team-1" / "plans" / "active"
+        plans_active.mkdir(parents=True)
+        plan = plans_active / "goal-abc123.json"
+        plan.write_text(
+            json.dumps(
+                {"id": "abc123", "quest_id": _UUID, "status": "active"}, indent=2
+            )
+        )
+
+        result = sweep_workspace_for_deleted_asset(root, _UUID)
+
+        # Active file is gone; archived copy lives in history/ with the
+        # quest reference cleared and the cycle cancelled.
+        assert not plan.exists()
+        assert str(plan) in result.plans_archived
+        history = root / "teams" / "team-1" / "plans" / "history" / "abc123.json"
+        assert history.exists()
+        archived = json.loads(history.read_text())
+        assert archived["quest_id"] is None
+        assert archived["status"] == "cancelled"
+
+
 def test_sweep_bumps_frontmatter_timestamp_on_markdown_rewrites():
     with TemporaryDirectory() as tmp:
         root = Path(tmp)

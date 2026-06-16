@@ -48,8 +48,8 @@ Composite. See [Memory model](./memory.md#working-memory-and-the-doc-store).
 
 ### `MemoryBackend`
 Protocol for vector memory backends. Default implementation is mem0 on
-top of Chroma. Memories carry category, importance, asset references,
-team scope, and decay.
+top of Chroma. Memories carry category, basis, stability, strength, asset
+references, team scope, and decay.
 
 ### Reflector
 The subagent that curates long-term memory — runs after autonomous /
@@ -83,7 +83,8 @@ the scheduler still fires but the run skips itself with a status string.
 ### Refinement
 The LLM-driven cleanup of workspace docs that drains a typed change-set
 queue (`ChangeKind.CORRECTION`, `GUIDANCE_UPDATED`, `ASSET_UPDATED`).
-Runs on `refinement.schedule`. See [Refinement](./refinement.md).
+Runs as the first phase of the dream cycle. See
+[Refinement](./refinement.md).
 
 ### Cleanup
 The deterministic handler for `asset.deleted` webhook events. Prunes

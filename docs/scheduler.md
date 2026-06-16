@@ -1,7 +1,7 @@
 # Scheduler
 
 `AgentScheduler` (`ouro_agents/scheduler.py`) is a thin wrapper around
-[APScheduler](https://github.com/agronholm/apscheduler) that owns three
+[APScheduler](https://github.com/agronholm/apscheduler) that owns two
 **system tasks** plus any number of **user-defined tasks** the agent
 creates at runtime.
 
@@ -13,7 +13,9 @@ It runs only when the FastAPI server is up (`ouro-agents serve`).
 |------|------|--------|
 | `system:heartbeat` | Every `heartbeat.every`, anchored to the start of the active window. | `HeartbeatConfig`. |
 | `system:dream` | Ticks daily at `memory.dream_time` (default `03:00`), but only runs once per `memory.rhythm` period (daily/weekly/biweekly). | `MemoryConfig`. |
-| `system:refinement` | `refinement.schedule` (cron, default `0 */6 * * *`). | `RefinementConfig`. |
+
+Refinement no longer has its own job: the change-set queue is drained as
+the first phase of `system:dream` (see [refinement.md](refinement.md)).
 
 System task ids are protected: `SYSTEM_PROTECTED_IDS` blocks the agent
 from accidentally deleting them with `remove_task`.

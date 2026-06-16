@@ -4,7 +4,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from .model import CATEGORIES, SUBJECT_TYPES, MemoryItem, coerce_id_list, content_hash, utc_now
+from .model import (
+    BASIS_VALUES,
+    CATEGORIES,
+    STABILITY_VALUES,
+    SUBJECT_TYPES,
+    MemoryItem,
+    coerce_id_list,
+    content_hash,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +52,13 @@ def _as_float(value: Any, default: float) -> float:
 
 def _category(value: Any) -> str:
     text = str(value or "fact").strip()
+    legacy = {
+        "decision": "direction",
+        "learning": "fact",
+        "observation": "episode",
+        "general": "fact",
+    }
+    text = legacy.get(text, text)
     return text if text in CATEGORIES else "fact"
 
 
@@ -50,9 +66,19 @@ def _subject_type(value: Any, category: str) -> str:
     text = str(value or "").strip()
     if text in SUBJECT_TYPES:
         return text
-    if category in {"learning", "decision", "direction", "observation"}:
+    if category in {"direction", "episode"}:
         return "agent"
     return "user"
+
+
+def _basis(value: Any) -> str:
+    text = str(value or "inferred").strip()
+    return text if text in BASIS_VALUES else "inferred"
+
+
+def _stability(value: Any) -> str:
+    text = str(value or "stable").strip()
+    return text if text in STABILITY_VALUES else "stable"
 
 
 def _filtered_team_ids(candidate_ids: list[str], ctx: MemoryRunContext) -> list[str]:
@@ -86,6 +112,8 @@ def validate_memory_candidate(
         raise ValueError("missing text")
 
     category = _category(candidate.get("category"))
+    if category == "episode":
+        raise ValueError("episode memories belong in period logs, not vector memory")
     subject_type = _subject_type(candidate.get("subject_type"), category)
     subject_id = str(
         candidate.get("subject_id")
@@ -124,26 +152,38 @@ def validate_memory_candidate(
         subject_id = ""
 
     now = utc_now()
+    basis = _basis(candidate.get("basis"))
+    stability = _stability(candidate.get("stability"))
+    strength = max(
+        0.0,
+        min(
+            1.0,
+            _as_float(
+                candidate.get("strength", candidate.get("importance")),
+                0.5,
+            ),
+        ),
+    )
     return MemoryItem(
         text=text,
         subject_type=subject_type,  # type: ignore[arg-type]
         subject_id=subject_id,
         category=category,  # type: ignore[arg-type]
+        basis=basis,  # type: ignore[arg-type]
+        stability=stability,  # type: ignore[arg-type]
         team_ids=team_ids,
         asset_ids=asset_ids,
         user_id=ctx.user_id,
         org_id=ctx.org_id,
         conversation_id=ctx.conversation_id,
         run_id=ctx.run_id,
-        mode=ctx.mode,
-        event_type=ctx.event_type,
         source=source,
-        importance=max(0.0, min(1.0, _as_float(candidate.get("importance"), 0.5))),
-        confidence=max(0.0, min(1.0, _as_float(candidate.get("confidence"), 0.7))),
-        volatility=max(0.0, min(1.0, _as_float(candidate.get("volatility"), 0.0))),
-        verification_hint=str(candidate.get("verification_hint") or ""),
+        strength=strength,
+        verification_hint=(
+            str(candidate.get("verification_hint") or "") if stability == "evolving" else ""
+        ),
         content_hash=content_hash(text),
-        schema_version=2,
+        schema_version=3,
         created_at=now,
     )
 

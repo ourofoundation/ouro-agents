@@ -6,7 +6,8 @@ Two-part operation:
    contains the deleted asset id. Safe and fast; UUIDs are unambiguous.
 2. **Workspace sweep**: rewrite markdown / JSON files that reference the asset
    id, marking the references as ``[deleted]`` (or removing them from arrays
-   for plan JSON). Never deletes whole content.
+   for plan JSON). Plans whose own backing quest was deleted are archived to
+   ``history/`` outright; everything else is rewritten in place, never deleted.
 
 Both parts run synchronously inside the webhook handler. No LLM is invoked.
 """
@@ -301,6 +302,31 @@ def _is_plan_json(path: Path) -> bool:
     return path.suffix == ".json" and "plans" in path.parts
 
 
+def _archive_plan_file(path: Path, data: dict) -> bool:
+    """Move an active plan whose backing quest was deleted to ``history/``.
+
+    Mirrors ``PlanStore.archive``: mark the cycle cancelled, write it to the
+    sibling ``history/`` directory, and remove the active file. A plan whose
+    own quest is gone has no platform counterpart left to track, so removing
+    it entirely beats leaving a ``[deleted]`` husk in the active index.
+    """
+    data = dict(data)
+    data["status"] = "cancelled"
+    data["completed_at"] = datetime.now(timezone.utc).isoformat()
+    data["quest_id"] = None
+
+    plan_id = str(data.get("id") or path.stem)
+    history_dir = path.parent.parent / "history"
+    try:
+        history_dir.mkdir(parents=True, exist_ok=True)
+        (history_dir / f"{plan_id}.json").write_text(json.dumps(data, indent=2))
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Cannot archive plan %s: %s", path, exc)
+        return False
+    return True
+
+
 def _is_skipped_file(path: Path) -> bool:
     if path.suffix == ".jsonl":
         return True
@@ -320,6 +346,16 @@ def _rewrite_file(path: Path, asset_id: str) -> tuple[int, bool]:
         return 0, False
 
     if _is_plan_json(path):
+        # When the deleted asset is the plan's own backing quest, the whole
+        # plan is moot: archive the file instead of rewriting ids inside it.
+        try:
+            data = json.loads(original)
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and str(data.get("quest_id") or "") == asset_id:
+            if _archive_plan_file(path, data):
+                return 1, True
+            return 0, False
         new_content, edits, archived = rewrite_plan_json(original, asset_id)
     elif path.suffix == ".md":
         new_body, edits = rewrite_markdown(original, asset_id)

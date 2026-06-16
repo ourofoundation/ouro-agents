@@ -2,7 +2,7 @@
 
 `ouro-agents` keeps memory at three timescales:
 
-1. **Vector memory** — facts, preferences, learnings, decisions, etc.,
+1. **Vector memory** — durable facts, preferences, and direction,
    stored in mem0 (default backend) on top of a Chroma vector store.
 2. **Working memory** — `MEMORY.md`, daily logs, entity files, plan files
    on disk, mirrored to Ouro as posts via the **doc store**.
@@ -21,48 +21,49 @@ class MemoryResult(BaseModel):
     id: str
     text: str
     score: float
-    category: str          # "fact" | "preference" | "learning" | "decision" |
-                           # "direction" | "observation" | "general"
-    importance: float
+    category: str          # "fact" | "preference" | "direction"
+    basis: str             # "stated" | "observed" | "inferred"
+    stability: str         # "stable" | "evolving"
+    strength: float        # reinforced on recall, decayed by dream
     created_at: str
     last_accessed: str
     team_ids: list[str]
     asset_ids: list[str]
     user_id: str
-    mode: str
-    confidence: float
     subject_type: str
     subject_id: str
+    last_verified: str
+    verification_hint: str
     metadata: dict[str, Any]
 ```
 
 Memories are written by the `reflector` subagent (after a run or
 mid-session in chat) using structured handoffs that include category,
-importance, and asset references. They are searched at preflight time by
+semantic basis, stability, strength, and asset references. They are searched at preflight time by
 the `memory_recall` tool (subagents include this tool in their
 `allowed_tools` list).
 
 ### Categories and decay
 
-Each category has its own decay policy in `memory.decay_rules`:
+Vector memory is semantic. Raw observations and one-off activity are
+episodes and go to the period log instead of mem0. The durable categories are:
 
-```json
-"decay_rules": {
-  "direction":   { "after_days": null, "factor": 1.0 },  // never decay
-  "decision":    { "after_days": null, "factor": 1.0 },
-  "fact":        { "after_days": 180,  "factor": 0.7 },
-  "preference":  { "after_days": 365,  "factor": 0.8 },
-  "learning":    { "after_days": 180,  "factor": 0.8 },
-  "observation": { "after_days": 30,   "factor": 0.5 }
-}
-```
+- `direction` — explicit human guidance or deliberate planning decisions.
+- `preference` — user communication/workflow preferences.
+- `fact` — durable project, team, asset, or agent knowledge.
 
-`memory.decay_after_days` is a global fallback when a category has no
-specific rule. `memory.dream_enabled` runs a consolidation ("dream") pass —
+`memory.decay_after_days` controls the single use-based decay law.
+Recall hits update `last_accessed` and reinforce `strength`; dream weakens
+unused memories and deletes memories that fall below the strength floor.
+Direction memories do not decay automatically.
+
+`memory.dream_enabled` runs a consolidation ("dream") pass —
 once per `memory.rhythm` period, at `memory.dream_time` — that:
 
-- Promotes high-importance, frequently-accessed memories into `MEMORY.md`.
-- Decays older memories by their category factor.
+- Drains the refinement change queue.
+- Promotes important period-log episodes into `MEMORY.md`.
+- Decays old, unaccessed memories by strength.
+- Reviews stale `stability="evolving"` memories.
 - Caps `MEMORY.md` size at `memory.memory_md_max_tokens`.
 
 ### Team scoping
@@ -130,11 +131,11 @@ as real history rather than as paraphrased prompt context.
 Built by `make_memory_tools` (`memory/tools.py`):
 
 - `memory_recall(query, ...)` — semantic search with filters for category,
-  subject, asset, mode, team, time window. Always available.
-- `remember(text, category, importance, …)` — write a memory. Only
-  exposed during `heartbeat`, `plan`, and `review` runs (other modes rely
-  on the reflector).
-- Doc-store tools for reading/appending entity files and daily logs.
+  subject, asset, team, and time window. Always available. In chat, recall
+  expands the query with the current `ConversationState`.
+- `remember(text, category, basis, stability, strength, …)` — write a
+  durable semantic memory. Exposed in any mode that grants
+  `Capability.MEMORY_WRITE`; reflection remains the safety net.
 
 Profiles can restrict the visible memory tool set with
 `memory_tool_filter` (e.g. `plan` only sees `memory_recall`).
@@ -143,9 +144,9 @@ Profiles can restrict the visible memory tool set with
 
 Two reflection paths use the same `reflector` subagent:
 
-- **Mid-session** — every `memory.mid_session_reflection_interval` chat
-  turns, after the assistant has responded. Updates the conversation
-  state with anything worth remembering.
+- **Mid-session** — after the assistant has responded, when the
+  `ConversationState` updater adds a new key moment. The key moment is the
+  salience signal for reflection.
 - **Post-run** — after autonomous / heartbeat / event-driven runs that
   preflight marked `worth_remembering`. Stores curated facts and
   optionally writes a daily-log entry.
@@ -155,10 +156,10 @@ user response is never blocked by reflection.
 
 ## Refinement and cleanup
 
-Two separate processes maintain memory hygiene:
+Dream and cleanup maintain memory hygiene:
 
-- **Refinement** — drains a typed change-set queue (corrections,
-  retractions) and uses a cheap LLM to rewrite affected docs in-place.
+- **Dream refinement** — drains a typed change-set queue (corrections,
+  retractions) as the first dream phase and uses a cheap LLM to rewrite affected docs in-place.
   See [Refinement](./refinement.md).
 - **Cleanup** — handles `asset.deleted` webhook events deterministically:
   prunes vector memories that referenced the asset and rewrites markdown

@@ -532,6 +532,7 @@ def _run_agent(
             memory_categories=ctx.memory_scopes,
             conversation_id=ctx.conversation_id,
             run_id=ctx.run_id,
+            conversation_state=ctx.conversation_state,
         )
         allowed = set(profile.allowed_tools)
         tools.extend(t for t in mem_tools if t.name in allowed)

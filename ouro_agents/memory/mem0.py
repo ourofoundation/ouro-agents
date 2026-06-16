@@ -9,11 +9,127 @@ from typing import List, Optional
 from ..config import MemoryConfig
 from ..usage import RunUsage, UsageTracker, record_usage_from_response
 from . import MemoryBackend, MemoryResult
-from .model import content_hash, memory_item_from_raw, to_metadata
+from .model import (
+    coerce_id_list,
+    content_hash,
+    encode_id_index,
+    memory_item_from_raw,
+    to_metadata,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
 _CHROMA_BLOB_SEQ_ID_FIX_MARKER = ".seq_id_blob_fix_v2"
+_LINKED_MEMORY_IDS_KEY = "linked_memory_ids"
+
+
+def _encode_linked_memory_ids(ids) -> str:
+    return encode_id_index(coerce_id_list(ids))
+
+
+def _decode_linked_memory_ids(value) -> list[str]:
+    if isinstance(value, list):
+        return coerce_id_list(value)
+    if isinstance(value, str):
+        return coerce_id_list(value)
+    if value in {None, ""}:
+        return []
+    return coerce_id_list(str(value))
+
+
+def _sanitize_chroma_entity_payload(payload: dict | None) -> dict | None:
+    """Chroma metadata must be scalar; mem0 stores linked_memory_ids as a list."""
+    if not payload:
+        return payload
+    out = dict(payload)
+    if _LINKED_MEMORY_IDS_KEY in out:
+        raw = out[_LINKED_MEMORY_IDS_KEY]
+        if isinstance(raw, list):
+            out[_LINKED_MEMORY_IDS_KEY] = _encode_linked_memory_ids(raw)
+        elif raw is None:
+            out.pop(_LINKED_MEMORY_IDS_KEY, None)
+    return out
+
+
+def _restore_chroma_entity_payload(payload: dict | None) -> dict | None:
+    if not payload or _LINKED_MEMORY_IDS_KEY not in payload:
+        return payload
+    out = dict(payload)
+    out[_LINKED_MEMORY_IDS_KEY] = _decode_linked_memory_ids(out[_LINKED_MEMORY_IDS_KEY])
+    return out
+
+
+def _restore_entity_store_rows(rows):
+    if not rows:
+        return rows
+    if isinstance(rows, list) and rows and isinstance(rows[0], list):
+        return [_restore_entity_store_rows(group) for group in rows]
+    for row in rows:
+        payload = getattr(row, "payload", None)
+        if payload:
+            row.payload = _restore_chroma_entity_payload(payload)
+    return rows
+
+
+def _patch_mem0_entity_store_for_chroma() -> None:
+    """Wrap mem0's entity store so linked_memory_ids survive Chroma metadata rules."""
+    from mem0.memory.main import Memory
+
+    if getattr(Memory, "_ouro_chroma_entity_store_patch", False):
+        return
+
+    original_fget = Memory.entity_store.fget
+
+    def _wrap_entity_store(store):
+        if getattr(store, "_ouro_chroma_payload_patch", False):
+            return store
+
+        original_insert = store.insert
+        original_update = store.update
+        original_search = store.search
+        original_get = store.get
+        original_list = store.list
+
+        def insert(vectors, payloads=None, ids=None):
+            sanitized = (
+                [_sanitize_chroma_entity_payload(payload) for payload in payloads]
+                if payloads
+                else payloads
+            )
+            return original_insert(vectors, sanitized, ids)
+
+        def update(vector_id, vector=None, payload=None):
+            return original_update(
+                vector_id,
+                vector,
+                _sanitize_chroma_entity_payload(payload),
+            )
+
+        def search(*args, **kwargs):
+            return _restore_entity_store_rows(original_search(*args, **kwargs))
+
+        def get(vector_id):
+            row = original_get(vector_id)
+            return _restore_entity_store_rows([row])[0]
+
+        def list_rows(*args, **kwargs):
+            return _restore_entity_store_rows(original_list(*args, **kwargs))
+
+        store.insert = insert
+        store.update = update
+        store.search = search
+        store.get = get
+        store.list = list_rows
+        store._ouro_chroma_payload_patch = True
+        return store
+
+    @property
+    def entity_store(self):
+        return _wrap_entity_store(original_fget(self))
+
+    Memory.entity_store = entity_store
+    Memory._ouro_chroma_entity_store_patch = True
 
 
 def _get_openrouter_api_key() -> str:
@@ -73,7 +189,6 @@ def _build_filters(
     category: Optional[str] = None,
     subject_type: Optional[str] = None,
     subject_id: Optional[str] = None,
-    mode: Optional[str] = None,
 ) -> dict:
     filters: dict = {}
     if category:
@@ -82,8 +197,6 @@ def _build_filters(
         filters["subject_type"] = subject_type
     if subject_id:
         filters["subject_id"] = subject_id
-    if mode:
-        filters["mode"] = mode
     return filters
 
 
@@ -110,19 +223,18 @@ def _to_result(raw: dict, score: float = 0.0) -> MemoryResult:
         text=str(text),
         score=raw.get("score", score),
         category=item.category,
-        importance=item.importance,
+        strength=item.strength,
         created_at=item.created_at.isoformat(),
         source=item.source,
         last_accessed=item.last_accessed.isoformat() if item.last_accessed else "",
         team_id=item.team_ids[0] if item.team_ids else "",
         subject_type=item.subject_type,
         subject_id=item.subject_id,
+        basis=item.basis,
+        stability=item.stability,
         team_ids=item.team_ids,
         asset_ids=item.asset_ids,
         user_id=item.user_id,
-        mode=item.mode,
-        confidence=item.confidence,
-        volatility=item.volatility,
         last_verified=item.last_verified.isoformat() if item.last_verified else "",
         verification_hint=item.verification_hint,
         content_hash=item.content_hash,
@@ -273,6 +385,7 @@ class Mem0Backend:
                 "config": config.graph.config,
             }
 
+        _patch_mem0_entity_store_for_chroma()
         self._mem = Memory.from_config(mem0_config)
         self._wrap_embedding_client()
 
@@ -357,7 +470,6 @@ class Mem0Backend:
         subject_type: Optional[str] = None,
         subject_id: Optional[str] = None,
         asset_id: Optional[str] = None,
-        mode: Optional[str] = None,
         since: Optional[datetime] = None,
     ) -> List[MemoryResult]:
         effective_team_id = team_id if scope in {"personal", "team"} else None
@@ -366,7 +478,6 @@ class Mem0Backend:
             category=category,
             subject_type=subject_type,
             subject_id=subject_id,
-            mode=mode,
         )
         filters["agent_id"] = agent_id
         if user_id:
@@ -391,6 +502,7 @@ class Mem0Backend:
                 out.append(result)
                 if len(out) >= limit:
                     break
+        self._reinforce_results(out)
         return out
 
     def add(
@@ -405,8 +517,8 @@ class Mem0Backend:
     ) -> None:
         meta = dict(metadata or {})
         meta.setdefault("created_at", datetime.now(timezone.utc).isoformat())
-        meta.setdefault("category", "general")
-        meta.setdefault("importance", 0.5)
+        meta.setdefault("category", "fact")
+        meta.setdefault("strength", meta.get("importance", 0.5))
         if user_id:
             meta.setdefault("user_id", user_id)
         if run_id:
@@ -421,6 +533,8 @@ class Mem0Backend:
         if team_id and team_id not in item.team_ids:
             item.team_ids = [team_id, *item.team_ids]
         meta.update(to_metadata(item))
+        for legacy_key in ("team_id", "asset_refs", "mode", "event_type"):
+            meta.pop(legacy_key, None)
 
         if isinstance(content, str) and self._has_content_hash(
             agent_id=agent_id,
@@ -472,7 +586,6 @@ class Mem0Backend:
         subject_id: Optional[str] = None,
         asset_id: Optional[str] = None,
         category: Optional[str] = None,
-        mode: Optional[str] = None,
         since: Optional[datetime] = None,
     ) -> List[MemoryResult]:
         has_post_filters = bool(team_id or asset_id)
@@ -480,7 +593,6 @@ class Mem0Backend:
             category=category,
             subject_type=subject_type,
             subject_id=subject_id,
-            mode=mode,
         )
         filters["agent_id"] = agent_id
         if user_id:
@@ -502,6 +614,19 @@ class Mem0Backend:
                     break
         return out
 
+    def _reinforce_results(self, results: list[MemoryResult]) -> None:
+        now = utc_now().isoformat()
+        for result in results:
+            if not result.id:
+                continue
+            metadata = dict(result.metadata or {})
+            strength = max(0.0, min(1.0, float(getattr(result, "strength", 0.5) or 0.5)))
+            strength = min(1.0, strength + 0.05)
+            metadata.update({"last_accessed": now, "strength": strength})
+            result.last_accessed = now
+            result.strength = strength
+            self.update_metadata(result.id, metadata)
+
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
         try:
             raw = self._mem.get(memory_id)
@@ -510,6 +635,10 @@ class Mem0Backend:
             text = str(raw.get("memory") or raw.get("text") or raw.get("data") or "")
             merged_metadata = _extract_metadata(raw)
             merged_metadata.update(metadata)
+            item = memory_item_from_raw(text, merged_metadata)
+            merged_metadata.update(to_metadata(item))
+            for legacy_key in ("team_id", "asset_refs", "mode", "event_type"):
+                merged_metadata.pop(legacy_key, None)
             self._mem.update(memory_id, text, metadata=merged_metadata)
         except Exception as e:
             logger.warning("Failed to update memory metadata %s: %s", memory_id, e)

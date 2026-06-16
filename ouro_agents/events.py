@@ -33,6 +33,21 @@ meaningfully advance the conversation.
 - The comment misunderstands something you said and clarification matters
 - You're the author of the asset and the commenter needs a response"""
 
+# Mentions are a direct summons, not ambient conversation: the full
+# silence-by-default rubric would contradict the prime directive there.
+_MENTION_ENGAGEMENT_GUIDANCE = """\
+## Decision
+
+You were mentioned by name — treat this as a request addressed directly to you. \
+Complete what was asked, then reply in-thread with the results. Return \
+`NO_ACTION` only if the mention is purely social (thanks, an FYI, a passing \
+reference) with nothing asked of you."""
+
+_NO_ENGAGEMENT_BAIT = (
+    "End your reply when the substance is done — no closing offers of further "
+    'help ("let me know if...", "happy to dive deeper...").'
+)
+
 _THREAD_REPLY_CAUTION = (
     "**Thread reply caution:** This is a reply within an existing thread. "
     "Threads that go back and forth too many times become noise. "
@@ -64,16 +79,14 @@ def _ready_hint(preload_names: list[str]) -> str:
 
 
 def _untrusted_comment_evidence(ctx: "CommentContext", title: str) -> str:
-    return format_untrusted_evidence(
-        title,
-        ctx.comment_text,
-        {
-            "comment_id": ctx.source_id,
-            "author": ctx.commenter,
-            "root_asset_id": ctx.root_asset_id,
-            "root_asset_type": ctx.root_asset_type,
-        },
-    )
+    provenance = {
+        "author": ctx.commenter,
+        "root_asset_id": ctx.root_asset_id,
+        "root_asset_type": ctx.root_asset_type,
+    }
+    if ctx.source_id != "unknown":
+        provenance = {"comment_id": ctx.source_id, **provenance}
+    return format_untrusted_evidence(title, ctx.comment_text, provenance)
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +109,9 @@ def _team_context_hint(ctx: "CommentContext") -> Optional[str]:
         parts.append(f', org: "{org_label}"')
     parts.append(
         "). When searching for or browsing content related to this "
-        'conversation (e.g. "what\'s the latest"), pass this `team_id` '
-        "to `search_assets` so results are scoped to this team. "
-        "Only search more broadly if the user explicitly asks."
+        'conversation (e.g. "what\'s the latest"), default to passing this '
+        "`team_id` to `search_assets` — unless the request references a "
+        "different team or topic, in which case scope to that instead."
     )
     return "".join(parts)
 
@@ -215,7 +228,14 @@ class CommentContext:
             asset_ids=asset_ids,
             comment_parent_ids=comment_parent_ids,
             thread_comment_parent_ids=thread_comment_parent_ids,
-            focus_comment_id=self.source_id if self.source_id != "unknown" else None,
+            # Only comments can be the focus of a thread; for post-body
+            # mentions the source is the post itself.
+            focus_comment_id=(
+                self.source_id
+                if self.source_id != "unknown"
+                and self.source_asset_type == "comment"
+                else None
+            ),
             focus_comment_author=self.commenter,
             focus_comment_text=self.comment_text,
         )
@@ -285,10 +305,22 @@ def _default_comment_task(
         "as pre-loaded context — no need to call get_asset or get_comments."
     )
 
+    if ctx.comment_text.strip():
+        trigger = (
+            f"**@{ctx.commenter}** wrote:\n\n"
+            f"{_untrusted_comment_evidence(ctx, 'triggering comment')}"
+        )
+    else:
+        # Mention embedded in the asset body itself: there is no separate
+        # comment text, so don't render an empty evidence block.
+        trigger = (
+            f"**@{ctx.commenter}** mentioned you in the {ctx.root_asset_type} "
+            "itself — the request is in the asset content provided below."
+        )
+
     parts = [
         f"Received a {event_type} on a {ctx.root_asset_type} (id: {ctx.root_asset_id}).\n\n"
-        f"**@{ctx.commenter}** wrote:\n\n"
-        f"{_untrusted_comment_evidence(ctx, 'triggering comment')}\n\n"
+        f"{trigger}\n\n"
         f"{context_hint}",
     ]
 
@@ -300,20 +332,32 @@ def _default_comment_task(
     if hint:
         parts.append(hint)
 
-    parts.append(_COMMENT_ENGAGEMENT_GUIDANCE)
+    parts.append(
+        _MENTION_ENGAGEMENT_GUIDANCE
+        if event_type == "mention"
+        else _COMMENT_ENGAGEMENT_GUIDANCE
+    )
 
     if ctx.is_thread_reply:
         parts.append(_THREAD_REPLY_CAUTION)
 
-    if provenance and provenance.is_own_asset:
+    if provenance and provenance.is_own_asset and event_type != "mention":
         parts.append(
             "This is your asset — you have extra context as the author. But even "
             "authors don't need to reply to every comment. Respond only if the "
             "commenter needs something from you."
         )
 
+    # Never instruct a reply on the literal id "unknown"; fall back to the
+    # root asset so the reply lands on the thread the event came from.
+    reply_target = (
+        ctx.reply_parent_id
+        if ctx.reply_parent_id != "unknown"
+        else ctx.root_asset_id
+    )
     parts.append(
-        f"If you decide to reply, use `create_comment` on `{ctx.reply_parent_id}`. "
+        f"If you decide to reply, use `create_comment` on `{reply_target}`. "
+        f"{_NO_ENGAGEMENT_BAIT} "
         "If no reply is warranted, return exactly `NO_ACTION`."
     )
     return "\n\n".join(parts)

@@ -594,7 +594,11 @@ class OuroAgent:
 
         user_model_text = ""
         if user_id:
-            user_model_text = active_doc_store.read(f"USER:{user_id}")
+            from .memory.user_model import strip_empty_sections
+
+            user_model_text = strip_empty_sections(
+                active_doc_store.read(f"USER:{user_id}")
+            )
         notes_name = f"NOTES:{self.config.agent.name}"
         notes_text = active_doc_store.read(notes_name)
         if not notes_text and not team_id:
@@ -1179,10 +1183,8 @@ class OuroAgent:
             org_id=self.config.agent.org_id or "",
             available_team_ids=self._available_memory_team_ids(team_id),
             available_teams=self._available_memory_teams(team_id),
-            enable_remember=(
-                run_mode in {"heartbeat", "plan", "review"}
-                and profile.allows_capability(Capability.MEMORY_WRITE)
-            ),
+            enable_remember=profile.allows_capability(Capability.MEMORY_WRITE),
+            conversation_state=conversation_state,
         )
         if profile.memory_tool_filter is not None:
             allowed = set(profile.memory_tool_filter)
@@ -1741,6 +1743,8 @@ class OuroAgent:
     def _run_preflight(
         self,
         task: str,
+        allowed_capabilities: Optional[frozenset[Capability]] = None,
+        preload_tools: Optional[list[str]] = None,
         conv_state: Optional[ConversationState] = None,
         user_id: Optional[str] = None,
         run_id: str = "",
@@ -1768,10 +1772,35 @@ class OuroAgent:
             except Exception:
                 logger.exception("Failed to emit preflight status")
 
+        # Tell preflight what the main run can actually do, so its plan only
+        # names tools and actions that are executable as written.
+        constraint_parts: list[str] = []
+        if allowed_capabilities is not None:
+            from .security.policy import describe_capabilities
+
+            note = describe_capabilities(allowed_capabilities)
+            if note:
+                constraint_parts.append(
+                    "The main agent's run is capability-restricted. Plan only "
+                    "actions within these bounds; if the request needs more, the "
+                    "plan should say so rather than include the blocked step.\n"
+                    + note
+                )
+        if preload_tools:
+            call_names = [n.split(":", 1)[-1] for n in preload_tools]
+            constraint_parts.append(
+                "Tools preloaded for the main agent: " + ", ".join(call_names) + "."
+            )
+        preflight_task = task
+        if constraint_parts:
+            preflight_task = (
+                task + "\n\n## Main Run Constraints\n" + "\n\n".join(constraint_parts)
+            )
+
         t0 = time.monotonic()
         result = self._run_subagent(
             PREFLIGHT,
-            task,
+            preflight_task,
             conversation_state=conv_state,
             user_id=user_id,
             run_id=run_id,
@@ -1905,7 +1934,7 @@ class OuroAgent:
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
     ) -> None:
-        """Run mid-session reflection after the turn if enough turns have passed."""
+        """Run mid-session reflection after a new key moment is observed."""
         if not conversation_id:
             return
         conversations_dir = self.config.agent.workspace / "conversations"
@@ -1913,7 +1942,6 @@ class OuroAgent:
             conversations_dir,
             conversation_id,
             conv_state,
-            self.config.memory.mid_session_reflection_interval,
         ):
             return
 
@@ -1973,7 +2001,7 @@ class OuroAgent:
     ) -> None:
         """Run reflection after an autonomous/event run via the reflector subagent.
 
-        Extracts curated facts (with categories, importance, asset refs) and
+        Extracts curated facts (with memory semantics and asset refs) and
         writes a daily log entry. Runs as a proper subagent so usage is tracked
         and the step is visible in the display.
         """
@@ -2211,6 +2239,8 @@ class OuroAgent:
         if not is_trivial and not skip_memory and not profile.skip_preflight:
             preflight = self._run_preflight(
                 task,
+                allowed_capabilities=profile.allowed_capabilities,
+                preload_tools=preload_tools,
                 conv_state=conv_state,
                 user_id=user_id,
                 run_id=run_id,
@@ -2302,6 +2332,12 @@ class OuroAgent:
         context_parts: list[str] = []
         if dynamic_context:
             context_parts.append(dynamic_context)
+        if profile.allowed_capabilities is not None:
+            from .security.policy import describe_capabilities
+
+            capability_note = describe_capabilities(profile.allowed_capabilities)
+            if capability_note:
+                context_parts.append(capability_note)
         if prefetch:
             emit_progress(observer, "prefetching_context", "loading referenced context")
             prefetch_context = resolve_prefetch(self._deferred_tools, prefetch)
@@ -2566,25 +2602,6 @@ class OuroAgent:
                     str(result),
                     tool_summary=tool_summary or None,
                 )
-                from .memory.session import SessionMemoryStore
-
-                session_memory = SessionMemoryStore(self._workspace)
-                session_memory.append_turn(
-                    conversation_id,
-                    role="user",
-                    text=task,
-                    agent_id=self.config.agent.name,
-                    user_id=user_id or "",
-                    run_id=run_id,
-                )
-                session_memory.append_turn(
-                    conversation_id,
-                    role="assistant",
-                    text=str(result),
-                    agent_id=self.config.agent.name,
-                    user_id=user_id or "",
-                    run_id=run_id,
-                )
             except Exception as e:
                 logger.warning("Failed to append conversation turn: %s", e)
 
@@ -2614,6 +2631,7 @@ class OuroAgent:
                 )
 
             if profile.update_conversation_state and conversation_id:
+                previous_key_moments = set(conv_state.key_moments if conv_state else [])
                 try:
                     state_model = self._build_model(
                         self.config.heartbeat.model or self.config.agent.model,
@@ -2634,15 +2652,19 @@ class OuroAgent:
                     logger.warning("Failed to update conversation state: %s", e)
                     new_conv_state = conv_state
 
-                # Mid-session reflection (post-turn): curate memories after responding
-                self._maybe_reflect_post_turn(
-                    conv_state=new_conv_state,
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    run_id=run_id,
-                    team_id=team_id,
-                    doc_store=active_doc_store,
-                )
+                new_key_moments = set(
+                    new_conv_state.key_moments if new_conv_state else []
+                ) - previous_key_moments
+                if new_key_moments:
+                    # Key moments are the salience signal for mid-session reflection.
+                    self._maybe_reflect_post_turn(
+                        conv_state=new_conv_state,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        run_id=run_id,
+                        team_id=team_id,
+                        doc_store=active_doc_store,
+                    )
 
         def _run_post_run_background() -> None:
             try:
@@ -2735,6 +2757,7 @@ class OuroAgent:
                 team_id=team_id,
                 dry_run=dry_run,
                 mode="manual",
+                agent=self,
             )
         else:
             results["shared"] = run_dream(
@@ -2746,6 +2769,7 @@ class OuroAgent:
                 doc_store=self.doc_store,
                 dry_run=dry_run,
                 mode="manual",
+                agent=self,
             )
             for tid, doc_store in sorted(self._team_doc_stores.items()):
                 results[tid] = run_dream(
@@ -2758,6 +2782,7 @@ class OuroAgent:
                     team_id=tid,
                     dry_run=dry_run,
                     mode="manual",
+                agent=self,
                 )
         return results
 

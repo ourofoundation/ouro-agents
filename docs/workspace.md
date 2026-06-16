@@ -67,7 +67,7 @@ team is writable by agents.
 The agent maintains both files itself:
 
 - The `reflector` subagent appends curated facts after runs.
-- The dream cycle promotes high-importance log entries and compacts
+- The dream cycle promotes salient log entries and compacts
   working memory on each `memory.rhythm` boundary.
 
 Hand-editing is fine, but expect edits to be reorganized over time as
