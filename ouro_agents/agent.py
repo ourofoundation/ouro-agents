@@ -196,6 +196,12 @@ class OuroAgent:
         self._load_custom_profiles()
         self._python_package_versions = self._validate_python_packages()
 
+    def reset_usage_tracking(self) -> None:
+        """Reset per-run usage accumulators owned by this agent instance."""
+        self._usage_tracker.reset()
+        self.memory.reset_usage()
+        self._subagent_ledger.clear()
+
     def _validate_python_packages(self) -> dict[str, str | None]:
         """Validate configured python_packages at startup and return version map."""
         packages = self.config.agent.sandbox.python_packages
@@ -2187,9 +2193,7 @@ class OuroAgent:
             model._reasoning_stream_callback = observer.on_reasoning_stream
 
         if not preserve_existing_usage:
-            self._usage_tracker.reset()
-            self.memory.reset_usage()
-            self._subagent_ledger.clear()
+            self.reset_usage_tracking()
         run_id = conversation_id or f"run_{uuid4().hex[:12]}"
 
         # Resolve mode profile and apply user config overrides
@@ -2712,6 +2716,7 @@ class OuroAgent:
     async def heartbeat(self) -> Optional[str]:
         from .modes.heartbeat import run_heartbeat
 
+        self.reset_usage_tracking()
         return await run_heartbeat(self)
 
     async def force_planning_heartbeat(

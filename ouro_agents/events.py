@@ -7,7 +7,11 @@ from ouro.events import WebhookEvent, parse_webhook_event
 from .artifacts import PrefetchSpec, format_untrusted_evidence
 from .config import RunMode
 from .constants import FETCHABLE_ASSET_TYPES
-from .event_registry import event_surface_for, max_capabilities_for, tool_preloads_for
+from .event_registry import (
+    event_surface_for,
+    surface_capability_override_for,
+    tool_preloads_for,
+)
 from .provenance import AssetProvenance
 from .security.policy import Capability, EventSurface
 
@@ -388,7 +392,10 @@ class EventRunContext:
     actor_username: Optional[str] = None
     actor_is_agent: Optional[bool] = None
     surface: EventSurface = EventSurface.UNKNOWN
-    surface_capabilities: frozenset[Capability] = field(default_factory=frozenset)
+    # Explicit per-event capability ceiling, or None to use the surface
+    # defaults. None lets the envelope resolver elevate trusted actors on
+    # actor-driven surfaces (e.g. controller comments).
+    surface_capabilities: Optional[frozenset[Capability]] = None
     event_text: Optional[str] = None
     received_at: Optional[str] = None
     team_id: Optional[str] = None
@@ -518,7 +525,7 @@ def build_event_run_context(
         actor_username=actor_username,
         actor_is_agent=actor_is_agent,
         surface=event_surface_for(event.event_type),
-        surface_capabilities=max_capabilities_for(event.event_type),
+        surface_capabilities=surface_capability_override_for(event.event_type),
         event_text=event_text,
         received_at=event.timestamp,
         team_id=event_team_id,

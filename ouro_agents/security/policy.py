@@ -78,6 +78,29 @@ ROLE_CAPABILITIES: dict[ActorRole, frozenset[Capability]] = {
     ActorRole.UNKNOWN: READ_REPLY_CAPABILITIES,
 }
 
+# Surfaces whose triggering input is authored by the actor (a chat message, an
+# API run, a comment, an @mention). The per-surface clamp on these exists only
+# to stop *untrusted* actors from using a public thread to escalate. When the
+# actor is the controller (or a trusted collaborator) the trigger is trusted
+# input, so their role capabilities govern and the surface does not subtract —
+# a controller can drive real work from a comment, just like a direct chat.
+ACTOR_DRIVEN_SURFACES: frozenset[EventSurface] = frozenset(
+    {
+        EventSurface.DIRECT_CHAT,
+        EventSurface.API_RUN,
+        EventSurface.COMMENT,
+        EventSurface.MENTION,
+    }
+)
+# Roles whose triggers are trusted enough to bypass the actor-driven surface
+# clamp. Public / agent / unknown actors stay capped by the surface.
+TRUSTED_ACTOR_ROLES: frozenset[ActorRole] = frozenset(
+    {
+        ActorRole.CONTROLLER,
+        ActorRole.TRUSTED,
+    }
+)
+
 SURFACE_CAPABILITIES: dict[EventSurface, frozenset[Capability]] = {
     EventSurface.DIRECT_CHAT: ALL_CAPABILITIES,
     EventSurface.API_RUN: ALL_CAPABILITIES,
@@ -204,8 +227,21 @@ def resolve_envelope(
     except ValueError:
         event_surface = EventSurface.UNKNOWN
     role_caps = ROLE_CAPABILITIES.get(actor_role, READ_REPLY_CAPABILITIES)
-    surface_caps = capabilities_for_surface(event_surface, surface_capabilities)
-    allowed = role_caps & surface_caps
+    if surface_capabilities is not None:
+        # An explicit per-event ceiling is a hard cap and always applies,
+        # regardless of role.
+        allowed = role_caps & capabilities_for_surface(
+            event_surface, surface_capabilities
+        )
+    elif (
+        actor_role in TRUSTED_ACTOR_ROLES
+        and event_surface in ACTOR_DRIVEN_SURFACES
+    ):
+        # Trusted/controller authored the trigger; their role governs and the
+        # default surface clamp is skipped.
+        allowed = role_caps
+    else:
+        allowed = role_caps & capabilities_for_surface(event_surface, None)
     return CapabilityEnvelope(
         allowed_capabilities=frozenset(allowed),
         role=actor_role,

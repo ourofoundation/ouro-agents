@@ -2,8 +2,10 @@ import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from ouro_agents.agent import OuroAgent
 from ouro_agents.config import HeartbeatConfig
 from ouro_agents.display import OuroDisplay
 from ouro_agents.modes.framing import HEARTBEAT_FRAMING
@@ -17,7 +19,7 @@ from ouro_agents.modes.profiles import HEARTBEAT
 from ouro_agents.modes.planning import PlanCycle, PlanItem, PlanStore
 from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT
 from ouro_agents.subagents.context import SubAgentUsage
-from ouro_agents.usage import RunUsage
+from ouro_agents.usage import RunUsage, UsageTracker
 
 
 def test_heartbeat_framing_prefers_bounded_progress():
@@ -113,6 +115,42 @@ def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):
     assert captured["task"] == "Review the world and act."
     assert captured["kwargs"]["preserve_existing_usage"] is True
     assert captured["kwargs"]["model_override"].model_id == "heartbeat-model"
+
+
+def test_agent_heartbeat_resets_stale_usage_before_run():
+    agent = OuroAgent.__new__(OuroAgent)
+    agent._usage_tracker = UsageTracker()
+    agent._usage_tracker.record(
+        "stale-run",
+        {"input_tokens": 70_000_000, "output_tokens": 1_000_000},
+    )
+    agent._subagent_ledger = [("stale-subagent", SimpleNamespace())]
+
+    class _Memory:
+        def __init__(self):
+            self.reset_calls = 0
+
+        def reset_usage(self):
+            self.reset_calls += 1
+
+    agent.memory = _Memory()
+    observed = {}
+
+    async def _fake_run_heartbeat(running_agent):
+        observed["input_tokens"] = running_agent._usage_tracker.total_input_tokens
+        observed["subagent_ledger"] = list(running_agent._subagent_ledger)
+        observed["memory_reset_calls"] = running_agent.memory.reset_calls
+        return '{"action":"none"}'
+
+    with patch("ouro_agents.modes.heartbeat.run_heartbeat", new=_fake_run_heartbeat):
+        result = asyncio.run(agent.heartbeat())
+
+    assert result == '{"action":"none"}'
+    assert observed == {
+        "input_tokens": 0,
+        "subagent_ledger": [],
+        "memory_reset_calls": 1,
+    }
 
 
 def test_run_heartbeat_scopes_preflight_and_run_to_selected_team(tmp_path):

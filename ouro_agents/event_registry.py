@@ -147,3 +147,14 @@ def event_surface_for(event_type: str) -> EventSurface:
 def max_capabilities_for(event_type: str) -> frozenset[Capability]:
     spec = spec_for(event_type)
     return spec.max_capabilities or capabilities_for_surface(spec.surface)
+
+
+def surface_capability_override_for(
+    event_type: str,
+) -> Optional[frozenset[Capability]]:
+    """Explicit per-event capability ceiling, or ``None`` to use the surface
+    defaults. Unlike :func:`max_capabilities_for`, this preserves the
+    distinction between "no override" and "override equal to the surface
+    default" so the envelope resolver can elevate trusted actors only when no
+    explicit ceiling was set."""
+    return spec_for(event_type).max_capabilities

@@ -9,13 +9,54 @@ from ouro_agents.security.policy import (
 )
 
 
-def test_controller_mention_can_create_assets():
+def test_controller_comment_drives_real_work():
+    # A controller's comment is trusted input, so the surface no longer clamps:
+    # the controller gets full role capabilities, same as a direct chat.
+    envelope = resolve_envelope(ActorRole.CONTROLLER, EventSurface.COMMENT)
+
+    assert envelope.allows(Capability.CREATE_ASSET)
+    assert envelope.allows(Capability.UPDATE_ASSET)
+    assert envelope.allows(Capability.EXECUTE_ROUTE)
+    assert envelope.allows(Capability.MANAGE_QUEST)
+    assert envelope.allows(Capability.LOAD_MCP_TOOL)
+    assert not envelope.is_restricted
+
+
+def test_controller_mention_is_not_clamped_by_surface():
     envelope = resolve_envelope(ActorRole.CONTROLLER, EventSurface.MENTION)
 
     assert envelope.allows(Capability.CREATE_ASSET)
     assert envelope.allows(Capability.LOAD_MCP_TOOL)
+    assert envelope.allows(Capability.EXECUTE_ROUTE)
+    assert envelope.allows(Capability.UPDATE_ASSET)
+
+
+def test_trusted_comment_can_create_and_update():
+    envelope = resolve_envelope(ActorRole.TRUSTED, EventSurface.COMMENT)
+
+    assert envelope.allows(Capability.READ_PLATFORM)
+    assert envelope.allows(Capability.REPLY)
+    assert envelope.allows(Capability.CREATE_ASSET)
+    assert envelope.allows(Capability.UPDATE_ASSET)
+    assert envelope.allows(Capability.LOAD_MCP_TOOL)
+    # Trusted role caps still exclude code/route/delegate even when unclamped.
     assert not envelope.allows(Capability.EXECUTE_ROUTE)
-    assert not envelope.allows(Capability.UPDATE_ASSET)
+    assert not envelope.allows(Capability.RUN_SHELL)
+
+
+def test_explicit_event_ceiling_still_caps_controller():
+    # An explicit per-event ceiling is a hard cap that applies regardless of
+    # role, so it cannot be bypassed by the trusted-actor elevation.
+    envelope = resolve_envelope(
+        ActorRole.CONTROLLER,
+        EventSurface.COMMENT,
+        surface_capabilities={Capability.READ_PLATFORM, Capability.REPLY},
+    )
+
+    assert envelope.allowed_capabilities == {
+        Capability.READ_PLATFORM,
+        Capability.REPLY,
+    }
 
 
 def test_public_mention_stays_read_reply_only():
