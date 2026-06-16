@@ -14,7 +14,7 @@
     "name": "hermes",
     "model": "qwen/qwen3.7-plus",
     "reasoning": {
-      "effort": "high"
+      "effort": "low"
     },
     "workspace": "./agents/hermes",
     "org_id": "00000000-0000-0000-0000-000000000000",
@@ -83,6 +83,9 @@
       "enabled": true,
       "every": "1h",
       "model": "qwen/qwen3.7-plus",
+      "reasoning": {
+        "effort": "medium"
+      },
       "max_steps": 40,
       "active_hours": {
         "start": "09:00",

@@ -175,7 +175,12 @@ HEARTBEAT = ModeProfile(
     framing=HEARTBEAT_FRAMING,
     output_format=HEARTBEAT_OUTPUT,
     max_steps=20,
-    preload_tools=["ouro:get_asset", "ouro:create_comment", "ouro:create_post"],
+    preload_tools=[
+        "ouro:search_assets",
+        "ouro:get_asset",
+        "ouro:create_comment",
+        "ouro:create_post",
+    ],
     restricted_servers=True,
     lightweight=True,
     skip_preflight=True,

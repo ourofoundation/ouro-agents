@@ -10,6 +10,7 @@ from ouro_agents.config import HeartbeatConfig
 from ouro_agents.display import OuroDisplay
 from ouro_agents.modes.framing import HEARTBEAT_FRAMING
 from ouro_agents.modes.heartbeat import (
+    _load_owned_open_quest_items,
     build_plan_execution_playbook,
     force_planning_heartbeat,
     has_future_heartbeat_in_active_window,
@@ -32,6 +33,7 @@ def test_heartbeat_framing_allows_direction_proposal_posts():
     assert "direction" in HEARTBEAT_FRAMING
     assert "3-5 concrete directions" in HEARTBEAT_FRAMING
     assert "do not create a quest" in HEARTBEAT_FRAMING
+    assert "ouro:search_assets" in HEARTBEAT.preload_tools
     assert "ouro:create_post" in HEARTBEAT.preload_tools
 
 
@@ -115,6 +117,162 @@ def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):
     assert captured["task"] == "Review the world and act."
     assert captured["kwargs"]["preserve_existing_usage"] is True
     assert captured["kwargs"]["model_override"].model_id == "heartbeat-model"
+
+
+def test_load_owned_open_quest_items_includes_unassigned_items(tmp_path):
+    class _Assets:
+        def search(self, **kwargs):
+            assert kwargs["asset_type"] == "quest"
+            assert kwargs["user_id"] == "agent-user"
+            return [
+                {
+                    "id": "quest-a",
+                    "name": "Outreach",
+                    "org_id": "org-a",
+                    "team_id": "team-a",
+                    "user_id": "agent-user",
+                }
+            ]
+
+    class _Quests:
+        def retrieve(self, quest_id):
+            assert quest_id == "quest-a"
+            return SimpleNamespace(
+                id="quest-a",
+                name="Outreach",
+                org_id="org-a",
+                team_id="team-a",
+                user_id="agent-user",
+                quest=SimpleNamespace(status="open", type="closable"),
+                items=[
+                    SimpleNamespace(
+                        id="item-a",
+                        quest_id="quest-a",
+                        status="in_progress",
+                        assignee_id=None,
+                        description="Contact a researcher",
+                    ),
+                    SimpleNamespace(
+                        id="item-b",
+                        quest_id="quest-a",
+                        status="done",
+                        assignee_id=None,
+                        description="Already done",
+                    ),
+                ],
+            )
+
+    agent = SimpleNamespace(
+        own_user_id="agent-user",
+        config=SimpleNamespace(agent=SimpleNamespace(org_id="org-a")),
+        _get_ouro_client=lambda: SimpleNamespace(assets=_Assets(), quests=_Quests()),
+    )
+
+    items = _load_owned_open_quest_items(agent)
+
+    assert len(items) == 1
+    assert items[0]["id"] == "item-a"
+    assert items[0]["assignee_id"] is None
+    assert items[0]["quest_asset"]["id"] == "quest-a"
+
+
+def test_run_heartbeat_prioritizes_owned_open_quests_over_planning(tmp_path):
+    captured = {}
+
+    class _Assets:
+        def search(self, **_kwargs):
+            return [
+                {
+                    "id": "quest-a",
+                    "name": "Outreach",
+                    "org_id": "org-a",
+                    "team_id": "team-a",
+                    "user_id": "agent-user",
+                }
+            ]
+
+    class _Quests:
+        def list_assigned_items(self, **_kwargs):
+            return []
+
+        def retrieve(self, quest_id):
+            assert quest_id == "quest-a"
+            return SimpleNamespace(
+                id="quest-a",
+                name="Outreach",
+                org_id="org-a",
+                team_id="team-a",
+                user_id="agent-user",
+                quest=SimpleNamespace(status="open", type="closable"),
+                items=[
+                    SimpleNamespace(
+                        id="item-a",
+                        quest_id="quest-a",
+                        status="pending",
+                        description="Contact a researcher",
+                    )
+                ],
+            )
+
+    class _FakeAgent:
+        own_user_id = "agent-user"
+
+        def __init__(self):
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(
+                    model="heartbeat-model",
+                    proactive=SimpleNamespace(enabled=False, servers=[]),
+                    active_hours=None,
+                ),
+                planning=SimpleNamespace(
+                    enabled=True,
+                    cadence="4h",
+                    min_heartbeats=4,
+                    review_window="1h",
+                    auto_approve=False,
+                ),
+                agent=SimpleNamespace(
+                    model="main-model",
+                    workspace=tmp_path,
+                    name="hermes",
+                    org_id="org-a",
+                ),
+            )
+            self.doc_store = SimpleNamespace(read=lambda _key: None)
+            self.team_registry = SimpleNamespace(team_ids=lambda: {"team-a"})
+
+        def _build_model(self, model_id, heartbeat=False):
+            return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
+
+        def _refresh_platform_context(self):
+            return None
+
+        def _get_ouro_client(self):
+            return SimpleNamespace(assets=_Assets(), quests=_Quests())
+
+        def doc_store_for(self, team_id):
+            assert team_id == "team-a"
+            return self.doc_store
+
+        async def run(self, task, **kwargs):
+            captured["task"] = task
+            captured["kwargs"] = kwargs
+            return '{"action":"none"}'
+
+    result = asyncio.run(run_heartbeat(_FakeAgent()))
+
+    assert result is None
+    assert "You are executing one of your own open quests" in captured["task"]
+    assert "Contact a researcher" in captured["task"]
+    assert captured["kwargs"]["team_id"] == "team-a"
+    assert captured["kwargs"]["preload_tools"] == [
+        "ouro:search_assets",
+        "ouro:get_asset",
+        "ouro:list_quest_items",
+        "ouro:update_quest_item",
+        "ouro:complete_quest_item",
+        "ouro:create_comment",
+    ]
 
 
 def test_agent_heartbeat_resets_stale_usage_before_run():

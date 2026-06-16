@@ -256,6 +256,115 @@ def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict
         return []
 
 
+def _value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _as_dict(obj: Any) -> dict[str, Any]:
+    if isinstance(obj, dict):
+        return dict(obj)
+    dump = getattr(obj, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json")
+        except TypeError:
+            return dump()
+    values = getattr(obj, "__dict__", None)
+    if isinstance(values, dict):
+        return dict(values)
+    return {}
+
+
+def _quest_asset_summary(quest: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    quest_details = _value(quest, "quest")
+    return {
+        "id": str(_value(quest, "id", fallback.get("id") or "")),
+        "name": _value(quest, "name", fallback.get("name") or "Untitled quest"),
+        "org_id": str(_value(quest, "org_id", fallback.get("org_id") or "")),
+        "team_id": str(_value(quest, "team_id", fallback.get("team_id") or "")),
+        "user_id": str(_value(quest, "user_id", fallback.get("user_id") or "")),
+        "quest": {
+            "status": _value(quest_details, "status"),
+            "type": _value(quest_details, "type"),
+        },
+    }
+
+
+def _load_owned_open_quest_items(
+    agent: "OuroAgent",
+    *,
+    quest_limit: int = 50,
+    item_limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Fetch actionable items from open quests owned by this agent.
+
+    Assigned items are the strongest signal, but agent-owned quests often encode
+    proactive work without assignee fields. Treat those open items as a second
+    inbox before falling back to self-directed heartbeat work.
+    """
+    own_user_id = getattr(agent, "own_user_id", None)
+    if not own_user_id:
+        return []
+    try:
+        ouro = agent._get_ouro_client()
+        search = getattr(getattr(ouro, "assets", None), "search", None)
+        retrieve = getattr(getattr(ouro, "quests", None), "retrieve", None)
+        if not search or not retrieve:
+            logger.debug("Owned quest discovery is not available in this SDK")
+            return []
+
+        search_kwargs: dict[str, Any] = {
+            "asset_type": "quest",
+            "user_id": str(own_user_id),
+            "sort": "updated",
+            "limit": quest_limit,
+        }
+        org_id = getattr(agent.config.agent, "org_id", None)
+        if org_id:
+            search_kwargs["org_id"] = str(org_id)
+        raw_assets = search(**search_kwargs)
+        if isinstance(raw_assets, dict):
+            raw_assets = raw_assets.get("data") or raw_assets.get("results") or []
+        if not isinstance(raw_assets, list):
+            return []
+
+        actionable: list[dict[str, Any]] = []
+        for asset in raw_assets:
+            if not isinstance(asset, dict):
+                continue
+            quest_id = str(asset.get("id") or "")
+            if not quest_id:
+                continue
+            try:
+                quest = retrieve(quest_id)
+            except Exception as e:
+                logger.debug("Failed to retrieve owned quest %s: %s", quest_id[:8], e)
+                continue
+
+            quest_details = _value(quest, "quest")
+            if _value(quest_details, "status") != "open":
+                continue
+
+            quest_asset = _quest_asset_summary(quest, asset)
+            for item in _value(quest, "items", []) or []:
+                status = _value(item, "status")
+                if status not in {"pending", "in_progress"}:
+                    continue
+                item_dict = _as_dict(item)
+                item_dict.setdefault("id", str(_value(item, "id") or ""))
+                item_dict.setdefault("quest_id", quest_id)
+                item_dict["quest_asset"] = quest_asset
+                actionable.append(item_dict)
+                if len(actionable) >= item_limit:
+                    return actionable
+        return actionable
+    except Exception as e:
+        logger.warning("Failed to load owned open quest items: %s", e)
+        return []
+
+
 def _assigned_item_quest(item: dict[str, Any]) -> dict[str, Any]:
     quest = item.get("quest_asset")
     return quest if isinstance(quest, dict) else {}
@@ -311,6 +420,25 @@ def build_assigned_work_playbook(items: list[dict[str, Any]]) -> str:
         "asset IDs. Use `complete_quest_item` only when you are clearly allowed to "
         "self-complete the item. If blocked, comment on the quest with the blocker "
         "and the next concrete question."
+    )
+
+
+def build_owned_work_playbook(items: list[dict[str, Any]]) -> str:
+    """Instruction block for open quest work owned by the agent."""
+    return (
+        "You are executing one of your own open quests.\n\n"
+        "These quest items may not be explicitly assigned to you, but you own the "
+        "quest and it contains pending or in-progress work. Treat this as a stronger "
+        "priority than inventing new heartbeat work. Choose one item, make one "
+        "meaningful slice of progress, and leave clear evidence.\n\n"
+        "## Open Quest Items\n"
+        f"{_format_assigned_quest_items(items)}\n\n"
+        "Use `get_asset` or `list_quest_items` if you need more quest context. "
+        "Mark the item `in_progress` with `update_quest_item` before working when "
+        "appropriate. When a slice is complete, use `complete_quest_item` with a "
+        "substantive completion note and any produced asset id. If the quest item "
+        "is broader than one heartbeat, update the item notes or comment on the "
+        "quest with the concrete progress and next step."
     )
 
 
@@ -449,9 +577,10 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
     plan_store: Optional[PlanStore] = None
     planning_cfg = agent.config.planning
     assigned_items = _load_assigned_quest_items(agent)
+    owned_items = [] if assigned_items else _load_owned_open_quest_items(agent)
 
     # --- Planning cycle integration ---
-    if planning_cfg.enabled and not assigned_items:
+    if planning_cfg.enabled and not assigned_items and not owned_items:
         logger.info(
             "Planning enabled: cadence=%s, min_heartbeats=%d, auto_approve=%s",
             planning_cfg.cadence, planning_cfg.min_heartbeats, planning_cfg.auto_approve,
@@ -664,9 +793,14 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
                         plan_store.save(gp)
     else:
         if planning_cfg.enabled:
-            logger.info(
-                "Assigned quest work is waiting; deferring self-planning this heartbeat"
-            )
+            if assigned_items:
+                logger.info(
+                    "Assigned quest work is waiting; deferring self-planning this heartbeat"
+                )
+            else:
+                logger.info(
+                    "Owned open quest work is waiting; deferring self-planning this heartbeat"
+                )
         else:
             logger.info("Planning disabled; skipping planning cycle")
 
@@ -694,6 +828,23 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
             "ouro:create_comment",
         ]
         logger.info("Executing assigned quest work: %d item(s)", len(assigned_items))
+
+    if not playbook and owned_items:
+        owned_team_id = _assigned_work_team_id(owned_items)
+        if owned_team_id and owned_team_id in _sorted_team_ids(agent):
+            heartbeat_team_id = owned_team_id
+            heartbeat_doc_store = agent.doc_store_for(owned_team_id)
+        playbook = build_owned_work_playbook(owned_items)
+        heartbeat_source = "owned-open-quest-items"
+        preload_tools = [
+            "ouro:search_assets",
+            "ouro:get_asset",
+            "ouro:list_quest_items",
+            "ouro:update_quest_item",
+            "ouro:complete_quest_item",
+            "ouro:create_comment",
+        ]
+        logger.info("Executing owned open quest work: %d item(s)", len(owned_items))
 
     if not playbook and planning_cfg.enabled and plan_store:
         scoped_store = team_plan_stores.get(heartbeat_team_id, plan_store)
