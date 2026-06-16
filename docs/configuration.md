@@ -26,6 +26,7 @@ point.
   "security":      { ... },
   "display":       { ... },
   "refinement":    { ... },
+  "run_log":       { ... },
   "env_file":      "..."
 }
 ```
@@ -349,6 +350,27 @@ Legacy keys are still accepted and migrated automatically: the old
 | `model` | none | Cheap model used for refinement; falls back to the heartbeat model. |
 
 See [Refinement](./refinement.md).
+
+## `run_log`
+
+Durable SQLite logging of every run to `<workspace>/runs.db`.
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `enabled` | `true` | When false, a no-op store (no DB file created). |
+| `path` | none | Defaults to `<workspace>/runs.db`. |
+| `capture_steps` | `true` | Persist the per-step trace to `run_steps`. |
+| `capture_reasoning` | `true` | Include provider reasoning on steps. |
+| `capture_observations` | `true` | Persist tool results (observations). |
+| `max_observation_chars` | `0` | Truncate observations to this many chars; `0` = keep full. |
+| `capture_subagent_runs` | `true` | Log each subagent as a child run (`parent_run_id`). |
+| `expose_to_agent` | `true` | Give the agent `recall_runs` / `get_run_detail` tools. |
+| `agent_default_scope` | `team` | Max recall breadth: `team` (+ shared), `conversation`, or `all`. |
+| `agent_max_results` | `10` | Default result cap for `recall_runs`. |
+| `agent_max_detail_chars` | `6000` | Observation budget returned by `get_run_detail`. |
+
+See [Run logging](./run-logging.md) for the schema, the `ouro-agents runs`
+CLI, and the agent self-recall tools.
 
 ## `env_file`
 

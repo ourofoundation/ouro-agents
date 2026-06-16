@@ -13,7 +13,7 @@ workspace/
 ├── SOUL.md                      # identity, values, operating rules (required)
 ├── NOTES.md                     # optional ambient notes
 ├── MEMORY.md                    # shared cross-team memory (curated)
-├── runs.jsonl                   # append-only log of every run
+├── runs.db                      # SQLite run log (every run + full step trace)
 ├── data/
 │   ├── platform_context.json    # cached profile/orgs/teams from Ouro
 │   ├── scheduled_tasks.json     # persisted ScheduledTask list
@@ -89,7 +89,8 @@ Logical doc keys use the `LOG:` prefix (e.g. `LOG:<agent>:<team_slug>:<period>`)
 Root-scoped logs live under `shared/logs/` when no team context is set.
 
 Entries are short bullet-style summaries with timestamps. Paired with the
-run log (`runs.jsonl`) they make a complete chronological record.
+run log (`runs.db`) they make a complete chronological record. See
+[Run logging](./run-logging.md) for the run-log schema.
 
 ## Conversations
 

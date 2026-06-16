@@ -107,6 +107,21 @@ a TUI picker (`tui/review_picker.py`) lets you pick which one. The review
 heartbeat re-checks comments on the quest, applies feedback, and either
 promotes the plan to `active` or keeps it in `pending_review`.
 
+## `runs`
+
+```bash
+ouro-agents runs list                       # recent runs, newest first
+ouro-agents runs list --mode heartbeat --status error --since 7d
+ouro-agents runs list --grep quest --json
+ouro-agents runs show <run_id> [--full] [--json]
+ouro-agents runs stats --since 24h
+```
+
+Read-only views over the SQLite run log (`<workspace>/runs.db`). These open the
+database directly and never start an agent. `--since` takes a relative window
+(`30m`, `24h`, `7d`, `2w`) or an ISO date; `runs show` accepts a unique id
+prefix. See [Run logging](./run-logging.md).
+
 ## Verbosity levels
 
 `OuroDisplay` (`ouro_agents/display.py`) reads:

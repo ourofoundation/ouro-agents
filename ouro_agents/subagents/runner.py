@@ -15,6 +15,7 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Optional
 
 from smolagents import ActionStep
@@ -164,12 +165,30 @@ def run_subagent(
 
     before = _snapshot_tracker(ctx.model)
     t0 = time.monotonic()
+    started_iso = datetime.now(timezone.utc).isoformat()
 
     try:
         text, agent = _run_agent(profile, task, ctx, run_id=run_id)
         wall_ms = int((time.monotonic() - t0) * 1000)
         usage = _compute_usage(ctx.model, before, wall_ms)
         usage.steps = _count_agent_steps(agent)
+
+        if ctx.record_subagent_run:
+            try:
+                ctx.record_subagent_run(
+                    name=profile.name,
+                    run_id=run_id,
+                    task=task,
+                    result=text,
+                    status="success",
+                    error=None,
+                    usage=usage,
+                    agent=agent,
+                    started_at=started_iso,
+                    duration_s=wall_ms / 1000.0,
+                )
+            except Exception:
+                logger.debug("record_subagent_run failed", exc_info=True)
 
         cost_str = f" cost=${usage.cost_usd:.4f}" if usage.cost_usd is not None else ""
         logger.info(
@@ -220,6 +239,22 @@ def run_subagent(
         usage = _compute_usage(ctx.model, before, wall_ms)
         if ctx.record_subagent_usage:
             ctx.record_subagent_usage(profile.name, usage)
+        if ctx.record_subagent_run:
+            try:
+                ctx.record_subagent_run(
+                    name=profile.name,
+                    run_id=run_id,
+                    task=task,
+                    result="",
+                    status="error",
+                    error=str(e),
+                    usage=usage,
+                    agent=None,
+                    started_at=started_iso,
+                    duration_s=wall_ms / 1000.0,
+                )
+            except Exception:
+                logger.debug("record_subagent_run failed", exc_info=True)
         logger.error("Subagent '%s' failed: %s", profile.name, e, exc_info=True)
         emit_progress(
             ctx.progress_observer,
@@ -336,6 +371,7 @@ def _build_chain_delegate(
             python_package_versions=dict(ctx.python_package_versions),
             sandbox_config=ctx.sandbox_config,
             record_subagent_usage=ctx.record_subagent_usage,
+            record_subagent_run=ctx.record_subagent_run,
             cancellation_token=ctx.cancellation_token,
             progress_observer=ctx.progress_observer,
             delegatable_profiles=ctx.delegatable_profiles,

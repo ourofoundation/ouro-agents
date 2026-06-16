@@ -402,6 +402,22 @@ def start_scheduler(agent, config: HeartbeatConfig):
 
 
 async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
+    """Run a full heartbeat cycle, grouping its sub-runs under one tick id.
+
+    A single tick may fire several agent runs (planning, review, action). A
+    shared ``tick_id`` stamped on each lets the run log group them together.
+    """
+    from ..uuid_v7 import uuid7_str
+
+    previous_tick_id = getattr(agent, "_current_tick_id", None)
+    agent._current_tick_id = uuid7_str()
+    try:
+        return await _run_heartbeat_impl(agent)
+    finally:
+        agent._current_tick_id = previous_tick_id
+
+
+async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
     """Run a full heartbeat cycle: planning integration, playbook, and run."""
     from ..memory.reflection import write_log
     from .planning import (
@@ -703,7 +719,7 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
             preflight_result = agent._run_subagent(
                 HEARTBEAT_PREFLIGHT,
                 preflight_context,
-                run_id=getattr(agent, "_current_run_id", ""),
+                run_id=getattr(agent, "_current_run_id", None) or "",
                 team_id=heartbeat_team_id,
                 doc_store=heartbeat_doc_store,
             )

@@ -49,6 +49,10 @@ cli = typer.Typer(
     no_args_is_help=False,
 )
 
+from .runs import runs_app  # noqa: E402
+
+cli.add_typer(runs_app, name="runs")
+
 
 def _verbosity(verbose: bool, quiet: bool) -> Verbosity:
     if quiet:

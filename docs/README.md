@@ -23,6 +23,7 @@ for the mental model.
 
 ### Operations
 - [Workspace layout](./workspace.md) — `SOUL.md`, `MEMORY.md`, daily logs, teams, plans.
+- [Run logging](./run-logging.md) — the SQLite run log (`runs.db`): schema and example queries.
 - [Teams & multi-team workspaces](./teams.md) — how teams are discovered and scoped.
 - [Planning](./planning.md) — plan cycles, quests, review heartbeats, controller review.
 - [Scheduler](./scheduler.md) — system + user scheduled tasks (cron and intervals).

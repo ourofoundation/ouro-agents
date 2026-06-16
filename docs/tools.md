@@ -45,6 +45,17 @@ Available in unrestricted modes (chat, autonomous, chat-reply). They wrap
 
 See [Scheduler](./scheduler.md) for schedule syntax.
 
+## Run history (self-recall) tools
+
+Available when `run_log.expose_to_agent` is true. They let the agent query its
+**own** past runs (episodic memory) from `runs.db`, scoped to the current
+context (see [Run logging](./run-logging.md#agent-self-recall-episodic-memory)):
+
+- `recall_runs(query?, mode?, status?, scope?, limit?)` — compact summaries of
+  matching past runs (newest first), excluding the current run.
+- `get_run_detail(run_id)` — the full step trace of one past run, within the
+  configured scope ceiling.
+
 ## delegate
 
 The dispatcher for subagents. Takes a list of task specs:

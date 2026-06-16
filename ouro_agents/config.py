@@ -516,6 +516,28 @@ class DisplayConfig(BaseModel):
     serve_progress: ServeProgressConfig = Field(default_factory=ServeProgressConfig)
 
 
+class RunLogConfig(BaseModel):
+    """Durable SQLite logging of every agent run (``<workspace>/runs.db``).
+
+    Captures a structured record per run — across all modes — plus the full
+    step trace, so past runs can be revisited. See ``ouro_agents/run_log.py``.
+    """
+
+    enabled: bool = True
+    path: Optional[Path] = None  # default: <workspace>/runs.db
+    capture_steps: bool = True
+    capture_reasoning: bool = True
+    capture_observations: bool = True
+    max_observation_chars: int = 0  # 0 = unlimited (keep everything)
+    capture_subagent_runs: bool = True
+
+    # Agent-facing recall tools (recall_runs / get_run_detail).
+    expose_to_agent: bool = True
+    agent_default_scope: Literal["team", "conversation", "all"] = "team"
+    agent_max_results: int = 10
+    agent_max_detail_chars: int = 6000
+
+
 class RefinementConfig(BaseModel):
     """Dream-phase refinement of agent learnings.
 
@@ -548,6 +570,7 @@ class OuroAgentsConfig(BaseSettings):
     modes: ModeConfig = Field(default_factory=ModeConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
+    run_log: RunLogConfig = Field(default_factory=RunLogConfig)
     env_file: Optional[Path] = None
 
     @classmethod

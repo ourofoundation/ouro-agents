@@ -82,6 +82,119 @@ def extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dic
     return summary
 
 
+def _tool_call_to_dict(tc: Any) -> dict[str, Any]:
+    """Normalize a smolagents tool call (dict or object) to ``{name, args}``."""
+    if isinstance(tc, dict):
+        if "function" in tc:
+            name = tc["function"].get("name", "unknown")
+            args = tc["function"].get("arguments", {})
+        else:
+            name = tc.get("name", "unknown")
+            args = tc.get("arguments", {})
+    elif hasattr(tc, "function") and tc.function is not None:
+        name = getattr(tc.function, "name", "unknown")
+        args = getattr(tc.function, "arguments", {})
+    else:
+        name = getattr(tc, "name", "unknown")
+        args = getattr(tc, "arguments", {})
+    return {"name": name, "args": args}
+
+
+def _step_reasoning(step: Any) -> Optional[str]:
+    """Best-effort plain-text reasoning for a memory step, if the provider sent any."""
+    from ..provider_reasoning import extract_reasoning_fields
+
+    msg = getattr(step, "model_output_message", None)
+    if msg is None:
+        return None
+    fields = extract_reasoning_fields(msg)
+    for key in ("reasoning", "reasoning_content"):
+        val = fields.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    details = fields.get("reasoning_details")
+    if details:
+        try:
+            return json.dumps(details, default=str)
+        except Exception:
+            return str(details)
+    return None
+
+
+def _step_duration(step: Any) -> Optional[float]:
+    timing = getattr(step, "timing", None)
+    if timing is None:
+        return None
+    try:
+        return timing.duration
+    except Exception:
+        return None
+
+
+def extract_run_steps(inner_agent, *, max_observation_chars: int = 0):
+    """Structured full-trace snapshot of an inner agent's memory steps.
+
+    Sibling to :func:`extract_tool_summary`, but captures every step type
+    (task / planning / action / final) with model output, reasoning, tool
+    calls, observations, errors, and timing — for durable run logging.
+
+    ``max_observation_chars`` of 0 means keep observations untruncated.
+    """
+    from smolagents.memory import PlanningStep, TaskStep
+
+    from ..run_log import RunStepRecord
+
+    def _cap(text: Optional[str]) -> Optional[str]:
+        if text is None:
+            return None
+        text = str(text)
+        if max_observation_chars and len(text) > max_observation_chars:
+            return text[:max_observation_chars] + "..."
+        return text
+
+    steps = []
+    for step in getattr(inner_agent.memory, "steps", []) or []:
+        if isinstance(step, TaskStep):
+            steps.append(
+                RunStepRecord(
+                    step_type="task",
+                    model_output=getattr(step, "task", "") or "",
+                )
+            )
+            continue
+        if isinstance(step, PlanningStep):
+            steps.append(
+                RunStepRecord(
+                    step_type="planning",
+                    model_output=getattr(step, "plan", "") or None,
+                    reasoning=_step_reasoning(step),
+                    duration_s=_step_duration(step),
+                )
+            )
+            continue
+        if isinstance(step, ActionStep):
+            tool_calls = [_tool_call_to_dict(tc) for tc in (step.tool_calls or [])]
+            is_final = bool(getattr(step, "is_final_answer", False))
+            steps.append(
+                RunStepRecord(
+                    step_number=getattr(step, "step_number", None),
+                    step_type="final" if is_final else "action",
+                    model_output=getattr(step, "model_output", None) or None,
+                    reasoning=_step_reasoning(step),
+                    tool_calls=tool_calls,
+                    observations=_cap(getattr(step, "observations", None) or None),
+                    error=(str(step.error) if getattr(step, "error", None) else None),
+                    is_final_answer=is_final,
+                    duration_s=_step_duration(step),
+                )
+            )
+            continue
+        steps.append(
+            RunStepRecord(step_type="other", model_output=repr(step))
+        )
+    return steps
+
+
 def _message_attr(message: dict[str, Any], name: str, default: Any = None) -> Any:
     return message.get(name, default)
 

@@ -153,5 +153,17 @@
       "show_token_updates": true,
       "show_subagents": true
     }
+  },
+  "run_log": {
+    "enabled": true,
+    "capture_steps": true,
+    "capture_reasoning": true,
+    "capture_observations": true,
+    "max_observation_chars": 0,
+    "capture_subagent_runs": true,
+    "expose_to_agent": true,
+    "agent_default_scope": "team",
+    "agent_max_results": 10,
+    "agent_max_detail_chars": 6000
   }
 }

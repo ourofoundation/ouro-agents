@@ -4,7 +4,6 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 from uuid import uuid4
@@ -19,7 +18,7 @@ from smolagents import (
 
 from .artifacts import PrefetchSpec, resolve_prefetch
 from .classify import is_trivial_message
-from .cancellation import RunCancellationToken
+from .cancellation import RunCancellationToken, RunCancelled
 from .config import (
     MCPServerConfig,
     OuroAgentsConfig,
@@ -57,6 +56,7 @@ from .modes import (
     resolve_mode_profile,
 )
 from .observer import AgentObserver, ProgressEvent, emit_progress
+from .run_log import RunLogStore, RunRecord
 from .security.policy import Capability, CapabilityEnvelope
 from .security.tool_capabilities import filter_deferred_tools
 from .skills import get_skill_directory, load_startup_skills
@@ -79,11 +79,11 @@ from .subagents.reflector import (
 from .tool_prompt import build_tool_calling_system_prompt
 from .tools.agent_base import SanitizedToolCallingAgent as _SanitizedToolCallingAgent
 from .tools.python_tool import make_code_tools
+from .tools.run_history_tools import make_run_history_tools
 from .tools.scheduler_tools import make_scheduler_tools
 from .tools.skills_tools import make_load_skill_tool
 from .usage import (
     MirroredUsageTracker,
-    RunUsage,
     TrackedOpenAIModel,
     UsageTracker,
     collect_run_usage,
@@ -95,6 +95,7 @@ from .utils.conversation import (
     append_conversation_turn,
     build_history_steps,
     conversation_file,
+    extract_run_steps,
     extract_tool_summary,
     format_conversation_turns,
     load_conversation_turns,
@@ -156,6 +157,13 @@ class OuroAgent:
         self._workspace = config.agent.workspace
         self._subagent_ledger: list[tuple[str, SubAgentUsage]] = []
         self.model = self._build_model(config.agent.model)
+
+        # Durable run logging (SQLite). Holds the current run/tick ids so nested
+        # runs and heartbeat sub-cycles can be linked. See run_log.py.
+        run_log_path = config.run_log.path or (self._workspace / "runs.db")
+        self._run_log = RunLogStore(run_log_path, enabled=config.run_log.enabled)
+        self._current_run_id: Optional[str] = None
+        self._current_tick_id: Optional[str] = None
 
         self._mcp_contexts: list = []
         self._deferred_tools: dict = {}
@@ -1226,6 +1234,19 @@ class OuroAgent:
             and profile.allows_capability(Capability.SCHEDULE)
             else []
         )
+        run_history_tools = (
+            make_run_history_tools(
+                self._run_log,
+                current_run_id=self._current_run_id,
+                team_id=team_id,
+                conversation_id=conversation_id,
+                default_scope=self.config.run_log.agent_default_scope,
+                max_results=self.config.run_log.agent_max_results,
+                max_detail_chars=self.config.run_log.agent_max_detail_chars,
+            )
+            if self.config.run_log.enabled and self.config.run_log.expose_to_agent
+            else []
+        )
 
         # Build the delegate tool for subagent dispatch
         delegatable_profiles = agent_self.delegatable_profiles
@@ -1360,11 +1381,15 @@ class OuroAgent:
 
         _has_memory_filter = profile.memory_tool_filter is not None
         if _has_memory_filter:
-            all_tools = list(memory_tools)
+            # Filtered modes (plan / review) keep a narrow memory surface, but
+            # self-recall is read-only and valuable for planning over past
+            # cycles, so it's exposed here too.
+            all_tools = list(memory_tools) + run_history_tools
         else:
             all_tools = (
                 list(memory_tools)
                 + scheduler_tools
+                + run_history_tools
                 + delegate_tools
                 + [tool for tool in (load_tool, load_skill) if tool is not None]
                 + code_tools
@@ -1615,6 +1640,14 @@ class OuroAgent:
             python_package_versions=self._python_package_versions or {},
             sandbox_config=self.config.agent.sandbox,
             record_subagent_usage=self._record_subagent_usage,
+            record_subagent_run=(
+                self._record_subagent_run
+                if (
+                    self.config.run_log.enabled
+                    and self.config.run_log.capture_subagent_runs
+                )
+                else None
+            ),
             cancellation_token=cancellation_token,
             progress_observer=progress_observer,
             delegatable_profiles=self.delegatable_profiles,
@@ -1623,6 +1656,64 @@ class OuroAgent:
 
     def _record_subagent_usage(self, name: str, usage: SubAgentUsage) -> None:
         self._subagent_ledger.append((name, usage))
+
+    def _record_subagent_run(
+        self,
+        *,
+        name: str,
+        run_id: str,
+        task: str,
+        result: str,
+        status: str,
+        error: Optional[str],
+        usage: Optional[SubAgentUsage],
+        agent,
+        started_at: str,
+        duration_s: Optional[float],
+    ) -> None:
+        """Write a subagent run to the run log as a child of the current run."""
+        try:
+            record = RunRecord(
+                run_id=run_id,
+                agent_name=self.config.agent.name,
+                mode=f"subagent:{name}",
+                status=status,
+                parent_run_id=self._current_run_id,
+                tick_id=self._current_tick_id,
+                started_at=started_at,
+                task=task or "",
+                model=getattr(usage, "model_id", "") or "",
+            )
+            record.result = "" if result is None else str(result)
+            if error:
+                record.error_message = error
+            record.finalize_timing(duration_s)
+            if usage is not None:
+                record.input_tokens = usage.input_tokens
+                record.output_tokens = usage.output_tokens
+                record.cached_input_tokens = usage.cached_input_tokens
+                record.reasoning_tokens = usage.reasoning_tokens
+                record.total_tokens = usage.total_tokens
+                record.num_api_calls = usage.llm_calls
+                record.cost_usd = usage.cost_usd
+                try:
+                    record.usage_json = json.dumps(usage.to_dict(), default=str)
+                except Exception:
+                    pass
+            cfg = self.config.run_log
+            if cfg.capture_steps and agent is not None:
+                cap = cfg.max_observation_chars if cfg.capture_observations else 0
+                steps = extract_run_steps(agent, max_observation_chars=cap)
+                if not cfg.capture_observations:
+                    for step in steps:
+                        step.observations = None
+                if not cfg.capture_reasoning:
+                    for step in steps:
+                        step.reasoning = None
+                record.set_steps(steps)
+            self._run_log.write(record)
+        except Exception:
+            logger.warning("Failed to record subagent run", exc_info=True)
 
     def _run_subagent(
         self,
@@ -2142,8 +2233,54 @@ class OuroAgent:
                 token.raise_if_cancelled()
             return self._run_blocking(**kwargs)
 
-    def _run_blocking(
+    def _run_blocking(self, **kwargs) -> str:
+        """Wrap the run body with durable run-log recording on every exit path.
+
+        A fresh time-ordered ``run_id`` identifies this run in the run log;
+        ``_current_run_id`` is set for the duration so nested runs and subagents
+        can link back via ``parent_run_id``. The record is written on success,
+        error, and cancellation alike.
+        """
+        mode = kwargs.get("mode", RunMode.AUTONOMOUS)
+        run_uid = uuid7_str()
+        parent_run_id = self._current_run_id
+        self._current_run_id = run_uid
+        record = RunRecord(
+            run_id=run_uid,
+            agent_name=self.config.agent.name,
+            mode=getattr(mode, "value", str(mode)),
+            parent_run_id=parent_run_id,
+            tick_id=self._current_tick_id,
+            event_type=kwargs.get("event_type"),
+            conversation_id=kwargs.get("conversation_id"),
+            team_id=kwargs.get("team_id"),
+            user_id=kwargs.get("user_id"),
+            trigger_turn_id=kwargs.get("trigger_turn_id"),
+            task=kwargs.get("task", "") or "",
+        )
+        cap = kwargs.get("capability_envelope")
+        if cap is not None:
+            record.capability_role = getattr(cap.role, "value", None)
+            record.capability_surface = getattr(cap.surface, "value", None)
+        started = time.monotonic()
+        try:
+            result = self._run_blocking_inner(record, **kwargs)
+            record.mark_success(result)
+            return result
+        except (RunCancelled, asyncio.CancelledError) as e:
+            record.mark_cancelled(str(e) or "cancelled")
+            raise
+        except Exception as e:
+            record.mark_error(e)
+            raise
+        finally:
+            record.finalize_timing(time.monotonic() - started)
+            self._finalize_run_record(record)
+            self._current_run_id = parent_run_id
+
+    def _run_blocking_inner(
         self,
+        record: RunRecord,
         task: str,
         model_override=None,
         conversation_id: Optional[str] = None,
@@ -2169,6 +2306,8 @@ class OuroAgent:
         run_started_at = time.monotonic()
         self.connect_mcp()
         model = model_override or self._build_model(self.config.agent.model)
+        record.model = model.model_id if hasattr(model, "model_id") else str(model)
+        record._model_obj = model
         active_doc_store = self._resolve_doc_store(team_id=team_id)
 
         _patched_reasoning_callbacks = False
@@ -2264,6 +2403,9 @@ class OuroAgent:
                 len(preflight.briefing),
                 len(preflight.plan),
             )
+            record.preflight_intent = preflight.intent
+            record.preflight_complexity = preflight.complexity
+            record.worth_remembering = preflight.worth_remembering
 
         # --- Build tools ---
         # Do this after preflight so parent-run preloads do not appear to be
@@ -2407,6 +2549,7 @@ class OuroAgent:
             plain_task_messages=profile.conversational,
         )
         agent_ref["agent"] = agent
+        record._agent = agent
 
         agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
             system_prompt,
@@ -2699,13 +2842,11 @@ class OuroAgent:
             memory_ledger=memory_ledger,
         )
 
-        self._log_run(
-            task,
-            result,
-            model.model_id if hasattr(model, "model_id") else str(model),
-            mode,
-            usage=usage,
-        )
+        # Populate the run record's usage now that it's computed for display;
+        # the wrapper's finally block snapshots steps and writes the record.
+        record.set_usage(usage)
+        record.set_subagent_ledger(self._subagent_ledger or None)
+        record.set_memory_ledger(memory_ledger)
 
         if _patched_reasoning_callbacks:
             model._reasoning_callback = _original_reasoning_cb
@@ -2849,29 +2990,48 @@ class OuroAgent:
             capability_envelope=capability_envelope,
         )
 
-    def _log_run(
-        self,
-        task: str,
-        result: str,
-        model_name: str,
-        mode: RunMode,
-        usage: Optional[RunUsage] = None,
-    ):
-        """Append a line to the run log (JSONL)."""
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "trigger": mode.value,
-            "task_summary": task[:200] + ("..." if len(task) > 200 else ""),
-            "model": model_name,
-            "result_summary": str(result)[:200]
-            + ("..." if len(str(result)) > 200 else ""),
-        }
-        if usage:
-            entry["usage"] = usage.dict()
-        log_path = self.config.agent.workspace / "runs.jsonl"
+    def _finalize_run_record(self, record: RunRecord) -> None:
+        """Snapshot steps + usage onto the record and persist it.
 
-        # Ensure workspace exists
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        Runs in the wrapper's ``finally`` so it fires on success, error, and
+        cancellation. Best-effort: never raises. On the success path usage and
+        ledgers are already populated; on error/cancel we fill in whatever the
+        run reached before failing.
+        """
+        try:
+            cfg = self.config.run_log
+            agent = record._agent
 
-        with open(log_path, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+            if cfg.capture_steps and not record.steps and agent is not None:
+                try:
+                    cap = cfg.max_observation_chars if cfg.capture_observations else 0
+                    steps = extract_run_steps(agent, max_observation_chars=cap)
+                    if not cfg.capture_observations:
+                        for step in steps:
+                            step.observations = None
+                    if not cfg.capture_reasoning:
+                        for step in steps:
+                            step.reasoning = None
+                    record.set_steps(steps)
+                except Exception:
+                    logger.debug("Failed to extract run steps", exc_info=True)
+
+            # Fill usage/ledgers if the run errored before they were collected.
+            if record.usage_json is None and agent is not None and record._model_obj:
+                try:
+                    record.set_usage(
+                        collect_run_usage(agent, record._model_obj, self._usage_tracker)
+                    )
+                except Exception:
+                    logger.debug("Failed to collect usage for run record", exc_info=True)
+                if record.subagent_ledger_json is None:
+                    record.set_subagent_ledger(self._subagent_ledger or None)
+                if record.memory_ledger_json is None:
+                    try:
+                        record.set_memory_ledger(self.memory.usage_ledger() or None)
+                    except Exception:
+                        pass
+
+            self._run_log.write(record)
+        except Exception:
+            logger.warning("Failed to finalize run record", exc_info=True)

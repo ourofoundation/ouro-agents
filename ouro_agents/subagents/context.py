@@ -142,6 +142,9 @@ class SubAgentContext:
     # When set (by OuroAgent), every completed subagent run records usage here
     # (top-level and nested delegate chains share the same ledger).
     record_subagent_usage: Optional[Callable[[str, SubAgentUsage], None]] = None
+    # When set (by OuroAgent), each subagent run is written to the run log as a
+    # child run (linked to the parent via parent_run_id). Keyword-only payload.
+    record_subagent_run: Optional[Callable[..., None]] = None
     cancellation_token: Any = None
     progress_observer: Any = None
 
