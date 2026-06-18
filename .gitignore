@@ -62,9 +62,19 @@ Thumbs.db
 **/*.jsonl
 
 
-# Workspace
+# Workspace runtime (default ./workspace)
 workspace/*
+
+# Agent workspaces — ignore runtime data by default, track identity/config
 agents/*
+!agents/*/
+agents/*/*
+!agents/*/SOUL.md
+!agents/*/HEARTBEAT.md
+!agents/*/NOTES.md
+!agents/*/skills/
+agents/*/skills/*
+!agents/*/skills/**
 
 # Config file
 config.json
