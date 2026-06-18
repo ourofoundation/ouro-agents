@@ -11,6 +11,7 @@ from ouro_agents.display import OuroDisplay
 from ouro_agents.modes.framing import HEARTBEAT_FRAMING
 from ouro_agents.modes.heartbeat import (
     _load_owned_open_quest_items,
+    _select_heartbeat_team_id,
     build_plan_execution_playbook,
     force_planning_heartbeat,
     has_future_heartbeat_in_active_window,
@@ -18,6 +19,7 @@ from ouro_agents.modes.heartbeat import (
 )
 from ouro_agents.modes.profiles import HEARTBEAT
 from ouro_agents.modes.planning import PlanCycle, PlanItem, PlanStore
+from ouro_agents.modes.planning import render_plan_context
 from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT
 from ouro_agents.subagents.context import SubAgentUsage
 from ouro_agents.usage import RunUsage, UsageTracker
@@ -52,6 +54,25 @@ def test_plan_execution_playbook_mentions_multi_heartbeat_expectation():
     assert "`update_quest_item`" in playbook
     assert "`complete_quest_item`" in playbook
     assert "`create_comment`" in playbook
+
+
+def test_render_plan_context_keeps_controller_direction_with_items():
+    context = render_plan_context(
+        PlanCycle(
+            status="active",
+            quest_id="quest-a",
+            plan_text="Prioritize outreach over literature research.",
+            human_feedback="The rest of the week should be fully dedicated to outreach.",
+            items=[
+                PlanItem(description="Do a literature scan", status="pending"),
+                PlanItem(description="Contact target researchers", status="pending"),
+            ],
+        )
+    )
+
+    assert "fully dedicated to outreach" in context
+    assert "Prioritize outreach over literature research" in context
+    assert "Do a literature scan" in context
 
 
 def test_has_future_heartbeat_in_active_window_before_last_tick():
@@ -90,6 +111,7 @@ def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):
             self.config = SimpleNamespace(
                 heartbeat=SimpleNamespace(
                     model="heartbeat-model",
+                    every="1h",
                     proactive=SimpleNamespace(enabled=False, servers=[]),
                     active_hours=None,
                 ),
@@ -117,6 +139,223 @@ def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):
     assert captured["task"] == "Review the world and act."
     assert captured["kwargs"]["preserve_existing_usage"] is True
     assert captured["kwargs"]["model_override"].model_id == "heartbeat-model"
+
+
+def test_run_heartbeat_appends_team_direction_when_unscoped(tmp_path):
+    captured = {}
+
+    class _MemoryItem:
+        text = "Work direction: the rest of the week should be fully dedicated to outreach."
+        category = "direction"
+        basis = "stated"
+        source = "controller-comment:comment-a"
+        strength = 0.9
+        score = 0.9
+        created_at = "2026-06-16T00:00:00Z"
+
+    class _Memory:
+        def search(self, **kwargs):
+            if kwargs.get("team_id") == "team-outreach":
+                return [_MemoryItem()]
+            return []
+
+    class _DocStore:
+        def read(self, key):
+            if key == "HEARTBEAT:hermes":
+                return "General heartbeat can browse or research."
+            return None
+
+    class _Registry:
+        def team_ids(self):
+            return {"team-outreach", "team-research"}
+
+    class _FakeAgent:
+        def __init__(self):
+            self.memory = _Memory()
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(
+                    model="heartbeat-model",
+                    every="1h",
+                    proactive=SimpleNamespace(enabled=False, servers=[]),
+                    active_hours=None,
+                ),
+                planning=SimpleNamespace(enabled=False),
+                agent=SimpleNamespace(
+                    model="main-model",
+                    workspace=tmp_path,
+                    name="hermes",
+                ),
+            )
+            self.doc_store = _DocStore()
+            self.team_registry = _Registry()
+
+        def _build_model(self, model_id, heartbeat=False):
+            return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
+
+        def _refresh_platform_context(self):
+            return None
+
+        def _get_ouro_client(self):
+            return None
+
+        def doc_store_for(self, _team_id):
+            return self.doc_store
+
+        async def run(self, task, **kwargs):
+            captured["task"] = task
+            captured["kwargs"] = kwargs
+            return '{"action":"none"}'
+
+    result = asyncio.run(run_heartbeat(_FakeAgent()))
+
+    assert result is None
+    assert "fully dedicated to outreach" in captured["task"]
+    assert "Do not choose unrelated research" in captured["task"]
+
+
+def test_run_heartbeat_selects_planning_team_from_direction_memory(tmp_path):
+    captured = {}
+
+    class _MemoryItem:
+        text = "Work direction: dedicate the rest of the week to outreach."
+        category = "direction"
+        basis = "stated"
+        source = "controller-comment:comment-a"
+        strength = 0.9
+        score = 0.9
+        created_at = "2026-06-16T00:00:00+00:00"
+
+    class _Memory:
+        def search(self, **kwargs):
+            if kwargs.get("team_id") == "team-outreach":
+                return [_MemoryItem()]
+            return []
+
+    class _DocStore:
+        def read(self, _key):
+            return None
+
+    class _Registry:
+        def team_ids(self):
+            return {"team-outreach", "team-research"}
+
+        def get_team(self, team_id):
+            return SimpleNamespace(
+                id=team_id,
+                name="outreach" if team_id == "team-outreach" else "research",
+                slug="outreach" if team_id == "team-outreach" else "research",
+                agent_can_create=True,
+            )
+
+    class _FakeAgent:
+        def __init__(self):
+            self.memory = _Memory()
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(
+                    model="heartbeat-model",
+                    every="1h",
+                    proactive=SimpleNamespace(enabled=False, servers=[]),
+                    active_hours=None,
+                ),
+                planning=SimpleNamespace(
+                    enabled=True,
+                    cadence="4h",
+                    min_heartbeats=4,
+                    review_window="1h",
+                    auto_approve=False,
+                ),
+                agent=SimpleNamespace(
+                    model="main-model",
+                    workspace=tmp_path,
+                    name="hermes",
+                ),
+            )
+            self.doc_store = _DocStore()
+            self.team_registry = _Registry()
+
+        def _build_model(self, model_id, heartbeat=False):
+            return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
+
+        def _refresh_platform_context(self):
+            return None
+
+        def _get_ouro_client(self):
+            return None
+
+        def doc_store_for(self, team_id):
+            captured["doc_store_team_id"] = team_id
+            return self.doc_store
+
+    async def _fake_planning(_agent, _model, plan_store, _servers, **_kwargs):
+        captured["planning_team_id"] = plan_store.team_id
+        return "planned"
+
+    with patch("ouro_agents.modes.planning.run_planning_heartbeat", new=_fake_planning):
+        result = asyncio.run(run_heartbeat(_FakeAgent()))
+
+    assert result == "planned"
+    assert captured["planning_team_id"] == "team-outreach"
+    assert captured["doc_store_team_id"] == "team-outreach"
+
+
+def test_select_heartbeat_team_uses_recent_controller_activity(tmp_path):
+    store_a = PlanStore(tmp_path / "teams" / "team-a" / "plans", team_id="team-a")
+    store_b = PlanStore(tmp_path / "teams" / "team-b" / "plans", team_id="team-b")
+
+    class _RunLog:
+        def query_runs(self, **kwargs):
+            assert kwargs["limit"] == 80
+            return [
+                {
+                    "team_id": "team-b",
+                    "started_at": "2026-06-16T12:00:00+00:00",
+                    "user_id": "controller-user",
+                    "capability_role": "controller",
+                },
+                {
+                    "team_id": "team-a",
+                    "started_at": "2026-06-16T11:00:00+00:00",
+                    "user_id": "other-user",
+                    "capability_role": "",
+                },
+            ]
+
+    class _Registry:
+        def get_team(self, team_id):
+            return SimpleNamespace(id=team_id, agent_can_create=True)
+
+    agent = SimpleNamespace(
+        memory=None,
+        _run_log=_RunLog(),
+        team_registry=_Registry(),
+        config=SimpleNamespace(
+            agent=SimpleNamespace(name="hermes"),
+            security=SimpleNamespace(
+                resolved_controller_ids=["controller-user"],
+                resolved_trusted_ids=[],
+            ),
+        ),
+    )
+
+    selected = _select_heartbeat_team_id(
+        {"team-a": store_a, "team-b": store_b}, agent=agent
+    )
+
+    assert selected == "team-b"
+
+
+def test_select_heartbeat_team_skips_non_writable_no_plan_team(tmp_path):
+    store = PlanStore(tmp_path / "teams" / "team-a" / "plans", team_id="team-a")
+
+    class _Registry:
+        def get_team(self, team_id):
+            return SimpleNamespace(id=team_id, agent_can_create=False)
+
+    agent = SimpleNamespace(team_registry=_Registry())
+
+    selected = _select_heartbeat_team_id({"team-a": store}, agent=agent)
+
+    assert selected is None
 
 
 def test_load_owned_open_quest_items_includes_unassigned_items(tmp_path):

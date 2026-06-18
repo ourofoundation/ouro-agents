@@ -1,6 +1,6 @@
 # Run logging
 
-Every agent run — in **every mode** (chat, chat-reply, autonomous, heartbeat,
+Every agent run — in **every mode** (chat, autonomous, heartbeat,
 plan, review) — writes one rich, structured record to a SQLite database at
 `<workspace>/runs.db`, plus the full step trace. Records are written on
 success, error, **and** cancellation, so failed and interrupted runs are just

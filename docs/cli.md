@@ -1,7 +1,8 @@
 # CLI reference
 
-`ouro-agents` exposes a single entry point that dispatches to subcommands
-(`ouro_agents/runner.py`).
+`ouro-agents` exposes a single Typer entry point that dispatches to
+subcommands (`ouro_agents/cli/__init__.py`; `python -m ouro_agents.cli`
+works too).
 
 ```
 ouro-agents [--config PATH] [--env-file PATH] [-v|-q] <command> [args]
@@ -54,17 +55,21 @@ ouro-agents chat
 ouro-agents chat --conversation-id 11111111-2222-3333-4444-555555555555
 ```
 
-Starts an interactive REPL. New conversations get a fresh UUID; pass
-`--conversation-id` to resume one. Inside the REPL:
+Starts an interactive REPL backed by a **real Ouro conversation**. It uses
+your stored personal credentials (`ouro-agents login`) for the human side
+and the agent's API key for the agent side, creates a conversation with both
+as members, posts each message you type as you, and posts the agent's reply
+(via `RunMode.CHAT`) back to the same conversation. New conversations are
+created on the platform; pass `--conversation-id` to resume one. Inside the
+REPL:
 
 | Input | Behavior |
 |-------|----------|
-| `<message>` | Run the agent in `RunMode.CHAT` and stream the answer. |
-| `/new` | Start a new conversation (new UUID). |
+| `<message>` | Post your message, run the agent in `RunMode.CHAT`, and post + stream the answer. |
+| `/new` | Create a new Ouro conversation. |
 | `/conversation <id>` | Switch to an existing conversation. |
 | `/exit` or `/quit` (or empty input) | Exit. |
 
-Conversation history is appended to `workspace/conversations/<id>/turns.jsonl`.
 Mid-session reflection runs automatically per the configured interval.
 
 ## `heartbeat`

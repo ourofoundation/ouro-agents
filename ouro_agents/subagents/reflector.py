@@ -95,7 +95,10 @@ Rules:
   prevent accidental repetition on the next tick. Include which asset was touched \
   and the gist of the interaction, not generic text like "engaged with community."
 - If nothing is worth remembering, return empty lists.
-- If the run was trivial (e.g. NO_ACTION), return empty lists.
+- If the run was trivial (e.g. NO_ACTION) and the task/result contains no explicit
+  human guidance, return empty lists. NO_ACTION is only an immediate reply
+  decision; it must not cause you to discard explicit human work-direction,
+  priority, or avoidance guidance contained in the task.
 - Be concise. Each fact/preference should be one sentence.
 - Do NOT store facts that duplicate or closely overlap with existing memories.
 - If entity files provide background, use them to add richer context to facts \
@@ -136,7 +139,6 @@ def resolve_daily_log_tag(
             "plan": "planning",
             "review": "review",
             "chat": "chat",
-            "chat-reply": "chat",
         }
         base = _mode_tags.get(run_mode, "task")
 
@@ -194,9 +196,9 @@ def build_run_reflection_task(
         "summary to multiple teams.\n\n"
         "If the task or result includes human guidance about what the agent should "
         "work on, avoid, prioritize, de-prioritize, or change in future plans, store "
-        'that as a category=\"direction\" memory. This is especially important for '
-        "comments, mentions, plan-review feedback, and replies on direction-proposal "
-        "posts."
+        'that as a category=\"direction\" memory even when the run result is '
+        "NO_ACTION. This is especially important for comments, mentions, "
+        "plan-review feedback, and replies on direction-proposal posts."
     )
 
 

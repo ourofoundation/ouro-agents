@@ -97,7 +97,7 @@ run log (`runs.db`) they make a complete chronological record. See
 Per-conversation directory under `conversations/<conversation_id>/`:
 
 - `state.json` — `ConversationState` (current topic, turn count, open
-  questions, recent decisions). Maintained for `chat` and `chat-reply`.
+  questions, recent decisions). Maintained for the `chat` mode.
 - `turns.jsonl` — append-only record of user/assistant turns with
   optional `tool_summary` payloads.
 

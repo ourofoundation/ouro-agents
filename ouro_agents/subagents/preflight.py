@@ -75,16 +75,20 @@ create_comment, create_post, execute_route, or update_quest, treat those as \
 instructions for the main heartbeat agent later — never call them during \
 preflight.
 
-You will be provided with the current autonomous playbook and a list of active plans.
+You will be provided with the current autonomous playbook, current work-direction
+guidance when available, and a list of active plans.
 Decide whether the agent should:
 1. Work on a specific active plan ("work_on_plan").
 2. Execute the general playbook ("general_heartbeat").
 3. Do nothing / skip this heartbeat ("skip").
 
-For active plans or ambiguous choices, call memory_recall at most once with batched
-queries if recent context would materially improve the decision. Include a query
-for current work-direction guidance when plan choice is unclear. Otherwise, do
-not call tools.
+Treat current work-direction guidance as stronger than stale active plans, task
+files, or broad research interests. If active plans conflict with current
+direction, choose "general_heartbeat" unless a listed plan clearly supports that
+direction. For active plans or ambiguous choices, call memory_recall at most once
+with batched queries if recent context would materially improve the decision.
+Include a query for current work-direction guidance when plan choice is unclear.
+Otherwise, do not call tools.
 If memory_recall returns no useful context, still choose an action and reply with valid JSON.
 
 Assume active plans can span multiple heartbeats. If you choose "work_on_plan",

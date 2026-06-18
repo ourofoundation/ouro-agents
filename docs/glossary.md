@@ -7,7 +7,7 @@ The orchestrator class (`ouro_agents/agent.py`). Owns the workspace, MCP
 connections, memory backend, doc store, scheduler, and team registry.
 
 ### Run mode / `RunMode`
-The kind of run being performed (`chat`, `chat-reply`, `autonomous`,
+The kind of run being performed (`chat`, `autonomous`,
 `heartbeat`, `plan`, `review`). Each value maps to a `ModeProfile` that
 controls prompt assembly, tools, and lifecycle hooks. See
 [Run modes](./run-modes.md).

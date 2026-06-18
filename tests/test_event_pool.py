@@ -33,7 +33,7 @@ def _event(
     return EventRunContext(
         event_type=event_type,
         task=f"Task for {text}",
-        mode=RunMode.CHAT_REPLY if event_type == "new-message" else RunMode.AUTONOMOUS,
+        mode=RunMode.CHAT if event_type == "new-message" else RunMode.AUTONOMOUS,
         conversation_id=conversation_id,
         user_id=f"user-{username}",
         source_id=source_id,

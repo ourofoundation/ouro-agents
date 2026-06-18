@@ -50,6 +50,7 @@ SUBAGENT_RULES = (
 SECTION_PRIORITY = {
     "mode": 1,
     "current_datetime": 2,
+    "conversation_id": 2.5,
     "soul": 3,
     "platform_context": 4,
     "user_model": 5,
@@ -190,6 +191,7 @@ def build_shared_prompt_sections(
 # consistent and makes the whole static prompt cacheable.
 _DYNAMIC_SECTIONS = {
     "current_datetime",
+    "conversation_id",
     "conversation_state",
     "plans_index",
     "entity_context",
@@ -239,17 +241,22 @@ def build_prompt(
 
     framing = mode_framing_override or profile.framing
     sections["mode"] = f"## MODE\n{framing}"
+    # The per-conversation id is volatile: keeping it in the static MODE section
+    # (the very first block of the system prompt) gave every conversation a
+    # unique prefix and defeated cross-conversation cache hits. It lives in the
+    # dynamic context (prepended to the task) instead.
     if profile.include_chat_conversation_id and chat_conversation_id:
         annotation = profile.conversation_id_annotation
         if annotation:
-            sections["mode"] += (
-                f"\n\n**Conversation id for this run:** `{chat_conversation_id}` "
-                f"({annotation})."
+            sections["conversation_id"] = (
+                f"## CONVERSATION\n**Conversation id for this run:** "
+                f"`{chat_conversation_id}` ({annotation})."
             )
         else:
-            sections[
-                "mode"
-            ] += f"\n\n**Conversation id for this run:** `{chat_conversation_id}`"
+            sections["conversation_id"] = (
+                f"## CONVERSATION\n**Conversation id for this run:** "
+                f"`{chat_conversation_id}`"
+            )
     if skills:
         sections["skills"] = f"## LOADED SKILLS\n{skills}"
 

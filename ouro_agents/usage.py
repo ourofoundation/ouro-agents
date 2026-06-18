@@ -406,6 +406,75 @@ class MirroredUsageTracker:
 # ---------------------------------------------------------------------------
 
 
+def _strip_cache_control(messages: Sequence[Any]) -> None:
+    """Remove any existing ``cache_control`` markers from message content.
+
+    Keeps the marker count bounded (providers cap explicit breakpoints, e.g.
+    Qwen/Anthropic allow at most 4) and makes injection idempotent across the
+    multi-step agent loop.
+    """
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
+
+
+def _mark_message_cache(msg: Any, cache_control: dict) -> bool:
+    """Tag a message's content with ``cache_control`` for prefix caching.
+
+    Returns True if a marker was placed. String content is promoted to the
+    block-array form the API requires for breakpoints; list content gets the
+    marker on its last text block. Messages without cacheable text (e.g. an
+    assistant turn that only carries ``tool_calls``) are skipped.
+    """
+    if not isinstance(msg, dict):
+        return False
+    content = msg.get("content")
+    if isinstance(content, str):
+        if not content.strip():
+            return False
+        msg["content"] = [
+            {"type": "text", "text": content, "cache_control": dict(cache_control)}
+        ]
+        return True
+    if isinstance(content, list):
+        for block in reversed(content):
+            if isinstance(block, dict) and block.get("type") == "text":
+                block["cache_control"] = dict(cache_control)
+                return True
+    return False
+
+
+def inject_cache_control(messages: Sequence[Any], ttl: str = "5m") -> None:
+    """Add explicit prompt-cache breakpoints to an outgoing message list.
+
+    Places two markers (the documented max-useful set for prefix caching):
+    one on the system message (the long, stable prefix) and one on the most
+    recent cacheable message (an advancing breakpoint so a multi-step loop
+    reuses the growing prefix). Mutates ``messages`` in place.
+    """
+    if not messages:
+        return
+    cache_control: dict[str, str] = {"type": "ephemeral"}
+    if ttl == "1h":
+        cache_control["ttl"] = "1h"
+
+    _strip_cache_control(messages)
+
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "system":
+            _mark_message_cache(msg, cache_control)
+            break
+
+    for msg in reversed(messages):
+        if _mark_message_cache(msg, cache_control):
+            break
+
+
 class TrackedOpenAIModel(OpenAIModel):
     """``OpenAIModel`` that intercepts every API call to record generation IDs
     and per-call token counts on a shared :class:`UsageTracker`."""
@@ -416,11 +485,19 @@ class TrackedOpenAIModel(OpenAIModel):
         tracker: Optional[UsageTracker] = None,
         reasoning_callback: Optional[ReasoningCallback] = None,
         reasoning_stream_callback: Optional[ReasoningCallback] = None,
+        cache_breakpoints: bool = False,
+        cache_ttl: str = "5m",
         **kwargs,
     ):
         self._tracker = tracker or UsageTracker()
         self._reasoning_callback = reasoning_callback
         self._reasoning_stream_callback = reasoning_stream_callback
+        # When set, inject Anthropic-style ``cache_control`` markers into the
+        # outgoing message content blocks. Needed for providers (Alibaba/Qwen)
+        # that only honor explicit per-message breakpoints, not OpenRouter's
+        # top-level ``cache_control`` field.
+        self._cache_breakpoints = cache_breakpoints
+        self._cache_ttl = cache_ttl
         super().__init__(*args, **kwargs)
 
     @property
@@ -439,6 +516,10 @@ class TrackedOpenAIModel(OpenAIModel):
 
         @functools.wraps(original_create)
         def tracked_create(*args, **kwargs):
+            if self._cache_breakpoints:
+                messages = kwargs.get("messages")
+                if isinstance(messages, list):
+                    inject_cache_control(messages, self._cache_ttl)
             if kwargs.get("stream"):
                 return _wrap_stream(
                     original_create(*args, **kwargs),

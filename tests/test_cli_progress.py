@@ -79,7 +79,7 @@ def test_terminal_progress_summarizes_event_context():
     event_run = EventRunContext(
         event_type="mention",
         task="reply",
-        mode=RunMode.CHAT_REPLY,
+        mode=RunMode.CHAT,
         conversation_id="019eabf4-7f32-700b-8edf-76c4887becd9",
         user_id="user-1",
         preload_tools=("ouro:get_asset", "ouro:create_comment"),
@@ -148,7 +148,7 @@ def test_token_progress_includes_current_context_size():
     event_run = EventRunContext(
         event_type="mention",
         task="reply",
-        mode=RunMode.CHAT_REPLY,
+        mode=RunMode.CHAT,
         conversation_id="conversation-1",
         user_id="user-1",
     )

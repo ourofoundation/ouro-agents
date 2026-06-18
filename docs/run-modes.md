@@ -10,7 +10,6 @@ conversation persistence).
 ```python
 class RunMode(str, Enum):
     CHAT = "chat"
-    CHAT_REPLY = "chat-reply"
     AUTONOMOUS = "autonomous"
     HEARTBEAT = "heartbeat"
     PLAN = "plan"
@@ -44,15 +43,18 @@ Each value maps to a built-in `ModeProfile`.
 ## Built-in profiles
 
 ### `chat`
-Interactive, conversation-aware. Loads conversation state, preloads Ouro
-discovery tools (`get_organizations`, `get_teams`), skips preflight and
+Interactive, conversation-aware. Used both by the local `ouro-agents chat`
+CLI and by webhook chat events (`new-message`, `new-conversation`). Loads
+conversation state, preloads the Ouro hot-path tools, and skips preflight and
 post-reflection (mid-session reflection still runs at the configured
-interval). Persists turns. Default `max_steps=20`.
+interval). Default `max_steps=20`.
 
-### `chat-reply`
-Webhook-driven version of chat. Same behavior except the reply is posted
-back to the Ouro conversation automatically by the server's
-`ServerAgentObserver` — the final assistant reply is enough.
+Delivery is the observer's job, not the mode's: for webhook events the
+server's `ServerAgentObserver` posts the final assistant message back to the
+Ouro conversation automatically; for the CLI it's rendered to the terminal.
+Either way the agent just produces a final assistant message — which is why
+the old `chat` / `chat-reply` split was collapsed into this one mode. The
+config aliases `chat-reply` and `reply` still resolve to `chat`.
 
 ### `autonomous`
 The default for `ouro-agents run`. Preloads action-oriented Ouro tools

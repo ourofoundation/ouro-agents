@@ -340,8 +340,10 @@ class SubAgentConfig(BaseModel):
 _MODE_OVERRIDE_ALIASES: dict[str, tuple[str, ...]] = {
     "run": ("autonomous",),
     "planning": ("plan",),
-    "chat-reply": ("chat-reply",),
-    "reply": ("chat-reply",),
+    # ``chat-reply``/``reply`` were merged into the single ``chat`` mode; keep
+    # the aliases so existing configs continue to apply to ``chat``.
+    "chat-reply": ("chat",),
+    "reply": ("chat",),
 }
 
 
@@ -612,10 +614,9 @@ class OuroAgentsConfig(BaseSettings):
 
         expanded_data = replace_env_vars(data)
 
-        # Migrate legacy per-mode config fields into modes.<name>.
-        # The old "chat" key mapped to CHAT_REPLY for preloads (CHAT always
-        # zeroed preloads), and max_steps.chat was shared by both CHAT and
-        # CHAT_REPLY.
+        # Migrate legacy per-mode config fields into modes.<name>. The old
+        # "chat" key now maps to the single CHAT profile (chat and chat-reply
+        # were merged).
         agent_data = expanded_data.get("agent", {})
         legacy_preloads = agent_data.pop("preload_tools", None)
         legacy_max_steps = agent_data.pop("max_steps", None)
@@ -624,24 +625,12 @@ class OuroAgentsConfig(BaseSettings):
             profiles = modes_data.setdefault("profiles", {})
             if legacy_preloads and isinstance(legacy_preloads, dict):
                 for mode_name, tools in legacy_preloads.items():
-                    normalized_name = _normalize_mode_name(mode_name)
-                    targets = (
-                        ["chat-reply"]
-                        if normalized_name == "chat"
-                        else list(_mode_override_targets(mode_name))
-                    )
-                    for target in targets:
+                    for target in _mode_override_targets(mode_name):
                         entry = profiles.setdefault(target, {})
                         entry.setdefault("preload_tools", tools)
             if legacy_max_steps and isinstance(legacy_max_steps, dict):
                 for mode_name, steps in legacy_max_steps.items():
-                    normalized_name = _normalize_mode_name(mode_name)
-                    targets = (
-                        ["chat", "chat-reply"]
-                        if normalized_name == "chat"
-                        else list(_mode_override_targets(mode_name))
-                    )
-                    for target in targets:
+                    for target in _mode_override_targets(mode_name):
                         entry = profiles.setdefault(target, {})
                         entry.setdefault("max_steps", steps)
 

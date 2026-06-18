@@ -8,9 +8,9 @@ heartbeats, and a multi-cycle planning loop tied to Ouro quests.
 
 ## Highlights
 
-- **Multiple run modes** — chat, autonomous, heartbeat, plan, review,
-  chat-reply. Each mode has a declarative profile controlling prompt
-  framing, tool access, and lifecycle.
+- **Multiple run modes** — chat, autonomous, heartbeat, plan, review.
+  Each mode has a declarative profile controlling prompt framing, tool
+  access, and lifecycle.
 - **Subagents** — built-in `research`, `planner`, `executor`, `writer`,
   `developer` profiles, plus a parallel `delegate` tool for fan-out work.
   Custom profiles can be dropped into `workspace/subagents/`.
@@ -212,7 +212,7 @@ The package layout:
 ```
 ouro_agents/
 ├── agent.py            # OuroAgent orchestrator
-├── runner.py           # CLI entry point
+├── cli/                # Typer CLI entry point (serve/run/chat/...)
 ├── server.py           # FastAPI + webhook routing
 ├── config.py           # Pydantic config models + loader
 ├── modes/              # mode profiles + heartbeat + planning

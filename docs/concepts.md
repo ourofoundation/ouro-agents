@@ -32,8 +32,7 @@ Built-in modes (see [`run-modes.md`](./run-modes.md)):
 
 | Mode | What triggers it | Notes |
 |------|------------------|-------|
-| `chat` | `ouro-agents chat` | Loads conversation state, no preflight. |
-| `chat-reply` | Webhook from Ouro chat | Reply gets posted automatically. |
+| `chat` | `ouro-agents chat` or webhook from Ouro chat | Loads conversation state, no preflight. Webhook replies are posted automatically. |
 | `autonomous` | `ouro-agents run "..."` | Full preflight + post-reflection. |
 | `heartbeat` | Scheduler tick | Lightweight, restricted to `ouro` server. |
 | `plan` | `ouro-agents plan` or scheduler | Generates a plan cycle. |
@@ -141,7 +140,7 @@ to their task context. See [Skills](./skills.md).
 
 ## Putting it together: a typical run
 
-A single chat-reply run roughly looks like:
+A single chat run (webhook-triggered) roughly looks like:
 
 ```
 event → server                                 # FastAPI handle_event
@@ -149,7 +148,7 @@ event → server                                 # FastAPI handle_event
   → _run_event_task
     → handle_plan_feedback?                    # plan-routing branch
     → asset.deleted?                           # cleanup branch
-    → OuroAgent.run(task, mode=CHAT_REPLY, ...)
+    → OuroAgent.run(task, mode=CHAT, ...)
       → resolve mode profile + overrides
       → preflight subagent (if not skipped)
       → build tools, system prompt, dynamic context

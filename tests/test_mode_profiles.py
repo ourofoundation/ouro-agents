@@ -3,7 +3,6 @@ from ouro_agents.modes.profiles import (
     AUTONOMOUS_ACTION_PRELOADS,
     CHAT,
     CHAT_HOTPATH_PRELOADS,
-    CHAT_REPLY,
     RunMode,
     apply_capability_envelope,
     resolve_mode_profile,
@@ -21,16 +20,13 @@ def test_autonomous_mode_preloads_core_ouro_action_tools():
     ]
 
 
-def test_chat_modes_keep_subagents_available_for_explicit_work():
+def test_chat_mode_keeps_subagents_available_for_explicit_work():
     assert CHAT.allow_delegation is True
-    assert CHAT_REPLY.allow_delegation is True
     assert resolve_mode_profile(RunMode.CHAT).allow_delegation is True
-    assert resolve_mode_profile(RunMode.CHAT_REPLY).allow_delegation is True
 
 
-def test_chat_modes_preload_hotpath_tools():
+def test_chat_mode_preloads_hotpath_tools():
     assert CHAT.preload_tools == CHAT_HOTPATH_PRELOADS
-    assert CHAT_REPLY.preload_tools == CHAT_HOTPATH_PRELOADS
     assert resolve_mode_profile(RunMode.CHAT).preload_tools == [
         "ouro:search_assets",
         "ouro:get_asset",
@@ -40,9 +36,8 @@ def test_chat_modes_preload_hotpath_tools():
     ]
 
 
-def test_chat_modes_are_conversational_and_work_modes_are_not():
+def test_chat_mode_is_conversational_and_work_modes_are_not():
     assert CHAT.conversational is True
-    assert CHAT_REPLY.conversational is True
     assert AUTONOMOUS.conversational is False
 
 

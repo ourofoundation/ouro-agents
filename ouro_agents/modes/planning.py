@@ -27,7 +27,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, model_validator
 
 from ..constants import _INTERVAL_RE, parse_json_from_llm
-from ..memory.focus import build_focus_memory_context, is_directional_feedback
+from ..memory.focus import build_focus_memory_context, remember_work_direction
 from ..syncing import normalize_status, read_field
 
 if TYPE_CHECKING:
@@ -346,6 +346,10 @@ def render_plan_context(cycle: PlanCycle) -> str:
     else:
         label = "Default Plan"
     parts = [f"## {label} (id: {cycle.id[:8]}, quest: {cycle.quest_id or 'n/a'})"]
+    if cycle.human_feedback:
+        parts.append(f"Controller / reviewer direction: {cycle.human_feedback}\n")
+    if cycle.plan_text and total:
+        parts.append(f"Plan notes:\n{cycle.plan_text}\n")
     if total:
         parts.append(f"Progress: {done}/{total} items complete\n")
         parts.append(render_plan_items(cycle.items))
@@ -538,35 +542,22 @@ def remember_plan_feedback_direction(
     feedback: str | None,
 ) -> None:
     """Store plan-review feedback that should influence future planning."""
-    if not feedback or not is_directional_feedback(feedback):
-        return
-
-    memory = getattr(agent, "memory", None)
     agent_cfg = getattr(getattr(agent, "config", None), "agent", None)
     agent_name = getattr(agent_cfg, "name", "")
-    if not memory or not agent_name:
+    if not agent_name:
         return
-
-    metadata = {
-        "category": "direction",
-        "basis": "stated",
-        "stability": "stable",
-        "strength": 0.8,
-        "source": f"plan-feedback:{cycle.quest_id or cycle.id}",
-    }
-    if cycle.quest_id:
-        metadata["asset_ids"] = cycle.quest_id
-
-    try:
-        memory.add(
-            f"Planning guidance from review feedback: {feedback}",
-            agent_id=agent_name,
-            run_id=getattr(agent, "_current_run_id", "") or cycle.id,
-            metadata=metadata,
-            team_id=cycle.team_id,
-        )
-    except Exception as e:
-        logger.warning("Failed to store plan feedback direction memory: %s", e)
+    source = f"plan-feedback:{cycle.quest_id or cycle.id}"
+    remember_work_direction(
+        getattr(agent, "memory", None),
+        agent_name,
+        feedback,
+        source=source,
+        run_id=getattr(agent, "_current_run_id", "") or cycle.id,
+        team_id=cycle.team_id,
+        asset_id=cycle.quest_id,
+        strength=0.8,
+        text_prefix="Planning guidance from review feedback",
+    )
 
 
 def notify_controller_plan_ready(

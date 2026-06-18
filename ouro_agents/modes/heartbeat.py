@@ -17,6 +17,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from ..config import HeartbeatConfig
 from ..constants import parse_interval_seconds, parse_json_from_llm
+from ..memory.focus import FOCUS_MEMORY_QUERIES, build_focus_memory_context
 
 if TYPE_CHECKING:
     from ..agent import OuroAgent
@@ -200,13 +201,296 @@ def _load_playbook(agent: "OuroAgent", heartbeat_doc_store) -> str | None:
     return playbook
 
 
+def _load_work_direction_context(agent: "OuroAgent", team_id: str | None) -> str:
+    """Load durable work-direction guidance that should constrain heartbeats."""
+    agent_cfg = getattr(getattr(agent, "config", None), "agent", None)
+    agent_name = getattr(agent_cfg, "name", "")
+    if not agent_name:
+        return ""
+
+    guidance = (
+        "Treat these as strong controller/user direction for choosing heartbeat "
+        "focus. If this conflicts with stale tasks, plans, or broad research "
+        "interests, follow the work direction and avoid the conflicting work."
+    )
+    memory = getattr(agent, "memory", None)
+    contexts: list[str] = []
+    if team_id:
+        context = build_focus_memory_context(
+            memory,
+            agent_name,
+            team_id=team_id,
+            heading="Current Work Direction Guidance",
+            guidance=guidance,
+        )
+        if context:
+            contexts.append(context)
+    else:
+        context = build_focus_memory_context(
+            memory,
+            agent_name,
+            heading="Current Work Direction Guidance",
+            guidance=guidance,
+        )
+        if context:
+            contexts.append(context)
+        for candidate_team_id in _sorted_team_ids(agent):
+            context = build_focus_memory_context(
+                memory,
+                agent_name,
+                team_id=candidate_team_id,
+                heading=f"Current Work Direction Guidance for team {candidate_team_id}",
+                guidance=guidance,
+                limit=3,
+            )
+            if context:
+                contexts.append(context)
+
+    return "\n\n".join(contexts)
+
+
 def _sorted_team_ids(agent: "OuroAgent") -> list[str]:
-    if not agent.team_registry:
+    team_registry = getattr(agent, "team_registry", None)
+    if not team_registry:
         return []
-    return sorted(agent.team_registry.team_ids())
+    return sorted(team_registry.team_ids())
 
 
-def _select_heartbeat_team_id(team_plan_stores: dict[str, object]) -> str | None:
+def _parse_signal_time(value: Any) -> float:
+    if not value:
+        return 0.0
+    try:
+        text = str(value).replace("Z", "+00:00")
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _planning_team_is_writable(agent: "OuroAgent", team_id: str) -> bool:
+    registry = getattr(agent, "team_registry", None)
+    get_team = getattr(registry, "get_team", None)
+    if not callable(get_team):
+        return True
+    team = get_team(team_id)
+    return bool(getattr(team, "agent_can_create", True)) if team else True
+
+
+def _team_label_fragments(agent: "OuroAgent", team_id: str) -> set[str]:
+    fragments = {team_id.lower()}
+    registry = getattr(agent, "team_registry", None)
+    get_team = getattr(registry, "get_team", None)
+    if callable(get_team):
+        team = get_team(team_id)
+        if team:
+            for attr in ("name", "slug"):
+                value = str(getattr(team, attr, "") or "").strip().lower()
+                if value:
+                    fragments.add(value)
+    return fragments
+
+
+def _text_mentions_team_label(text: str, labels: set[str]) -> bool:
+    lowered = text.lower()
+    for label in labels:
+        if not label:
+            continue
+        if re.search(rf"(?<![\w-]){re.escape(label)}(?![\w-])", lowered):
+            return True
+    return False
+
+
+def _team_direction_score(agent: "OuroAgent", team_id: str) -> tuple[float, float, str]:
+    agent_cfg = getattr(getattr(agent, "config", None), "agent", None)
+    agent_name = getattr(agent_cfg, "name", "")
+    memory = getattr(agent, "memory", None)
+    if not agent_name or not memory:
+        return 0.0, 0.0, ""
+
+    best_score = 0.0
+    best_time = 0.0
+    best_reason = ""
+
+    def consider(matches: list[Any], base: float, reason: str) -> None:
+        nonlocal best_score, best_time, best_reason
+        for match in matches:
+            text = (getattr(match, "text", "") or "").strip()
+            if not text:
+                continue
+            strength = float(getattr(match, "strength", 0.8) or 0.8)
+            signal_time = _parse_signal_time(getattr(match, "created_at", ""))
+            score = base + min(10.0, max(0.0, strength * 10.0))
+            if score > best_score or (score == best_score and signal_time > best_time):
+                best_score = score
+                best_time = signal_time
+                best_reason = reason
+
+    for query in FOCUS_MEMORY_QUERIES:
+        try:
+            team_matches = memory.search(
+                query=query,
+                agent_id=agent_name,
+                team_id=team_id,
+                scope="team",
+                category="direction",
+                limit=4,
+            )
+            consider(list(team_matches or []), 100.0, "team direction memory")
+        except TypeError:
+            try:
+                team_matches = memory.search(
+                    query=query,
+                    agent_id=agent_name,
+                    team_id=team_id,
+                    scope="team",
+                    limit=4,
+                )
+                consider(list(team_matches or []), 95.0, "team focus memory")
+            except Exception as e:
+                logger.debug("Failed to score team direction memory: %s", e)
+                break
+        except Exception as e:
+            logger.debug("Failed to score team direction memory: %s", e)
+            break
+
+    labels = _team_label_fragments(agent, team_id)
+    for query in FOCUS_MEMORY_QUERIES:
+        try:
+            global_matches = memory.search(
+                query=query,
+                agent_id=agent_name,
+                scope="global",
+                category="direction",
+                limit=6,
+            )
+        except TypeError:
+            try:
+                global_matches = memory.search(
+                    query=query,
+                    agent_id=agent_name,
+                    scope="global",
+                    limit=6,
+                )
+            except Exception as e:
+                logger.debug("Failed to score global direction memory: %s", e)
+                break
+        except Exception as e:
+            logger.debug("Failed to score global direction memory: %s", e)
+            break
+        matching_global = [
+            match
+            for match in list(global_matches or [])
+            if _text_mentions_team_label(getattr(match, "text", "") or "", labels)
+        ]
+        consider(matching_global, 85.0, "global direction memory naming team")
+
+    return best_score, best_time, best_reason
+
+
+def _recent_run_team_scores(
+    agent: "OuroAgent",
+    candidate_team_ids: set[str],
+    *,
+    lookback_days: int = 7,
+) -> dict[str, tuple[float, float, str]]:
+    run_log = getattr(agent, "_run_log", None)
+    query_runs = getattr(run_log, "query_runs", None)
+    if not callable(query_runs):
+        return {}
+
+    since = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    try:
+        rows = query_runs(since=since, limit=80)
+    except Exception as e:
+        logger.debug("Failed to query recent run history for team selection: %s", e)
+        return {}
+
+    security = getattr(getattr(agent, "config", None), "security", None)
+    controller_ids = set(getattr(security, "resolved_controller_ids", []) or [])
+    trusted_ids = set(getattr(security, "resolved_trusted_ids", []) or [])
+    scores: dict[str, tuple[float, float, str]] = {}
+
+    for index, row in enumerate(rows or []):
+        team_id = str(row.get("team_id") or "")
+        if team_id not in candidate_team_ids:
+            continue
+        user_id = str(row.get("user_id") or "")
+        role = str(row.get("capability_role") or "").lower()
+        trusted_actor = (
+            role in {"controller", "trusted"}
+            or user_id in controller_ids
+            or user_id in trusted_ids
+        )
+        base = 60.0 if trusted_actor else 30.0
+        score = max(1.0, base - float(index))
+        signal_time = _parse_signal_time(row.get("started_at"))
+        reason = "recent controller/trusted activity" if trusted_actor else "recent agent activity"
+        current = scores.get(team_id)
+        if (
+            current is None
+            or score > current[0]
+            or (score == current[0] and signal_time > current[1])
+        ):
+            scores[team_id] = (score, signal_time, reason)
+    return scores
+
+
+def _select_planning_team_id(
+    agent: "OuroAgent", team_plan_stores: dict[str, object]
+) -> str | None:
+    candidate_ids = {
+        team_id
+        for team_id, store in team_plan_stores.items()
+        if store.load_default() is None and _planning_team_is_writable(agent, team_id)
+    }
+    if not candidate_ids:
+        return None
+
+    scored: dict[str, tuple[float, float, list[str]]] = {
+        team_id: (0.0, 0.0, []) for team_id in candidate_ids
+    }
+
+    for team_id in candidate_ids:
+        score, signal_time, reason = _team_direction_score(agent, team_id)
+        if score:
+            total, latest, reasons = scored[team_id]
+            scored[team_id] = (
+                total + score,
+                max(latest, signal_time),
+                reasons + [reason],
+            )
+
+    for team_id, (score, signal_time, reason) in _recent_run_team_scores(
+        agent, candidate_ids
+    ).items():
+        total, latest, reasons = scored[team_id]
+        scored[team_id] = (
+            total + score,
+            max(latest, signal_time),
+            reasons + [reason],
+        )
+
+    ranked = [
+        (score, signal_time, team_id, reasons)
+        for team_id, (score, signal_time, reasons) in scored.items()
+        if score > 0
+    ]
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
+    selected_score, _signal_time, selected, reasons = ranked[0]
+    logger.info(
+        "Selected planning team %s by policy score=%.1f reasons=%s",
+        selected[:8],
+        selected_score,
+        ", ".join(reasons) or "none",
+    )
+    return selected
+
+
+def _select_heartbeat_team_id(
+    team_plan_stores: dict[str, object],
+    agent: "OuroAgent" | None = None,
+) -> str | None:
     ranked: list[tuple[int, str]] = []
     priorities = {"active": 0, "pending_review": 1, "planning": 2}
     for team_id, store in team_plan_stores.items():
@@ -223,13 +507,25 @@ def _select_heartbeat_team_id(team_plan_stores: dict[str, object]) -> str | None
         return selected
     if len(team_plan_stores) == 1:
         fallback = next(iter(team_plan_stores), None)
+        if agent is not None and fallback and not _planning_team_is_writable(
+            agent, fallback
+        ):
+            logger.info(
+                "No teams have active plans; only team %s is not writable by agents",
+                fallback[:8],
+            )
+            return None
         logger.info(
             "No teams have active plans; defaulting to only team %s",
             fallback[:8] if fallback else "none",
         )
         return fallback
+    if agent is not None:
+        selected = _select_planning_team_id(agent, team_plan_stores)
+        if selected:
+            return selected
     logger.info(
-        "No teams have active plans; running general heartbeat unscoped (%d teams total)",
+        "No teams have active plans or planning-team signals; running general heartbeat unscoped (%d teams total)",
         len(team_plan_stores),
     )
     return None
@@ -629,7 +925,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
             for cycle in store.load_all_active():
                 reconcile_plan_with_remote_quest(store, cycle, ouro_client)
 
-        heartbeat_team_id = _select_heartbeat_team_id(team_plan_stores)
+        heartbeat_team_id = _select_heartbeat_team_id(team_plan_stores, agent=agent)
         default_plan = None
         if heartbeat_team_id:
             plan_store = team_plan_stores[heartbeat_team_id]
@@ -863,6 +1159,9 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
             playbook_for_preflight = _load_playbook(agent, heartbeat_doc_store)
 
             preflight_context = f"## Active Plans\n{render_all_plans_context(active_plans)}"
+            direction_context = _load_work_direction_context(agent, heartbeat_team_id)
+            if direction_context:
+                preflight_context = f"{direction_context}\n\n{preflight_context}"
             if playbook_for_preflight:
                 preflight_context = f"## Playbook\n{playbook_for_preflight}\n\n{preflight_context}"
 
@@ -925,6 +1224,15 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
             "(checked team doc store, global doc store, and local HEARTBEAT.md)"
         )
         return None
+
+    direction_context = _load_work_direction_context(agent, heartbeat_team_id)
+    if direction_context:
+        playbook = (
+            f"{playbook}\n\n## Current Work Direction\n{direction_context}\n\n"
+            "Before choosing work for this heartbeat, apply the current work "
+            "direction above as a hard priority signal. Do not choose unrelated "
+            "research or browsing when a current direction names a concrete focus."
+        )
 
     if not is_within_active_hours(agent.config.heartbeat):
         playbook += (

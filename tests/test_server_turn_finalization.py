@@ -15,7 +15,7 @@ def _observer() -> tuple[ServerAgentObserver, MagicMock]:
         team_id=None,
         actor_user_id="agent-1",
         actor_username="hermes",
-        mode=RunMode.CHAT_REPLY,
+        mode=RunMode.CHAT,
         asset_id=None,
         asset_type=None,
         root_asset_id=None,

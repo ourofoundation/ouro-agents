@@ -117,8 +117,7 @@ Names are scoped by team and agent:
 Per-conversation state lives under `workspace/conversations/<id>/`:
 
 - `state.json` — a `ConversationState` object (current topic, turn count,
-  open questions, recent decisions, etc.). Used by `chat` and `chat-reply`
-  modes.
+  open questions, recent decisions, etc.). Used by the `chat` mode.
 - `turns.jsonl` — raw user/assistant turns, optionally with a structured
   `tool_summary`.
 

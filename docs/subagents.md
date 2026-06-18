@@ -98,8 +98,8 @@ domains.
 
 ## The `delegate` tool
 
-When a profile has `allow_delegation=True` (true for `chat`, `chat-reply`,
-and `autonomous` by default), the main agent has a `delegate` tool that
+When a profile has `allow_delegation=True` (true for `chat` and
+`autonomous` by default), the main agent has a `delegate` tool that
 takes a list of task specs:
 
 ```json

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -646,6 +647,26 @@ class OuroAgent:
     def _is_anthropic_model(self, model_id: str) -> bool:
         return model_id.startswith("anthropic/")
 
+    # Alibaba's commercial Qwen line (``-plus`` / ``-max`` / ``-flash``, with an
+    # optional ``-preview`` snapshot) is served exclusively by DashScope, which
+    # supports Anthropic-style ``cache_control`` markers. Dated snapshots
+    # (e.g. ``qwen3.5-plus-02-15``) and middle-qualifier variants
+    # (``-coder-``, ``-vl-``) do NOT support explicit caching, so they are
+    # excluded. Open-source Qwen ids route across providers that mostly ignore
+    # the markers and are excluded too.
+    _QWEN_EXPLICIT_CACHE_RE = re.compile(
+        r"^qwen/qwen\d+(?:\.\d+){0,2}-(?:plus|max|flash)(?:-preview)?$"
+    )
+
+    def _supports_explicit_cache(self, model_id: str) -> bool:
+        """Models that need per-message ``cache_control`` breakpoints.
+
+        Unlike Anthropic (where OpenRouter honors a top-level ``cache_control``
+        field), Alibaba/Qwen only caches when the markers are injected into the
+        message content blocks. ``TrackedOpenAIModel`` does that injection.
+        """
+        return bool(self._QWEN_EXPLICIT_CACHE_RE.match(model_id))
+
     def _resolve_reasoning(
         self,
         *,
@@ -768,12 +789,17 @@ class OuroAgent:
         if tool_choice is not None:
             model_kwargs["tool_choice"] = tool_choice
 
+        cache_cfg = self.config.prompt_caching
+        explicit_cache = cache_cfg.enabled and self._supports_explicit_cache(model_id)
+
         return TrackedOpenAIModel(
             model_id=model_id,
             api_base="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
             tracker=usage_tracker or self._usage_tracker,
             reasoning_callback=get_display().reasoning,
+            cache_breakpoints=explicit_cache,
+            cache_ttl=cache_cfg.ttl,
             **model_kwargs,
         )
 

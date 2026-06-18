@@ -431,10 +431,10 @@ def _build_event_task(
         hint = _ready_hint(preload_names)
         if hint:
             task += f"\n\n{hint}"
-        return task, RunMode.CHAT_REPLY, tuple(preload_names), prefetch
+        return task, RunMode.CHAT, tuple(preload_names), prefetch
 
     if event_type == "new-conversation":
-        return "", RunMode.CHAT_REPLY, tuple(preload_names), prefetch
+        return "", RunMode.CHAT, tuple(preload_names), prefetch
 
     if event_type in {"comment", "mention"}:
         ctx = comment_ctx or CommentContext.from_event(event)

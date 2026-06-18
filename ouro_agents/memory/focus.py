@@ -77,6 +77,48 @@ def is_directional_feedback(feedback: str) -> bool:
     return any(keyword in text for keyword in FOCUS_KEYWORDS)
 
 
+def remember_work_direction(
+    memory: MemoryBackend | None,
+    agent_id: str,
+    direction: str | None,
+    *,
+    source: str,
+    run_id: str = "",
+    team_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    strength: float = 0.9,
+    text_prefix: str = "Work direction",
+) -> bool:
+    """Store controller/user guidance that should steer future work selection."""
+    if not memory or not agent_id or not direction:
+        return False
+    if not is_directional_feedback(direction):
+        return False
+
+    metadata = {
+        "category": "direction",
+        "basis": "stated",
+        "stability": "stable",
+        "strength": strength,
+        "source": source,
+    }
+    if asset_id:
+        metadata["asset_ids"] = asset_id
+
+    try:
+        memory.add(
+            f"{text_prefix}: {direction}",
+            agent_id=agent_id,
+            run_id=run_id,
+            metadata=metadata,
+            team_id=team_id,
+        )
+        return True
+    except Exception as e:
+        logger.warning("Failed to store work direction memory: %s", e)
+        return False
+
+
 def _focus_sort_key(memory) -> tuple[int, float, str]:
     category = getattr(memory, "category", "fact") or "fact"
     priority = {

@@ -2,7 +2,6 @@ from .framing import build_output_format
 from .profiles import (
     AUTONOMOUS,
     CHAT,
-    CHAT_REPLY,
     HEARTBEAT,
     MODE_REGISTRY,
     PLAN,
@@ -23,7 +22,6 @@ __all__ = [
     "apply_capability_envelope",
     "build_output_format",
     "CHAT",
-    "CHAT_REPLY",
     "AUTONOMOUS",
     "HEARTBEAT",
     "PLAN",

@@ -27,7 +27,7 @@ pre-opened connection (or thin KV helper) bound to
 - Surface as raw `sqlite3` connection, or a small `kv_get`/`kv_set`/`kv_list`
   helper layered on top? Probably both — helpers for the 90% case, raw conn
   for anything else.
-- Concurrency: heartbeat + chat-reply can overlap. SQLite WAL mode handles
+- Concurrency: heartbeat + chat can overlap. SQLite WAL mode handles
   this, but worth confirming under the agent's actual call patterns.
 - Migration story if we later want to evolve the schema.
 

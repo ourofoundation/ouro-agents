@@ -21,7 +21,7 @@ function agentApp(name, configFile, envFile) {
     cwd: appDir,
     script: pythonBin,
     interpreter: "none",
-    args: ["-m", "ouro_agents.runner", "--config", configFile, "--env-file", path.join(appDir, envFile), "serve"],
+    args: ["-m", "ouro_agents.cli", "--config", configFile, "--env-file", path.join(appDir, envFile), "serve"],
     exec_mode: "fork",
     instances: 1,
     autorestart: true,

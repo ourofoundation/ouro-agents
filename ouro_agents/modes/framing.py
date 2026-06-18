@@ -90,9 +90,10 @@ Write final replies with standard Markdown plus the Ouro Markdown syntax from lo
 
 CHAT_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Chat mode: answer directly. If you need tools, attach the tool calls to the "
-    "same assistant message. When finished, return final assistant content with "
-    "no tool calls.\n\n"
+    "Answer directly. If you need tools, attach the tool calls to the "
+    "same assistant message. When finished, return final assistant content "
+    "with no tool calls — that final message is your reply to the "
+    "conversation.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
@@ -120,21 +121,10 @@ REVIEW_OUTPUT = (
     "message containing the required structured JSON and no tool calls. "
 )
 
-CHAT_REPLY_OUTPUT = (
-    "## OUTPUT FORMAT\n"
-    "Your final assistant content is posted to the conversation automatically. "
-    "If you need tools, attach the tool calls to the same assistant message. "
-    "When finished, return final assistant content with no tool calls.\n\n"
-    f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
-)
-
-
 def build_output_format(
     output_format: str,
     mode_name: str,
     preloaded_tool_names: list[str] | None = None,
 ) -> str:
     """Return the output format section for a mode."""
-    if mode_name == "chat-reply":
-        return CHAT_REPLY_OUTPUT
     return output_format

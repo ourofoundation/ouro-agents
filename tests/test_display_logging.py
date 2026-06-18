@@ -84,7 +84,7 @@ def test_subagent_step_is_spinner_only():
     event_run = EventRunContext(
         event_type="mention",
         task="reply",
-        mode=RunMode.CHAT_REPLY,
+        mode=RunMode.CHAT,
         conversation_id="conversation-1",
         user_id="user-1",
     )

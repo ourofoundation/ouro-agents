@@ -5,28 +5,33 @@ from unittest.mock import patch
 from ouro_agents.agent import OuroAgent
 
 
+def make_agent(
+    *,
+    openrouter_provider=None,
+    heartbeat_openrouter_provider=None,
+    subagent_profiles=None,
+    caching_enabled=False,
+    caching_ttl="5m",
+):
+    agent = OuroAgent.__new__(OuroAgent)
+    agent.config = SimpleNamespace(
+        agent=SimpleNamespace(reasoning=None),
+        prompt_caching=SimpleNamespace(enabled=caching_enabled, ttl=caching_ttl),
+        heartbeat=SimpleNamespace(
+            reasoning=None,
+            model="openai/gpt-4.1-mini",
+            openrouter_provider=heartbeat_openrouter_provider,
+        ),
+        subagents=SimpleNamespace(profiles=subagent_profiles or {}),
+        openrouter_provider=openrouter_provider,
+    )
+    agent._usage_tracker = object()
+    return agent
+
+
 class TestModelProviderOverrides(unittest.TestCase):
-    def _make_agent(
-        self,
-        *,
-        openrouter_provider=None,
-        heartbeat_openrouter_provider=None,
-        subagent_profiles=None,
-    ):
-        agent = OuroAgent.__new__(OuroAgent)
-        agent.config = SimpleNamespace(
-            agent=SimpleNamespace(reasoning=None),
-            prompt_caching=SimpleNamespace(enabled=False, ttl="5m"),
-            heartbeat=SimpleNamespace(
-                reasoning=None,
-                model="openai/gpt-4.1-mini",
-                openrouter_provider=heartbeat_openrouter_provider,
-            ),
-            subagents=SimpleNamespace(profiles=subagent_profiles or {}),
-            openrouter_provider=openrouter_provider,
-        )
-        agent._usage_tracker = object()
-        return agent
+    def _make_agent(self, **kwargs):
+        return make_agent(**kwargs)
 
     def test_defaults_to_auto_tool_choice_for_minimax(self):
         agent = self._make_agent()
@@ -173,6 +178,63 @@ class TestModelProviderOverrides(unittest.TestCase):
         extra_body = tracked_model.call_args.kwargs.get("extra_body")
         if extra_body is not None:
             self.assertNotIn("reasoning_split", extra_body)
+
+
+class TestExplicitCacheDetection(unittest.TestCase):
+    def setUp(self):
+        self.agent = OuroAgent.__new__(OuroAgent)
+
+    def test_commercial_qwen_tiers_supported(self):
+        for model_id in (
+            "qwen/qwen3.7-plus",
+            "qwen/qwen3.7-max",
+            "qwen/qwen3.6-flash",
+            "qwen/qwen3-max",
+            "qwen/qwen3.6-max-preview",
+        ):
+            self.assertTrue(
+                self.agent._supports_explicit_cache(model_id), model_id
+            )
+
+    def test_excluded_qwen_and_other_models(self):
+        for model_id in (
+            "qwen/qwen3-coder-plus",  # middle qualifier
+            "qwen/qwen3-vl-max",  # middle qualifier
+            "qwen/qwen3.5-plus-02-15",  # dated snapshot
+            "qwen/qwen3-235b-a22b",  # open-source
+            "anthropic/claude-sonnet-4",  # uses top-level path instead
+            "openai/gpt-4.1-mini",
+            "deepseek/deepseek-v4-pro",
+        ):
+            self.assertFalse(
+                self.agent._supports_explicit_cache(model_id), model_id
+            )
+
+
+class TestBuildModelCaching(unittest.TestCase):
+    def _build(self, model_id, **agent_kwargs):
+        agent = make_agent(**agent_kwargs)
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model(model_id)
+        return tracked_model.call_args.kwargs
+
+    def test_qwen_commercial_gets_breakpoints_when_enabled(self):
+        kwargs = self._build("qwen/qwen3.7-plus", caching_enabled=True, caching_ttl="1h")
+        self.assertTrue(kwargs["cache_breakpoints"])
+        self.assertEqual(kwargs["cache_ttl"], "1h")
+
+    def test_no_breakpoints_when_caching_disabled(self):
+        kwargs = self._build("qwen/qwen3.7-plus", caching_enabled=False)
+        self.assertFalse(kwargs["cache_breakpoints"])
+
+    def test_anthropic_does_not_use_message_breakpoints(self):
+        # Anthropic caches via the top-level cache_control field, not injection.
+        kwargs = self._build("anthropic/claude-sonnet-4", caching_enabled=True)
+        self.assertFalse(kwargs["cache_breakpoints"])
 
 
 if __name__ == "__main__":

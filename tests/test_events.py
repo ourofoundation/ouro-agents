@@ -27,7 +27,6 @@ def _load_events_module():
 
     class RunMode(str, Enum):
         CHAT = "chat"
-        CHAT_REPLY = "chat-reply"
         AUTONOMOUS = "autonomous"
         HEARTBEAT = "heartbeat"
         PLAN = "plan"

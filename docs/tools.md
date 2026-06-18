@@ -32,7 +32,7 @@ The four sources of tools:
 
 ## Scheduler tools
 
-Available in unrestricted modes (chat, autonomous, chat-reply). They wrap
+Available in unrestricted modes (chat, autonomous). They wrap
 `AgentScheduler` with team scoping injected:
 
 - `list_scheduled_tasks()`

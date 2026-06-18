@@ -43,11 +43,11 @@ the [Ouro](https://ouro.foundation) platform. A single agent process owns a
 workspace on disk, talks to Ouro through MCP, maintains its own memory, and
 runs in several modes:
 
-- **chat** — interactive, conversation-aware.
+- **chat** — interactive, conversation-aware. Drives both the local CLI chat
+  and webhook-driven replies inside Ouro conversations.
 - **autonomous** — one-shot tasks via `ouro-agents run`.
 - **heartbeat** — periodic ticks while inside active hours.
 - **plan / review** — generate and revise multi-step plans tied to Ouro quests.
-- **chat-reply** — webhook-driven replies inside Ouro conversations.
 
 Around the agent loop there are several supporting subsystems:
 

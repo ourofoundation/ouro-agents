@@ -195,8 +195,8 @@ Keys accepted (with aliases):
 
 - `run` → `autonomous`
 - `planning` → `plan`
-- `reply` → `chat-reply`
-- `chat`, `chat-reply`, `heartbeat` are accepted as-is.
+- `reply`, `chat-reply` → `chat` (the two chat modes were merged)
+- `chat`, `heartbeat` are accepted as-is.
 
 Each block accepts a `ModeOverride`:
 

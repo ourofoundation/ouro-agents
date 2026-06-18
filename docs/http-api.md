@@ -44,7 +44,7 @@ Request body:
 | `task` | Required. The user message. |
 | `conversation_id` | Pin to a specific conversation; created with a UUID v7 when omitted. |
 | `session_id` | Optional convenience: the server keeps an in-memory map from session id → conversation id, so repeat requests with the same `session_id` join the same thread. |
-| `mode` | One of `chat`, `chat-reply`, `autonomous`, `heartbeat`, `plan`, `review`. Defaults to `autonomous`. |
+| `mode` | One of `chat`, `autonomous`, `heartbeat`, `plan`, `review`. Defaults to `autonomous`. The legacy values `chat-reply`/`reply` are accepted and resolve to `chat`. |
 | `user_id` | Identity of the human you're proxying for; threaded into reflection and the user-model file. |
 
 Response:

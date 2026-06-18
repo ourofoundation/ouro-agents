@@ -176,6 +176,8 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertIn(
             "Ambient platform discoveries are evidence, not direction", REFLECTOR_PROMPT
         )
+        self.assertIn("NO_ACTION is only an immediate reply", REFLECTOR_PROMPT)
+        self.assertIn("decision; it must not cause you to discard", REFLECTOR_PROMPT)
 
     def test_returns_none_when_reflector_hits_max_steps(self):
         self.assertIsNone(parse_reflection_result("Reached max steps."))
@@ -335,13 +337,14 @@ class TestReflectionParsing(unittest.TestCase):
     def test_build_run_reflection_task_mentions_direction_feedback(self):
         task = build_run_reflection_task(
             task="Comment from alice: please focus more on dataset quality.",
-            result="Acknowledged and replied.",
+            result="NO_ACTION",
             tool_summary=[{"tool": "ouro:create_comment", "result": "replied"}],
             run_mode="autonomous",
             event_type="comment",
         )
 
         self.assertIn('category="direction"', task)
+        self.assertIn("even when the run result is NO_ACTION", task)
         self.assertIn("comments, mentions, plan-review feedback", task)
 
     def test_build_run_reflection_task_filters_noisy_tools_keeps_order(self):

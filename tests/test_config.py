@@ -49,7 +49,7 @@ class TestConfigModeOverrides(unittest.TestCase):
 
         self.assertEqual(config.modes.profiles["autonomous"].max_steps, 11)
         self.assertEqual(config.modes.profiles["plan"].max_steps, 4)
-        self.assertEqual(config.modes.profiles["chat-reply"].max_steps, 7)
+        self.assertEqual(config.modes.profiles["chat"].max_steps, 7)
 
     def test_hydrates_heartbeat_and_planning_sections_from_modes(self):
         data = _base_config()
@@ -111,7 +111,6 @@ class TestConfigModeOverrides(unittest.TestCase):
         config = self._load_config(data)
 
         self.assertEqual(config.modes.profiles["chat"].max_steps, 9)
-        self.assertEqual(config.modes.profiles["chat-reply"].max_steps, 9)
         self.assertEqual(config.modes.profiles["autonomous"].max_steps, 13)
         self.assertEqual(config.modes.profiles["plan"].max_steps, 5)
         self.assertEqual(config.modes.profiles["heartbeat"].max_steps, 3)

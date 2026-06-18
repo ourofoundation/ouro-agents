@@ -5,9 +5,10 @@ import unittest
 
 from ouro_agents.agent import _dedup_bullet_lines
 from ouro_agents.memory.conversation_state import ConversationState
-from ouro_agents.modes.framing import CHAT_REPLY_OUTPUT
-from ouro_agents.modes.profiles import CHAT, CHAT_REPLY
+from ouro_agents.modes.profiles import CHAT
+from ouro_agents.soul import build_prompt
 from ouro_agents.tools.agent_base import PlainTaskStep
+from ouro_agents.usage import inject_cache_control
 from ouro_agents.utils.conversation import (
     HISTORY_WINDOW_MIN,
     HISTORY_WINDOW_STEP,
@@ -105,18 +106,103 @@ class TestConversationStateSummary(unittest.TestCase):
 
 
 class TestChatToolExclusion(unittest.TestCase):
-    def test_chat_profiles_exclude_conversation_tools(self):
-        for profile in (CHAT, CHAT_REPLY):
-            self.assertIn("ouro:send_message", profile.excluded_tools)
-            self.assertIn("ouro:list_conversations", profile.excluded_tools)
-            self.assertIn("ouro:create_conversation", profile.excluded_tools)
+    def test_chat_profile_excludes_conversation_tools(self):
+        self.assertIn("ouro:send_message", CHAT.excluded_tools)
+        self.assertIn("ouro:list_conversations", CHAT.excluded_tools)
+        self.assertIn("ouro:create_conversation", CHAT.excluded_tools)
 
     def test_send_message_prohibition_language_removed(self):
-        self.assertNotIn("send_message", CHAT_REPLY_OUTPUT)
-        for profile in (CHAT, CHAT_REPLY):
-            self.assertNotIn(
-                "send_message", profile.conversation_id_annotation or ""
-            )
+        self.assertNotIn("send_message", CHAT.output_format)
+        self.assertNotIn("send_message", CHAT.conversation_id_annotation or "")
+
+
+class TestConversationIdPlacement(unittest.TestCase):
+    """The per-conversation id must live in dynamic context, not the static
+    system prompt — otherwise every conversation gets a unique prefix and
+    never shares a prompt cache entry."""
+
+    def test_conversation_id_is_dynamic_not_static(self):
+        conv_id = "abc-123-conv"
+        system_prompt, dynamic_context = build_prompt(
+            soul="Be precise.",
+            notes="",
+            skills="",
+            profile=CHAT,
+            chat_conversation_id=conv_id,
+        )
+        self.assertNotIn(conv_id, system_prompt)
+        self.assertIn(conv_id, dynamic_context)
+
+    def test_no_conversation_section_without_id(self):
+        system_prompt, dynamic_context = build_prompt(
+            soul="Be precise.",
+            notes="",
+            skills="",
+            profile=CHAT,
+            chat_conversation_id=None,
+        )
+        self.assertNotIn("Conversation id for this run", system_prompt)
+        self.assertNotIn("Conversation id for this run", dynamic_context)
+
+
+class TestInjectCacheControl(unittest.TestCase):
+    def _messages(self):
+        return [
+            {"role": "system", "content": "long stable system prompt"},
+            {"role": "user", "content": "first task"},
+            {"role": "assistant", "content": "thinking", "tool_calls": [{"id": "1"}]},
+            {"role": "tool", "content": "tool result"},
+        ]
+
+    def _markers(self, messages):
+        count = 0
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                count += sum(
+                    1 for b in content if isinstance(b, dict) and "cache_control" in b
+                )
+        return count
+
+    def test_marks_system_and_last_message(self):
+        messages = self._messages()
+        inject_cache_control(messages, ttl="5m")
+        # System prefix breakpoint.
+        self.assertEqual(
+            messages[0]["content"][0]["cache_control"], {"type": "ephemeral"}
+        )
+        # Advancing breakpoint on the most recent cacheable message.
+        self.assertEqual(
+            messages[-1]["content"][0]["cache_control"], {"type": "ephemeral"}
+        )
+        self.assertEqual(self._markers(messages), 2)
+
+    def test_ttl_is_propagated(self):
+        messages = self._messages()
+        inject_cache_control(messages, ttl="1h")
+        self.assertEqual(
+            messages[0]["content"][0]["cache_control"],
+            {"type": "ephemeral", "ttl": "1h"},
+        )
+
+    def test_idempotent_across_calls(self):
+        # The agent loop rebuilds messages each step; re-injecting must not
+        # accumulate markers beyond the two breakpoints (providers cap at 4).
+        messages = self._messages()
+        inject_cache_control(messages, ttl="5m")
+        inject_cache_control(messages, ttl="5m")
+        self.assertEqual(self._markers(messages), 2)
+
+    def test_skips_message_without_text(self):
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "1"}]},
+        ]
+        inject_cache_control(messages, ttl="5m")
+        # System gets the prefix marker; the tool-call-only turn is skipped, so
+        # the advancing breakpoint falls back onto the system message.
+        self.assertEqual(self._markers(messages), 1)
+        self.assertIsNone(messages[1]["content"])
 
 
 if __name__ == "__main__":

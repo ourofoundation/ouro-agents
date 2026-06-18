@@ -5,7 +5,7 @@ resource limits, and behavioral flags.  This mirrors SubAgentProfile — a singl
 declarative object that captures everything about a mode, replacing scattered
 conditionals throughout agent.py and soul.py.
 
-Built-in profiles cover the six core modes.  User config can override
+Built-in profiles cover the five core modes.  User config can override
 ``max_steps`` and ``preload_tools`` per mode via ``ModeOverride``.
 """
 
@@ -32,7 +32,6 @@ from .framing import (
 
 class RunMode(str, Enum):
     CHAT = "chat"
-    CHAT_REPLY = "chat-reply"
     AUTONOMOUS = "autonomous"
     HEARTBEAT = "heartbeat"
     PLAN = "plan"
@@ -79,7 +78,7 @@ class ModeProfile(BaseModel):
     append_conversation_turns: bool = True
     update_conversation_state: bool = False
 
-    # Chat-reply conversation-id annotation style (None = don't add)
+    # Conversation-id annotation style (None = don't add)
     conversation_id_annotation: Optional[str] = None
 
     def allows_capability(self, capability: Capability | str) -> bool:
@@ -140,26 +139,7 @@ CHAT = ModeProfile(
     skip_post_reflection=True,
     append_conversation_turns=False,
     update_conversation_state=True,
-    conversation_id_annotation="conversation memory/history only",
-)
-
-CHAT_REPLY = ModeProfile(
-    name="chat-reply",
-    framing=CHAT_FRAMING,
-    output_format="",  # dynamic — see framing.CHAT_REPLY_OUTPUT
-    max_steps=20,
-    preload_tools=CHAT_HOTPATH_PRELOADS,
-    excluded_tools=CHAT_EXCLUDED_TOOLS,
-    conversational=True,
-    load_conversation_state=True,
-    include_chat_conversation_id=True,
-    skip_preflight=True,
-    skip_post_reflection=True,
-    append_conversation_turns=False,
-    update_conversation_state=True,
-    conversation_id_annotation=(
-        "your final assistant content will be posted automatically"
-    ),
+    conversation_id_annotation="this conversation's history and memory",
 )
 
 AUTONOMOUS = ModeProfile(
@@ -218,11 +198,10 @@ REVIEW = ModeProfile(
 # Registry
 # ---------------------------------------------------------------------------
 
-PROFILES = [CHAT, CHAT_REPLY, AUTONOMOUS, HEARTBEAT, PLAN, REVIEW]
+PROFILES = [CHAT, AUTONOMOUS, HEARTBEAT, PLAN, REVIEW]
 
 MODE_REGISTRY: dict[RunMode, ModeProfile] = {
     RunMode.CHAT: CHAT,
-    RunMode.CHAT_REPLY: CHAT_REPLY,
     RunMode.AUTONOMOUS: AUTONOMOUS,
     RunMode.HEARTBEAT: HEARTBEAT,
     RunMode.PLAN: PLAN,

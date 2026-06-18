@@ -80,6 +80,18 @@ class RunRequest(BaseModel):
     run_secret: Optional[str] = None
 
 
+# Legacy mode aliases accepted on the HTTP API. ``chat-reply``/``reply`` were
+# merged into the single ``chat`` mode.
+_REQUEST_MODE_ALIASES = {"chat-reply": "chat", "reply": "chat", "run": "autonomous"}
+
+
+def _resolve_request_mode(mode: Optional[str]) -> RunMode:
+    if not mode:
+        return RunMode.AUTONOMOUS
+    normalized = _REQUEST_MODE_ALIASES.get(mode.strip().lower(), mode)
+    return RunMode(normalized)
+
+
 def _get_ouro_client_env(config: OuroAgentsConfig) -> Dict[str, str]:
     for server in config.mcp_servers:
         if server.name == "ouro" and server.env:
@@ -1015,7 +1027,7 @@ async def run_task(request: RunRequest, http_request: Request):
                 if request.session_id:
                     session_threads[request.session_id] = conversation_id
 
-        mode = RunMode(request.mode) if request.mode else RunMode.AUTONOMOUS
+        mode = _resolve_request_mode(request.mode)
         capability_envelope = _run_request_envelope(http_request, request)
         result = await agent_instance.run(
             task=request.task,
