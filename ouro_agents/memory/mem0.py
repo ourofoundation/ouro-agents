@@ -643,6 +643,31 @@ class Mem0Backend:
         except Exception as e:
             logger.warning("Failed to update memory metadata %s: %s", memory_id, e)
 
+    def update_text(self, memory_id: str, text: str) -> None:
+        if not memory_id or not text.strip():
+            raise ValueError("memory_id and non-empty text are required")
+        raw = self._mem.get(memory_id)
+        if not raw:
+            raise ValueError(f"Memory with id {memory_id} not found")
+        metadata = _extract_metadata(raw)
+        metadata["content_hash"] = content_hash(text)
+        metadata["updated_at"] = utc_now().isoformat()
+        item = memory_item_from_raw(text, metadata)
+        metadata.update(to_metadata(item))
+        for legacy_key in ("team_id", "asset_refs", "mode", "event_type"):
+            metadata.pop(legacy_key, None)
+        self._mem.update(memory_id, text, metadata=metadata)
+
+    def get(self, memory_id: str) -> Optional[MemoryResult]:
+        if not memory_id:
+            return None
+        try:
+            raw = self._mem.get(memory_id)
+        except Exception as e:
+            logger.warning("Failed to fetch memory %s: %s", memory_id, e)
+            return None
+        return _to_result(raw) if raw else None
+
     def delete(self, memory_id: str) -> None:
         if not memory_id:
             return

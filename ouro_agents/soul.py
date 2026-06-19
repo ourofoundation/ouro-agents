@@ -24,6 +24,8 @@ MCP_TOOL_RULES = (
     "important fact that should affect future runs, call `remember` if available. Do not store raw "
     "episodes or task mechanics in vector memory, and do not hand-edit MEMORY.md. To retrieve prior "
     "context, call `memory_recall`; when it returns asset refs, use get_asset to load them if needed.\n"
+    "- When a recalled memory is wrong or outdated, fix it immediately: `update_memory(id, ...)` to "
+    "revise it in place, or `forget(id, ...)` to delete it. memory_recall returns the id to use.\n"
     "- For complex multi-step workflows or batch operations, delegate to the `developer` subagent — "
     "it has direct access to the Ouro Python SDK."
 )

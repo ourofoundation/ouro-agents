@@ -161,7 +161,6 @@ HEARTBEAT = ModeProfile(
         "ouro:create_comment",
         "ouro:create_post",
     ],
-    restricted_servers=True,
     lightweight=True,
     skip_preflight=True,
     load_scheduled_tasks=False,

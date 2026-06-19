@@ -37,6 +37,8 @@ def test_heartbeat_framing_allows_direction_proposal_posts():
     assert "do not create a quest" in HEARTBEAT_FRAMING
     assert "ouro:search_assets" in HEARTBEAT.preload_tools
     assert "ouro:create_post" in HEARTBEAT.preload_tools
+    assert HEARTBEAT.restricted_servers is False
+    assert HEARTBEAT.allow_delegation is True
 
 
 def test_heartbeat_preflight_mentions_direction_guidance():

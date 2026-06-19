@@ -1,3 +1,5 @@
+import json
+
 from ouro_agents.memory.tools import _normalize_memory_queries
 from ouro_agents.memory.tools import make_memory_tools
 from ouro_agents.memory import MemoryResult
@@ -193,3 +195,75 @@ def test_memory_recall_ranks_direction_above_ambient_asset_observation():
 
     assert "Focus on benchmark quality" in result
     assert "2:17 RE-Fe/Co" not in result
+
+
+class _MutableBackend(_FakeBackend):
+    def __init__(self):
+        super().__init__()
+        self.deleted = []
+        self.updated = []
+
+    def search(self, **kwargs):
+        self.search_calls.append(kwargs)
+        return [MemoryResult(id="mem-1", text="An outdated fact", category="fact")]
+
+    def delete(self, memory_id):
+        self.deleted.append(memory_id)
+
+    def update_text(self, memory_id, text):
+        self.updated.append((memory_id, text))
+
+
+def test_write_tools_only_exposed_when_remember_enabled():
+    backend = _MutableBackend()
+    read_only = {t.name for t in make_memory_tools(backend, agent_id="hermes")}
+    assert read_only == {"memory_recall", "memory_status"}
+
+    writable = {
+        t.name
+        for t in make_memory_tools(backend, agent_id="hermes", enable_remember=True)
+    }
+    assert {"remember", "update_memory", "forget"} <= writable
+
+
+def test_recall_surfaces_ids_only_when_writes_enabled():
+    backend = _MutableBackend()
+    read_only = _tool_by_name(
+        make_memory_tools(backend, agent_id="hermes"), "memory_recall"
+    ).forward([{"query": "facts"}])
+    assert "id=mem-1" not in read_only
+
+    writable = _tool_by_name(
+        make_memory_tools(backend, agent_id="hermes", enable_remember=True),
+        "memory_recall",
+    ).forward([{"query": "facts"}])
+    assert "id=mem-1" in writable
+
+
+def test_forget_deletes_and_requires_reason():
+    backend = _MutableBackend()
+    forget = _tool_by_name(
+        make_memory_tools(backend, agent_id="hermes", enable_remember=True), "forget"
+    )
+
+    ok = json.loads(forget.forward("mem-1", "superseded"))
+    assert ok == {"status": "ok", "deleted": "mem-1"}
+    assert backend.deleted == ["mem-1"]
+
+    err = json.loads(forget.forward("mem-1", ""))
+    assert err["status"] == "error"
+
+
+def test_update_memory_rewrites_text_in_place():
+    backend = _MutableBackend()
+    update = _tool_by_name(
+        make_memory_tools(backend, agent_id="hermes", enable_remember=True),
+        "update_memory",
+    )
+
+    ok = json.loads(update.forward("mem-1", "A corrected fact", "evolved"))
+    assert ok == {"status": "ok", "updated": "mem-1"}
+    assert backend.updated == [("mem-1", "A corrected fact")]
+
+    err = json.loads(update.forward("mem-1", "", "evolved"))
+    assert err["status"] == "error"

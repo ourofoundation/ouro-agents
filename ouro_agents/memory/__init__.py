@@ -90,6 +90,14 @@ class MemoryBackend(Protocol):
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None: ...
 
+    def update_text(self, memory_id: str, text: str) -> None:
+        """Replace a memory's text in place, recomputing its content hash."""
+        ...
+
+    def get(self, memory_id: str) -> Optional[MemoryResult]:
+        """Fetch a single memory by id, or None if it does not exist."""
+        ...
+
     def delete(self, memory_id: str) -> None:
         """Permanently remove a memory by id. Best-effort; logs and swallows errors."""
         ...

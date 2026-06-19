@@ -866,7 +866,9 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         logger.warning("Failed to refresh platform context during heartbeat: %s", e)
 
     proactive_cfg = agent.config.heartbeat.proactive
-    servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+    planning_servers = (
+        proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+    )
     heartbeat_team_id: str | None = None
     heartbeat_doc_store = agent.doc_store
     team_plan_stores: dict[str, PlanStore] = {}
@@ -984,7 +986,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
                         default_plan, ouro_client=agent._get_ouro_client()
                     )
                     return await run_planning_heartbeat(
-                        agent, hb_model, plan_store, servers
+                        agent, hb_model, plan_store, planning_servers
                     )
                 if default_plan.all_items_complete:
                     logger.info(
@@ -995,7 +997,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
                         default_plan, ouro_client=agent._get_ouro_client()
                     )
                     return await run_planning_heartbeat(
-                        agent, hb_model, plan_store, servers
+                        agent, hb_model, plan_store, planning_servers
                     )
                 logger.info(
                     "Continuing planning for active plan %s (%d/%d items done)",
@@ -1004,16 +1006,22 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
                     len(default_plan.items),
                 )
                 return await run_planning_heartbeat(
-                    agent, hb_model, plan_store, servers, continuation=default_plan
+                    agent,
+                    hb_model,
+                    plan_store,
+                    planning_servers,
+                    continuation=default_plan,
                 )
             logger.info("No existing plan; starting fresh planning cycle")
-            return await run_planning_heartbeat(agent, hb_model, plan_store, servers)
+            return await run_planning_heartbeat(
+                agent, hb_model, plan_store, planning_servers
+            )
 
         if action == "check_review":
             logger.info("Checking for review feedback on plan %s",
                         default_plan.id[:8] if default_plan else "none")
             reviewed = await run_review_heartbeat(
-                agent, hb_model, plan_store, default_plan, servers
+                agent, hb_model, plan_store, default_plan, planning_servers
             )
             if reviewed:
                 logger.info("Plan %s approved after review", reviewed.id[:8])
@@ -1241,17 +1249,15 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         )
 
     logger.info(
-        "Running heartbeat: source=%s, team=%s, servers=%s",
+        "Running heartbeat: source=%s, team=%s",
         heartbeat_source,
         heartbeat_team_id[:8] if heartbeat_team_id else "none",
-        servers,
     )
 
     result = await agent.run(
         playbook,
         model_override=hb_model,
         mode=RunMode.HEARTBEAT,
-        allowed_servers=servers,
         extra_tools=extra_tools,
         preload_tools=preload_tools,
         preserve_existing_usage=True,

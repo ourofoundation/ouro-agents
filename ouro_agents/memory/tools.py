@@ -294,7 +294,8 @@ def make_memory_tools(
                         else raw_refs
                     )
                 ref_str = f" refs={','.join(refs)}" if refs else ""
-                lines.append(f"- {r.text}{cat_str}{score_str}{ref_str}")
+                id_str = f" (id={r.id})" if enable_remember and r.id else ""
+                lines.append(f"- {r.text}{cat_str}{score_str}{ref_str}{id_str}")
                 if len(lines) >= limit:
                     break
             return query, lines
@@ -495,7 +496,60 @@ def make_memory_tools(
         )
         return json.dumps({"status": "ok", "content_hash": item.content_hash})
 
+    @tool
+    def update_memory(memory_id: str, text: str, reason: str) -> str:
+        """Revise a memory in place when it is partly wrong or has evolved.
+
+        Replaces the stored text while keeping the memory's scope and category,
+        so a single contradicting fact supersedes the stale one immediately
+        instead of waiting for background maintenance. Get ids from
+        memory_recall. Disabled unless the run opts in.
+
+        Args:
+            memory_id: Id of the memory to revise (from memory_recall output).
+            text: Corrected memory text that replaces the existing text.
+            reason: Why this memory is being revised.
+        """
+        if not enable_remember:
+            return json.dumps(
+                {"status": "error", "error": "update_memory is not enabled for this run"}
+            )
+        if not memory_id.strip():
+            return json.dumps({"status": "error", "error": "memory_id is required"})
+        if not text.strip():
+            return json.dumps({"status": "error", "error": "text is required"})
+        if not reason.strip():
+            return json.dumps({"status": "error", "error": "reason is required"})
+        try:
+            backend.update_text(memory_id, text)
+        except Exception as exc:
+            return json.dumps({"status": "error", "error": str(exc)})
+        return json.dumps({"status": "ok", "updated": memory_id})
+
+    @tool
+    def forget(memory_id: str, reason: str) -> str:
+        """Permanently delete a memory by id.
+
+        Use when a memory is wrong, outdated, or fully superseded and should no
+        longer surface. For a memory that merely changed, prefer update_memory.
+        Get ids from memory_recall. Disabled unless the run opts in.
+
+        Args:
+            memory_id: Id of the memory to delete (from memory_recall output).
+            reason: Why this memory should be removed.
+        """
+        if not enable_remember:
+            return json.dumps(
+                {"status": "error", "error": "forget is not enabled for this run"}
+            )
+        if not memory_id.strip():
+            return json.dumps({"status": "error", "error": "memory_id is required"})
+        if not reason.strip():
+            return json.dumps({"status": "error", "error": "reason is required"})
+        backend.delete(memory_id)
+        return json.dumps({"status": "ok", "deleted": memory_id})
+
     tools = [memory_recall, memory_status]
     if enable_remember:
-        tools.append(remember)
+        tools.extend([remember, update_memory, forget])
     return tools

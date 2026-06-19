@@ -49,9 +49,11 @@ cli = typer.Typer(
     no_args_is_help=False,
 )
 
+from . import memory as memory_cli  # noqa: E402
 from .runs import runs_app  # noqa: E402
 
 cli.add_typer(runs_app, name="runs")
+memory_cli.register(cli)
 
 
 def _verbosity(verbose: bool, quiet: bool) -> Verbosity:

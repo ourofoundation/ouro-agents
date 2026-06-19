@@ -135,9 +135,30 @@ Built by `make_memory_tools` (`memory/tools.py`):
 - `remember(text, category, basis, stability, strength, …)` — write a
   durable semantic memory. Exposed in any mode that grants
   `Capability.MEMORY_WRITE`; reflection remains the safety net.
+- `update_memory(memory_id, text, reason)` — revise a memory in place when
+  it is partly wrong or has evolved, keeping its scope and category.
+- `forget(memory_id, reason)` — permanently delete a stale or superseded
+  memory. Both are gated by `Capability.MEMORY_WRITE`, and `memory_recall`
+  surfaces the `id` to act on when the agent can write.
 
 Profiles can restrict the visible memory tool set with
 `memory_tool_filter` (e.g. `plan` only sees `memory_recall`).
+
+## Manual curation (CLI)
+
+`ouro-agents memory` opens a full-screen browser for a human first pass over
+the vector store without starting an agent (viewing never reinforces memories).
+
+Startup filters (optional): `--team`, `--category`, `--subject-type`,
+`--since`, `--grep`, `--limit`. Use `--json` to dump matching memories and
+exit (for scripting).
+
+One memory at a time, weakest-first. Keys:
+
+- `←` / `→` (or `↑` / `↓`) — previous / next
+- `d` `d` — delete (press twice to confirm)
+- `e` — edit in a modal (Ctrl+S save, Esc cancel)
+- `q` — quit
 
 ## Reflection
 
