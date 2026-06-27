@@ -211,6 +211,8 @@ def _after_since(result: MemoryResult, since: Optional[datetime]) -> bool:
             created = created.replace(tzinfo=timezone.utc)
     except ValueError:
         return False
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
     return created >= since
 
 
