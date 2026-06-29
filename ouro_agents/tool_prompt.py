@@ -7,6 +7,23 @@ the MODE section owns initiative policy, and stacking both made the two pull
 opposite ways on casual messages.
 """
 
+import re
+
+# smolagents renders the ToolCallingAgent system prompt through Jinja. Ouro
+# overrides that template with a fully literal prompt (tools are passed natively
+# rather than enumerated via Jinja), so any {{ }}, {% %}, or {# #} that shows up
+# in the composed prompt — typically from skill docs or agent-written memory
+# (e.g. a SQL example like ``FROM {{table}}``) — is an accidental template
+# expression that makes rendering raise ``UndefinedError`` and kills the run.
+# Rewrite each delimiter so Jinja emits it verbatim. re.sub scans the original
+# string left to right and does not re-process its own replacements, so this is
+# safe and order-independent.
+_JINJA_DELIMITERS = re.compile(r"\{\{|\}\}|\{%|%\}|\{#|#\}")
+
+
+def _escape_jinja_delimiters(text: str) -> str:
+    return _JINJA_DELIMITERS.sub(lambda m: "{{ %r }}" % m.group(0), text)
+
 _WORK_DIRECTIVE = """\
 Prime directive: do the work, don't describe it. If the user asked you to create,
 transform, analyze, execute, publish, or update something, produce that result before
@@ -82,7 +99,9 @@ def build_tool_calling_system_prompt(
     base = "\n".join(base_parts)
     extra = extra_instructions.strip()
     if not extra:
-        return base
-    if not base:
-        return extra
-    return base + "\n\n" + extra
+        result = base
+    elif not base:
+        result = extra
+    else:
+        result = base + "\n\n" + extra
+    return _escape_jinja_delimiters(result)
