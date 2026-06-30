@@ -502,7 +502,7 @@ def test_run_planning_heartbeat_mentions_controller_when_plan_needs_review():
             assert current is not None
             assert current.status == "pending_review"
             assert ouro_client.comments.created == [
-                ("plan-quest-1", "{@reviewer} this quest is ready for review.")
+                ("plan-quest-1", "`{@reviewer}` this quest is ready for review.")
             ]
 
     asyncio.run(_exercise())

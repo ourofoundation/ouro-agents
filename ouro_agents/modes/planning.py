@@ -572,7 +572,9 @@ def notify_controller_plan_ready(
     comment_on_plan(
         ouro_client,
         quest_id,
-        f"{{@{username}}} this quest is ready for review.",
+        # Backtick-wrapped `{@username}` is the only form Ouro's markdown parser
+        # turns into a real mention/notification (see ouro-js markdown-parser).
+        f"`{{@{username}}}` this quest is ready for review.",
     )
 
 

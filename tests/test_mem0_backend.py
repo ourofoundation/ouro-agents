@@ -1,5 +1,7 @@
 import sqlite3
+from types import SimpleNamespace
 
+from ouro_agents.memory import MemoryResult
 from ouro_agents.memory.mem0 import (
     Mem0Backend,
     _decode_linked_memory_ids,
@@ -8,6 +10,7 @@ from ouro_agents.memory.mem0 import (
     _restore_chroma_entity_payload,
     _sanitize_chroma_entity_payload,
 )
+from ouro_agents.memory.model import utc_now
 
 
 class _FakeMem0:
@@ -76,6 +79,28 @@ class _LimitOnlyMem0(_FakeMem0):
                 },
             }
         ]
+
+
+class _FakeVectorStore:
+    def __init__(self, payload):
+        self._payload = dict(payload)
+        self.update_calls = []
+        self.get_calls = []
+
+    def get(self, vector_id):
+        self.get_calls.append(vector_id)
+        return SimpleNamespace(id=vector_id, payload=dict(self._payload))
+
+    def update(self, vector_id, vector=None, payload=None):
+        self.update_calls.append((vector_id, vector, payload))
+
+
+class _VectorStoreMem0(_FakeMem0):
+    """Fake mem0 that exposes a chroma-like vector_store for the no-embed path."""
+
+    def __init__(self, payload, team_id="team-42"):
+        super().__init__(team_id=team_id)
+        self.vector_store = _FakeVectorStore(payload)
 
 
 def _backend_with_fake_mem(fake):
@@ -257,6 +282,67 @@ def test_update_metadata_preserves_existing_memory_text_and_metadata():
     assert fake.update_calls[0][2]["category"] == "fact"
     assert fake.update_calls[0][2]["strength"] == 0.35
     assert fake.update_calls[0][2]["created_at"] == "2026-04-15T04:11:41.404721-07:00"
+
+
+def test_update_metadata_uses_metadata_only_path_without_reembedding():
+    fake = _VectorStoreMem0(
+        payload={
+            "data": "Existing memory text",
+            "hash": "abc123",
+            "text_lemmatized": "exist memori text",
+            "created_at": "2026-04-15T04:11:41.404721-07:00",
+            "category": "fact",
+            "strength": 0.7,
+            "agent_id": "hermes",
+        }
+    )
+    backend = _backend_with_fake_mem(fake)
+
+    backend.update_metadata(
+        "memory-1",
+        {"strength": 0.35, "last_accessed": "2026-06-29T12:00:00+00:00"},
+    )
+
+    # The re-embedding path (self._mem.get/update) must not be touched.
+    assert fake.get_calls == []
+    assert fake.update_calls == []
+
+    assert len(fake.vector_store.update_calls) == 1
+    vid, vector, payload = fake.vector_store.update_calls[0]
+    assert vid == "memory-1"
+    assert vector is None  # embedding left untouched
+    assert payload["data"] == "Existing memory text"
+    assert payload["strength"] == 0.35
+    assert payload["last_accessed"] == "2026-06-29T12:00:00+00:00"
+    assert payload["created_at"] == "2026-04-15T04:11:41.404721-07:00"
+    assert payload["hash"] == "abc123"
+    assert payload["text_lemmatized"] == "exist memori text"
+
+
+def test_reinforce_skips_recently_accessed_memory():
+    fake = _VectorStoreMem0(payload={"data": "t", "category": "fact"})
+    backend = _backend_with_fake_mem(fake)
+
+    recent = MemoryResult(id="m1", text="t", last_accessed=utc_now().isoformat())
+    backend._reinforce_results([recent])
+
+    assert fake.vector_store.update_calls == []
+
+
+def test_reinforce_touches_stale_memory_via_no_embed_path():
+    fake = _VectorStoreMem0(payload={"data": "t", "category": "fact", "strength": 0.5})
+    backend = _backend_with_fake_mem(fake)
+
+    stale = MemoryResult(
+        id="m1", text="t", strength=0.5, last_accessed="2020-01-01T00:00:00+00:00"
+    )
+    backend._reinforce_results([stale])
+
+    assert len(fake.vector_store.update_calls) == 1
+    _, vector, payload = fake.vector_store.update_calls[0]
+    assert vector is None
+    assert payload["strength"] == 0.55  # bumped by +0.05
+    assert stale.last_accessed != "2020-01-01T00:00:00+00:00"
 
 
 def test_add_writes_schema_v3_metadata():

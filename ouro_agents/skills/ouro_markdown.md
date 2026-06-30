@@ -59,7 +59,7 @@ Use typed URI schemes instead of hand-built URLs:
 
 ### User mentions
 
-Use `@username` to mention a user.
+Write `@username` to mention a user — for example `@mmoderwell`.
 
 ### Math
 

@@ -7,6 +7,7 @@ on later assistant messages, especially in tool-use loops.
 
 from __future__ import annotations
 
+import contextvars
 from typing import Any
 
 
@@ -27,6 +28,31 @@ KNOWN_REPLAYABLE_REASONING_FORMATS = frozenset(
         "google-gemini-v1",
     }
 )
+
+# Model-id prefixes whose ``format="unknown"`` reasoning_details we DO replay.
+# Zhipu GLM (``z-ai/``) returns structured ``reasoning.text`` details that
+# OpenRouter merely tags ``unknown``; replaying them is what lets an
+# interleaved-thinking model keep its own scratchpad across a tool-use loop
+# (without it, GLM re-derives state every step and repeats actions). This is
+# only safe when the model is pinned to a single provider so replay never
+# crosses providers — see ``openrouter_provider`` in the agent config.
+REPLAYABLE_UNKNOWN_REASONING_MODEL_PREFIXES = ("z-ai/",)
+
+# Set by the model wrapper for the duration of request preparation so the
+# (globally patched) message-cleaning pass can tell which model is being built.
+active_model_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "ouro_active_model_id", default=None
+)
+
+
+def model_allows_unknown_reasoning_replay(model_id: str | None) -> bool:
+    """True when ``format="unknown"`` reasoning_details are replayable for this model."""
+    if not model_id:
+        return False
+    return any(
+        model_id.startswith(prefix)
+        for prefix in REPLAYABLE_UNKNOWN_REASONING_MODEL_PREFIXES
+    )
 
 
 def object_field(obj: Any, name: str) -> Any:
@@ -71,11 +97,13 @@ def extract_reasoning_fields(source: Any) -> dict[str, Any]:
     return fields
 
 
-def _filter_replayable_details(details: Any) -> list[Any]:
+def _filter_replayable_details(details: Any, *, allow_unknown: bool = False) -> list[Any]:
     """Drop ``reasoning_details`` entries with formats we can't safely replay.
 
     Returns a (possibly empty) list. Non-list inputs are returned unchanged so
-    callers don't have to second-guess shape.
+    callers don't have to second-guess shape. When ``allow_unknown`` is set
+    (a provider-pinned model on our replay allowlist), ``format="unknown"``
+    entries are kept instead of dropped.
     """
     if not isinstance(details, list):
         return details
@@ -86,6 +114,8 @@ def _filter_replayable_details(details: Any) -> list[Any]:
             continue
         fmt = entry.get("format")
         if fmt and fmt not in KNOWN_REPLAYABLE_REASONING_FORMATS:
+            if allow_unknown and fmt == "unknown":
+                keep.append(entry)
             continue
         keep.append(entry)
     return keep
@@ -98,11 +128,17 @@ def replayable_reasoning_fields(source: Any) -> dict[str, Any]:
     :data:`KNOWN_REPLAYABLE_REASONING_FORMATS` are dropped. If the resulting
     list is empty, we drop the field entirely so we fall back to the plain
     ``reasoning`` string (which most providers accept verbatim).
+
+    Exception: for models on :data:`REPLAYABLE_UNKNOWN_REASONING_MODEL_PREFIXES`
+    (resolved via the :data:`active_model_id` contextvar), ``format="unknown"``
+    details are kept so the model's own chain-of-thought survives the tool-use
+    loop. Those models must be provider-pinned so replay stays same-provider.
     """
     fields = extract_reasoning_fields(source)
     details = fields.get("reasoning_details")
     if details is not None:
-        kept = _filter_replayable_details(details)
+        allow_unknown = model_allows_unknown_reasoning_replay(active_model_id.get())
+        kept = _filter_replayable_details(details, allow_unknown=allow_unknown)
         if kept:
             fields["reasoning_details"] = kept
         else:

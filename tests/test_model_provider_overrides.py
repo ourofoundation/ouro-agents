@@ -59,6 +59,12 @@ class TestModelProviderOverrides(unittest.TestCase):
             agent._default_tool_choice("qwen/qwen3.7-max"), "auto"
         )
 
+    def test_defaults_to_auto_tool_choice_for_glm(self):
+        # Z.AI's GLM endpoint advertises no route for tool_choice="required".
+        agent = self._make_agent()
+
+        self.assertEqual(agent._default_tool_choice("z-ai/glm-5.2"), "auto")
+
     def test_build_model_passes_auto_tool_choice_for_qwen(self):
         agent = self._make_agent()
 

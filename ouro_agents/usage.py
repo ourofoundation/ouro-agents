@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from smolagents import OpenAIModel
 
-from .provider_reasoning import attach_reasoning_from_raw_response
+from .provider_reasoning import active_model_id, attach_reasoning_from_raw_response
 
 logger = logging.getLogger(__name__)
 
@@ -503,6 +503,16 @@ class TrackedOpenAIModel(OpenAIModel):
     @property
     def tracker(self) -> UsageTracker:
         return self._tracker
+
+    def _prepare_completion_kwargs(self, *args, **kwargs):
+        # Expose the model id to the globally patched ``get_clean_message_list``
+        # so it can decide whether this model's ``format="unknown"`` reasoning
+        # is replayable. Covers both ``generate`` and ``generate_stream``.
+        token = active_model_id.set(self.model_id)
+        try:
+            return super()._prepare_completion_kwargs(*args, **kwargs)
+        finally:
+            active_model_id.reset(token)
 
     def generate(self, *args, **kwargs):
         message = super().generate(*args, **kwargs)

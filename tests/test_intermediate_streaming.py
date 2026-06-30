@@ -116,6 +116,58 @@ class TestIntermediateContentStreamer(unittest.TestCase):
         self.assertIsNone(suppressed)
         self.assertFalse(streamer.has_streamed)
 
+    def test_suppresses_narrated_calling_tools_block(self):
+        # GLM (and other models) imitate smolagents' own
+        # "Calling tools:\n[{...}]" step rendering and emit it in the content
+        # channel alongside real native tool calls. The preamble before it is
+        # genuine commentary and should survive; the narrated block must not
+        # reach the conversation.
+        streamer = IntermediateContentStreamer()
+
+        first = streamer.consume(
+            _content_delta("Let me get the details on the main activity runs from today.")
+        )
+        self.assertEqual(
+            first, "Let me get the details on the main activity runs from today."
+        )
+
+        suppressed = streamer.consume(
+            _content_delta(
+                "\nCalling tools:\n[{'id': 'call_2b5c', 'type': 'function', "
+                "'function': {'name': 'get_run_detail', 'arguments': {}}}]"
+            )
+        )
+        self.assertIsNone(suppressed)
+        # Persisted text is the clean preamble only — no narrated block.
+        self.assertEqual(
+            streamer.buffered_text,
+            "Let me get the details on the main activity runs from today.",
+        )
+        # Remains suppressed for the rest of the step.
+        self.assertIsNone(streamer.consume(_content_delta(" more")))
+
+    def test_suppresses_narrated_block_in_single_delta(self):
+        # Whole content (preamble + narrated block) arrives at once.
+        streamer = IntermediateContentStreamer()
+        chunk = streamer.consume(
+            _content_delta(
+                "Checking the run.\n**Calling tools:**\n[{'id': 'call_x'}]"
+            )
+        )
+        self.assertEqual(chunk, "Checking the run.")
+        self.assertEqual(streamer.buffered_text, "Checking the run.")
+
+    def test_holds_back_partial_marker_prefix(self):
+        # The marker can arrive split across deltas; never stream a partial
+        # "Calling" that later resolves to the marker.
+        streamer = IntermediateContentStreamer()
+        first = streamer.consume(_content_delta("Done. Calling"))
+        # "Calling" is a prefix of the marker, so it's withheld.
+        self.assertEqual(first, "Done. ")
+        second = streamer.consume(_content_delta(" tools:\n[{'id': 'call_y'}]"))
+        self.assertIsNone(second)
+        self.assertEqual(streamer.buffered_text, "Done.")
+
     def test_does_not_double_emit_overlapping_buffers(self):
         # The streamer must only emit each character once even if upstream
         # accidentally re-sends an overlapping prefix.

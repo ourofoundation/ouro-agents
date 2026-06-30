@@ -182,6 +182,21 @@ class TestReflectionParsing(unittest.TestCase):
     def test_returns_none_when_reflector_hits_max_steps(self):
         self.assertIsNone(parse_reflection_result("Reached max steps."))
 
+    def test_parses_json_wrapped_in_prose(self):
+        result = parse_reflection_result(
+            "Here is my reflection on this completed run:\n\n"
+            "**What happened:** hermes fixed mention syntax.\n\n"
+            '{"candidates": [{"text": "Ouro mentions use plain @username.", '
+            '"category": "preference", "strength": 0.8}], '
+            '"user_preferences": [], "daily_log_entries": []}\n\n'
+            "That's everything worth keeping."
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(len(result.facts_to_store), 1)
+        self.assertEqual(result.facts_to_store[0]["category"], "preference")
+
     def test_parses_valid_empty_reflection_payload(self):
         result = parse_reflection_result(
             '{"facts_to_store": [], "user_preferences": [], "daily_log_entries": []}'

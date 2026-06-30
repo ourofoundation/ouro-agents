@@ -5,7 +5,12 @@ import smolagents.models as smol_models
 from smolagents.models import ChatMessage, MessageRole
 
 import ouro_agents.smolagents_patches  # noqa: F401
-from ouro_agents.provider_reasoning import attach_reasoning_from_raw_response
+from ouro_agents.provider_reasoning import (
+    active_model_id,
+    attach_reasoning_from_raw_response,
+    model_allows_unknown_reasoning_replay,
+    replayable_reasoning_fields,
+)
 from ouro_agents.tools.agent_base import _copy_step_reasoning_to_messages
 from ouro_agents.usage import (
     MirroredUsageTracker,
@@ -28,6 +33,55 @@ def _choice(**kwargs):
 
 def _response(**kwargs):
     return SimpleNamespace(**kwargs)
+
+
+class TestUnknownReasoningReplayAllowlist(unittest.TestCase):
+    """GLM (z-ai/) reasoning_details are tagged format="unknown" by OpenRouter
+    but are structurally replayable; keep them so the model's chain-of-thought
+    survives a tool-use loop, but only for allowlisted (provider-pinned) models.
+    """
+
+    def _glm_message(self):
+        return _message(
+            reasoning="thinking...",
+            reasoning_details=[
+                {
+                    "type": "reasoning.text",
+                    "text": "thinking...",
+                    "format": "unknown",
+                    "index": 0,
+                }
+            ],
+        )
+
+    def test_model_allowlist_membership(self):
+        self.assertTrue(model_allows_unknown_reasoning_replay("z-ai/glm-5.2"))
+        self.assertFalse(model_allows_unknown_reasoning_replay("deepseek/deepseek-v4-pro"))
+        self.assertFalse(model_allows_unknown_reasoning_replay(None))
+
+    def test_unknown_details_dropped_for_non_allowlisted_model(self):
+        token = active_model_id.set("deepseek/deepseek-v4-pro")
+        try:
+            fields = replayable_reasoning_fields(self._glm_message())
+        finally:
+            active_model_id.reset(token)
+        # reasoning_details dropped (format unknown); plain reasoning kept.
+        self.assertNotIn("reasoning_details", fields)
+        self.assertEqual(fields.get("reasoning"), "thinking...")
+
+    def test_unknown_details_kept_for_allowlisted_model(self):
+        token = active_model_id.set("z-ai/glm-5.2")
+        try:
+            fields = replayable_reasoning_fields(self._glm_message())
+        finally:
+            active_model_id.reset(token)
+        self.assertIn("reasoning_details", fields)
+        self.assertEqual(fields["reasoning_details"][0]["format"], "unknown")
+
+    def test_no_active_model_drops_unknown(self):
+        # Default contextvar (no model in scope) behaves conservatively.
+        fields = replayable_reasoning_fields(self._glm_message())
+        self.assertNotIn("reasoning_details", fields)
 
 
 class TestVisibleReasoningLogging(unittest.TestCase):

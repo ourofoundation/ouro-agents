@@ -14,7 +14,7 @@
     "name": "hermes",
     "model": "z-ai/glm-5.2",
     "reasoning": {
-      "effort": "low"
+      "effort": "medium"
     },
     "workspace": "./agents/hermes",
     "org_id": "00000000-0000-0000-0000-000000000000",
@@ -42,10 +42,10 @@
     }
   },
   "openrouter_provider": {
-    "ignore": [
-      "Parasail"
+    "order": [
+      "Z.AI"
     ],
-    "allow_fallbacks": true
+    "allow_fallbacks": false
   },
   "subagents": {
     "preflight": {
@@ -56,6 +56,13 @@
       "max_steps": 4
     },
     "research": {
+      "model": "z-ai/glm-5.2",
+      "reasoning": {
+        "effort": "none"
+      },
+      "max_steps": 10
+    },
+    "reflector": {
       "model": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "none"

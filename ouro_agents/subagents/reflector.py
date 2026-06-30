@@ -205,6 +205,58 @@ def build_run_reflection_task(
 _TAG_RE = re.compile(r"^\[[\w:.-]+\]\s*")
 
 
+def _extract_json_object(text: str) -> Optional[str]:
+    """Return the first balanced top-level ``{...}`` JSON object found in ``text``.
+
+    Models sometimes wrap the required JSON in prose (e.g. "Here is my
+    reflection...\n\n{...}") or trailing commentary. Scan for the first ``{``
+    and walk forward tracking brace depth (ignoring braces inside strings) to
+    recover the object regardless of surrounding text.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def _coerce_json_object(text: str) -> Optional[dict]:
+    """Parse ``text`` into a JSON object, tolerating fences and prose wrappers."""
+    candidate = text
+    if candidate.startswith("```"):
+        candidate = candidate.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    for attempt in (candidate, _extract_json_object(candidate)):
+        if not attempt:
+            continue
+        try:
+            data = json.loads(attempt)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
 def normalize_daily_log_entry(
     entry: str,
     run_mode: str = "autonomous",
@@ -228,11 +280,14 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
     if text == "Reached max steps.":
         logger.warning("Reflector exhausted its step budget before returning JSON")
         return None
-    try:
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        data = json.loads(text)
 
+    data = _coerce_json_object(text)
+    if data is None:
+        preview = text[:200].replace("\n", "\\n")
+        logger.warning("Failed to parse reflection result | preview=%r", preview)
+        return None
+
+    try:
         facts_raw = data.get("candidates", data.get("facts_to_store", []))
         facts = []
         for fact in facts_raw:
@@ -288,6 +343,9 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
             daily_log_entries=daily_entries,
         )
     except Exception as e:
-        preview = text[:200].replace("\n", "\\n")
-        logger.warning("Failed to parse reflection result: %s | preview=%r", e, preview)
+        logger.warning(
+            "Failed to read reflection JSON structure: %s | keys=%s",
+            e,
+            sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,
+        )
         return None

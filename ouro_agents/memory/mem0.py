@@ -1,7 +1,7 @@
 import logging
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 from typing import List, Optional
@@ -14,6 +14,7 @@ from .model import (
     content_hash,
     encode_id_index,
     memory_item_from_raw,
+    parse_timestamp,
     to_metadata,
     utc_now,
 )
@@ -22,6 +23,14 @@ logger = logging.getLogger(__name__)
 
 _CHROMA_BLOB_SEQ_ID_FIX_MARKER = ".seq_id_blob_fix_v2"
 _LINKED_MEMORY_IDS_KEY = "linked_memory_ids"
+
+# Reinforcement bumps strength/last_accessed each time a memory is recalled.
+# A single heartbeat/reflection cycle issues many recalls, and a hot memory
+# surfaces across most of them, so without throttling the same record is
+# rewritten dozens of times per cycle. Skip re-touching a memory that was
+# already reinforced within this window; this collapses the duplicate writes
+# while still letting strength accrue over time.
+_REINFORCE_MIN_INTERVAL = timedelta(hours=1)
 
 
 def _encode_linked_memory_ids(ids) -> str:
@@ -617,9 +626,13 @@ class Mem0Backend:
         return out
 
     def _reinforce_results(self, results: list[MemoryResult]) -> None:
-        now = utc_now().isoformat()
+        now_dt = utc_now()
+        now = now_dt.isoformat()
         for result in results:
             if not result.id:
+                continue
+            last = parse_timestamp(getattr(result, "last_accessed", "") or "")
+            if last is not None and now_dt - last < _REINFORCE_MIN_INTERVAL:
                 continue
             metadata = dict(result.metadata or {})
             strength = max(0.0, min(1.0, float(getattr(result, "strength", 0.5) or 0.5)))
@@ -630,6 +643,11 @@ class Mem0Backend:
             self.update_metadata(result.id, metadata)
 
     def update_metadata(self, memory_id: str, metadata: dict) -> None:
+        if self._update_metadata_no_embed(memory_id, metadata):
+            return
+        # Fallback: full mem0 update, which re-embeds the (unchanged) text over
+        # the embedding API. Only reached when the metadata-only fast path is
+        # unavailable (non-chroma backend) or failed.
         try:
             raw = self._mem.get(memory_id)
             if not raw:
@@ -644,6 +662,50 @@ class Mem0Backend:
             self._mem.update(memory_id, text, metadata=merged_metadata)
         except Exception as e:
             logger.warning("Failed to update memory metadata %s: %s", memory_id, e)
+
+    def _update_metadata_no_embed(self, memory_id: str, metadata: dict) -> bool:
+        """Rewrite a memory's metadata payload without re-embedding its text.
+
+        Reinforcement only changes ``last_accessed``/``strength`` — the text is
+        unchanged — but ``mem0.update`` re-embeds the text over the embedding API
+        on every call. Chroma's ``vector_store.update`` accepts ``vector=None`` to
+        update only the metadata payload (chroma *replaces* metadata, so we carry
+        the full existing payload forward). Returns ``True`` on success.
+        """
+        vs = getattr(self._mem, "vector_store", None)
+        update = getattr(vs, "update", None)
+        get = getattr(vs, "get", None)
+        if vs is None or not callable(update) or not callable(get):
+            return False
+        try:
+            existing = get(vector_id=memory_id)
+            payload = dict(getattr(existing, "payload", None) or {})
+            if not payload:
+                return False
+            text = str(payload.get("data") or payload.get("memory") or "")
+            if not text:
+                return False
+            merged = _extract_metadata({"memory": text, "metadata": payload})
+            merged.update(metadata)
+            item = memory_item_from_raw(text, merged)
+            merged.update(to_metadata(item))
+            # mem0 keeps the canonical text and bookkeeping fields on the chroma
+            # payload; preserve them since chroma.update overwrites metadata.
+            for key in ("data", "hash", "text_lemmatized", "created_at"):
+                if payload.get(key) not in (None, "") and key not in merged:
+                    merged[key] = payload[key]
+            merged["data"] = text
+            merged["updated_at"] = utc_now().isoformat()
+            for legacy_key in ("team_id", "asset_refs", "mode", "event_type"):
+                merged.pop(legacy_key, None)
+            sanitized = _sanitize_chroma_entity_payload(merged) or merged
+            update(vector_id=memory_id, vector=None, payload=sanitized)
+            return True
+        except Exception as e:
+            logger.debug(
+                "Metadata-only update fast path failed for %s: %s", memory_id, e
+            )
+            return False
 
     def update_text(self, memory_id: str, text: str) -> None:
         if not memory_id or not text.strip():

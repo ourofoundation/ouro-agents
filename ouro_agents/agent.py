@@ -752,10 +752,16 @@ class OuroAgent:
         #   - Qwen via Alibaba rejects `required` (and object tool_choice) in
         #     thinking mode. Qwen 3.x routes often enter thinking even without an
         #     explicit OpenRouter ``reasoning`` block, so always use ``auto``.
+        #   - Zhipu GLM (``z-ai/``): the first-party Z.AI endpoint advertises no
+        #     route for ``tool_choice="required"`` (OpenRouter returns "no
+        #     endpoints found"), so we'd be forced off the canonical provider.
+        #     ``auto`` works there and is healthier for an interleaved-thinking
+        #     model, which should be free to finish with a plain content reply.
         if (
             model_id.startswith("minimax/")
             or model_id.startswith("deepseek/")
             or model_id.startswith("qwen/")
+            or model_id.startswith("z-ai/")
         ):
             return "auto"
         return None

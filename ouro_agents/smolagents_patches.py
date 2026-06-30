@@ -5,12 +5,19 @@ by default appends one JSON line per tool call. OuroLogger already prints a comp
 ``> tool_name(args)`` line when the tool runs, so the JSON duplicates noise.
 """
 
-from typing import Any
+import ast
+import json
+import logging
+import re
+import uuid
+from typing import Any, Optional
 
 import smolagents.models as smol_models
 from smolagents.models import ChatMessage, MessageRole
 
 from .provider_reasoning import replayable_reasoning_fields
+
+logger = logging.getLogger(__name__)
 
 
 _ORIGINAL_GET_CLEAN_MESSAGE_LIST = getattr(
@@ -109,6 +116,190 @@ def _merge_reasoning_field(existing: Any, new_value: Any) -> Any:
     return existing
 
 
+_OBSERVATION_PREFIX = "Observation:\n"
+# smolagents renders a tool-calling step as ``"Calling tools:\n" + repr(list)``
+# (see smolagents/memory.py). The list literal always begins with ``[``.
+_CALLING_TOOLS_RE = re.compile(r"Calling tools:\s*(?=\[)")
+
+
+def _content_to_text(content: Any) -> str:
+    """Flatten a smolagents message ``content`` (str or list of parts) to text."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            el.get("text", "")
+            for el in content
+            if isinstance(el, dict) and el.get("type") == "text"
+        ]
+        return "\n".join(parts)
+    return str(content)
+
+
+def _extract_bracketed(text: str, open_idx: int) -> Optional[str]:
+    """Return the balanced ``[...]`` literal starting at ``open_idx`` (or None).
+
+    Tracks string state so brackets inside quoted argument values don't throw
+    off the depth count.
+    """
+    depth = 0
+    in_string = False
+    quote = ""
+    escaped = False
+    for i in range(open_idx, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                in_string = False
+            continue
+        if ch in "\"'":
+            in_string = True
+            quote = ch
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                return text[open_idx : i + 1]
+    return None
+
+
+def _to_native_tool_calls(parsed: Any) -> Optional[list[dict[str, Any]]]:
+    """Convert a parsed ``[{id,type,function:{name,arguments}}]`` list to the
+    native OpenAI tool_calls shape, with ``arguments`` as a JSON string."""
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    calls: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            return None
+        fn = item.get("function")
+        if not isinstance(fn, dict):
+            return None
+        name = fn.get("name")
+        if not name or not isinstance(name, str):
+            return None
+        args = fn.get("arguments", {})
+        if not isinstance(args, str):
+            try:
+                args = json.dumps(args)
+            except (TypeError, ValueError):
+                args = "{}"
+        call_id = item.get("id") or f"call_{uuid.uuid4().hex[:24]}"
+        calls.append(
+            {
+                "id": str(call_id),
+                "type": "function",
+                "function": {"name": name, "arguments": args},
+            }
+        )
+    return calls
+
+
+def _parse_tool_call_render(text: str) -> tuple[str, Optional[list[dict[str, Any]]]]:
+    """Split assistant ``text`` into (kept_narration, native_tool_calls).
+
+    The authoritative call list is smolagents' final ``Calling tools:`` block.
+    A model may *also* narrate its own (sometimes malformed) ``Calling tools:``
+    block earlier in content — so we keep only text before the first marker and
+    parse the last marker that yields a valid tool-call list.
+    """
+    matches = list(_CALLING_TOOLS_RE.finditer(text))
+    if not matches:
+        return text, None
+    kept = text[: matches[0].start()].rstrip()
+    for match in reversed(matches):
+        literal = _extract_bracketed(text, match.end())
+        if literal is None:
+            continue
+        try:
+            parsed = ast.literal_eval(literal)
+        except (ValueError, SyntaxError):
+            continue
+        calls = _to_native_tool_calls(parsed)
+        if calls:
+            return kept, calls
+    return kept, None
+
+
+def _build_tool_messages(
+    calls: list[dict[str, Any]], observation: Optional[str]
+) -> list[dict[str, Any]]:
+    """One ``tool`` message per tool_call_id (API requires exact pairing).
+
+    smolagents concatenates all parallel results into a single observation blob
+    with no per-id delimiters, so the combined text rides on the first call and
+    later ids get a pointer placeholder (keeps the message array valid)."""
+    messages: list[dict[str, Any]] = []
+    for idx, call in enumerate(calls):
+        if idx == 0:
+            content = observation if observation else ""
+        elif observation:
+            content = "(result included with the first tool call above)"
+        else:
+            content = ""
+        messages.append(
+            {"role": "tool", "tool_call_id": call["id"], "content": content}
+        )
+    return messages
+
+
+def _rewrite_tool_protocol_as_native(
+    output: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Replace smolagents' text tool-call protocol with native function calling.
+
+    smolagents replays prior tool use as plain text (an assistant message whose
+    content ends with ``Calling tools:\n[{...}]`` plus a ``user`` message
+    ``Observation:\n...``). Native-function-calling models imitate that text
+    instead of emitting real tool_calls. Rewrite those into proper
+    ``assistant.tool_calls`` + ``role:"tool"`` messages so the model sees the
+    format it was trained on. Any unparseable step is left untouched (status
+    quo), bounding the blast radius.
+    """
+    result: list[dict[str, Any]] = []
+    i = 0
+    n = len(output)
+    while i < n:
+        msg = output[i]
+        if msg.get("role") != "assistant":
+            result.append(msg)
+            i += 1
+            continue
+
+        kept, calls = _parse_tool_call_render(_content_to_text(msg.get("content")))
+        if not calls:
+            result.append(msg)
+            i += 1
+            continue
+
+        new_msg = dict(msg)
+        new_msg["content"] = kept or None
+        new_msg["tool_calls"] = calls
+        result.append(new_msg)
+        i += 1
+
+        # The tool response is the immediately following user/tool message
+        # (smolagents prefixes "Observation:\n", or "Call id: ...\nError:..").
+        observation: Optional[str] = None
+        if i < n and output[i].get("role") in ("user", "tool"):
+            next_text = _content_to_text(output[i].get("content"))
+            if next_text.startswith(_OBSERVATION_PREFIX):
+                observation = next_text[len(_OBSERVATION_PREFIX) :]
+            else:
+                observation = next_text
+            i += 1
+        result.extend(_build_tool_messages(calls, observation))
+
+    return result
+
+
 def _get_clean_message_list_preserving_reasoning(
     message_list: list[ChatMessage | dict],
     role_conversions: dict = {},
@@ -145,6 +336,16 @@ def _get_clean_message_list_preserving_reasoning(
             merged = _merge_reasoning_field(target.get(name), value)
             if merged is not None:
                 target[name] = merged
+
+    # Reconstruct native tool_calls AFTER reasoning is merged onto the collapsed
+    # output, so the lockstep role-collapse mapping above stays valid.
+    try:
+        output = _rewrite_tool_protocol_as_native(output)
+    except Exception:
+        logger.warning(
+            "Native tool-call reconstruction failed; using text protocol",
+            exc_info=True,
+        )
 
     return output
 
