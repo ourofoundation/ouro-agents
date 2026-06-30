@@ -67,6 +67,33 @@ class TestResolveEventProvenance(unittest.TestCase):
             self.assertEqual(provenance.plan_cycle.quest_id, "plan-quest-1")
             self.assertEqual(provenance.team_id, "team-1")
 
+    def test_structured_root_asset_object_matches_plan_quest(self):
+        """Canonical payloads nest the root as a structured object, not a flat key."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            self._write_active_plan(
+                workspace,
+                quest_id="plan-quest-1",
+                status="pending_review",
+                team_id="team-1",
+            )
+
+            provenance = resolve_event_provenance(
+                event_data={
+                    "source_id": "comment-2",
+                    "source_asset_type": "comment",
+                    "parent_asset": {"id": "thread-comment-1", "type": "comment"},
+                    "root_asset": {"id": "plan-quest-1", "type": "quest"},
+                    "team": {"id": "team-1", "name": "research"},
+                },
+                workspace=workspace,
+                planning_enabled=True,
+            )
+
+            self.assertTrue(provenance.is_plan_feedback)
+            self.assertEqual(provenance.plan_cycle.quest_id, "plan-quest-1")
+            self.assertEqual(provenance.team_id, "team-1")
+
     def test_event_without_team(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

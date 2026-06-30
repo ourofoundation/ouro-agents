@@ -68,6 +68,28 @@ def _extract_event_team_id(event_data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _extract_root_asset_id(event_data: Dict[str, Any]) -> Optional[str]:
+    """Resolve the thread-root asset id from a webhook payload.
+
+    The canonical payload nests the root as a structured ``root_asset`` object
+    (``{"id": ..., "type": ...}``); the flat ``root_asset_id`` key is only the
+    legacy form.  Mirror the SDK / ``CommentContext`` fallback chain so plan
+    feedback on quests is recognized regardless of payload shape.  ``parent_asset``
+    is included as a last resort (it equals the root for top-level comments); a
+    nested reply's parent is a comment id, which simply won't match any plan
+    quest, so the fallback is safe.
+    """
+    root = event_data.get("root_asset")
+    if isinstance(root, dict) and root.get("id"):
+        return root["id"]
+    if event_data.get("root_asset_id"):
+        return event_data["root_asset_id"]
+    parent = event_data.get("parent_asset")
+    if isinstance(parent, dict) and parent.get("id"):
+        return parent["id"]
+    return event_data.get("parent_asset_id")
+
+
 def resolve_event_provenance(
     event_data: Dict[str, Any],
     workspace: Path,
@@ -78,7 +100,7 @@ def resolve_event_provenance(
     Reads ``root_asset_id`` and ``team`` directly from the enriched event
     payload.  Searches team-namespaced plan stores for cycle matches.
     """
-    root_asset_id = event_data.get("root_asset_id")
+    root_asset_id = _extract_root_asset_id(event_data)
     if not root_asset_id:
         team_id = _extract_event_team_id(event_data)
         return AssetProvenance(team_id=team_id)

@@ -723,7 +723,12 @@ Step 3. After all updates, end the turn with a final message that is only this J
 REVIEW_PROMPT_TEMPLATE = """\
 You published a plan as an Ouro quest (asset ID: {quest_id}).
 Check if there are any comments on that quest with feedback from a human reviewer
-(use get_comments).
+(use get_comments with parent_id={quest_id}).
+
+IMPORTANT: get_comments only returns top-level comments. Reviewer feedback is
+often a REPLY to your own "ready for review" comment, which is nested one level
+deeper. For each top-level comment authored by you, call get_comments again with
+that comment's id to fetch its replies before concluding there is no feedback.
 
 Current plan status: {current_status}
 
