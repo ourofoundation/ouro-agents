@@ -63,11 +63,57 @@ def _plan_quest_name_instruction(goal: str = "") -> str:
 # ---------------------------------------------------------------------------
 
 
+def _parse_iso_datetime(value: object) -> Optional[datetime]:
+    """Best-effort parse of an ISO 8601 timestamp into an aware datetime."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 class PlanItem(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4())[:8])
     description: str
     status: Literal["pending", "in_progress", "done", "skipped"] = "pending"
     notes: str = ""
+    # Deferral metadata: a waiting item is still open work, but is parked
+    # pending something external (`waiting_on`) and/or a future date
+    # (`waiting_until`). Waiting items are treated as non-actionable so they
+    # don't block starting new work. When `waiting_check_every` (an interval
+    # like "1d") is set, the item is a recurring check: it resurfaces each time
+    # `waiting_until` comes due, then `waiting_until` is advanced by the interval.
+    waiting_on: str = ""
+    waiting_until: Optional[str] = None
+    waiting_check_every: Optional[str] = None
+
+    def is_waiting(self, now: Optional[datetime] = None) -> bool:
+        """True when this item is parked and not actionable yet.
+
+        An item counts as waiting only while it is unfinished (pending or
+        in_progress). A `waiting_until` in the future keeps it parked; if only
+        `waiting_on` is set (no date), it stays parked until cleared.
+        """
+        if self.status in ("done", "skipped"):
+            return False
+        deadline = _parse_iso_datetime(self.waiting_until)
+        if deadline is not None:
+            now = now or datetime.now(timezone.utc)
+            return deadline > now
+        # A recurring check with no next-time set is due now (it will be
+        # re-parked once handled), so it should not count as waiting.
+        if self.waiting_check_every:
+            return False
+        return bool(self.waiting_on.strip())
 
 
 class PlanCycle(BaseModel):
@@ -106,6 +152,20 @@ class PlanCycle(BaseModel):
     def all_items_complete(self) -> bool:
         return bool(self.items) and all(
             i.status in ("done", "skipped") for i in self.items
+        )
+
+    def has_actionable_items(self, now: Optional[datetime] = None) -> bool:
+        """Any item that can be worked on right now.
+
+        An item is actionable when it is pending or in_progress and not parked
+        (waiting). When nothing is actionable — because everything is
+        done/skipped or merely waiting on something external — the cycle has no
+        work left to advance and the agent should start a new one instead of
+        idling on the parked items.
+        """
+        return any(
+            i.status in ("pending", "in_progress") and not i.is_waiting(now)
+            for i in self.items
         )
 
     @property
@@ -319,7 +379,17 @@ def render_plan_items(items: list[PlanItem], include_ids: bool = True) -> str:
         line = f"[{marker}] {item.description}"
         if include_ids:
             line += f" (item_id: {item.id})"
-        if item.status == "in_progress":
+        if item.is_waiting():
+            detail = item.waiting_on.strip() or "external event"
+            if item.waiting_check_every:
+                cadence = f", checks every {item.waiting_check_every}"
+            else:
+                cadence = ""
+            if item.waiting_until:
+                line += f" [waiting on {detail} until {item.waiting_until}{cadence}]"
+            else:
+                line += f" [waiting on {detail}{cadence}]"
+        elif item.status == "in_progress":
             line += " [in_progress]"
         if item.notes:
             line += f" — {item.notes}"
@@ -403,6 +473,9 @@ def parse_plan_items(raw: list[dict]) -> list[PlanItem]:
                 description=entry.get("description", ""),
                 status=entry.get("status", "pending"),
                 notes=entry.get("notes", ""),
+                waiting_on=entry.get("waiting_on") or "",
+                waiting_until=entry.get("waiting_until") or None,
+                waiting_check_every=entry.get("waiting_check_every") or None,
             )
         )
     return items
@@ -441,6 +514,11 @@ def _plan_items_from_api_objects(api_items: object) -> list[PlanItem]:
                 description=str(read_field(item, "description", "") or ""),
                 status=_status_from_api(read_field(item, "status", "pending")),  # type: ignore[arg-type]
                 notes=str(read_field(item, "notes", "") or ""),
+                waiting_on=str(read_field(item, "waiting_on", "") or ""),
+                waiting_until=(read_field(item, "waiting_until", None) or None),
+                waiting_check_every=(
+                    read_field(item, "waiting_check_every", None) or None
+                ),
             )
         )
     return items
@@ -624,9 +702,12 @@ def next_action(
     if current.status == "active":
         if current.needs_replan_stale_active:
             return "plan"
-        # Replan when all items are complete
+        # Replan when there is no actionable work left. This covers both a fully
+        # complete plan and one whose only remaining items are parked (waiting on
+        # external replies or a future date) — in either case idling would waste
+        # the cycle, so start fresh instead.
         if (
-            current.all_items_complete
+            not current.has_actionable_items(now)
             and current.heartbeats_completed >= min_heartbeats
         ):
             return "plan"

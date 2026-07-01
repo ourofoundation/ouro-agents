@@ -84,7 +84,7 @@
       "cadence": "4h",
       "min_heartbeats": 4,
       "review_window": "1h",
-      "auto_approve": false
+      "auto_approve": true
     },
     "heartbeat": {
       "enabled": true,

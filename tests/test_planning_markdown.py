@@ -3,7 +3,7 @@
 import asyncio
 import json
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -183,6 +183,118 @@ def test_next_action_keeps_executing_active_incomplete_plan_after_cadence():
         review_window="1h",
         auto_approve=True,
         now=datetime.fromisoformat("2026-04-01T18:00:00+00:00"),
+    )
+
+    assert action == "execute"
+
+
+def test_plan_item_is_waiting_by_date_and_reason():
+    now = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+    future = (now + timedelta(days=7)).isoformat()
+    past = (now - timedelta(days=1)).isoformat()
+
+    # Future date → waiting; past date → actionable again.
+    assert PlanItem(description="x", status="in_progress", waiting_until=future).is_waiting(now)
+    assert not PlanItem(description="x", status="in_progress", waiting_until=past).is_waiting(now)
+    # waiting_on with no date parks indefinitely until cleared.
+    assert PlanItem(description="x", status="in_progress", waiting_on="a reply").is_waiting(now)
+    # Finished items are never "waiting".
+    assert not PlanItem(description="x", status="done", waiting_on="a reply").is_waiting(now)
+    # No deferral metadata → not waiting.
+    assert not PlanItem(description="x", status="in_progress").is_waiting(now)
+
+
+def test_recurring_waiting_item_is_due_without_next_time():
+    now = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+    # Recurring check with a future next-time → parked.
+    parked = PlanItem(
+        description="Scan for replies",
+        status="in_progress",
+        waiting_on="reply from authors",
+        waiting_until=(now + timedelta(hours=6)).isoformat(),
+        waiting_check_every="1d",
+    )
+    assert parked.is_waiting(now)
+    # Recurring check with no next-time set → due now (not waiting).
+    due = PlanItem(
+        description="Scan for replies",
+        status="in_progress",
+        waiting_on="reply from authors",
+        waiting_check_every="1d",
+    )
+    assert not due.is_waiting(now)
+
+
+def test_next_action_replans_when_only_waiting_items_remain():
+    """A plan whose sole remaining item is parked should start a new cycle."""
+    now = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+    current = PlanCycle(
+        id="cycle-waiting",
+        status="active",
+        kind="default",
+        created_at="2026-06-23T09:00:00+00:00",
+        activated_at="2026-06-23T09:00:00+00:00",
+        heartbeats_completed=8,
+        quest_id="quest-waiting",
+        items=[
+            PlanItem(id="done-1", description="Shipped", status="done"),
+            PlanItem(
+                id="wait-1",
+                description="Follow up if no reply",
+                status="in_progress",
+                waiting_on="reply from authors",
+                waiting_until=(now + timedelta(days=7)).isoformat(),
+            ),
+        ],
+    )
+
+    assert current.all_items_complete is False
+    assert current.has_actionable_items(now) is False
+
+    action = next_action(
+        current=current,
+        cadence="4h",
+        min_heartbeats=4,
+        review_window="1h",
+        auto_approve=True,
+        now=now,
+    )
+
+    assert action == "plan"
+
+
+def test_next_action_executes_when_a_waiting_item_comes_due():
+    """Once waiting_until passes, the item is actionable again — keep executing."""
+    now = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
+    current = PlanCycle(
+        id="cycle-due",
+        status="active",
+        kind="default",
+        created_at="2026-06-23T09:00:00+00:00",
+        activated_at="2026-06-23T09:00:00+00:00",
+        heartbeats_completed=8,
+        quest_id="quest-due",
+        items=[
+            PlanItem(id="done-1", description="Shipped", status="done"),
+            PlanItem(
+                id="wait-1",
+                description="Follow up if no reply",
+                status="in_progress",
+                waiting_on="reply from authors",
+                waiting_until="2026-07-07T14:00:00+00:00",
+            ),
+        ],
+    )
+
+    assert current.has_actionable_items(now) is True
+
+    action = next_action(
+        current=current,
+        cadence="4h",
+        min_heartbeats=4,
+        review_window="1h",
+        auto_approve=True,
+        now=now,
     )
 
     assert action == "execute"

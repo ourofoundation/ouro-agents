@@ -176,6 +176,18 @@ def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str
         "When you complete an item, use `complete_quest_item` with a substantive "
         "completion note and any produced asset id. Use `list_quest_items` if the "
         "local item context seems stale.\n"
+        "If an item cannot progress right now because it is blocked on an external "
+        "event (a reply, a review) or a future date, do NOT leave it as plain "
+        "`in_progress`: call `update_quest_item` with `waiting_on` (why) and, when "
+        "known, `waiting_until` (ISO timestamp). Parked items are treated as "
+        "non-actionable so they won't hold up starting the next cycle; clear the "
+        "waiting fields (pass empty strings) when the item becomes workable again.\n"
+        "For work that needs a light recurring check (e.g. scan for a reply once a "
+        "day until it arrives), also set `waiting_check_every` (an interval like "
+        "'1d' or '6h'). The item will resurface on that cadence — do the check when "
+        "it does, then `complete_quest_item` once resolved to stop the recurrence. "
+        "You do not need to manually reschedule a recurring check; it re-parks "
+        "itself after each due tick.\n"
         "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
         "you MUST use the `create_comment` MCP tool to comment on the plan's original quest "
         "(using the quest id shown above). Summarize the work you accomplished and include "
@@ -531,6 +543,78 @@ def _select_heartbeat_team_id(
     return None
 
 
+def _item_is_waiting(item: Any, now: datetime | None = None) -> bool:
+    """True when a quest item (dict or object) is parked and not actionable yet.
+
+    Mirrors ``PlanItem.is_waiting``: an unfinished item with a future
+    ``waiting_until`` (or a ``waiting_on`` with no date) is treated as waiting so
+    it is kept out of the actionable inbox until it comes due.
+    """
+    from .planning import _parse_iso_datetime
+
+    status = _value(item, "status")
+    if status in ("done", "skipped"):
+        return False
+    deadline = _parse_iso_datetime(_value(item, "waiting_until"))
+    if deadline is not None:
+        now = now or datetime.now(timezone.utc)
+        return deadline > now
+    # A recurring check with no next-time set is due now.
+    if _value(item, "waiting_check_every"):
+        return False
+    waiting_on = _value(item, "waiting_on") or ""
+    return bool(str(waiting_on).strip())
+
+
+def _advance_due_recurring_items(
+    agent: "OuroAgent",
+    items: list[dict[str, Any]],
+    now: datetime | None = None,
+) -> None:
+    """Re-park due recurring waiting items so they poll on a cadence.
+
+    When a recurring check (``waiting_check_every`` set) has come due it is
+    handed to this heartbeat once; advancing ``waiting_until`` by the interval
+    keeps it out of the inbox until the next tick so it doesn't consume every
+    heartbeat. Completing the item stops the recurrence. Failures are non-fatal:
+    the item is still worked this heartbeat, just not rescheduled.
+    """
+    from ..constants import parse_interval_seconds
+
+    now = now or datetime.now(timezone.utc)
+    client = None
+    for item in items:
+        every = _value(item, "waiting_check_every")
+        if not every:
+            continue
+        if _value(item, "status") not in ("pending", "in_progress"):
+            continue
+        if _item_is_waiting(item, now):
+            continue
+        seconds = parse_interval_seconds(str(every))
+        if not seconds:
+            continue
+        quest_id = _value(item, "quest_id")
+        item_id = _value(item, "id")
+        if not quest_id or not item_id:
+            continue
+        next_iso = (now + timedelta(seconds=seconds)).isoformat()
+        try:
+            client = client or agent._get_ouro_client()
+            client.quests.update_item(
+                str(quest_id), str(item_id), waiting_until=next_iso
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to reschedule recurring waiting item %s: %s",
+                str(item_id)[:8],
+                e,
+            )
+            continue
+        if isinstance(item, dict):
+            item["waiting_until"] = next_iso
+
+
 def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]:
     """Fetch actionable quest items assigned to this agent, if supported by the API."""
     if not getattr(agent, "own_user_id", None):
@@ -546,7 +630,11 @@ def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict
             raw = raw.get("data") or []
         if not isinstance(raw, list):
             return []
-        return [item for item in raw if isinstance(item, dict)]
+        return [
+            item
+            for item in raw
+            if isinstance(item, dict) and not _item_is_waiting(item)
+        ]
     except Exception as e:
         logger.warning("Failed to load assigned quest items: %s", e)
         return []
@@ -647,6 +735,8 @@ def _load_owned_open_quest_items(
             for item in _value(quest, "items", []) or []:
                 status = _value(item, "status")
                 if status not in {"pending", "in_progress"}:
+                    continue
+                if _item_is_waiting(item):
                     continue
                 item_dict = _as_dict(item)
                 item_dict.setdefault("id", str(_value(item, "id") or ""))
@@ -1115,6 +1205,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
     heartbeat_source = "none"
 
     if assigned_items:
+        _advance_due_recurring_items(agent, assigned_items)
         assigned_team_id = _assigned_work_team_id(assigned_items)
         if assigned_team_id and assigned_team_id in _sorted_team_ids(agent):
             heartbeat_team_id = assigned_team_id
@@ -1134,6 +1225,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         logger.info("Executing assigned quest work: %d item(s)", len(assigned_items))
 
     if not playbook and owned_items:
+        _advance_due_recurring_items(agent, owned_items)
         owned_team_id = _assigned_work_team_id(owned_items)
         if owned_team_id and owned_team_id in _sorted_team_ids(agent):
             heartbeat_team_id = owned_team_id

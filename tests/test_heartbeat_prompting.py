@@ -10,6 +10,7 @@ from ouro_agents.config import HeartbeatConfig
 from ouro_agents.display import OuroDisplay
 from ouro_agents.modes.framing import HEARTBEAT_FRAMING
 from ouro_agents.modes.heartbeat import (
+    _advance_due_recurring_items,
     _load_owned_open_quest_items,
     _select_heartbeat_team_id,
     build_plan_execution_playbook,
@@ -23,6 +24,55 @@ from ouro_agents.modes.planning import render_plan_context
 from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT
 from ouro_agents.subagents.context import SubAgentUsage
 from ouro_agents.usage import RunUsage, UsageTracker
+
+
+def test_advance_due_recurring_items_reschedules_only_due_recurring():
+    from datetime import timedelta, timezone
+
+    now = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+
+    class _FakeQuests:
+        def __init__(self):
+            self.calls = []
+
+        def update_item(self, quest_id, item_id, **kwargs):
+            self.calls.append((quest_id, item_id, kwargs))
+
+    fake_quests = _FakeQuests()
+    agent = SimpleNamespace(
+        _get_ouro_client=lambda: SimpleNamespace(quests=fake_quests)
+    )
+
+    due_recurring = {
+        "id": "item-due",
+        "quest_id": "quest-1",
+        "status": "in_progress",
+        "waiting_on": "reply",
+        "waiting_check_every": "1d",
+    }
+    parked_recurring = {
+        "id": "item-parked",
+        "quest_id": "quest-1",
+        "status": "in_progress",
+        "waiting_on": "reply",
+        "waiting_until": (now + timedelta(hours=6)).isoformat(),
+        "waiting_check_every": "1d",
+    }
+    plain = {
+        "id": "item-plain",
+        "quest_id": "quest-1",
+        "status": "in_progress",
+    }
+
+    _advance_due_recurring_items(agent, [due_recurring, parked_recurring, plain], now)
+
+    # Only the due recurring item is rescheduled, one day out.
+    assert len(fake_quests.calls) == 1
+    quest_id, item_id, kwargs = fake_quests.calls[0]
+    assert (quest_id, item_id) == ("quest-1", "item-due")
+    assert kwargs["waiting_until"] == (now + timedelta(days=1)).isoformat()
+    # And the in-memory dict reflects the new next-check.
+    assert due_recurring["waiting_until"] == (now + timedelta(days=1)).isoformat()
 
 
 def test_heartbeat_framing_prefers_bounded_progress():
