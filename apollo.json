@@ -14,7 +14,7 @@
   },
   "agent": {
     "name": "apollo",
-    "model": "qwen/qwen3.7-plus",
+    "model": "z-ai/glm-5.2",
     "reasoning": {
       "effort": "high"
     },
@@ -55,21 +55,21 @@
   },
   "subagents": {
     "preflight": {
-      "model": "qwen/qwen3.7-plus",
+      "model": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 4
     },
     "research": {
-      "model": "qwen/qwen3.7-plus",
+      "model": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 10
     },
     "writer": {
-      "model": "qwen/qwen3.7-plus"
+      "model": "z-ai/glm-5.2"
     },
     "executor": {
       "max_steps": 24
@@ -78,7 +78,7 @@
   "modes": {
     "planning": {
       "enabled": false,
-      "model": "qwen/qwen3.7-plus",
+      "model": "z-ai/glm-5.2",
       "max_steps": 20,
       "cadence": "8h",
       "min_heartbeats": 4,
@@ -88,7 +88,7 @@
     "heartbeat": {
       "enabled": true,
       "every": "6h",
-      "model": "qwen/qwen3.7-plus",
+      "model": "z-ai/glm-5.2",
       "max_steps": 20,
       "active_hours": {
         "start": "08:30",
@@ -103,7 +103,7 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/apollo/memory",
-    "extraction_model": "qwen/qwen3.7-plus",
+    "extraction_model": "z-ai/glm-5.2",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "retrieval_queries": 3,
