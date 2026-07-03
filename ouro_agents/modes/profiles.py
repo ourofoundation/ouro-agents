@@ -146,7 +146,7 @@ AUTONOMOUS = ModeProfile(
     name="autonomous",
     framing=AUTONOMOUS_FRAMING,
     output_format=AUTONOMOUS_OUTPUT,
-    max_steps=20,
+    max_steps=40,
     preload_tools=AUTONOMOUS_ACTION_PRELOADS,
 )
 

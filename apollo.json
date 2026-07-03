@@ -83,6 +83,9 @@
     }
   },
   "modes": {
+    "autonomous": {
+      "max_steps": 40
+    },
     "planning": {
       "enabled": false,
       "model": "z-ai/glm-5.2",
