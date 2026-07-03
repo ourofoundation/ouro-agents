@@ -42,28 +42,25 @@
     }
   },
   "openrouter_provider": {
-    "order": [
-      "Z.AI"
-    ],
-    "allow_fallbacks": false
+    "allow_fallbacks": true
   },
   "subagents": {
     "preflight": {
-      "model": "z-ai/glm-5.2",
+      "model": "xiaomi/mimo-v2.5",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 4
     },
     "research": {
-      "model": "z-ai/glm-5.2",
+      "model": "xiaomi/mimo-v2.5",
       "reasoning": {
         "effort": "none"
       },
       "max_steps": 10
     },
     "reflector": {
-      "model": "z-ai/glm-5.2",
+      "model": "xiaomi/mimo-v2.5",
       "reasoning": {
         "effort": "none"
       },
@@ -111,7 +108,7 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/hermes/memory",
-    "extraction_model": "z-ai/glm-5.2",
+    "extraction_model": "xiaomi/mimo-v2.5",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "retrieval_queries": 3,

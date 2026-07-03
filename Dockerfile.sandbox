@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir \
-        ouro-py \
+        ouro-py==0.10.0 \
         httpx \
         ase \
         numpy \
