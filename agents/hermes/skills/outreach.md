@@ -95,6 +95,12 @@ WHERE lower(email) = lower('them@example.edu')
   channel.
 - No row -> this is genuinely new. Proceed.
 
+Apollo runs his own author outreach (weights/code requests) out of a separate
+CRM dataset with the same schema; its id is in your MEMORY.md once he's
+created and shared it. Run the same email/name check against his dataset
+before a cold send. If Apollo has a live thread (`sent` or `replied`), don't
+email separately: message him your angle and let him carry it.
+
 ## Sending workflow
 
 1. **Read their work.** Open the paper, preprint, dataset, or profile. You need

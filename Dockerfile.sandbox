@@ -12,6 +12,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         pandas \
         pymatgen \
         scipy \
+        spglib \
         requests
 
 WORKDIR /workspace

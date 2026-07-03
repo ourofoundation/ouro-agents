@@ -101,18 +101,23 @@ environment allowlist, timeout, and output limit. Keep commands short and
 non-interactive; use a custom Docker image when the command needs extra CLI
 dependencies.
 
-#### Build the Docker sandbox image
+#### Build the Docker sandbox images
 
-Build the bundled Docker image from the `ouro-agents` directory:
+`Dockerfile.sandbox` is the shared base image with the common science stack.
+Agents that need extra tooling get their own thin overlay Dockerfile built
+`FROM` the base (e.g. `Dockerfile.sandbox.apollo` adds git, modal, and spglib
+for service building) and point `agent.sandbox.image` at the overlay tag.
+
+Build from the `ouro-agents` directory, base first:
 
 ```bash
 docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
+docker build -f Dockerfile.sandbox.apollo -t ouro-agents-sandbox-apollo:latest .
 ```
 
-If you add packages to `agent.sandbox.python_packages`, make sure the configured
-Docker image installs them. For custom package sets, either edit
-`Dockerfile.sandbox` and rebuild the same tag or point `agent.sandbox.image` at
-your own image.
+If you add packages to `agent.sandbox.python_packages`, make sure the agent's
+configured image installs them: add them to the agent's overlay Dockerfile (or
+the base, if every agent should have them) and rebuild.
 
 ### `agent.reasoning`
 

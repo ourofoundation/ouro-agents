@@ -48,7 +48,7 @@ ouro = get_ouro_client()
 - `update(id, name=None, data=None, data_mode="append", description=None, **kwargs)` → Dataset
   - `data_mode`: "append" | "overwrite" | "upsert"
 - `list_views(id)` → list[dict]
-- `create_view(id, name, description=None, sql_query=None, engine_type="auto", config=None, prompt=None)` → dict
+- `create_view(id, name, description=None, sql_query=None, config=None, prompt=None)` → dict
 - `update_view(id, view_id, ...)` → dict
 - `delete_view(id, view_id)` → None
 - `delete(id)` → None

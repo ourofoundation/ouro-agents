@@ -2,11 +2,13 @@
   "env_file": ".env.apollo",
   "security": {
     "controllers": [
-      "mmoderwell"
+      "mmoderwell",
+      "hermes"
     ],
     "trusted": [
       "hermes",
-      "athena"
+      "athena",
+      "will"
     ],
     "run_secret": null
   },
@@ -19,12 +21,29 @@
     "workspace": "./agents/apollo",
     "org_id": "00000000-0000-0000-0000-000000000000",
     "sandbox": {
+      "mode": "docker",
+      "enable_shell": true,
       "python_packages": [
         "numpy.*",
         "scipy.*",
         "ase.*",
         "pymatgen.*",
-        "spglib.*"
+        "spglib.*",
+        "modal.*"
+      ],
+      "image": "ouro-agents-sandbox-apollo:latest",
+      "workspace_mount": "/workspace",
+      "network": "bridge",
+      "memory": "4g",
+      "cpus": 2.0,
+      "pids_limit": 512,
+      "timeout_seconds": 600,
+      "max_output_chars": 50000,
+      "env_allowlist": [
+        "OURO_API_KEY",
+        "OURO_BASE_URL",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET"
       ]
     }
   },
@@ -68,7 +87,7 @@
     },
     "heartbeat": {
       "enabled": true,
-      "every": "1h",
+      "every": "6h",
       "model": "qwen/qwen3.7-plus",
       "max_steps": 20,
       "active_hours": {
@@ -77,11 +96,7 @@
         "timezone": "America/Chicago"
       },
       "proactive": {
-        "enabled": true,
-        "servers": [
-          "ouro",
-          "search"
-        ]
+        "enabled": false
       }
     }
   },
@@ -148,6 +163,19 @@
       ],
       "env": {
         "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
+    },
+    {
+      "name": "resend",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "resend-mcp"
+      ],
+      "env": {
+        "RESEND_API_KEY": "${RESEND_API_KEY}",
+        "SENDER_EMAIL_ADDRESS": "${RESEND_SENDER}"
       }
     }
   ],
