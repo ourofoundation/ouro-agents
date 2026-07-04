@@ -27,26 +27,44 @@ _NOISY_REFLECTION_TOOLS = {
 REFLECTOR_PROMPT = """\
 You are a memory curator. Given context about recent activity — either a \
 conversation with recent messages, or a completed task run with results — \
-extract what is worth remembering long-term. Be selective — only include \
-things that would be useful in FUTURE conversations or runs.
+extract what is worth remembering long-term.
+
+The admission test: store something only if it would change what the agent \
+does in a FUTURE conversation or run. If a future model reading the sentence \
+cold could not act differently because of it, leave it out.
 
 Strategy:
-- If memory_recall is available, search for existing memories about the current \
-topic to avoid storing duplicates (batch queries in one call)
+- If memory_recall is available, search for existing memories about the \
+  current topic first (batch queries in one call). Use the results both to \
+  avoid storing duplicates and to collect the IDs of memories your new \
+  candidates supersede.
 
 Output ONLY valid JSON matching this schema (no markdown fences):
 {
-  "candidates": [{"text": "string", "subject_type": "user"|"agent"|"team"|"asset"|"general", "subject_id_hint": "string", "category": "fact"|"direction"|"preference", "basis": "stated"|"inferred"|"observed", "stability": "stable"|"evolving", "strength": 0.3|0.5|0.8, "team_ids": ["uuid from available teams"], "asset_ids": ["uuid"], "verification_hint": "string or empty"}],
+  "candidates": [{"text": "string", "subject_type": "user"|"agent"|"team"|"asset"|"general", "subject_id_hint": "string", "category": "fact"|"direction"|"preference", "basis": "stated"|"inferred"|"observed", "stability": "stable"|"evolving", "strength": "minor"|"normal"|"high", "team_ids": ["uuid from available teams"], "asset_ids": ["uuid"], "verification_hint": "string or empty", "supersedes": ["memory_id from memory_recall results"]}],
   "user_preferences": ["string"],
   "daily_log_entries": [{"team_id": "uuid from available teams", "entry": "string"}]
 }
 
-Rules:
-- candidates: Distilled semantic memory only: durable facts, preferences, or \
-  direction. NOT raw observations, conversation mechanics, or task plumbing. \
-  Assign a coarse strength seed (0.3=minor, 0.5=normal, 0.8=high). \
-  If a fact references an Ouro asset, include its UUID in asset_ids AND use \
-  [asset name](asset:<uuid>) links in the text so the fact is self-contained. Otherwise omit asset_ids.
+Writing candidates:
+- Distilled semantic memory only: durable facts, preferences, or direction. \
+  NOT raw observations, conversation mechanics, or task plumbing.
+- Each candidate is ONE self-contained sentence in third person. Name the \
+  subject explicitly (username, agent name, team, or asset) — never "the \
+  user", "this project", or "it". The sentence must make sense read alone, \
+  months later, with no surrounding context.
+- Prefix time-sensitive facts with the current date from context ("As of \
+  2026-07-04, ..."). Durable facts need no date.
+- If a fact references an Ouro asset, include its UUID in asset_ids AND use \
+  [asset name](asset:<uuid>) links in the text so the fact is self-contained. \
+  Otherwise omit asset_ids.
+- strength: "minor" for peripheral detail, "normal" for most memories, "high" \
+  for explicit human guidance and hard-won lessons.
+- If entity files provide background, use them to add richer context to facts \
+  (e.g. "User prefers X for project Y" instead of just "User prefers X").
+- Do NOT store facts that duplicate or closely overlap with existing memories.
+
+Field rules:
 - basis: Use stated for explicit human instructions/preferences/facts, observed \
   for tool or platform evidence, inferred for the agent's synthesis.
 - stability: stable means the memory is durable until contradicted; evolving \
@@ -60,7 +78,13 @@ Rules:
 - subject_type answers what the memory is about: user preferences are user, \
   agent operating learnings/directions are agent, team-specific project knowledge \
   is team, asset interactions are asset, and broadly applicable facts are general.
-- direction: Use this category for durable work-direction guidance from humans \
+- supersedes: when a candidate contradicts, reverses, or updates a memory that \
+  memory_recall surfaced, list that memory's id here — the system retires those \
+  memories when the candidate is stored. Never invent IDs; omit or leave empty \
+  when nothing is superseded.
+
+Direction memories:
+- Use category direction for durable work-direction guidance from humans \
   or deliberate decisions about what the agent should focus on next. Capture \
   both positive priorities ("spend more time on X") and negative constraints \
   ("stop doing Y", "avoid Z"). Prefer this over a generic observation when the \
@@ -69,17 +93,11 @@ Rules:
   planning decisions. Ambient platform discoveries are evidence, not direction; \
   log them as episodes when they are useful future context.
 - When a human explicitly bans, prohibits, or reverses something, store that as \
-  a direction with strength 0.8 and stability stable, and phrase it so it \
+  a direction with strength high and stability stable, and phrase it so it \
   unambiguously supersedes older advice (name the banned thing and the date). \
-  If memory_recall surfaced existing memories that recommend the now-banned \
-  thing, mention them in the candidate text so consolidation can remove them.
-- When a run interacted with an Ouro asset in a way that future heartbeats should \
-  avoid repeating immediately (for example: commenting on it, reviewing it, or \
-  deciding to pass on it for now), write one concise daily_log_entries episode with \
-  the asset ref and the substance of what happened so a later model can infer \
-  "I already touched this recently."
-- user_preferences: Communication style, interests, or workflow patterns observed. \
-  Only include clear, repeated signals. Omit for task/run reflection.
+  List any recalled memories that recommend the now-banned thing in supersedes.
+
+Daily log entries:
 - daily_log_entries: Team-specific one-line summaries of what was accomplished. \
   Use this for episodic memory: what happened, when, and which assets were touched. \
   Use this when a run did work relevant to one or more listed teams. Each entry \
@@ -91,20 +109,51 @@ Rules:
   Otherwise use [chat] for conversation reflections. Never invent tags like [heartbeat] \
   or [event:comment] yourself — the system determines the correct tag. \
   Format: "[tag] brief description with [linked assets](asset:<uuid>)"
+- When a run interacted with an Ouro asset in a way that future heartbeats should \
+  avoid repeating immediately (for example: commenting on it, reviewing it, or \
+  deciding to pass on it for now), write one concise daily_log_entries episode with \
+  the asset ref and the substance of what happened so a later model can infer \
+  "I already touched this recently."
 - For heartbeat engagement actions, make each daily log entry specific enough to \
   prevent accidental repetition on the next tick. Include which asset was touched \
   and the gist of the interaction, not generic text like "engaged with community."
+
+Other outputs:
+- user_preferences: Communication style, interests, or workflow patterns observed. \
+  Only include clear, repeated signals. Omit for task/run reflection.
 - If nothing is worth remembering, return empty lists.
 - If the run was trivial (e.g. NO_ACTION) and the task/result contains no explicit
   human guidance, return empty lists. NO_ACTION is only an immediate reply
   decision; it must not cause you to discard explicit human work-direction,
   priority, or avoidance guidance contained in the task.
-- Be concise. Each fact/preference should be one sentence.
-- Do NOT store facts that duplicate or closely overlap with existing memories.
-- If entity files provide background, use them to add richer context to facts \
-  (e.g. "User prefers X for project Y" instead of just "User prefers X").
+
+Examples:
+
+Input: user alice says "great — from now on, publish all benchmark results to the eval-lab team, not general."
+Candidate: {"text": "As of 2026-07-04, alice wants benchmark results published to the eval-lab team instead of general.", "subject_type": "agent", "subject_id_hint": "self", "category": "direction", "basis": "stated", "stability": "stable", "strength": "high", "team_ids": ["<eval-lab uuid from available teams>"], "asset_ids": [], "verification_hint": "", "supersedes": []}
+
+Input: a run inspected a dataset and found its schema.
+Candidate: {"text": "The [alloy-corpus dataset](asset:d3adbeef-0000-0000-0000-000000000000) stores formation energy in eV/atom in the `formation_energy` column.", "subject_type": "asset", "subject_id_hint": "d3adbeef-0000-0000-0000-000000000000", "category": "fact", "basis": "observed", "stability": "evolving", "strength": "normal", "team_ids": [], "asset_ids": ["d3adbeef-0000-0000-0000-000000000000"], "verification_hint": "re-read the dataset schema", "supersedes": []}
+
+Input: a heartbeat run posted one comment and the result was "commented on the post"; no human guidance appeared.
+Candidates: [] — the comment itself is task plumbing that would not change future behavior. Record it as one daily_log_entries episode with the asset link instead.
 
 When finished, end the turn with a final message containing ONLY the JSON."""
+
+
+_STRENGTH_WORDS = {"minor": 0.3, "normal": 0.5, "high": 0.8}
+
+
+def _coerce_strength(value, default: float = 0.5) -> float:
+    """Accept the word scale ("minor"|"normal"|"high") or a raw float."""
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in _STRENGTH_WORDS:
+            return _STRENGTH_WORDS[word]
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass
@@ -162,7 +211,7 @@ def build_run_reflection_task(
         name = tc.get("tool", "")
         if name in _NOISY_REFLECTION_TOOLS:
             continue
-        tc_result = str(tc.get("result", ""))[:300]
+        tc_result = str(tc.get("result", ""))[:400]
         tools_compact.append(f"- {name}: {tc_result}")
     tools_text = (
         "\n".join(tools_compact) if tools_compact else "(no significant tool calls)"
@@ -185,8 +234,8 @@ def build_run_reflection_task(
         f"Daily log tag: {tag}\n\n"
         "Available teams (use only these IDs in team_ids):\n"
         f"{available_team_text}\n\n"
-        f"Task:\n{task[:600]}\n\n"
-        f"Result:\n{str(result)[:800]}\n\n"
+        f"Task:\n{task[:1500]}\n\n"
+        f"Result:\n{str(result)[:2000]}\n\n"
         f"Tool calls:\n{tools_text}\n\n"
         "If this run commented on, reviewed, or otherwise interacted with an Ouro "
         "asset, capture that interaction concretely so the next heartbeat can tell "
@@ -304,6 +353,9 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
                         else "user"
                     )
                 asset_ids = fact.get("asset_ids", fact.get("asset_refs", []))
+                supersedes = fact.get("supersedes") or []
+                if not isinstance(supersedes, list):
+                    supersedes = []
                 facts.append(
                     {
                         "text": fact.get("text", ""),
@@ -314,8 +366,11 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
                         "stability": fact.get("stability", "stable"),
                         "team_ids": fact.get("team_ids", []),
                         "asset_ids": asset_ids,
-                        "strength": fact.get("strength", fact.get("importance", 0.5)),
+                        "strength": _coerce_strength(
+                            fact.get("strength", fact.get("importance", 0.5))
+                        ),
                         "verification_hint": str(fact.get("verification_hint") or ""),
+                        "supersedes": [str(mid).strip() for mid in supersedes if str(mid).strip()],
                         "asset_refs": asset_ids,
                     }
                 )

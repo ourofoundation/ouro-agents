@@ -32,13 +32,20 @@ def test_chat_mode_preloads_hotpath_tools():
         "ouro:get_asset",
         "ouro:execute_route",
         "ouro:get_action",
-        "ouro:create_comment",
+        "ouro:write_comment",
     ]
 
 
 def test_chat_mode_is_conversational_and_work_modes_are_not():
     assert CHAT.conversational is True
     assert AUTONOMOUS.conversational is False
+
+
+def test_chat_mode_runs_preflight_and_post_reflection():
+    # Chat shares the full preflight/reflection pipeline with autonomous runs;
+    # only lightweight background modes (heartbeat/plan/review) skip it.
+    assert CHAT.skip_preflight is False
+    assert CHAT.skip_post_reflection is False
 
 
 def test_public_comment_envelope_filters_autonomous_preloads():

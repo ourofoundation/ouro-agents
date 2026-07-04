@@ -516,6 +516,7 @@ class AgentScheduler:
                 mode=RunMode.AUTONOMOUS,
                 skip_memory=False,
                 team_id=task.team_id,
+                preemptible=True,
             )
             get_display().flush_pending_run_summary()
             self.store.update(

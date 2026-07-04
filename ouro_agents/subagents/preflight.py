@@ -2,7 +2,7 @@
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ context from memory so the agent can start with a clear picture.
 Your job is analysis only. Do not execute the user's task, do not draft the \
 final user-facing response, and do not perform side effects. Your plan is only \
 a launchpad for the main agent's first concrete actions, not a substitute for them. If the task text \
-mentions MCP tools such as create_comment, create_post, send_message, execute_route, \
+mentions MCP tools such as write_comment, create_post, send_message, execute_route, \
 or update_quest, treat those as instructions for the main agent later — never \
 call them during preflight.
 
@@ -39,7 +39,8 @@ ONLY valid JSON matching this schema (no markdown fences, no explanation):
   "complexity": "simple" | "moderate" | "complex",
   "worth_remembering": true | false,
   "briefing": "Synthesized relevant context from memory, or empty string if nothing relevant.",
-  "plan": "Numbered concrete action plan for moderate/complex tasks, or empty string for simple."
+  "plan": "Numbered concrete action plan for moderate/complex tasks, or empty string for simple.",
+  "tools": ["server:tool_name", ...]
 }
 
 Rules:
@@ -56,6 +57,10 @@ tools, route/service discovery, asset creation/transformation, or result inspect
 One line per step. End moderate/complex plans with a verification step that names the expected \
 evidence (asset ID, action ID, dataset rows, status, URL, or exact change). Empty string if the \
 task is simple enough to not need a plan.
+- tools: MCP tools (exact qualified names from the Available MCP Tools list, when provided) that \
+the main agent will very likely call for this task, so they can be preloaded and called without a \
+load_tool step. List at most 6, only tools your plan actually uses, most important first. Empty \
+list for simple/conversational tasks or when unsure.
 - plan ordering: if the request explicitly names a durable artifact to create (a quest, post, \
 plan, dataset), put that creation step FIRST — before web research, outreach, or other long \
 execution — so the requested deliverable exists even if later steps stall. Do not front-load \
@@ -71,7 +76,7 @@ Your job is to decide what the agent should focus on during this heartbeat tick.
 
 Your job is analysis only. Do not execute heartbeat work, post comments, update \
 quests, or perform any side effects. If the playbook mentions MCP tools such as \
-create_comment, create_post, execute_route, or update_quest, treat those as \
+write_comment, create_post, execute_route, or update_quest, treat those as \
 instructions for the main heartbeat agent later — never call them during \
 preflight.
 
@@ -111,6 +116,11 @@ The only available heartbeat preflight tool is memory_recall. Never call side-ef
 Your final message must be the JSON object alone — no surrounding prose."""
 
 
+# Cap on preflight-selected tool preloads: enough for a real hot path,
+# small enough that a rambling selection can't crowd the tool list.
+MAX_PREFLIGHT_TOOLS = 6
+
+
 @dataclass
 class PreflightResult:
     """Structured output from the preflight subagent."""
@@ -120,10 +130,18 @@ class PreflightResult:
     worth_remembering: bool = True
     briefing: str = ""
     plan: str = ""
+    tools: list[str] = field(default_factory=list)
 
     @property
     def is_trivial(self) -> bool:
         return self.intent == "converse" and self.complexity == "simple"
+
+
+def _parse_tool_list(raw: object) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    tools = [str(t).strip() for t in raw if str(t).strip()]
+    return list(dict.fromkeys(tools))[:MAX_PREFLIGHT_TOOLS]
 
 
 def parse_preflight_result(raw: str) -> PreflightResult:
@@ -140,6 +158,7 @@ def parse_preflight_result(raw: str) -> PreflightResult:
             worth_remembering=data.get("worth_remembering", True),
             briefing=data.get("briefing", ""),
             plan=data.get("plan", ""),
+            tools=_parse_tool_list(data.get("tools")),
         )
     except Exception as e:
         logger.warning("Failed to parse preflight result, using defaults: %s", e)

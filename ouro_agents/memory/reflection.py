@@ -224,6 +224,19 @@ def store_reflection_memories(
             )
         except Exception as e:
             logger.warning("Failed to store reflected memory: %s", e)
+            continue
+        for superseded_id in item.supersedes:
+            try:
+                memory_backend.delete(superseded_id)
+                logger.info(
+                    "Reflection retired superseded memory %s (replaced by: %s)",
+                    superseded_id,
+                    item.text[:80],
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to retire superseded memory %s: %s", superseded_id, e
+                )
     return stored
 
 

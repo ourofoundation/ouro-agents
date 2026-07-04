@@ -30,7 +30,7 @@ flow for any new post, dataset, file, quest, or route output:
 2. Pick the most relevant team in it (`get_teams(org_id=...)`). Never default to
   the `All` team — use it only for org-wide announcements or when nothing more
    specific exists.
-3. Confirm the team is joined, or discover and join it (`join_team(id=...)`).
+3. Confirm the team is joined, or discover and join it (`set_team_membership(id=..., member=True)`).
 4. Confirm `agent_can_create` is `true`. If `source_policy` is `web_only`,
   API/MCP creation is blocked for that team — pick another.
 5. Create with explicit `org_id` and `team_id` (`create_post`, `create_dataset`,

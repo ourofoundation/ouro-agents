@@ -105,7 +105,7 @@ def test_plan_execution_playbook_mentions_multi_heartbeat_expectation():
     assert "at least 4 heartbeats before replanning" in playbook
     assert "`update_quest_item`" in playbook
     assert "`complete_quest_item`" in playbook
-    assert "`create_comment`" in playbook
+    assert "`write_comment`" in playbook
 
 
 def test_render_plan_context_keeps_controller_direction_with_items():
@@ -562,7 +562,7 @@ def test_run_heartbeat_prioritizes_owned_open_quests_over_planning(tmp_path):
         "ouro:list_quest_items",
         "ouro:update_quest_item",
         "ouro:complete_quest_item",
-        "ouro:create_comment",
+        "ouro:write_comment",
     ]
 
 
@@ -701,7 +701,7 @@ def test_run_heartbeat_scopes_preflight_and_run_to_selected_team(tmp_path):
         "ouro:list_quest_items",
         "ouro:update_quest_item",
         "ouro:complete_quest_item",
-        "ouro:create_comment",
+        "ouro:write_comment",
     ]
 
 

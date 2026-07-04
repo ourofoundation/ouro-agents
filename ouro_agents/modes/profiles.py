@@ -108,7 +108,7 @@ CHAT_HOTPATH_PRELOADS = [
     "ouro:get_asset",
     "ouro:execute_route",
     "ouro:get_action",
-    "ouro:create_comment",
+    "ouro:write_comment",
 ]
 
 # Chat runs ARE the conversation: the host injects history and posts the
@@ -125,6 +125,11 @@ CHAT_EXCLUDED_TOOLS = [
 ]
 
 
+# Chat runs the same preflight/reflection pipeline as autonomous runs:
+# preflight classifies the message, recalls memory, and picks tools to
+# preload (the trivial-message regex still fast-paths greetings), and
+# post-run reflection curates memory in a background thread so it adds
+# no reply latency.
 CHAT = ModeProfile(
     name="chat",
     framing=CHAT_FRAMING,
@@ -135,8 +140,6 @@ CHAT = ModeProfile(
     conversational=True,
     load_conversation_state=True,
     include_chat_conversation_id=True,
-    skip_preflight=True,
-    skip_post_reflection=True,
     append_conversation_turns=False,
     update_conversation_state=True,
     conversation_id_annotation="this conversation's history and memory",
@@ -158,7 +161,7 @@ HEARTBEAT = ModeProfile(
     preload_tools=[
         "ouro:search_assets",
         "ouro:get_asset",
-        "ouro:create_comment",
+        "ouro:write_comment",
         "ouro:create_post",
     ],
     lightweight=True,

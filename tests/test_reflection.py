@@ -59,6 +59,7 @@ parse_reflection_result = _reflector_module.parse_reflection_result
 build_run_reflection_task = _reflector_module.build_run_reflection_task
 REFLECTOR_PROMPT = _reflector_module.REFLECTOR_PROMPT
 apply_reflection = _reflection_module.apply_reflection
+store_reflection_memories = _reflection_module.store_reflection_memories
 record_reflection_turn = _reflection_module.record_reflection_turn
 should_reflect = _reflection_module.should_reflect
 should_reflect_for_conversation = _reflection_module.should_reflect_for_conversation
@@ -68,6 +69,7 @@ validated_daily_log_entries = _reflection_module.validated_daily_log_entries
 class _FakeMemoryBackend:
     def __init__(self):
         self.items = []
+        self.deleted = []
 
     def add(
         self,
@@ -90,6 +92,9 @@ class _FakeMemoryBackend:
                 "infer": infer,
             }
         )
+
+    def delete(self, memory_id):
+        self.deleted.append(memory_id)
 
 
 class _ConversationState:
@@ -374,12 +379,41 @@ class TestReflectionParsing(unittest.TestCase):
             ],
         )
 
+    def test_parses_word_strength_scale(self):
+        result = parse_reflection_result(
+            '{"candidates": [{"text": "Fact one.", "strength": "high"}, '
+            '{"text": "Fact two.", "strength": "minor"}, '
+            '{"text": "Fact three.", "strength": 0.5}], '
+            '"user_preferences": [], "daily_log_entries": []}'
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(
+            [fact["strength"] for fact in result.facts_to_store],
+            [0.8, 0.3, 0.5],
+        )
+
+    def test_parses_supersedes_ids(self):
+        result = parse_reflection_result(
+            '{"candidates": [{"text": "As of 2026-07-04, X is banned.", '
+            '"category": "direction", "strength": "high", '
+            '"supersedes": ["mem-old", " ", "mem-stale"]}], '
+            '"user_preferences": [], "daily_log_entries": []}'
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(
+            result.facts_to_store[0]["supersedes"], ["mem-old", "mem-stale"]
+        )
+
     def test_build_run_reflection_task_mentions_redundant_follow_up_avoidance(self):
         task = build_run_reflection_task(
             task="Comment on a post if useful.",
             result="Left a comment on asset abc.",
             tool_summary=[
-                {"tool": "ouro:create_comment", "result": "commented on asset abc"}
+                {"tool": "ouro:write_comment", "result": "commented on asset abc"}
             ],
             run_mode="heartbeat",
         )
@@ -391,7 +425,7 @@ class TestReflectionParsing(unittest.TestCase):
         task = build_run_reflection_task(
             task="Comment from alice: please focus more on dataset quality.",
             result="NO_ACTION",
-            tool_summary=[{"tool": "ouro:create_comment", "result": "replied"}],
+            tool_summary=[{"tool": "ouro:write_comment", "result": "replied"}],
             run_mode="autonomous",
             event_type="comment",
         )
@@ -407,10 +441,10 @@ class TestReflectionParsing(unittest.TestCase):
             tool_summary=[
                 {"tool": "memory_recall", "result": "prior context"},
                 {"tool": "ouro:get_asset", "result": "asset body"},
-                {"tool": "ouro:create_comment", "result": "comment one"},
+                {"tool": "ouro:write_comment", "result": "comment one"},
                 {"tool": "load_tool", "result": "loaded search"},
                 {"tool": "ouro:update_post", "result": "updated plan post"},
-                {"tool": "ouro:create_comment", "result": "comment two"},
+                {"tool": "ouro:write_comment", "result": "comment two"},
             ],
             run_mode="heartbeat",
         )
@@ -418,21 +452,21 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertNotIn("memory_recall", task)
         self.assertNotIn("ouro:get_asset", task)
         self.assertNotIn("load_tool", task)
-        self.assertIn("- ouro:create_comment: comment one", task)
+        self.assertIn("- ouro:write_comment: comment one", task)
         self.assertIn("- ouro:update_post: updated plan post", task)
-        self.assertIn("- ouro:create_comment: comment two", task)
+        self.assertIn("- ouro:write_comment: comment two", task)
         self.assertLess(
-            task.index("- ouro:create_comment: comment one"),
+            task.index("- ouro:write_comment: comment one"),
             task.index("- ouro:update_post: updated plan post"),
         )
         self.assertLess(
             task.index("- ouro:update_post: updated plan post"),
-            task.index("- ouro:create_comment: comment two"),
+            task.index("- ouro:write_comment: comment two"),
         )
 
     def test_build_run_reflection_task_includes_all_non_noisy_tools(self):
         tool_summary = [
-            {"tool": "ouro:create_comment", "result": f"comment {i}"} for i in range(12)
+            {"tool": "ouro:write_comment", "result": f"comment {i}"} for i in range(12)
         ]
         task = build_run_reflection_task(
             task="Comment when appropriate.",
@@ -441,8 +475,8 @@ class TestReflectionParsing(unittest.TestCase):
             run_mode="heartbeat",
         )
 
-        self.assertIn("- ouro:create_comment: comment 0", task)
-        self.assertIn("- ouro:create_comment: comment 11", task)
+        self.assertIn("- ouro:write_comment: comment 0", task)
+        self.assertIn("- ouro:write_comment: comment 11", task)
 
 
 class TestApplyReflection(unittest.TestCase):
@@ -513,6 +547,58 @@ class TestApplyReflection(unittest.TestCase):
             )
 
             self.assertEqual(backend.items[0]["team_id"], "team-42")
+
+    def test_store_reflection_memories_retires_superseded_ids(self):
+        backend = _FakeMemoryBackend()
+        result = ReflectionResult(
+            facts_to_store=[
+                {
+                    "text": "As of 2026-07-04, alice banned auto-posting benchmarks.",
+                    "category": "direction",
+                    "basis": "stated",
+                    "strength": 0.8,
+                    "supersedes": ["mem-old-advice"],
+                }
+            ],
+        )
+
+        stored = store_reflection_memories(
+            result,
+            backend,
+            agent_id="hermes",
+            user_id="user-1",
+            run_id="run-1",
+        )
+
+        self.assertEqual(stored, 1)
+        self.assertEqual(backend.deleted, ["mem-old-advice"])
+
+    def test_store_reflection_memories_skips_supersedes_when_store_fails(self):
+        class _FailingBackend(_FakeMemoryBackend):
+            def add(self, *args, **kwargs):
+                raise RuntimeError("store unavailable")
+
+        backend = _FailingBackend()
+        result = ReflectionResult(
+            facts_to_store=[
+                {
+                    "text": "As of 2026-07-04, alice banned auto-posting benchmarks.",
+                    "category": "direction",
+                    "supersedes": ["mem-old-advice"],
+                }
+            ],
+        )
+
+        stored = store_reflection_memories(
+            result,
+            backend,
+            agent_id="hermes",
+            user_id="user-1",
+            run_id="run-1",
+        )
+
+        self.assertEqual(stored, 0)
+        self.assertEqual(backend.deleted, [])
 
     def test_apply_reflection_preserves_direction_category(self):
         with tempfile.TemporaryDirectory() as tmpdir:

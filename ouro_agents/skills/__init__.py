@@ -120,6 +120,11 @@ def _build_index(workspace: Optional[Path] = None) -> dict[str, SkillEntry]:
 # ---------------------------------------------------------------------------
 
 
+def invalidate_skill_cache(workspace: Optional[Path] = None) -> None:
+    """Drop the cached skill index after workspace skill files change."""
+    _index_cache.pop(str(workspace) if workspace else "__builtins_only__", None)
+
+
 def load_startup_skills(config: OuroAgentsConfig) -> str:
     """Build prompt text for skills tagged ``load: always``.
 

@@ -377,7 +377,7 @@ class TestToolCallParsing(unittest.TestCase):
     def test_rejects_structured_payload_with_ambiguous_list_arguments(self):
         tool_calls = _parse_structured_tool_calls(
             """
-            {"tool": "create_comment", "arguments": [
+            {"tool": "write_comment", "arguments": [
               {"parent_id": "abc"},
               {"content": "two dicts are ambiguous"}
             ]}
@@ -515,7 +515,7 @@ class TestToolCallParsing(unittest.TestCase):
 
         leaked = (
             "<｜DSML｜function_calls>"
-            '<｜DSML｜invoke name="create_comment">'
+            '<｜DSML｜invoke name="write_comment">'
             '<｜DSML｜parameter name="parent_id" string="true">post-1</｜DSML｜parameter>'
             '<｜DSML｜parameter name="content" string="true">ok</｜DSML｜parameter>'
             "</｜DSML｜invoke>"
@@ -549,7 +549,7 @@ class TestToolCallParsing(unittest.TestCase):
         parsed = model.parse_tool_calls(message)
 
         self.assertEqual(len(parsed.tool_calls), 1)
-        self.assertEqual(parsed.tool_calls[0].function.name, "create_comment")
+        self.assertEqual(parsed.tool_calls[0].function.name, "write_comment")
         self.assertEqual(
             parsed.tool_calls[0].function.arguments,
             {"parent_id": "post-1", "content": "ok"},

@@ -37,11 +37,18 @@ class MemoryResult(BaseModel):
     metadata: dict[str, Any]
 ```
 
-Memories are written by the `reflector` subagent (after a run or
-mid-session in chat) using structured handoffs that include category,
+Memories are written by the `reflector` subagent after each run
+using structured handoffs that include category,
 semantic basis, stability, strength, and asset references. They are searched at preflight time by
 the `memory_recall` tool (subagents include this tool in their
 `allowed_tools` list).
+
+The reflector emits strength as a word (`minor`/`normal`/`high`, mapped to
+0.3/0.5/0.8) and may list `supersedes` memory IDs on a candidate — IDs
+surfaced by its own `memory_recall` search that the new memory contradicts
+or replaces. Superseded memories are deleted as soon as the replacement is
+stored, so bans and reversals take effect immediately instead of waiting
+for dream consolidation.
 
 ### Categories and decay
 
@@ -62,6 +69,9 @@ once per `memory.rhythm` period, at `memory.dream_time` — that:
 
 - Drains the refinement change queue.
 - Promotes important period-log episodes into `MEMORY.md`.
+- Distills reinforced direction memories into workspace lesson skills
+  (`skills/lessons-<topic>.md`) so procedural lessons load by topic
+  instead of competing for recall.
 - Decays old, unaccessed memories by strength.
 - Reviews stale `stability="evolving"` memories.
 - Caps `MEMORY.md` size at `memory.memory_md_max_tokens`.
@@ -92,6 +102,13 @@ Three implementations:
 Per-team writes go through `_build_team_doc_store`. If the team is not
 writable by agents (`source_policy` is `web_only`), it falls back to
 local-only without crashing.
+
+Entity files (`memory/entities/*.md`) and task files (`memory/tasks/*.md`)
+carry YAML frontmatter with a `description` and optional `aliases` list.
+The context loader matches conversation key entities against file stems
+and aliases, and injects a one-line-per-file index
+(`build_memory_index`) into every run so unmatched files stay
+discoverable through the agent's file tools.
 
 The `_sync_workspace_docs` helper does a bidirectional sync at startup so
 local edits made offline propagate to Ouro and vice versa.
@@ -162,17 +179,14 @@ One memory at a time, weakest-first. Keys:
 
 ## Reflection
 
-Two reflection paths use the same `reflector` subagent:
+Every run mode that writes memory (chat, autonomous, event-driven) shares one
+post-run reflection path: after a run that preflight marked
+`worth_remembering`, the `reflector` subagent stores curated facts, updates
+the user model from observed preferences, and optionally writes a daily-log
+entry.
 
-- **Mid-session** — after the assistant has responded, when the
-  `ConversationState` updater adds a new key moment. The key moment is the
-  salience signal for reflection.
-- **Post-run** — after autonomous / heartbeat / event-driven runs that
-  preflight marked `worth_remembering`. Stores curated facts and
-  optionally writes a daily-log entry.
-
-Both run in the background (`asyncio.create_task` + `to_thread`) so the
-user response is never blocked by reflection.
+Reflection runs in a background thread so the user response is never blocked
+by it.
 
 ## Refinement and cleanup
 

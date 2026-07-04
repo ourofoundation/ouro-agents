@@ -23,7 +23,7 @@ EVENT_REGISTRY = {
 }
 ```
 
-Comment / mention preloads: `ouro:get_asset`, `ouro:create_comment`,
+Comment / mention preloads: `ouro:get_asset`, `ouro:write_comment`,
 `ouro:get_comments`. New events get a zero-config `EventSpec` by default.
 
 The registry validates against `ouro.events.WEBHOOK_EVENT_TYPES` at

@@ -114,6 +114,9 @@ class MemoryItem(BaseModel):
     source: str = ""
     strength: float = 0.5
     verification_hint: str = ""
+    # IDs of existing memories this item contradicts or replaces. An
+    # instruction to the storage pipeline, not a persisted property.
+    supersedes: list[str] = Field(default_factory=list)
     content_hash: str = ""
     schema_version: int = 3
     created_at: datetime = Field(default_factory=utc_now)

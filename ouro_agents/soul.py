@@ -91,6 +91,29 @@ _TRIMMABLE_SECTIONS = [
     "conversation_state",
 ]
 
+# Sections ordered most-recent-last: trimming keeps the tail (recent content)
+# instead of the head. Everything else keeps the head.
+_TRIM_KEEP_TAIL = {"conversation", "conversation_state"}
+
+
+def _trim_section(text: str, max_chars: int, *, keep_tail: bool) -> str:
+    """Cut a section to ~max_chars at a line boundary, marking the cut."""
+    if len(text) <= max_chars:
+        return text
+    if not keep_tail:
+        cut = text[:max_chars]
+        newline = cut.rfind("\n")
+        if newline > 0:
+            cut = cut[:newline]
+        return cut + "\n[...truncated]"
+    # Keep the section heading, then the tail of the body (most recent lines).
+    heading, _, body = text.partition("\n")
+    cut = body[-max(0, max_chars - len(heading) - 1) :]
+    newline = cut.find("\n")
+    if newline != -1:
+        cut = cut[newline + 1 :]
+    return f"{heading}\n[...truncated]\n{cut}"
+
 
 def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
     """Truncate low-priority sections if the total exceeds the token budget.
@@ -113,8 +136,10 @@ def _enforce_budget(sections: dict[str, str], ordered_keys: list[str]) -> None:
             continue
         max_chars = max(400, (section_tokens - overage) * CHARS_PER_TOKEN)
         if max_chars < len(sections[section_key]):
-            sections[section_key] = (
-                sections[section_key][:max_chars] + "\n[...truncated]"
+            sections[section_key] = _trim_section(
+                sections[section_key],
+                max_chars,
+                keep_tail=section_key in _TRIM_KEEP_TAIL,
             )
             saved = section_tokens - _estimate_tokens(sections[section_key])
             overage -= saved

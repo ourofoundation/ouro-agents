@@ -817,7 +817,7 @@ Your current plan:
 {plan_text}
 
 If there is feedback, revise your plan to incorporate it and update the quest
-(update_quest).  Then reply to the reviewer with a comment (create_comment on the
+(update_quest).  Then reply to the reviewer with a comment (write_comment on the
 quest) summarizing what you changed and what the plan's next status should be.
 
 If there are no comments or the comments don't require changes, keep the plan as-is.
@@ -1021,11 +1021,11 @@ def build_feedback_review_prompt(
 ) -> str:
     if reply_parent_id and reply_parent_id != quest_id:
         reply_instruction = (
-            f"Reply in the same comment thread by calling create_comment with "
+            f"Reply in the same comment thread by calling write_comment with "
             f"parent_id `{reply_parent_id}`."
         )
     else:
-        reply_instruction = f"Reply on the plan quest by calling create_comment with parent_id `{quest_id}`."
+        reply_instruction = f"Reply on the plan quest by calling write_comment with parent_id `{quest_id}`."
 
     if thread_parent_id:
         thread_context = (
@@ -1253,7 +1253,7 @@ async def run_review_heartbeat(
 
     review_preload = [
         "ouro:get_comments",
-        "ouro:create_comment",
+        "ouro:write_comment",
         "ouro:update_quest",
         "ouro:list_quest_items",
         "ouro:create_quest_items",

@@ -182,6 +182,7 @@ def validate_memory_candidate(
         verification_hint=(
             str(candidate.get("verification_hint") or "") if stability == "evolving" else ""
         ),
+        supersedes=coerce_id_list(candidate.get("supersedes")),
         content_hash=content_hash(text),
         schema_version=3,
         created_at=now,

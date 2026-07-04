@@ -10,6 +10,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+import yaml
+
 from ..constants import CHARS_PER_TOKEN
 from .conversation_state import ConversationState
 from .naming import period_key_offset, store_rhythm
@@ -20,6 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 MAX_ENTITY_CONTEXT_TOKENS = 4000
 MAX_TASK_CONTEXT_TOKENS = 2000
+MAX_INDEX_FILES_PER_KIND = 30
 
 
 def _slugify(name: str) -> str:
@@ -33,12 +36,41 @@ def _team_memory_dir(workspace: Path, team_id: str | None, leaf: str) -> Path:
     return workspace / "memory" / leaf
 
 
+def _file_frontmatter(path: Path) -> dict:
+    """Parse YAML frontmatter from a memory file, or {} when absent/invalid."""
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return {}
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}
+    try:
+        meta = yaml.safe_load(text[3:end])
+    except yaml.YAMLError:
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _file_slugs(path: Path, meta: dict) -> list[str]:
+    """All slugs a file answers to: its stem plus frontmatter aliases."""
+    slugs = [path.stem.lower()]
+    aliases = meta.get("aliases")
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    if isinstance(aliases, list):
+        slugs.extend(_slugify(str(a)) for a in aliases if str(a).strip())
+    return slugs
+
+
 def _find_entity_files(
     workspace: Path,
     key_entities: list[str],
     team_id: str | None = None,
 ) -> list[tuple[str, Path]]:
-    """Match key_entities to files in memory/entities/.
+    """Match key_entities to files in memory/entities/ by stem or alias.
 
     Returns (entity_name, path) tuples preserving the original entity names.
     """
@@ -46,7 +78,10 @@ def _find_entity_files(
     if not entities_dir.exists():
         return []
 
-    available = {p.stem.lower(): p for p in entities_dir.glob("*.md")}
+    available: dict[str, Path] = {}
+    for path in sorted(entities_dir.glob("*.md")):
+        for slug in _file_slugs(path, _file_frontmatter(path)):
+            available.setdefault(slug, path)
     matched: list[tuple[str, Path]] = []
 
     for entity in key_entities:
@@ -93,6 +128,49 @@ def load_entity_files(
             total_tokens += len(content) // CHARS_PER_TOKEN
 
     return "\n\n".join(parts)
+
+
+def _file_description(path: Path, meta: dict) -> str:
+    """A one-line description: frontmatter `description`, else the first line."""
+    desc = str(meta.get("description") or "").strip()
+    if not desc:
+        from .frontmatter import strip_frontmatter
+
+        try:
+            body = strip_frontmatter(path.read_text(errors="replace"))
+        except OSError:
+            return ""
+        first = next((line.strip() for line in body.splitlines() if line.strip()), "")
+        desc = first.lstrip("# ").strip()
+    return desc if len(desc) <= 120 else desc[:117].rstrip() + "..."
+
+
+def build_memory_index(workspace: Path, team_id: str | None = None) -> str:
+    """One line per entity/task file so the agent knows what memory files exist.
+
+    Injected into the prompt alongside entity context: only files matching the
+    conversation's key entities are auto-loaded, so this index is how the agent
+    discovers the rest (readable with its file tools).
+    """
+    sections: list[str] = []
+    for leaf, label in (("entities", "Entity files"), ("tasks", "Task files")):
+        directory = _team_memory_dir(workspace, team_id, leaf)
+        files = sorted(directory.glob("*.md")) if directory.exists() else []
+        if not files:
+            continue
+        lines = [f"**{label}**"]
+        for path in files[:MAX_INDEX_FILES_PER_KIND]:
+            desc = _file_description(path, _file_frontmatter(path))
+            rel = path.relative_to(workspace)
+            lines.append(f"- `{rel}`" + (f" — {desc}" if desc else ""))
+        if len(files) > MAX_INDEX_FILES_PER_KIND:
+            lines.append(f"- (and {len(files) - MAX_INDEX_FILES_PER_KIND} more)")
+        sections.append("\n".join(lines))
+    if not sections:
+        return ""
+    return "### Memory files (read with file tools when relevant)\n" + "\n\n".join(
+        sections
+    )
 
 
 def _find_active_task_files(workspace: Path, team_id: str | None = None) -> list[Path]:
@@ -201,6 +279,12 @@ def load_entity_context(
     if daily_context:
         sections.append(daily_context)
         total_tokens += len(daily_context) // CHARS_PER_TOKEN
+
+    # 4. Index of all memory files so unmatched ones remain discoverable
+    index = build_memory_index(workspace, team_id=team_id)
+    if index:
+        sections.append(index)
+        total_tokens += len(index) // CHARS_PER_TOKEN
 
     if not sections:
         return ""

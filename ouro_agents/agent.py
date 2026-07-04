@@ -40,9 +40,6 @@ from .memory import DocStore
 from .memory.naming import current_period_heading, period_key, store_rhythm
 from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
-    apply_reflection,
-    record_reflection_turn,
-    should_reflect_for_conversation,
     store_reflection_memories,
     validated_daily_log_entries,
     write_log,
@@ -176,6 +173,10 @@ class OuroAgent:
         self._run_lock = threading.RLock()
         self._active_runs_lock = threading.RLock()
         self._active_run_tokens: set[RunCancellationToken] = set()
+        # (token, preemptible) for the run currently holding _run_lock, so an
+        # interactive run can cancel a background run instead of queueing
+        # behind it. Guarded by _active_runs_lock.
+        self._run_lock_holder: Optional[tuple[RunCancellationToken, bool]] = None
 
         self.team_registry: TeamRegistry = TeamRegistry.from_platform_context(
             self._workspace,
@@ -1137,29 +1138,12 @@ class OuroAgent:
             )
         return None, f"Unknown tool '{tool_name}'."
 
-    def _build_agent_tools(
+    def _filter_deferred_for_profile(
         self,
         profile: ModeProfile,
-        user_id: Optional[str] = None,
         allowed_servers: Optional[list[str]] = None,
-        preload_tools: Optional[list[str]] = None,
-        conversation_state: Optional[ConversationState] = None,
-        conversation_id: Optional[str] = None,
-        run_id: str = "",
-        team_id: Optional[str] = None,
-        doc_store: Optional[DocStore] = None,
-        run_mode: str = "",
-        event_type: str = "",
-        cancellation_token: Optional[RunCancellationToken] = None,
-        observer: Optional[AgentObserver] = None,
-    ):
-        """Build the tool list and directory string for a single run.
-
-        Returns (all_tools, deferred_tool_directory, agent_ref, preloaded_names).
-        ``preloaded_names`` lists the raw call names of tools that were eagerly
-        resolved and added to ``all_tools`` so the agent can use them without
-        calling ``load_tool`` first.
-        """
+    ) -> tuple[dict, list[dict]]:
+        """Narrow the deferred MCP tool set to what a mode profile may use."""
         deferred_tools = self._deferred_tools
         deferred_index = self._deferred_index
 
@@ -1192,6 +1176,35 @@ class OuroAgent:
                 deferred_index,
                 profile.allowed_capabilities,
             )
+
+        return deferred_tools, deferred_index
+
+    def _build_agent_tools(
+        self,
+        profile: ModeProfile,
+        user_id: Optional[str] = None,
+        allowed_servers: Optional[list[str]] = None,
+        preload_tools: Optional[list[str]] = None,
+        conversation_state: Optional[ConversationState] = None,
+        conversation_id: Optional[str] = None,
+        run_id: str = "",
+        team_id: Optional[str] = None,
+        doc_store: Optional[DocStore] = None,
+        run_mode: str = "",
+        event_type: str = "",
+        cancellation_token: Optional[RunCancellationToken] = None,
+        observer: Optional[AgentObserver] = None,
+    ):
+        """Build the tool list and directory string for a single run.
+
+        Returns (all_tools, deferred_tool_directory, agent_ref, preloaded_names).
+        ``preloaded_names`` lists the raw call names of tools that were eagerly
+        resolved and added to ``all_tools`` so the agent can use them without
+        calling ``load_tool`` first.
+        """
+        deferred_tools, deferred_index = self._filter_deferred_for_profile(
+            profile, allowed_servers
+        )
 
         agent_self = self
         agent_ref: dict = {}
@@ -1887,6 +1900,7 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
         observer: Optional[AgentObserver] = None,
+        available_tools: Optional[list[str]] = None,
     ) -> PreflightResult:
         """Run the preflight subagent as a visible step 0.
 
@@ -1922,6 +1936,12 @@ class OuroAgent:
             call_names = [n.split(":", 1)[-1] for n in preload_tools]
             constraint_parts.append(
                 "Tools preloaded for the main agent: " + ", ".join(call_names) + "."
+            )
+        if available_tools:
+            constraint_parts.append(
+                "Available MCP Tools (pick the ones the main agent should have "
+                'preloaded via the "tools" field of your JSON reply; use these '
+                "exact names): " + ", ".join(available_tools)
             )
         preflight_task = task
         if constraint_parts:
@@ -2057,70 +2077,6 @@ class OuroAgent:
                 )
         return "\n".join(lines)
 
-    def _maybe_reflect_post_turn(
-        self,
-        conv_state: Optional[ConversationState],
-        conversation_id: Optional[str],
-        user_id: Optional[str] = None,
-        run_id: str = "",
-        team_id: Optional[str] = None,
-        doc_store: Optional[DocStore] = None,
-        has_new_key_moment: bool = True,
-    ) -> None:
-        """Run mid-session reflection after a key moment or on turn cadence."""
-        if not conversation_id:
-            return
-        conversations_dir = self.config.agent.workspace / "conversations"
-        if not should_reflect_for_conversation(
-            conversations_dir,
-            conversation_id,
-            conv_state,
-            has_new_key_moment=has_new_key_moment,
-        ):
-            return
-
-        turn_count = conv_state.turn_count if conv_state else 0
-        record_reflection_turn(conversations_dir, conversation_id, turn_count)
-
-        try:
-            reflection_result = self._run_reflection(
-                "Reflect on the recent conversation turns and extract what is worth "
-                "remembering, especially any durable work-direction guidance that "
-                "should influence future planning.",
-                conversation_state=conv_state,
-                conversation_id=conversation_id,
-                user_id=user_id,
-                run_id=run_id,
-                team_id=team_id,
-                doc_store=doc_store,
-            )
-            if not reflection_result:
-                return
-            apply_reflection(
-                reflection_result,
-                self.memory,
-                agent_id=self.config.agent.name,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                workspace=self.config.agent.workspace,
-                conversations_dir=conversations_dir,
-                conversation_state=conv_state,
-                doc_store=self._resolve_doc_store(team_id=team_id, doc_store=doc_store),
-                team_id=team_id,
-                available_team_ids=self._available_memory_team_ids(team_id),
-                org_id=self.config.agent.org_id or "",
-                mode="chat",
-            )
-            logger.info(
-                "Post-turn reflection for %s (turn %d): %d facts, %d prefs",
-                conversation_id,
-                conv_state.turn_count if conv_state else 0,
-                len(reflection_result.facts_to_store),
-                len(reflection_result.user_preferences),
-            )
-        except Exception as e:
-            logger.warning("Post-turn reflection failed for %s: %s", conversation_id, e)
-
     def _post_run_reflect(
         self,
         task: str,
@@ -2132,6 +2088,8 @@ class OuroAgent:
         event_type: Optional[str] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        conversation_state: Optional[ConversationState] = None,
+        conversation_id: Optional[str] = None,
     ) -> None:
         """Run reflection after an autonomous/event run via the reflector subagent.
 
@@ -2152,6 +2110,8 @@ class OuroAgent:
         try:
             reflection = self._run_reflection(
                 reflection_task,
+                conversation_state=conversation_state,
+                conversation_id=conversation_id,
                 user_id=user_id,
                 run_id=run_id,
                 team_id=team_id,
@@ -2174,6 +2134,20 @@ class OuroAgent:
                 event_type=event_type or "",
                 source=f"run-reflection:{run_id}",
             )
+
+            if reflection.user_preferences and user_id:
+                from .memory.user_model import append_to_user_model
+
+                try:
+                    append_to_user_model(
+                        self.config.agent.workspace,
+                        user_id,
+                        "Preferences",
+                        reflection.user_preferences,
+                        doc_store=active_doc_store,
+                    )
+                except Exception as e:
+                    logger.warning("Failed to update user model: %s", e)
 
             daily_writes = 0
             seen_daily_entries: set[tuple[str, str]] = set()
@@ -2228,8 +2202,20 @@ class OuroAgent:
         capability_envelope: Optional[CapabilityEnvelope] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
         trigger_turn_id: Optional[str] = None,
+        preemptible: Optional[bool] = None,
     ) -> str:
         token = cancellation_token or RunCancellationToken()
+        # Background modes have no user waiting on them; an interactive run
+        # (chat, direct request) cancels an in-flight background run instead
+        # of queueing behind it. The background work re-runs on its next tick.
+        if preemptible is None:
+            preemptible = mode in (RunMode.HEARTBEAT, RunMode.PLAN, RunMode.REVIEW)
+        if not preemptible:
+            with self._active_runs_lock:
+                holder = self._run_lock_holder
+            if holder is not None and holder[1]:
+                holder[0].cancel("preempted by interactive run")
+                logger.info("Preempting background run to start %s run", mode.value)
         with self._active_runs_lock:
             self._active_run_tokens.add(token)
         try:
@@ -2255,6 +2241,7 @@ class OuroAgent:
                     capability_envelope=capability_envelope,
                     cancellation_token=token,
                     trigger_turn_id=trigger_turn_id,
+                    preemptible=preemptible,
                 )
             except asyncio.CancelledError:
                 token.cancel("async task cancelled")
@@ -2265,10 +2252,18 @@ class OuroAgent:
 
     def _run_blocking_locked(self, **kwargs) -> str:
         token = kwargs.get("cancellation_token")
+        preemptible = bool(kwargs.pop("preemptible", False))
         with self._run_lock:
             if token is not None:
                 token.raise_if_cancelled()
-            return self._run_blocking(**kwargs)
+            if token is not None:
+                with self._active_runs_lock:
+                    self._run_lock_holder = (token, preemptible)
+            try:
+                return self._run_blocking(**kwargs)
+            finally:
+                with self._active_runs_lock:
+                    self._run_lock_holder = None
 
     def _run_blocking(self, **kwargs) -> str:
         """Wrap the run body with durable run-log recording on every exit path.
@@ -2417,6 +2412,9 @@ class OuroAgent:
                 observer.on_progress(event)
 
         if not is_trivial and not skip_memory and not profile.skip_preflight:
+            _, eligible_index = self._filter_deferred_for_profile(
+                profile, allowed_servers
+            )
             preflight = self._run_preflight(
                 task,
                 allowed_capabilities=profile.allowed_capabilities,
@@ -2431,18 +2429,27 @@ class OuroAgent:
                 doc_store=active_doc_store,
                 cancellation_token=token,
                 observer=observer,
+                available_tools=[item["tool"] for item in eligible_index],
             )
             logger.info(
-                "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d",
+                "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d tools=%s",
                 preflight.intent,
                 preflight.complexity,
                 preflight.worth_remembering,
                 len(preflight.briefing),
                 len(preflight.plan),
+                ",".join(preflight.tools) or "none",
             )
             record.preflight_intent = preflight.intent
             record.preflight_complexity = preflight.complexity
             record.worth_remembering = preflight.worth_remembering
+            if preflight.tools:
+                # Task-aware preloading: tools preflight expects the plan to
+                # need skip the load_tool round-trip. Unknown or disallowed
+                # names are dropped later by _build_agent_tools.
+                preload_tools = list(
+                    dict.fromkeys((preload_tools or []) + preflight.tools)
+                )
 
         # --- Build tools ---
         # Do this after preflight so parent-run preloads do not appear to be
@@ -2812,10 +2819,11 @@ class OuroAgent:
                     event_type=event_type,
                     team_id=team_id,
                     doc_store=active_doc_store,
+                    conversation_state=conv_state,
+                    conversation_id=conversation_id,
                 )
 
             if profile.update_conversation_state and conversation_id:
-                previous_key_moments = set(conv_state.key_moments if conv_state else [])
                 try:
                     state_model = self._build_model(
                         self.config.heartbeat.model or self.config.agent.model,
@@ -2834,23 +2842,6 @@ class OuroAgent:
                     )
                 except Exception as e:
                     logger.warning("Failed to update conversation state: %s", e)
-                    new_conv_state = conv_state
-
-                new_key_moments = set(
-                    new_conv_state.key_moments if new_conv_state else []
-                ) - previous_key_moments
-                # Key moments reflect immediately; otherwise the reflection
-                # policy still fires on a turn cadence so quiet conversations
-                # get curated too (see should_reflect).
-                self._maybe_reflect_post_turn(
-                    conv_state=new_conv_state,
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    run_id=run_id,
-                    team_id=team_id,
-                    doc_store=active_doc_store,
-                    has_new_key_moment=bool(new_key_moments),
-                )
 
         def _run_post_run_background() -> None:
             try:

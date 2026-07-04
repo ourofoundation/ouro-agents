@@ -189,7 +189,7 @@ def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str
         "You do not need to manually reschedule a recurring check; it re-parks "
         "itself after each due tick.\n"
         "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
-        "you MUST use the `create_comment` MCP tool to comment on the plan's original quest "
+        "you MUST use the `write_comment` MCP tool to comment on the plan's original quest "
         "(using the quest id shown above). Summarize the work you accomplished and include "
         "links to any posts or assets you created."
     )
@@ -1220,7 +1220,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
             "ouro:submit_quest_entry",
             "ouro:list_quest_entries",
             "ouro:complete_quest_item",
-            "ouro:create_comment",
+            "ouro:write_comment",
         ]
         logger.info("Executing assigned quest work: %d item(s)", len(assigned_items))
 
@@ -1238,7 +1238,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
             "ouro:list_quest_items",
             "ouro:update_quest_item",
             "ouro:complete_quest_item",
-            "ouro:create_comment",
+            "ouro:write_comment",
         ]
         logger.info("Executing owned open quest work: %d item(s)", len(owned_items))
 
@@ -1305,7 +1305,7 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
                         "ouro:list_quest_items",
                         "ouro:update_quest_item",
                         "ouro:complete_quest_item",
-                        "ouro:create_comment",
+                        "ouro:write_comment",
                     ]
                 else:
                     logger.warning(

@@ -264,7 +264,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.prefetch.focus_comment_author, "alice")
         self.assertEqual(event_run.prefetch.focus_comment_text, "Can we tighten the scope?")
         self.assertIn("post (id: plan-post-1)", event_run.task)
-        self.assertIn("`create_comment` on `comment-789`", event_run.task)
+        self.assertIn("`write_comment` on `comment-789`", event_run.task)
         self.assertEqual(event_run.reply_parent_id, "comment-789")
         self.assertEqual(event_run.thread_parent_id, "thread-123")
         self.assertEqual(event_run.feedback_text, "Can we tighten the scope?")
@@ -393,7 +393,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertIn("no closing offers", event_run.task)
 
     def test_unknown_source_id_falls_back_to_root_for_reply(self):
-        """Never instruct create_comment on the literal id 'unknown'."""
+        """Never instruct write_comment on the literal id 'unknown'."""
         event_run = build_event_run_context(
             {
                 "event": "mention",
@@ -408,7 +408,7 @@ class TestBuildEventRunContext(unittest.TestCase):
             }
         )
 
-        self.assertIn("`create_comment` on `post-9`", event_run.task)
+        self.assertIn("`write_comment` on `post-9`", event_run.task)
         self.assertNotIn("`unknown`", event_run.task)
         # Empty comment text: no empty evidence block, point at the asset body.
         self.assertIn("the request is in the asset content", event_run.task)

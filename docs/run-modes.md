@@ -45,9 +45,10 @@ Each value maps to a built-in `ModeProfile`.
 ### `chat`
 Interactive, conversation-aware. Used both by the local `ouro-agents chat`
 CLI and by webhook chat events (`new-message`, `new-conversation`). Loads
-conversation state, preloads the Ouro hot-path tools, and skips preflight and
-post-reflection (mid-session reflection still runs at the configured
-interval). Default `max_steps=20`.
+conversation state, preloads the Ouro hot-path tools, and runs the same
+preflight/post-reflection pipeline as autonomous runs (the trivial-message
+regex fast-paths greetings; reflection runs in the background and never
+delays the reply). Default `max_steps=20`.
 
 Delivery is the observer's job, not the mode's: for webhook events the
 server's `ServerAgentObserver` posts the final assistant message back to the
@@ -64,7 +65,7 @@ preflight + post-reflection. Persists conversation turns when
 
 ### `heartbeat`
 Lightweight scheduler-driven mode. Restricted to the `ouro` MCP server,
-preloads `get_asset`, `create_comment`, `create_post`. No preflight. Used
+preloads `get_asset`, `write_comment`, `create_post`. No preflight. Used
 inside the heartbeat loop in `modes/heartbeat.py`.
 
 ### `plan`
@@ -108,16 +109,23 @@ subagent as visible **step 0** of the run. Preflight returns:
 - `briefing` — extra context (memory hits, entity files) injected before
   the user task.
 - `plan` — an advisory plan injected as `## Advisory Action Plan`.
+- `tools` — MCP tools the plan will need, merged into the run's preloads so
+  the main agent can call them without a `load_tool` round-trip.
 - `worth_remembering` — gates whether the post-run reflector runs.
 
 After the main loop finishes, if `skip_post_reflection=False` and the run
 is `worth_remembering`, the agent dispatches the `reflector` subagent in
-the background. It curates facts/preferences into vector memory and
-appends a daily-log entry. Failures are logged but never block the user
-response.
+the background. It curates facts/preferences into vector memory, updates
+the user model, and appends a daily-log entry. Failures are logged but
+never block the user response.
 
-For chat modes, mid-session reflection runs when the conversation-state updater
-adds a new key moment.
+## Preemption
+
+Background modes (`heartbeat`, `plan`, `review`, and scheduled tasks) are
+*preemptible*: when an interactive run (chat, direct request) arrives while
+a background run holds the run lock, the background run is cancelled at its
+next step boundary and the interactive run proceeds. Background work simply
+resumes on its next tick.
 
 ## How a mode is resolved at runtime
 

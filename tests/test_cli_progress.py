@@ -82,7 +82,7 @@ def test_terminal_progress_summarizes_event_context():
         mode=RunMode.CHAT,
         conversation_id="019eabf4-7f32-700b-8edf-76c4887becd9",
         user_id="user-1",
-        preload_tools=("ouro:get_asset", "ouro:create_comment"),
+        preload_tools=("ouro:get_asset", "ouro:write_comment"),
         prefetch=PrefetchSpec(
             asset_ids=["019eabf4-aaaa-bbbb-cccc-76c4887becd9"],
             comment_parent_ids=["root-comment"],
@@ -124,7 +124,7 @@ def test_terminal_progress_summarizes_event_context():
         "info",
         "trigger: @mmoderwell on post:019eabf4...ecd9",
     ) in display.calls
-    assert ("info", "ready tools: get_asset, create_comment") in display.calls
+    assert ("info", "ready tools: get_asset, write_comment") in display.calls
     assert (
         "info",
         "prefetch: 1 asset, 1 comment thread, 1 reply thread, focus=019eabf4...ment",

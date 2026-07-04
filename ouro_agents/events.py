@@ -62,7 +62,7 @@ _THREAD_REPLY_CAUTION = (
 
 _PLAN_FEEDBACK_PRELOADS: List[str] = [
     "ouro:get_comments",
-    "ouro:create_comment",
+    "ouro:write_comment",
     "ouro:update_quest",
     "ouro:list_quest_items",
     "ouro:create_quest_items",
@@ -254,10 +254,10 @@ def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str
     pc = provenance.plan_cycle
     feedback = _untrusted_comment_evidence(ctx, "plan feedback comment")
     reply_instruction = (
-        f"Reply in the same thread by calling create_comment with parent_id "
+        f"Reply in the same thread by calling write_comment with parent_id "
         f"`{ctx.reply_parent_id}`."
         if ctx.reply_parent_id and ctx.reply_parent_id != pc.quest_id
-        else "Reply on the plan quest with create_comment."
+        else "Reply on the plan quest with write_comment."
     )
     return (
         f"You received feedback on your current plan "
@@ -360,7 +360,7 @@ def _default_comment_task(
         else ctx.root_asset_id
     )
     parts.append(
-        f"If you decide to reply, use `create_comment` on `{reply_target}`. "
+        f"If you decide to reply, use `write_comment` on `{reply_target}`. "
         f"{_NO_ENGAGEMENT_BAIT} "
         "If no reply is warranted, return exactly `NO_ACTION`."
     )

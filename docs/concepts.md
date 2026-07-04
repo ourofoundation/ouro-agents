@@ -32,7 +32,7 @@ Built-in modes (see [`run-modes.md`](./run-modes.md)):
 
 | Mode | What triggers it | Notes |
 |------|------------------|-------|
-| `chat` | `ouro-agents chat` or webhook from Ouro chat | Loads conversation state, no preflight. Webhook replies are posted automatically. |
+| `chat` | `ouro-agents chat` or webhook from Ouro chat | Loads conversation state, full preflight + post-reflection. Webhook replies are posted automatically. |
 | `autonomous` | `ouro-agents run "..."` | Full preflight + post-reflection. |
 | `heartbeat` | Scheduler tick | Lightweight, restricted to `ouro` server. |
 | `plan` | `ouro-agents plan` or scheduler | Generates a plan cycle. |

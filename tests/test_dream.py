@@ -9,6 +9,7 @@ from ouro_agents.memory.dream import (
     _REVIEW_PERIOD_KEY,
     _STRENGTH_DECAY_PERIOD_KEY,
     decay_memory_strength,
+    distill_skills,
     has_recent_dream_activity,
     promote_log_entries,
     run_dream,
@@ -342,3 +343,128 @@ def test_dream_review_can_delete_with_explicit_evidence(tmp_path: Path):
     assert summary["dream_review"]["contradicted"] == 1
     assert summary["dream_review"]["uncertain"] == 0
     assert backend.deleted == ["mem-api"]
+
+
+class _DistillModel:
+    def __init__(self, proposals):
+        self.proposals = proposals
+
+    def __call__(self, messages):
+        return SimpleNamespace(content=json.dumps(self.proposals))
+
+
+def _reinforced_direction(memory_id="mem-dir", metadata=None):
+    now = datetime.now(timezone.utc).isoformat()
+    return MemoryResult(
+        id=memory_id,
+        text="Always publish benchmark results to the eval-lab team.",
+        category="direction",
+        strength=0.8,
+        created_at=now,
+        last_accessed=now,
+        metadata=metadata or {},
+    )
+
+
+def test_distill_skills_writes_lesson_file_and_marks_memory(tmp_path: Path):
+    backend = _UpdateBackend()
+    model = _DistillModel(
+        [
+            {
+                "topic": "publishing",
+                "memory_ids": ["mem-dir"],
+                "lesson": "Publish benchmark results to the eval-lab team.",
+            }
+        ]
+    )
+
+    written = distill_skills(
+        tmp_path, backend, model, all_memories=[_reinforced_direction()]
+    )
+
+    assert written == 1
+    skill_path = tmp_path / "skills" / "lessons-publishing.md"
+    content = skill_path.read_text()
+    assert "Publish benchmark results to the eval-lab team." in content
+    assert "description: Learned lessons about publishing" in content
+    assert backend.updated == [("mem-dir", {"distilled_to_skill": "lessons-publishing"})]
+
+
+def test_distill_skills_appends_to_existing_topic(tmp_path: Path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "lessons-publishing.md").write_text(
+        "---\ndescription: Learned lessons about publishing (distilled from memory)\n"
+        "load: stub\n---\n\n# Lessons: publishing\n\n- Existing lesson.\n"
+    )
+    backend = _UpdateBackend()
+    model = _DistillModel(
+        [
+            {
+                "topic": "publishing",
+                "memory_ids": ["mem-dir"],
+                "lesson": "New lesson about benchmarks.",
+            }
+        ]
+    )
+
+    written = distill_skills(
+        tmp_path, backend, model, all_memories=[_reinforced_direction()]
+    )
+
+    assert written == 1
+    content = (skills_dir / "lessons-publishing.md").read_text()
+    assert "- Existing lesson.\n- New lesson about benchmarks.\n" in content
+
+
+def test_distill_skills_skips_unreinforced_and_already_distilled(tmp_path: Path):
+    backend = _UpdateBackend()
+    never_recalled = _reinforced_direction("mem-a")
+    never_recalled.last_accessed = ""
+    already_distilled = _reinforced_direction(
+        "mem-b", metadata={"distilled_to_skill": "lessons-publishing"}
+    )
+
+    written = distill_skills(
+        tmp_path,
+        backend,
+        _DistillModel([]),
+        all_memories=[never_recalled, already_distilled],
+    )
+
+    assert written == 0
+    assert not (tmp_path / "skills").exists()
+
+
+def test_distill_skills_dry_run_plans_without_writing(tmp_path: Path):
+    from ouro_agents.memory.dream import DreamPlan
+
+    backend = _UpdateBackend()
+    plan = DreamPlan(
+        scope="team-42", agent_id="hermes", team_id="team-42",
+        rhythm="daily", period=period_key("daily"), dry_run=True,
+    )
+    model = _DistillModel(
+        [
+            {
+                "topic": "publishing",
+                "memory_ids": ["mem-dir"],
+                "lesson": "Publish benchmark results to the eval-lab team.",
+            }
+        ]
+    )
+
+    written = distill_skills(
+        tmp_path,
+        backend,
+        model,
+        all_memories=[_reinforced_direction()],
+        dry_run=True,
+        plan=plan,
+    )
+
+    assert written == 1
+    assert not (tmp_path / "skills").exists()
+    assert backend.updated == []
+    assert plan.operations[0].kind == "skill_distillation"
+    assert plan.operations[0].status == "planned"

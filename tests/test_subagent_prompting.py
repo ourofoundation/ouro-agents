@@ -148,7 +148,7 @@ def test_preflight_prompts_limit_tool_use_and_recover():
     assert "previous response failed or was not accepted" in PREFLIGHT_PROMPT
     assert "Your job is analysis only" in PREFLIGHT_PROMPT
     assert "Never call side-effecting platform MCP tools" in PREFLIGHT_PROMPT
-    assert "create_comment" in PREFLIGHT_PROMPT
+    assert "write_comment" in PREFLIGHT_PROMPT
     assert "Include a memory only if it would change what the main agent" in PREFLIGHT_PROMPT
     assert "End moderate/complex plans with a verification step" in PREFLIGHT_PROMPT
 

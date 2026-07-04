@@ -36,6 +36,7 @@ def _summary_template() -> dict[str, Any]:
     return {
         "compacted": False,
         "promoted": 0,
+        "skills_distilled": 0,
         "strength_decayed": 0,
         "memories_deleted": 0,
         "refinement": {
@@ -417,6 +418,25 @@ Rules:
 - If nothing is worth promoting, return an empty array: []
 - Output ONLY the JSON array, no markdown fences, no explanation."""
 
+SKILL_DISTILLATION_PROMPT = """\
+You are a memory curator turning repeated agent lessons into procedural skills.
+
+Below are strong direction memories that have proven durable (each was \
+recalled and reinforced after being stored), plus the agent's existing \
+distilled-lesson skill topics. Decide whether any memory encodes a \
+*procedural* lesson — "when doing X, do Y" — that belongs in a skill file so \
+it is loaded whenever the agent does that kind of work.
+
+Rules:
+- Only distill lessons that generalize beyond a single asset, user, or conversation.
+- Reuse an existing topic when one clearly covers the lesson; otherwise pick a \
+  short new topic slug (lowercase letters, digits, dashes).
+- Rewrite each lesson as 1-2 imperative sentences, self-contained and durable.
+- Most memories should NOT be distilled. Return [] when nothing qualifies.
+
+Output ONLY a JSON array (no markdown fences, no explanation):
+[{"topic": "slug", "memory_ids": ["id"], "lesson": "imperative lesson text"}]"""
+
 DREAM_REVIEW_PROMPT = """\
 You are reviewing an agent's stored memories for accuracy. Each memory below \
 was learned at a specific point in time and may no longer be true — especially \
@@ -739,6 +759,178 @@ def promote_log_entries(
             plan.add_warning(f"Log promotion failed: {e}")
         logger.warning("Log promotion failed: %s", e)
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Skill distillation
+# ---------------------------------------------------------------------------
+
+_DISTILLED_KEY = "distilled_to_skill"
+_LESSON_SKILL_PREFIX = "lessons-"
+_MAX_DISTILL_PER_RUN = 10
+_SLUG_RE_ALLOWED = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+
+
+def _lesson_topic_slug(raw: str) -> str:
+    """Normalize an LLM-proposed topic into a safe slug (or "")."""
+    slug = raw.strip().lower().replace(" ", "-").replace("_", "-")
+    if slug.startswith(_LESSON_SKILL_PREFIX):
+        slug = slug[len(_LESSON_SKILL_PREFIX):]
+    slug = "".join(c for c in slug if c in _SLUG_RE_ALLOWED).strip("-")
+    return slug[:40]
+
+
+def _existing_lesson_topics(workspace: Path) -> dict[str, Path]:
+    skills_dir = workspace / "skills"
+    if not skills_dir.exists():
+        return {}
+    return {
+        p.stem[len(_LESSON_SKILL_PREFIX):]: p
+        for p in sorted(skills_dir.glob(f"{_LESSON_SKILL_PREFIX}*.md"))
+    }
+
+
+def _select_distillation_candidates(
+    all_memories: list[MemoryResult],
+) -> list[MemoryResult]:
+    """Directions that were recalled after being stored and not yet distilled."""
+    candidates = [
+        mem
+        for mem in all_memories
+        if mem.category == "direction"
+        and mem.strength >= 0.7
+        and mem.last_accessed
+        and not (mem.metadata or {}).get(_DISTILLED_KEY)
+    ]
+    candidates.sort(key=lambda m: m.strength, reverse=True)
+    return candidates[:_MAX_DISTILL_PER_RUN]
+
+
+def distill_skills(
+    workspace: Path,
+    backend: MemoryBackend,
+    model,
+    all_memories: list[MemoryResult] | None = None,
+    dry_run: bool = False,
+    plan: DreamPlan | None = None,
+) -> int:
+    """Promote reinforced direction memories into workspace lesson skills.
+
+    Confirmed procedural lessons graduate from vector memory into
+    ``workspace/skills/lessons-<topic>.md`` files, where they are surfaced by
+    the skill directory and loadable by topic instead of competing for recall.
+    Returns the number of lessons written.
+    """
+    candidates = _select_distillation_candidates(all_memories or [])
+    if not candidates:
+        if plan:
+            plan.add_skip("skill_distillation", "no_reinforced_directions")
+        return 0
+
+    topics = _existing_lesson_topics(workspace)
+    topic_lines = "\n".join(f"- {topic}" for topic in topics) or "- (none yet)"
+    memory_lines = "\n".join(
+        f"- ID: {_memory_id(mem)}\n  Text: {mem.text}" for mem in candidates
+    )
+
+    try:
+        result = model(
+            [
+                {"role": "system", "content": SKILL_DISTILLATION_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Existing lesson topics:\n{topic_lines}\n\n"
+                        f"Candidate memories:\n{memory_lines}"
+                    ),
+                },
+            ],
+        )
+        text = result.content if hasattr(result, "content") else str(result)
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        proposals = json.loads(text)
+        if not isinstance(proposals, list):
+            return 0
+    except Exception as e:
+        if plan:
+            plan.add_warning(f"Skill distillation failed: {e}")
+        logger.warning("Skill distillation failed: %s", e)
+        return 0
+
+    candidates_by_id = {_memory_id(mem): mem for mem in candidates}
+    skills_dir = workspace / "skills"
+    written = 0
+    touched_workspace = False
+
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        topic = _lesson_topic_slug(str(proposal.get("topic") or ""))
+        lesson = str(proposal.get("lesson") or "").strip()
+        memory_ids = [
+            mid
+            for mid in (proposal.get("memory_ids") or [])
+            if str(mid) in candidates_by_id
+        ]
+        if not topic or not lesson or not memory_ids:
+            continue
+
+        skill_name = f"{_LESSON_SKILL_PREFIX}{topic}"
+        path = skills_dir / f"{skill_name}.md"
+        if plan:
+            plan.add_operation(
+                DreamOperation(
+                    kind="skill_distillation",
+                    status="planned" if dry_run else "applied",
+                    target=skill_name,
+                    memory_id=",".join(str(mid) for mid in memory_ids),
+                    reason="promote_direction_to_skill",
+                    excerpt=_short_excerpt(lesson),
+                )
+            )
+        written += 1
+        if dry_run:
+            continue
+
+        try:
+            skills_dir.mkdir(parents=True, exist_ok=True)
+            if path.exists():
+                body = path.read_text()
+                if not body.endswith("\n"):
+                    body += "\n"
+                path.write_text(body + f"- {lesson}\n")
+            else:
+                path.write_text(
+                    "---\n"
+                    f"description: Learned lessons about {topic} (distilled from memory)\n"
+                    "load: stub\n"
+                    "---\n\n"
+                    f"# Lessons: {topic}\n\n"
+                    f"- {lesson}\n"
+                )
+            touched_workspace = True
+        except OSError as e:
+            if plan:
+                plan.add_warning(f"Failed to write skill {skill_name}: {e}")
+            logger.warning("Failed to write skill %s: %s", skill_name, e)
+            written -= 1
+            continue
+
+        for mid in memory_ids:
+            try:
+                backend.update_metadata(str(mid), {_DISTILLED_KEY: skill_name})
+            except Exception as e:
+                logger.warning("Failed to mark memory %s distilled: %s", mid, e)
+
+    if touched_workspace:
+        from ..skills import invalidate_skill_cache
+
+        invalidate_skill_cache(workspace)
+    if written:
+        logger.info("Distilled %d lessons into workspace skills", written)
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -1384,6 +1576,15 @@ def run_dream(
                 logger.warning(warning)
                 all_memories = []
 
+    with _time_phase(dream_result, "skill_distillation"):
+        results["skills_distilled"] = distill_skills(
+            workspace,
+            backend,
+            model,
+            all_memories=all_memories,
+            dry_run=dry_run,
+            plan=plan,
+        )
     with _time_phase(dream_result, "strength_decay"):
         results["strength_decayed"] = decay_memory_strength(
             backend,
