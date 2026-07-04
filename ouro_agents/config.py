@@ -128,9 +128,15 @@ class MemoryConfig(BaseModel):
     path: Path = Path("./workspace/memory")
     extraction_model: str
     embedder: str
+    # Default top-K per memory_recall query (per-query ``limit`` overrides).
     search_limit: int = 10
-    retrieval_queries: int = 3
+    # Global soft cap (in tokens, ~4 chars each) on a single memory_recall's
+    # combined output across all its queries.
     max_retrieval_tokens: int = 4000
+    # Relevance floor for recall results (memory_signal_score). Results below
+    # this are dropped unless the caller passed explicit filters. The best hit
+    # is always kept so recall never comes back empty when matches exist.
+    min_signal_score: float = 0.35
     # Memory rhythm: how often the agent rolls its log and runs the dream cycle.
     # Drives both the log bucket window AND the dream cadence (single source of
     # truth — there is intentionally no separate dream cron to misconfigure).

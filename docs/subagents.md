@@ -34,7 +34,6 @@ Defined in `ouro_agents/subagents/profiles.py`. Key fields:
 |------|-------------|--------------|
 | `preflight` | no | Step 0 of a normal run: classify intent, fetch memory, optionally sketch a plan. |
 | `heartbeat_preflight` | no | Decides what the agent should focus on this heartbeat tick. |
-| `context_loader` | no | Loads internal memory and entity files into a briefing. |
 | `reflector` | no | Curates long-term memory after a run or every N turns in chat. |
 | `research` | yes | Investigates a topic via `tavily_search`, posts the writeup to Ouro. |
 | `planner` | yes | Returns a short numbered execution plan. |

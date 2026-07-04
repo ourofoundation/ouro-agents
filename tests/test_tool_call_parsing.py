@@ -980,5 +980,67 @@ class TestMiniMaxToolCallParsing(unittest.TestCase):
         )
 
 
+class TestRunObservationCompaction(unittest.TestCase):
+    """Within-run memory pressure: old step observations get folded."""
+
+    @staticmethod
+    def _make_steps(count, observation_chars):
+        from smolagents import ActionStep
+        from smolagents.monitoring import Timing
+
+        return [
+            ActionStep(
+                step_number=i,
+                timing=Timing(start_time=0.0, end_time=0.0),
+                observations=f"step-{i} " + "x" * observation_chars,
+            )
+            for i in range(count)
+        ]
+
+    @staticmethod
+    def _fake_agent(steps):
+        import types
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        fake = types.SimpleNamespace(memory=types.SimpleNamespace(steps=steps))
+        fake._compact_old_observations = (
+            SanitizedToolCallingAgent._compact_old_observations.__get__(fake)
+        )
+        return fake
+
+    def test_folds_oldest_steps_when_over_high_water(self):
+        from ouro_agents.tools.agent_base import (
+            _RUN_COMPACT_KEEP_RECENT_STEPS,
+            _RUN_COMPACT_MARKER,
+            _RUN_OBSERVATIONS_LOW_WATER_CHARS,
+        )
+
+        # 20 steps x 20k chars = 400k chars, well over the 240k high-water mark.
+        steps = self._make_steps(20, 20_000)
+        agent = self._fake_agent(steps)
+
+        agent._compact_old_observations()
+
+        # Oldest steps folded; total under the low-water mark.
+        self.assertIn(_RUN_COMPACT_MARKER, steps[0].observations)
+        total = sum(len(s.observations or "") for s in steps)
+        self.assertLessEqual(total, _RUN_OBSERVATIONS_LOW_WATER_CHARS)
+        # The most recent steps are never touched.
+        for step in steps[-_RUN_COMPACT_KEEP_RECENT_STEPS:]:
+            self.assertNotIn(_RUN_COMPACT_MARKER, step.observations)
+
+    def test_noop_under_high_water(self):
+        from ouro_agents.tools.agent_base import _RUN_COMPACT_MARKER
+
+        steps = self._make_steps(10, 1_000)
+        agent = self._fake_agent(steps)
+
+        agent._compact_old_observations()
+
+        for step in steps:
+            self.assertNotIn(_RUN_COMPACT_MARKER, step.observations)
+
+
 if __name__ == "__main__":
     unittest.main()

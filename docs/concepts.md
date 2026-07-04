@@ -50,7 +50,7 @@ override, skills, etc.
 
 Built-in delegatable profiles: `research`, `planner`, `executor`, `writer`,
 `developer`. Internal profiles: `preflight`, `heartbeat_preflight`,
-`context_loader`, `reflector`.
+`reflector`.
 
 Custom profiles can be dropped into `workspace/subagents/*.{json,yaml}` (or
 the path set by `subagents.custom_profiles_dir`) and override built-ins of

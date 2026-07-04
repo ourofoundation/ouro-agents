@@ -78,8 +78,13 @@ def make_memory_tools(
     available_teams: Optional[list[dict]] = None,
     enable_remember: bool = False,
     conversation_state: Any = None,
+    search_limit: int = 5,
+    max_retrieval_tokens: int = 4000,
+    min_signal_score: float = 0.35,
 ) -> list:
     allowed_categories = set(memory_categories or [])
+    # Global character budget across all recall output for a single call.
+    retrieval_char_budget = max(int(max_retrieval_tokens), 0) * 4
     run_team_id = team_id
     run_mode = mode or ""
     team_ids = set(available_team_ids or ([] if not run_team_id else [run_team_id]))
@@ -168,7 +173,7 @@ def make_memory_tools(
         def _search_one(spec: dict) -> tuple[str, list[str]]:
             query = spec.get("query", "")
             category = spec.get("category", "")
-            limit = int(spec.get("limit", 5))
+            limit = int(spec.get("limit", search_limit))
             scope = spec.get("scope", "team")
             spec_team_id = spec.get("team_id", run_team_id)
             spec_subject_type = spec.get("subject_type", "")
@@ -269,15 +274,26 @@ def make_memory_tools(
                     continue
                 seen_text.add(key)
                 deduped.append(r)
-            results = sorted(
-                deduped,
-                key=lambda r: memory_signal_score(
+            scored = [
+                (
+                    memory_signal_score(
+                        r,
+                        team_id=spec_team_id or "",
+                        explicit_filter=explicit_filters,
+                    ),
                     r,
-                    team_id=spec_team_id or "",
-                    explicit_filter=explicit_filters,
-                ),
-                reverse=True,
-            )
+                )
+                for r in deduped
+            ]
+            scored.sort(key=lambda pair: pair[0], reverse=True)
+            # Relevance floor: drop low-signal hits so recall stays high-precision.
+            # Skipped when the caller passed explicit filters (they asked for
+            # exactly this slice) — but never return an empty set if anything
+            # matched at all; keep the single best hit as a fallback.
+            if not explicit_filters and scored:
+                filtered = [pair for pair in scored if pair[0] >= min_signal_score]
+                scored = filtered if filtered else scored[:1]
+            results = [r for _, r in scored]
 
             lines: list[str] = []
             for r in results:
@@ -300,9 +316,45 @@ def make_memory_tools(
                     break
             return query, lines
 
+        def _apply_char_budget(sections: list[str]) -> str:
+            """Enforce the global retrieval token budget across all sections.
+
+            Whole memory lines are dropped (never mid-line truncated) once the
+            budget is exhausted, with a note so the model knows recall was capped.
+            """
+            text = "\n\n".join(sections)
+            if not retrieval_char_budget or len(text) <= retrieval_char_budget:
+                return text
+            kept: list[str] = []
+            used = 0
+            truncated = False
+            for section in sections:
+                section_lines = section.split("\n")
+                kept_lines: list[str] = []
+                for line in section_lines:
+                    cost = len(line) + 1
+                    if used + cost > retrieval_char_budget and kept_lines:
+                        truncated = True
+                        break
+                    used += cost
+                    kept_lines.append(line)
+                if kept_lines:
+                    kept.append("\n".join(kept_lines))
+                if truncated:
+                    break
+            result = "\n\n".join(kept)
+            if truncated or len(kept) < len(sections):
+                result += (
+                    "\n\n[Recall output truncated to fit the retrieval budget; "
+                    "narrow your queries or add filters for more specific results.]"
+                )
+            return result
+
         if len(queries) == 1:
             query, lines = _search_one(queries[0])
-            return "\n".join(lines) if lines else "No relevant memories found."
+            if not lines:
+                return "No relevant memories found."
+            return _apply_char_budget(["\n".join(lines)])
 
         all_sections: list[str] = []
         with ThreadPoolExecutor(max_workers=min(4, len(queries))) as pool:
@@ -320,7 +372,7 @@ def make_memory_tools(
             else:
                 all_sections.append(f'## Query: "{query}"\nNo relevant memories found.')
 
-        return "\n\n".join(all_sections)
+        return _apply_char_budget(all_sections)
 
     @tool
     def memory_status() -> str:

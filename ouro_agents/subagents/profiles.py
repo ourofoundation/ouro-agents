@@ -22,7 +22,6 @@ from pydantic import BaseModel, Field
 
 from .preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
 from .prompts import (
-    CONTEXT_LOADER_PROMPT,
     DEVELOPER_PROMPT,
     EXECUTOR_PROMPT,
     PLANNER_PROMPT,
@@ -125,17 +124,6 @@ HEARTBEAT_PREFLIGHT = SubAgentProfile(
     include_asset_placement=False,
 )
 
-CONTEXT_LOADER = SubAgentProfile(
-    name="context_loader",
-    description="Load internal memory, entity files, and task context into a concise briefing.",
-    system_prompt=CONTEXT_LOADER_PROMPT,
-    allowed_tools=["memory_recall"],
-    max_steps=3,
-    memory_scopes=[],
-    include_work_directive=False,
-    include_asset_placement=False,
-)
-
 REFLECTOR = SubAgentProfile(
     name="reflector",
     description="Curate long-term memories from recent conversation turns.",
@@ -227,7 +215,6 @@ DEVELOPER = SubAgentProfile(
 # All built-in profiles
 PROFILES = [
     PREFLIGHT,
-    CONTEXT_LOADER,
     RESEARCH,
     PLANNER,
     REFLECTOR,

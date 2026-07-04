@@ -164,6 +164,44 @@ class TestShouldReflect(unittest.TestCase):
             )
 
 
+class TestReflectionCadence(unittest.TestCase):
+    def test_no_key_moment_waits_for_turn_interval(self):
+        # Below the cadence interval: no reflection without a key moment.
+        self.assertFalse(
+            should_reflect(
+                _ConversationState(turn_count=5),
+                last_reflected_turn=0,
+                has_new_key_moment=False,
+            )
+        )
+        # At the interval, reflection fires even without a key moment.
+        self.assertTrue(
+            should_reflect(
+                _ConversationState(turn_count=6),
+                last_reflected_turn=0,
+                has_new_key_moment=False,
+            )
+        )
+
+    def test_key_moment_reflects_immediately(self):
+        self.assertTrue(
+            should_reflect(
+                _ConversationState(turn_count=2),
+                last_reflected_turn=1,
+                has_new_key_moment=True,
+            )
+        )
+
+    def test_already_reflected_turn_never_re_reflects(self):
+        self.assertFalse(
+            should_reflect(
+                _ConversationState(turn_count=5),
+                last_reflected_turn=5,
+                has_new_key_moment=True,
+            )
+        )
+
+
 class TestReflectionParsing(unittest.TestCase):
     def test_reflector_prompt_mentions_recent_asset_interactions(self):
         self.assertIn("avoid repeating immediately", REFLECTOR_PROMPT)

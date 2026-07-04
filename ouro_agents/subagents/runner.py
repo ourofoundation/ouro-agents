@@ -569,6 +569,9 @@ def _run_agent(
             conversation_id=ctx.conversation_id,
             run_id=ctx.run_id,
             conversation_state=ctx.conversation_state,
+            search_limit=getattr(ctx.memory_config, "search_limit", 5),
+            max_retrieval_tokens=getattr(ctx.memory_config, "max_retrieval_tokens", 4000),
+            min_signal_score=getattr(ctx.memory_config, "min_signal_score", 0.35),
         )
         allowed = set(profile.allowed_tools)
         tools.extend(t for t in mem_tools if t.name in allowed)

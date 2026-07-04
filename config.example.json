@@ -95,7 +95,6 @@
     "extraction_model": "xiaomi/mimo-v2-flash",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
-    "retrieval_queries": 3,
     "max_retrieval_tokens": 1500,
     "rhythm": "daily",
     "dream_enabled": true,

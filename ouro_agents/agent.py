@@ -1231,6 +1231,9 @@ class OuroAgent:
             available_teams=self._available_memory_teams(team_id),
             enable_remember=profile.allows_capability(Capability.MEMORY_WRITE),
             conversation_state=conversation_state,
+            search_limit=self.config.memory.search_limit,
+            max_retrieval_tokens=self.config.memory.max_retrieval_tokens,
+            min_signal_score=self.config.memory.min_signal_score,
         )
         if profile.memory_tool_filter is not None:
             allowed = set(profile.memory_tool_filter)
@@ -2062,8 +2065,9 @@ class OuroAgent:
         run_id: str = "",
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
+        has_new_key_moment: bool = True,
     ) -> None:
-        """Run mid-session reflection after a new key moment is observed."""
+        """Run mid-session reflection after a key moment or on turn cadence."""
         if not conversation_id:
             return
         conversations_dir = self.config.agent.workspace / "conversations"
@@ -2071,6 +2075,7 @@ class OuroAgent:
             conversations_dir,
             conversation_id,
             conv_state,
+            has_new_key_moment=has_new_key_moment,
         ):
             return
 
@@ -2834,16 +2839,18 @@ class OuroAgent:
                 new_key_moments = set(
                     new_conv_state.key_moments if new_conv_state else []
                 ) - previous_key_moments
-                if new_key_moments:
-                    # Key moments are the salience signal for mid-session reflection.
-                    self._maybe_reflect_post_turn(
-                        conv_state=new_conv_state,
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        run_id=run_id,
-                        team_id=team_id,
-                        doc_store=active_doc_store,
-                    )
+                # Key moments reflect immediately; otherwise the reflection
+                # policy still fires on a turn cadence so quiet conversations
+                # get curated too (see should_reflect).
+                self._maybe_reflect_post_turn(
+                    conv_state=new_conv_state,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    run_id=run_id,
+                    team_id=team_id,
+                    doc_store=active_doc_store,
+                    has_new_key_moment=bool(new_key_moments),
+                )
 
         def _run_post_run_background() -> None:
             try:

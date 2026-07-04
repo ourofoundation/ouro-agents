@@ -29,6 +29,19 @@ _MAX_TOOL_OUTPUT_CHARS = 50_000
 # Compacted summaries are targeted at this size (~2k tokens).
 _COMPACT_TARGET_CHARS = 8_000
 
+# Within-run memory pressure: when the accumulated tool observations across all
+# steps exceed this size (~60k tokens), the oldest steps' observations are
+# folded down so long tool-heavy runs don't blow the context window.
+_RUN_OBSERVATIONS_HIGH_WATER_CHARS = 240_000
+# Compaction shrinks total observations to below this (~40k tokens).
+_RUN_OBSERVATIONS_LOW_WATER_CHARS = 160_000
+# The most recent steps are always left untouched — the model still needs
+# their full detail to continue the task.
+_RUN_COMPACT_KEEP_RECENT_STEPS = 5
+# Per-step observation excerpt retained when a step is folded.
+_RUN_COMPACT_EXCERPT_CHARS = 1_500
+_RUN_COMPACT_MARKER = "[older observation folded to save context"
+
 _COMPACT_SYSTEM_PROMPT = """\
 A tool returned output that is too large to include verbatim in context.
 Compress it into a concise but faithful summary. Preserve all specific facts, numbers, \
@@ -1120,6 +1133,54 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         self._track_reasoning_only_step(memory_step)
         self._inject_nudge_observation(memory_step)
         self._inject_step_budget_observation(memory_step)
+        self._compact_old_observations()
+
+    def _compact_old_observations(self) -> None:
+        """Fold old step observations when the run's context grows too large.
+
+        Individual oversized tool outputs are compacted at the point of return
+        (see ``execute_tool_call``), but a long run of many medium-sized
+        observations can still exhaust the context window. When cumulative
+        observation size passes the high-water mark, the oldest steps'
+        observations are reduced to a short excerpt until the total drops
+        below the low-water mark. The most recent steps are never touched.
+        """
+        action_steps = [s for s in self.memory.steps if isinstance(s, ActionStep)]
+        if len(action_steps) <= _RUN_COMPACT_KEEP_RECENT_STEPS:
+            return
+
+        def _total() -> int:
+            return sum(len(s.observations or "") for s in action_steps)
+
+        total = _total()
+        if total <= _RUN_OBSERVATIONS_HIGH_WATER_CHARS:
+            return
+
+        folded = 0
+        for step in action_steps[:-_RUN_COMPACT_KEEP_RECENT_STEPS]:
+            if total <= _RUN_OBSERVATIONS_LOW_WATER_CHARS:
+                break
+            observations = step.observations or ""
+            if (
+                len(observations) <= _RUN_COMPACT_EXCERPT_CHARS
+                or _RUN_COMPACT_MARKER in observations
+            ):
+                continue
+            excerpt = observations[:_RUN_COMPACT_EXCERPT_CHARS]
+            step.observations = (
+                f"{excerpt}\n\n{_RUN_COMPACT_MARKER}: "
+                f"{len(observations):,} chars originally; re-run the tool if the "
+                "full output is needed again]"
+            )
+            total -= len(observations) - len(step.observations)
+            folded += 1
+
+        if folded:
+            logger.info(
+                "Compacted %d old step observation(s); run observations now ~%d chars",
+                folded,
+                total,
+            )
 
     def _inject_nudge_observation(self, memory_step: ActionStep) -> None:
         """Surface a runtime nudge stashed by the patched parser.

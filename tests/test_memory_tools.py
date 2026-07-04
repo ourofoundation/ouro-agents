@@ -197,6 +197,96 @@ def test_memory_recall_ranks_direction_above_ambient_asset_observation():
     assert "2:17 RE-Fe/Co" not in result
 
 
+def test_memory_recall_drops_results_below_signal_floor():
+    backend = _RankedBackend()
+    tools = make_memory_tools(
+        backend,
+        agent_id="hermes",
+        user_id="user-1",
+        doc_store=_FakeDocStore(),
+        team_id="team-42",
+        mode="chat",
+        min_signal_score=0.5,
+    )
+
+    result = _tool_by_name(tools, "memory_recall").forward(
+        [{"query": "what should I focus on next"}]
+    )
+
+    # The ambient asset episode scores below the floor and is dropped even
+    # though the limit would have allowed it.
+    assert "Focus on benchmark quality" in result
+    assert "2:17 RE-Fe/Co" not in result
+
+
+def test_memory_recall_keeps_best_hit_when_floor_would_empty_results():
+    backend = _RankedBackend()
+    tools = make_memory_tools(
+        backend,
+        agent_id="hermes",
+        user_id="user-1",
+        doc_store=_FakeDocStore(),
+        team_id="team-42",
+        mode="chat",
+        min_signal_score=99.0,
+    )
+
+    result = _tool_by_name(tools, "memory_recall").forward(
+        [{"query": "what should I focus on next"}]
+    )
+
+    assert "No relevant memories found" not in result
+    assert "Focus on benchmark quality" in result
+
+
+def test_memory_recall_uses_configured_search_limit_default():
+    backend = _FakeBackend()
+    tools = make_memory_tools(
+        backend,
+        agent_id="hermes",
+        doc_store=_FakeDocStore(),
+        team_id="team-42",
+        search_limit=7,
+    )
+
+    _tool_by_name(tools, "memory_recall").forward([{"query": "team strategy"}])
+
+    assert backend.search_calls[0]["limit"] == 7
+
+
+def test_memory_recall_enforces_global_retrieval_token_budget():
+    class _VerboseBackend(_FakeBackend):
+        def search(self, **kwargs):
+            self.search_calls.append(kwargs)
+            return [
+                MemoryResult(
+                    text=f"Direction memory number {i}: " + "x" * 400,
+                    category="direction",
+                    basis="stated",
+                    strength=0.9,
+                    score=0.9,
+                )
+                for i in range(10)
+            ]
+
+    backend = _VerboseBackend()
+    tools = make_memory_tools(
+        backend,
+        agent_id="hermes",
+        doc_store=_FakeDocStore(),
+        team_id="team-42",
+        search_limit=10,
+        max_retrieval_tokens=300,  # ~1200 chars; each line is ~430 chars
+    )
+
+    result = _tool_by_name(tools, "memory_recall").forward(
+        [{"query": "alpha"}, {"query": "beta"}]
+    )
+
+    assert "[Recall output truncated" in result
+    assert len(result) < 2500
+
+
 class _MutableBackend(_FakeBackend):
     def __init__(self):
         super().__init__()

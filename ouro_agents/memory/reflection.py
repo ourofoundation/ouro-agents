@@ -82,16 +82,34 @@ def validated_daily_log_entries(
     return entries
 
 
+# Reflect at least every N user turns even when no key moment fires, so
+# quiet-but-substantive conversations still get their facts curated into
+# long-term memory. Key moments still trigger reflection immediately.
+REFLECTION_TURN_INTERVAL = 6
+
+
 def should_reflect(
     conversation_state: Optional[ConversationState],
     last_reflected_turn: int = 0,
+    *,
+    has_new_key_moment: bool = True,
+    turn_interval: int = REFLECTION_TURN_INTERVAL,
 ) -> bool:
-    """Return True when the current key-moment turn has not been reflected."""
+    """Return True when this turn warrants reflection.
+
+    A new key moment reflects immediately (provided the turn hasn't already
+    been reflected). Without one, reflection still runs once ``turn_interval``
+    user turns have passed since the last reflection.
+    """
     if not conversation_state:
         return False
     if conversation_state.turn_count < 1:
         return False
-    return conversation_state.turn_count > last_reflected_turn
+    if conversation_state.turn_count <= last_reflected_turn:
+        return False
+    if has_new_key_moment:
+        return True
+    return conversation_state.turn_count - last_reflected_turn >= turn_interval
 
 
 def _load_reflected_turn(conversations_dir: Path, conversation_id: str) -> int:
@@ -213,10 +231,16 @@ def should_reflect_for_conversation(
     conversations_dir: Path,
     conversation_id: str,
     conversation_state: Optional[ConversationState],
+    *,
+    has_new_key_moment: bool = True,
 ) -> bool:
-    """Full check: load last reflected key-moment turn and compare."""
+    """Full check: load last reflected turn and apply the reflection policy."""
     last_turn = _load_reflected_turn(conversations_dir, conversation_id)
-    return should_reflect(conversation_state, last_turn)
+    return should_reflect(
+        conversation_state,
+        last_turn,
+        has_new_key_moment=has_new_key_moment,
+    )
 
 
 def apply_reflection(

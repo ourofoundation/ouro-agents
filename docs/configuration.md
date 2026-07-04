@@ -255,9 +255,9 @@ Vector memory backend + dream (consolidation) policy.
 | `path` | `./workspace/memory` | Local store directory. |
 | `extraction_model` | required | Cheap model used by mem0 to extract facts. |
 | `embedder` | required | Embedding model id (e.g. `openai/text-embedding-3-small`). |
-| `search_limit` | 10 | Default top-K for `memory_recall`. |
-| `retrieval_queries` | 3 | Multi-query expansion in preflight. |
-| `max_retrieval_tokens` | 4000 | Soft cap on injected memory bytes. |
+| `search_limit` | 10 | Default top-K per `memory_recall` query (per-query `limit` overrides). |
+| `max_retrieval_tokens` | 4000 | Global soft cap (tokens) on a single `memory_recall`'s combined output. |
+| `min_signal_score` | 0.35 | Relevance floor for recall results; low-signal hits are dropped unless explicit filters were passed. |
 | `rhythm` | `daily` | Log/dream cadence: `daily`, `weekly`, or `biweekly`. Sets the window a single log doc covers **and** how often the dream cycle runs. |
 | `dream_enabled` | `true` | Run the dream (memory consolidation) cycle. |
 | `dream_time` | `03:00` | Time of day (`HH:MM`, UTC) for the dream tick. The tick only does work when a new `rhythm` period has begun since the last run. |

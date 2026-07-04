@@ -1,3 +1,12 @@
+> **STALE — historical audit (kept for reference).** Most gaps described below
+> have since been implemented: preflight task classification exists
+> (`subagents/preflight.py`), prompt assembly has a token budget
+> (`soul.py::_enforce_budget`), chat history uses cache-stable windows with a
+> rolling conversation summary, recall results are reranked with a relevance
+> floor and global token cap (`memory/tools.py`), and long runs fold old step
+> observations (`tools/agent_base.py`). Do not treat this document as a
+> current description of the system.
+
 Alright, I've read through the entire framework — `agent.py`, `soul.py`, memory system, config, and your `plan.md`. This is a solid foundation. The SOUL/NOTES/HEARTBEAT separation is clean, the deferred tool loading pattern is smart, and the mem0 integration is well-abstracted.
 
 Here are the gaps I see, organized around the three areas you mentioned, with concrete suggestions modeled off how my architecture handles these problems.
