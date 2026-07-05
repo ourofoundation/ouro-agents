@@ -1,5 +1,5 @@
 ---
-description: Concrete mechanics for building, deploying, and testing services — the backlog, the Modal app pattern, Ouro integration, and the testing bar
+description: Apollo's service pipeline — the backlog, feasibility assessment, author outreach, announcements, and maintenance (deploy mechanics live in the shared deploying-services skill)
 load: always
 ---
 
@@ -96,83 +96,23 @@ follow-up maximum, silence is an answer, and every active row carries a
    If no reply after the follow-up window, kill the candidate with
    "authors unresponsive" and move on.
 
-## Stage 2: Build
+## Stages 2–4: Build, deploy, test
 
-Services are Modal apps built in your workspace under
-`services/<model-name>/`:
+The mechanics — Modal app structure, Ouro integration requirements, deploy
+commands, `deployment.json`, and the testing bar — live in the shared
+`deploying-services` skill; load it, plus `modal-app-template` when actually
+writing `app.py`. Your Modal workspace is `ouro-apollo`.
 
-```
-services/<model-name>/
-├── app.py          # Modal app with FastAPI endpoints
-└── README.md       # what it is, how to deploy
-```
+Two additions on top of the shared bar:
 
-Load the `modal-app-template` skill when writing `app.py` — it has full
-annotated templates for both patterns with the Ouro integration in place.
-
-Key decisions:
-
-- **Sync vs async**: direct return from `@modal.asgi_app()` for jobs under
-  ~5 minutes; the webhook pattern (return 202, spawn compute, POST result to
-  `ouro-webhook-url`) for anything longer.
-- **GPU**: `T4` small, `L4` medium, `A100` large. Don't over-provision.
-- **API surface**: one endpoint that does one thing. Resist adding options the
-  model's users didn't ask for.
-
-Ouro integration requirements (non-negotiable):
-
-- Accept the Ouro headers: `ouro-route-id`, `ouro-action-id`,
-  `ouro-route-org-id`, `ouro-route-team-id` (plus `ouro-webhook-url` and
-  `ouro-webhook-token` for async).
-- Declare inputs/outputs with `@ouro_field("x-ouro-input-assets", ...)` and
-  `@ouro_field("x-ouro-output-assets", ...)` so routes can wire files through.
-- Return file outputs as base64 with Ouro file metadata (name, filename, MIME
-  type, extension, org_id, team_id).
-- Log progress through the `Action` model: `action.log("...")`, with
-  `level="error"` on failures, so users watching the route see real status.
-
-## Stage 3: Deploy
-
-You have your own Modal workspace (`ouro-apollo`). The `modal` CLI and SDK are
-installed in your sandbox and authenticate automatically via the
-`MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` environment variables — no profile
-setup needed. Deploy with `run_shell`:
-
-```bash
-modal deploy services/<model-name>/app.py
-```
-
-(`modal serve` is for interactive iteration and won't outlive a shell call;
-prefer deploying and testing against the deployed URL.)
-
-After a successful deploy, write `deployment.json` in the app directory with
-the Modal app name, live URL, OpenAPI URL, paper/repo links, license, authors,
-and I/O formats. Then register the service on Ouro so it appears as a callable
-route.
-
-If a step needs something you don't have (missing credentials, spend approval,
-ambiguous licensing), do everything up to that point, then flag exactly what
-you need from @mmoderwell in a message or task file. Blocked-and-flagged is a
-valid stage; silently stalled is not.
-
-## Stage 4: Test
-
-Test through the **live route**, the way a user would call it — not by importing
-the model locally. The bar:
-
-1. **Reference cases.** Run inputs with known-good answers (experimental
-   values, DFT references, the paper's own examples) and compare. Record the
-   comparison in a dataset or table, not prose.
-2. **Edge cases.** At least one: an unusual but valid input, a large input, a
-   malformed input. The service should fail loudly and clearly, never return
-   plausible garbage.
-3. **The claimed win.** If the model was deployed to close a documented gap
-   (e.g. mCGCNN for AFM oxides where ALIGNN fails), test that exact case. The
-   announcement should be able to say "here is the case the old stack got
-   wrong, and here is what this service returns."
-
-Save test artifacts as Ouro datasets or files. They are the evidence behind
-your announcement and the regression baseline for later re-tests.
+- **Test the claimed win.** If the model was deployed to close a documented
+  gap (e.g. mCGCNN for AFM oxides where ALIGNN fails), test that exact case.
+  The announcement should be able to say "here is the case the old stack got
+  wrong, and here is what this service returns."
+- **Blocked-and-flagged is a valid stage.** If a step needs something you
+  don't have (missing credentials, spend approval, ambiguous licensing), do
+  everything up to that point, then flag exactly what you need from
+  @mmoderwell in a message or task file. Silently stalled is not.
 
 ## Stage 5: Announce
 

@@ -1,16 +1,17 @@
 ---
 description: Annotated Modal app templates (sync and async webhook patterns) with full Ouro integration — load when actually writing a service's app.py
+load: stub
 ---
 
 # Modal App Template
 
 Full annotated templates for building a service with Ouro integration. Load
-this when writing `app.py`; the service-building skill covers the surrounding
-pipeline.
+this when writing `app.py`; the `deploying-services` skill covers the
+surrounding pipeline.
 
 ## One-time workspace setup
 
-Your Modal workspace is `ouro-apollo`, authenticated via `MODAL_TOKEN_ID` /
+Your Modal workspace authenticates via `MODAL_TOKEN_ID` /
 `MODAL_TOKEN_SECRET` in your sandbox environment. Deployed apps need Ouro
 credentials at runtime, provided through a Modal secret named `ouro`. Create it
 once (and recreate if credentials rotate):

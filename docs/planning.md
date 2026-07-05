@@ -58,8 +58,16 @@ planning cycle on its `cadence` (e.g. every 4 hours). The decision logic
 
 Generation flow:
 
-1. Build the planning prompt: soul, notes, working memory, recent daily
-   logs, prior cycle status, available teams, and the current goal/intent.
+1. Build the planning prompt. Most review material is injected directly:
+   the previous cycle's item-level outcome (with unfinished items the
+   model must explicitly adopt, park, or drop), a recent-activity digest
+   from the run log, work-direction memory, the heartbeat budget derived
+   from cadence ÷ heartbeat interval, and the current goal/intent. The
+   model can additionally use read-only tools (`search_assets`,
+   `get_asset`, `get_comments`, `list_quest_items`) for targeted
+   inspection; the only write tool allowed is quest creation/update. The
+   prompt also carries an item quality bar: concrete deliverable,
+   checkable done-condition, sized to one heartbeat.
 2. Call the planning model (typically a stronger model than the
    heartbeat default) under the `plan` mode profile.
 3. Post the resulting plan to Ouro as a **quest** in the team's

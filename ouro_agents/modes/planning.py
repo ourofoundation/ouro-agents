@@ -662,6 +662,97 @@ def notify_controller_plan_ready(
 
 from ..constants import parse_interval_seconds as parse_cadence_seconds  # noqa: E402
 
+
+def expected_heartbeats(cadence: str, heartbeat_every: str) -> Optional[int]:
+    """How many heartbeat work sessions fit in one planning cadence."""
+    cadence_secs = parse_cadence_seconds(cadence)
+    beat_secs = parse_cadence_seconds(heartbeat_every)
+    if not cadence_secs or not beat_secs:
+        return None
+    return max(1, cadence_secs // beat_secs)
+
+
+# ---------------------------------------------------------------------------
+# Planning context builders
+# ---------------------------------------------------------------------------
+
+
+def build_previous_cycle_context(previous: Optional[PlanCycle]) -> str:
+    """Item-level outcome of the last archived plan, for fresh planning runs.
+
+    The previous plan's prose alone loses unfinished work; showing the items
+    with their statuses, notes, and waiting metadata lets the model explicitly
+    adopt, defer, or drop each open thread instead of silently forgetting it.
+    """
+    if not previous:
+        return ""
+    parts = [
+        "## Previous Plan Outcome",
+        f"Status: {previous.status}; "
+        f"{previous.items_done}/{len(previous.items)} items completed "
+        f"over {previous.heartbeats_completed} heartbeats.",
+    ]
+    if previous.plan_text:
+        parts.append(f"\nPlan notes:\n{previous.plan_text}")
+    if previous.items:
+        parts.append(f"\nItems:\n{render_plan_items(previous.items, include_ids=False)}")
+    open_items = [i for i in previous.items if i.status in ("pending", "in_progress")]
+    if open_items:
+        parts.append(
+            "\nThe unfinished items above are open threads. For each one, "
+            "explicitly adopt it into the new plan, park it as a waiting item, "
+            "or drop it — and say why in the plan description. Do not let open "
+            "work silently disappear."
+        )
+    return "\n".join(parts)
+
+
+def build_recent_activity_context(agent: "OuroAgent", team_id: str | None, limit: int = 8) -> str:
+    """Digest of recent runs from the run log, so planning isn't blind.
+
+    Read-only tools are available during planning, but the digest keeps the
+    common case cheap: the model shouldn't have to search for its own recent
+    work. Failures are non-fatal — planning proceeds without the digest.
+    """
+    run_log = getattr(agent, "_run_log", None)
+    query_runs = getattr(run_log, "query_runs", None)
+    if not callable(query_runs):
+        return ""
+    try:
+        kwargs: dict = {"limit": limit}
+        if team_id:
+            kwargs["team_id"] = team_id
+        rows = query_runs(**kwargs)
+    except Exception as e:
+        logger.debug("Failed to build recent-activity context: %s", e)
+        return ""
+
+    def _snippet(text: object, max_len: int) -> str:
+        flat = " ".join(str(text or "").split())
+        return flat[: max_len - 1] + "…" if len(flat) > max_len else flat
+
+    lines: list[str] = []
+    for row in rows or []:
+        mode = row.get("mode") or "run"
+        if mode in ("plan", "review"):
+            continue
+        started = str(row.get("started_at") or "")[:16]
+        status = row.get("status") or "unknown"
+        task = _snippet(row.get("task"), 140)
+        result = _snippet(row.get("result"), 200)
+        line = f"- [{started}] {mode} ({status}): {task}"
+        if result:
+            line += f" → {result}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return (
+        "## Recent Activity\n"
+        "Your most recent runs, newest first. Use these as evidence of what "
+        "you actually did and how it went — not as direction by themselves.\n"
+        + "\n".join(lines)
+    )
+
 # ---------------------------------------------------------------------------
 # Cycle decision logic
 # ---------------------------------------------------------------------------
@@ -721,34 +812,52 @@ def next_action(
 # Prompt templates
 # ---------------------------------------------------------------------------
 
+PLAN_ITEM_QUALITY_BAR = """\
+Every plan item must pass this bar:
+- It names a concrete deliverable or observable outcome (an asset created or
+  updated, a route executed with results recorded, a substantive comment, a
+  measurement taken) — not an activity. Rewrite vague items like "explore X"
+  or "look into Y" as the artifact the exploration should produce.
+- It is sized to roughly one heartbeat work session. Split anything bigger.
+- Its done-condition is checkable from the item text alone: a reviewer should
+  be able to tell from the platform whether it happened."""
+
 PLANNING_PROMPT_TEMPLATE = """\
 You are entering a planning phase.{goal_section}
 
-Review what has happened since your last plan (or recently if this is your first),
-consider your scheduled tasks, ongoing work, and interests, then create a plan
-for the upcoming period.
+Your previous plan's outcome, recent activity, and work-direction guidance are
+included below. You may also use read-only tools (search_assets, get_asset,
+get_comments, list_quest_items) to inspect specific assets or threads before
+scoping items — but keep inspection brief and targeted; most of what you need
+is already here. Then create a plan for the upcoming period.
 
-Your plan should be realistic given the time available (~{cadence_description}),
+Your plan should be realistic given the time available ({budget_description}),
 specific enough to guide your heartbeats, and flexible enough to adapt.
-If Additional Context includes work-direction guidance, use it to choose focus,
+If the context includes work-direction guidance, use it to choose focus,
 scope, and negative constraints before inventing new work.
 Ground every focus choice in the current user goal, an approved quest item,
 work-direction memory, or explicit evidence you have evaluated. Recent platform
 activity alone is not a reason to prioritize a topic.
+
+{item_quality_bar}
 
 {previous_plan_section}
 
 {context_section}
 
 IMPORTANT: You MUST do both of the following steps. Do NOT skip the quest creation.
-Do NOT use any tools besides create_quest. Do NOT attempt to
-execute any plan items or do actual work — only write and publish the plan.
+Besides read-only inspection, the only write tool you may use is create_quest.
+Do NOT attempt to execute any plan items or do actual work — only write and
+publish the plan.
 
 Step 1. Call create_quest to publish your plan{quest_instructions}.
    {quest_name_instruction}
    - Pass status="draft" so the plan quest is not live until approved.
    - Pass description_markdown with **prose context**: background, reasoning,
      focus areas. Use headers and paragraphs — no checklists in the description.
+   - If a Previous Plan Outcome is shown above, open the description with a
+     short retrospective (2-3 sentences): what worked, what didn't, and what
+     this plan does differently because of it.
    - Pass items as a list of specific, actionable task descriptions (strings).
      Each item becomes a trackable task on the platform.
 
@@ -761,13 +870,17 @@ Step 2. After create_quest succeeds, end the turn with a final message that is o
 CONTINUATION_PLANNING_PROMPT_TEMPLATE = """\
 You are revising your current plan.{goal_section}
 
-Review what has happened, what's been completed, and what needs to change
-for the upcoming period (~{cadence_description}).
-If Additional Context includes work-direction guidance, use it to adjust focus,
+The current items, recent activity, and guidance you need are included below;
+you may also use read-only tools (search_assets, get_asset, get_comments) for
+brief, targeted inspection. Review what's been completed and what needs to
+change for the upcoming period ({budget_description}).
+If the context includes work-direction guidance, use it to adjust focus,
 scope, and negative constraints before inventing new work.
 Ground every focus change in the current user goal, an approved quest item,
 work-direction memory, or explicit evidence you have evaluated. Recent platform
 activity alone is not a reason to prioritize a topic.
+
+{item_quality_bar}
 
 ## Current Items
 {current_items_section}
@@ -857,6 +970,22 @@ def _cadence_description(cadence: str) -> str:
     return f"{val} {label}"
 
 
+def _budget_description(cadence: str, heartbeat_every: str = "") -> str:
+    """Cadence plus, when derivable, the concrete heartbeat budget.
+
+    'roughly N work sessions' is a far stronger sizing constraint than a raw
+    duration, so include it whenever the heartbeat interval is known.
+    """
+    base = f"~{_cadence_description(cadence)}"
+    beats = expected_heartbeats(cadence, heartbeat_every) if heartbeat_every else None
+    if beats is None:
+        return base
+    return (
+        f"{base}, roughly {beats} heartbeat work session{'s' if beats != 1 else ''} "
+        "— plan about that many items, each sized to one session"
+    )
+
+
 def build_planning_prompt(
     cadence: str,
     team_id: Optional[str] = None,
@@ -867,6 +996,7 @@ def build_planning_prompt(
     agent_name: str = "",
     goal: str = "",
     team_context: Optional["TeamContext"] = None,
+    heartbeat_every: str = "",
 ) -> str:
     """Build a planning or continuation-planning prompt.
 
@@ -918,7 +1048,8 @@ def build_planning_prompt(
             context_section = f"## Additional Context\n{extra_context}"
 
         return CONTINUATION_PLANNING_PROMPT_TEMPLATE.format(
-            cadence_description=_cadence_description(cadence),
+            budget_description=_budget_description(cadence, heartbeat_every),
+            item_quality_bar=PLAN_ITEM_QUALITY_BAR,
             current_items_section=current_items_section,
             quest_id=current_plan.quest_id,
             quest_instructions=quest_instructions,
@@ -928,20 +1059,15 @@ def build_planning_prompt(
         )
 
     # Fresh plan: create a new quest
-    previous_plan_section = ""
-    if previous_plan and previous_plan.plan_text:
-        previous_plan_section = (
-            "## Previous Plan\n"
-            "Here is your most recent completed plan for reference:\n"
-            f"{previous_plan.plan_text}\n"
-        )
+    previous_plan_section = build_previous_cycle_context(previous_plan)
 
     context_section = ""
     if extra_context:
         context_section = f"## Additional Context\n{extra_context}"
 
     return PLANNING_PROMPT_TEMPLATE.format(
-        cadence_description=_cadence_description(cadence),
+        budget_description=_budget_description(cadence, heartbeat_every),
+        item_quality_bar=PLAN_ITEM_QUALITY_BAR,
         quest_instructions=quest_instructions,
         previous_plan_section=previous_plan_section,
         context_section=context_section,
@@ -1134,6 +1260,11 @@ async def run_planning_heartbeat(
         ),
     )
 
+    activity_context = build_recent_activity_context(agent, plan_store.team_id)
+    extra_context = "\n\n".join(
+        part for part in (direction_context, activity_context) if part
+    )
+
     prompt = build_planning_prompt(
         cadence=planning_cfg.cadence,
         previous_plan=previous_plan,
@@ -1141,11 +1272,15 @@ async def run_planning_heartbeat(
         agent_name=agent_cfg.name,
         goal=goal,
         team_context=tc,
-        extra_context=direction_context,
+        extra_context=extra_context,
+        heartbeat_every=getattr(
+            getattr(agent.config, "heartbeat", None), "every", ""
+        ) or "",
     )
 
+    read_tools = ["ouro:search_assets", "ouro:get_asset", "ouro:get_comments"]
     if is_continuation:
-        preload = [
+        preload = read_tools + [
             "ouro:update_quest",
             "ouro:list_quest_items",
             "ouro:create_quest_items",
@@ -1153,7 +1288,7 @@ async def run_planning_heartbeat(
             "ouro:delete_quest_item",
         ]
     else:
-        preload = ["ouro:create_quest"]
+        preload = read_tools + ["ouro:create_quest", "ouro:list_quest_items"]
 
     result = await agent.run(
         prompt,

@@ -25,7 +25,8 @@
         "numpy.*",
         "scipy.*",
         "ase.*",
-        "pymatgen.*"
+        "pymatgen.*",
+        "modal.*"
       ],
       "image": "ouro-agents-sandbox:latest",
       "workspace_mount": "/workspace",
@@ -37,7 +38,9 @@
       "max_output_chars": 50000,
       "env_allowlist": [
         "OURO_API_KEY",
-        "OURO_BASE_URL"
+        "OURO_BASE_URL",
+        "MODAL_TOKEN_ID",
+        "MODAL_TOKEN_SECRET"
       ]
     }
   },

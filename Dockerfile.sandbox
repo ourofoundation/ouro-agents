@@ -13,6 +13,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         pymatgen \
         scipy \
         spglib \
-        requests
+        requests \
+        modal
 
 WORKDIR /workspace

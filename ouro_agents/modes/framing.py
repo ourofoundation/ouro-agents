@@ -62,12 +62,19 @@ HEARTBEAT_FRAMING = (
 )
 
 PLANNING_FRAMING = (
-    "You are entering a planning phase. Review recent activity, your memory, "
-    "and ongoing work, then create or revise your plan for the upcoming period. "
-    "Be thoughtful and realistic. Put actionable work in quest task items, not "
-    "markdown checklists in the plan description. "
-    "If updating an existing plan, revise the quest in place rather than creating a new one. "
-    "When revising a plan, manage quest items directly with the quest item MCP tools "
+    "You are entering a planning phase. The plan you write here drives everything "
+    "you do until the next planning cycle, so its quality matters more than any "
+    "single work session. Review the context you are given — previous plan "
+    "outcomes, recent activity, work-direction guidance — and create or revise "
+    "your plan for the upcoming period.\n"
+    "Put actionable work in quest task items, not markdown checklists in the plan "
+    "description. Each item must name a concrete deliverable with a checkable "
+    "done-condition and be sized to one heartbeat work session — never vague "
+    "activities like 'explore' or 'look into'. Carry unfinished work forward "
+    "deliberately: adopt it, park it as waiting, or drop it with a stated reason. "
+    "Prefer a few items you can genuinely finish over an ambitious list you can't.\n"
+    "If updating an existing plan, revise the quest in place rather than creating "
+    "a new one, managing quest items directly with the quest item MCP tools "
     "(create/update/delete) instead of rewriting them in prose. "
     "Do NOT execute any plan items or do actual work — your only job is to write "
     "the plan and publish it as a quest."
@@ -110,9 +117,11 @@ PLAN_OUTPUT = (
     "## OUTPUT FORMAT\n"
     "Create or update your plan quest, then end the turn with a final message "
     "containing the required structured JSON and no tool calls. "
-    "In fresh planning runs, use `create_quest`. In continuation/review runs, you may use "
-    "`update_quest`, `list_quest_items`, `create_quest_items`, `update_quest_item`, and "
-    "`delete_quest_item` as needed before finishing."
+    "Read-only tools (`search_assets`, `get_asset`, `get_comments`, `list_quest_items`) "
+    "may be used for targeted inspection before writing. "
+    "In fresh planning runs, the only write tool is `create_quest`. In continuation/review "
+    "runs, you may use `update_quest`, `list_quest_items`, `create_quest_items`, "
+    "`update_quest_item`, and `delete_quest_item` as needed before finishing."
 )
 
 REVIEW_OUTPUT = (

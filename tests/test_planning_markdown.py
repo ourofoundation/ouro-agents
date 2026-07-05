@@ -148,6 +148,73 @@ def test_build_focus_memory_context_filters_and_formats_guidance():
     assert "2:17 RE-Fe/Co" not in context
 
 
+def test_build_planning_prompt_includes_heartbeat_budget():
+    prompt = build_planning_prompt(cadence="4h", heartbeat_every="30m")
+
+    assert "roughly 8 heartbeat work sessions" in prompt
+    assert "each sized to one session" in prompt
+
+
+def test_build_planning_prompt_includes_item_quality_bar():
+    prompt = build_planning_prompt(cadence="1d")
+
+    assert "concrete deliverable or observable outcome" in prompt
+    assert "sized to roughly one heartbeat work session" in prompt
+
+
+def test_fresh_plan_carries_over_previous_cycle_outcome():
+    previous = PlanCycle(
+        id="cycle-prev",
+        status="completed",
+        plan_text="# Old Plan",
+        heartbeats_completed=6,
+        items=[
+            PlanItem(description="Shipped thing", status="done"),
+            PlanItem(description="Unfinished thread", status="pending"),
+        ],
+    )
+
+    prompt = build_planning_prompt(cadence="1d", previous_plan=previous)
+
+    assert "## Previous Plan Outcome" in prompt
+    assert "1/2 items completed over 6 heartbeats" in prompt
+    assert "Unfinished thread" in prompt
+    assert "adopt it into the new plan" in prompt
+    assert "retrospective" in prompt
+
+
+def test_build_recent_activity_context_digests_run_log():
+    from ouro_agents.modes.planning import build_recent_activity_context
+
+    class FakeRunLog:
+        def query_runs(self, **kwargs):
+            assert kwargs["team_id"] == "team-1"
+            return [
+                {
+                    "mode": "heartbeat",
+                    "status": "success",
+                    "started_at": "2026-07-05T12:00:00+00:00",
+                    "task": "Work the plan",
+                    "result": "Completed quest item and posted results.",
+                },
+                {
+                    "mode": "plan",
+                    "status": "success",
+                    "started_at": "2026-07-05T08:00:00+00:00",
+                    "task": "Planning run should be excluded",
+                    "result": "{}",
+                },
+            ]
+
+    agent = SimpleNamespace(_run_log=FakeRunLog())
+    context = build_recent_activity_context(agent, "team-1")
+
+    assert "## Recent Activity" in context
+    assert "heartbeat (success): Work the plan" in context
+    assert "Completed quest item" in context
+    assert "should be excluded" not in context
+
+
 def test_build_planning_prompt_includes_direction_extra_context():
     prompt = build_planning_prompt(
         cadence="1d",
