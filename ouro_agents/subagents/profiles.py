@@ -20,7 +20,7 @@ from typing import Literal, Optional
 import yaml
 from pydantic import BaseModel, Field
 
-from .preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
+from .preflight import PREFLIGHT_PROMPT
 from .prompts import (
     DEVELOPER_PROMPT,
     EXECUTOR_PROMPT,
@@ -101,25 +101,6 @@ PREFLIGHT = SubAgentProfile(
         "current_datetime",
         "platform_context",
         "conversation_state",
-    ],
-    include_asset_placement=False,
-)
-
-HEARTBEAT_PREFLIGHT = SubAgentProfile(
-    name="heartbeat_preflight",
-    description="Decide what the agent should focus on during an autonomous heartbeat.",
-    system_prompt=HEARTBEAT_PREFLIGHT_PROMPT,
-    allowed_tools=["memory_recall"],
-    max_steps=3,
-    memory_scopes=[],
-    subagent_log_level="info",
-    include_work_directive=False,
-    include_tool_mechanics=False,
-    shared_context_sections=[
-        "current_datetime",
-        "platform_context",
-        "conversation_state",
-        "plans_index",
     ],
     include_asset_placement=False,
 )

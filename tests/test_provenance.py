@@ -3,30 +3,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ouro_agents.modes.planning import PlanCycle
 from ouro_agents.provenance import resolve_event_provenance
 
 
-class TestResolveEventProvenance(unittest.TestCase):
-    def _write_active_plan(
-        self, workspace: Path, quest_id: str, status: str = "active", team_id: str = "team-1"
-    ) -> None:
-        plan = PlanCycle(
-            id="cycle-1",
-            status=status,
-            kind="default",
-            plan_text="# Plan",
-            quest_id=quest_id,
-            team_id=team_id,
-        )
-        active_dir = workspace / "teams" / team_id / "plans" / "active"
-        active_dir.mkdir(parents=True, exist_ok=True)
-        (active_dir / "default.json").write_text(json.dumps(plan.model_dump(), indent=2))
+def _write_platform_context(workspace: Path, user_id: str) -> None:
+    data_dir = workspace / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "platform_context.json").write_text(
+        json.dumps({"profile": {"id": user_id}})
+    )
 
-    def test_comment_on_plan_quest_matches_target_asset(self):
+
+class TestResolveEventProvenance(unittest.TestCase):
+    def test_comment_on_own_quest_is_quest_feedback(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            self._write_active_plan(workspace, quest_id="plan-quest-1", team_id="team-1")
+            _write_platform_context(workspace, "agent-user")
 
             provenance = resolve_event_provenance(
                 event_data={
@@ -34,49 +26,21 @@ class TestResolveEventProvenance(unittest.TestCase):
                     "source_asset_type": "comment",
                     "root_asset_id": "plan-quest-1",
                     "root_asset_type": "quest",
+                    "asset_user_id": "agent-user",
                     "team": {"id": "team-1", "name": "research"},
                 },
                 workspace=workspace,
-                planning_enabled=True,
             )
 
-            self.assertTrue(provenance.is_plan_feedback)
-            self.assertEqual(provenance.plan_cycle.quest_id, "plan-quest-1")
+            self.assertTrue(provenance.is_quest_feedback)
+            self.assertEqual(provenance.root_asset_id, "plan-quest-1")
             self.assertEqual(provenance.team_id, "team-1")
 
-    def test_reply_in_plan_comment_thread_resolves_root_plan_quest(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            self._write_active_plan(workspace, quest_id="plan-quest-1", team_id="team-1")
-
-            provenance = resolve_event_provenance(
-                event_data={
-                    "source_id": "comment-2",
-                    "source_asset_type": "comment",
-                    "target_id": "thread-comment-1",
-                    "target_asset_type": "comment",
-                    "root_asset_id": "plan-quest-1",
-                    "root_asset_type": "quest",
-                    "team": {"id": "team-1", "name": "research"},
-                },
-                workspace=workspace,
-                planning_enabled=True,
-            )
-
-            self.assertTrue(provenance.is_plan_feedback)
-            self.assertEqual(provenance.plan_cycle.quest_id, "plan-quest-1")
-            self.assertEqual(provenance.team_id, "team-1")
-
-    def test_structured_root_asset_object_matches_plan_quest(self):
+    def test_structured_root_asset_object_matches_quest(self):
         """Canonical payloads nest the root as a structured object, not a flat key."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            self._write_active_plan(
-                workspace,
-                quest_id="plan-quest-1",
-                status="pending_review",
-                team_id="team-1",
-            )
+            _write_platform_context(workspace, "agent-user")
 
             provenance = resolve_event_provenance(
                 event_data={
@@ -84,15 +48,51 @@ class TestResolveEventProvenance(unittest.TestCase):
                     "source_asset_type": "comment",
                     "parent_asset": {"id": "thread-comment-1", "type": "comment"},
                     "root_asset": {"id": "plan-quest-1", "type": "quest"},
+                    "asset_user_id": "agent-user",
                     "team": {"id": "team-1", "name": "research"},
                 },
                 workspace=workspace,
-                planning_enabled=True,
             )
 
-            self.assertTrue(provenance.is_plan_feedback)
-            self.assertEqual(provenance.plan_cycle.quest_id, "plan-quest-1")
+            self.assertTrue(provenance.is_quest_feedback)
+            self.assertEqual(provenance.root_asset_id, "plan-quest-1")
             self.assertEqual(provenance.team_id, "team-1")
+
+    def test_comment_on_someone_elses_quest_is_not_quest_feedback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_platform_context(workspace, "agent-user")
+
+            provenance = resolve_event_provenance(
+                event_data={
+                    "source_id": "comment-1",
+                    "root_asset_id": "quest-1",
+                    "root_asset_type": "quest",
+                    "asset_user_id": "other-user",
+                },
+                workspace=workspace,
+            )
+
+            self.assertFalse(provenance.is_own_asset)
+            self.assertFalse(provenance.is_quest_feedback)
+
+    def test_comment_on_own_post_is_own_but_not_quest_feedback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_platform_context(workspace, "agent-user")
+
+            provenance = resolve_event_provenance(
+                event_data={
+                    "source_id": "comment-1",
+                    "root_asset_id": "post-1",
+                    "root_asset_type": "post",
+                    "asset_user_id": "agent-user",
+                },
+                workspace=workspace,
+            )
+
+            self.assertTrue(provenance.is_own_asset)
+            self.assertFalse(provenance.is_quest_feedback)
 
     def test_event_without_team(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,7 +105,7 @@ class TestResolveEventProvenance(unittest.TestCase):
                 workspace=workspace,
             )
             self.assertIsNone(provenance.team_id)
-            self.assertFalse(provenance.is_plan_feedback)
+            self.assertFalse(provenance.is_quest_feedback)
 
     def test_event_extracts_team_id(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -119,23 +119,6 @@ class TestResolveEventProvenance(unittest.TestCase):
                 workspace=workspace,
             )
             self.assertEqual(provenance.team_id, "team-42")
-
-    def test_searches_all_teams_when_no_event_team(self):
-        """When event has no team, provenance scans all team plan stores."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            self._write_active_plan(workspace, quest_id="q-1", team_id="team-a")
-
-            provenance = resolve_event_provenance(
-                event_data={
-                    "source_id": "comment-1",
-                    "root_asset_id": "q-1",
-                },
-                workspace=workspace,
-                planning_enabled=True,
-            )
-            self.assertTrue(provenance.is_plan_feedback)
-            self.assertEqual(provenance.plan_cycle.quest_id, "q-1")
 
 
 if __name__ == "__main__":

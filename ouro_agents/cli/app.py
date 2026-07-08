@@ -21,8 +21,6 @@ from ..agent import OuroAgent
 from ..cancellation import RunCancelled
 from ..config import OuroAgentsConfig, RunMode
 from ..display import OuroDisplay, Verbosity, set_display
-from ..modes.planning import PlanStore
-from ..tui.review_picker import reviewable_plans
 from ..uuid_v7 import uuid7_str
 from .auth import (
     OuroIdentity,
@@ -324,7 +322,7 @@ class OuroApp(App[None]):
             lines.append("[b]Proactive[/]: off")
         if plan.enabled:
             lines.append(
-                f"[b]Planning[/]: cadence {plan.cadence}, every {plan.min_heartbeats} beats, "
+                f"[b]Planning[/]: cadence {plan.cadence}, "
                 f"review {plan.review_window}, "
                 f"auto-approve {'on' if plan.auto_approve else 'off'}"
             )
@@ -375,7 +373,7 @@ class OuroApp(App[None]):
                 exclusive=True,
             )
         elif isinstance(event.item, QuestItem):
-            self.open_quest(event.item.cycle)
+            self.open_quest(event.item.quest)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id
@@ -565,13 +563,10 @@ class OuroApp(App[None]):
 
     async def review_quest(self) -> None:
         log = self._view_log("review" if self.current_view_key == "review" else "quests")
-        plans = self._active_plans()
-        reviewable = reviewable_plans(plans)
-        quest_cycle_id = reviewable[0].id if reviewable else None
-        log.line(f"Reviewing quest {quest_cycle_id or '(default)'}...")
+        log.line("Reviewing latest reviewable quest...")
         agent = await self._ensure_agent()
         try:
-            result = await agent.force_review_heartbeat(plan_id=quest_cycle_id)
+            result = await agent.force_review_heartbeat()
         except RunCancelled:
             log.line("Review cancelled.", style="red")
             return
@@ -699,58 +694,48 @@ class OuroApp(App[None]):
             log.line(event.text)
 
     def refresh_quests(self) -> None:
+        self.run_worker(
+            self._refresh_quests_async(), name="refresh-quests-load", exclusive=True
+        )
+
+    async def _refresh_quests_async(self) -> None:
+        from ..modes.planning import find_reviewable_quests
+
         self._ensure_selected_teams()
-        plans = self._active_plans()
+        agent = await self._ensure_agent()
+        quests = await asyncio.to_thread(find_reviewable_quests, agent)
         items = [
-            QuestItem(cycle, team_label=self._team_label(cycle.team_id))
-            for cycle in plans
+            QuestItem(quest, team_label=self._team_label(quest.get("team_id") or None))
+            for quest in quests
         ]
         self.query_one(QuestSidebar).set_quests(items)
-        if not plans:
+        if not quests:
             log = self._view_log("quests")
             log.clear()
-            log.line('No active quests found. Create one with "Create quest".')
+            log.line('No draft or open quests found. Create one with "Create quest".')
 
-    def open_quest(self, cycle: Any) -> None:
+    def open_quest(self, quest: dict[str, Any]) -> None:
         log = self._view_log("quests")
         log.clear()
-        log.markdown(self._render_quest_detail(cycle))
+        log.markdown(self._render_quest_detail(quest))
 
-    def _render_quest_detail(self, cycle: Any) -> str:
-        total = len(cycle.items)
-        progress = f"{cycle.items_done}/{total} items complete" if total else "no items"
-        lines = [
-            f"# {cycle.goal or ('Default quest' if cycle.kind == 'default' else 'Quest')}",
-            "",
-            f"- **Status:** {cycle.status}",
-            f"- **Team:** {self._team_label(cycle.team_id)}",
-            f"- **Progress:** {progress}",
-            f"- **Cycle ID:** `{cycle.id[:8]}`",
-        ]
-        if cycle.quest_id:
-            lines.append(f"- **Quest asset:** `{cycle.quest_id}`")
-        lines.append("")
-        if cycle.items:
-            lines.append("## Items")
-            for idx, item in enumerate(cycle.items, start=1):
-                mark = "x" if item.status in ("done", "skipped") else " "
-                lines.append(f"{idx}. [{mark}] {item.description} _({item.status})_")
-                if item.notes:
-                    lines.append(f"   - {item.notes}")
-        elif cycle.plan_text:
-            lines.append("## Plan")
-            lines.append(cycle.plan_text)
-        return "\n".join(lines)
-
-    def _active_plans(self) -> list[Any]:
-        plans: list[Any] = []
-        for team_id in sorted(self._team_ids()):
-            store = PlanStore(
-                self.config.agent.workspace / "teams" / team_id / "plans",
-                team_id=team_id,
-            )
-            plans.extend(store.load_all_active())
-        return plans
+    def _render_quest_detail(self, quest: dict[str, Any]) -> str:
+        total = int(quest.get("items_total") or 0)
+        progress = (
+            f"{quest.get('items_done', 0)}/{total} items complete"
+            if total
+            else "no items"
+        )
+        return "\n".join(
+            [
+                f"# {quest.get('name') or 'Untitled quest'}",
+                "",
+                f"- **Status:** {quest.get('status')}",
+                f"- **Team:** {self._team_label(quest.get('team_id') or None)}",
+                f"- **Progress:** {progress}",
+                f"- **Quest asset:** `{quest.get('id')}`",
+            ]
+        )
 
     def _team_ids(self) -> set[str]:
         if self.agent:

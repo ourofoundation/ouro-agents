@@ -60,7 +60,7 @@ _THREAD_REPLY_CAUTION = (
     "Prefer silence over a redundant reply."
 )
 
-_PLAN_FEEDBACK_PRELOADS: List[str] = [
+_QUEST_FEEDBACK_PRELOADS: List[str] = [
     "ouro:get_comments",
     "ouro:write_comment",
     "ouro:update_quest",
@@ -250,47 +250,30 @@ class CommentContext:
 # ---------------------------------------------------------------------------
 
 
-def _plan_feedback_task(ctx: CommentContext, provenance: AssetProvenance) -> str:
-    pc = provenance.plan_cycle
-    feedback = _untrusted_comment_evidence(ctx, "plan feedback comment")
+def _quest_feedback_task(ctx: CommentContext) -> str:
+    """Fallback task when quest feedback can't take the dedicated review path.
+
+    The normal route is ``agent.handle_quest_feedback`` → review run, which
+    builds its own prompt from the live quest. This task only runs when that
+    path declines (e.g. the quest turns out not to be the agent's own).
+    """
+    feedback = _untrusted_comment_evidence(ctx, "quest feedback comment")
     reply_instruction = (
         f"Reply in the same thread by calling write_comment with parent_id "
         f"`{ctx.reply_parent_id}`."
-        if ctx.reply_parent_id and ctx.reply_parent_id != pc.quest_id
-        else "Reply on the plan quest with write_comment."
+        if ctx.reply_parent_id and ctx.reply_parent_id != ctx.root_asset_id
+        else "Reply on the quest with write_comment."
     )
     return (
-        f"You received feedback on your current plan "
-        f"(cycle {pc.cycle_id[:8]}, status: {pc.status}, "
-        f"quest id: {pc.quest_id or ctx.root_asset_id}).\n\n"
+        f"You received a comment on a quest "
+        f"(quest id: {ctx.root_asset_id}).\n\n"
         f"## Feedback\n{feedback}\n\n"
-        f"## Your Current Plan\n{pc.plan_text}\n\n"
-        f"Review the feedback, revise your plan if needed, and update "
-        f"the quest (update_quest). Manage task items directly with "
-        f"list_quest_items, update_quest_item, create_quest_items, or "
-        f"delete_quest_item as needed; do not rewrite task progress as a "
-        f"markdown checklist. {reply_instruction}\n\n"
-        f"Return a JSON summary:\n"
-        f'```json\n{{"revised_plan": "<updated plan text>", '
-        f'"feedback_summary": "<brief summary of changes>"}}\n```\n\n'
-        f"{_ready_hint(list(_PLAN_FEEDBACK_PRELOADS))}"
-    )
-
-
-def _historical_feedback_task(
-    ctx: CommentContext,
-    provenance: AssetProvenance,
-    preload_names: list[str],
-) -> str:
-    pc = provenance.plan_cycle
-    feedback = _untrusted_comment_evidence(ctx, "historical plan feedback comment")
-    return (
-        f"You received feedback on a completed plan "
-        f"(cycle {pc.cycle_id[:8]}, quest id: {pc.quest_id or ctx.root_asset_id}).\n\n"
-        f"## Feedback\n{feedback}\n\n"
-        f"This plan has already been executed. Acknowledge the feedback "
-        f"and note any insights that should inform future planning.\n\n"
-        f"{_ready_hint(preload_names)}"
+        f"Inspect the quest with get_asset if needed. If it is your quest and "
+        f"the feedback calls for changes, revise the description with "
+        f"update_quest and manage task items directly with list_quest_items, "
+        f"update_quest_item, create_quest_items, or delete_quest_item; do not "
+        f"rewrite task progress as a markdown checklist. {reply_instruction}\n\n"
+        f"{_ready_hint(list(_QUEST_FEEDBACK_PRELOADS))}"
     )
 
 
@@ -440,13 +423,9 @@ def _build_event_task(
         ctx = comment_ctx or CommentContext.from_event(event)
         prefetch = ctx.build_prefetch()
 
-        if provenance and provenance.is_plan_feedback:
-            task = _plan_feedback_task(ctx, provenance)
-            return task, RunMode.AUTONOMOUS, tuple(_PLAN_FEEDBACK_PRELOADS), prefetch
-
-        if provenance and provenance.is_historical_plan_feedback:
-            task = _historical_feedback_task(ctx, provenance, preload_names)
-            return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
+        if provenance and provenance.is_quest_feedback:
+            task = _quest_feedback_task(ctx)
+            return task, RunMode.AUTONOMOUS, tuple(_QUEST_FEEDBACK_PRELOADS), prefetch
 
         task = _default_comment_task(ctx, event_type, provenance, preload_names)
         return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch

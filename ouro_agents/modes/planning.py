@@ -1,16 +1,19 @@
-"""Planning cycle: plan / review / execute layered on top of heartbeats.
+"""Planning: periodic quest creation plus quest feedback review.
 
-The agent periodically generates a plan (published as an Ouro quest for human
-review), then executes guided by it.  Configurable at any timescale with a
-min-heartbeats guard so the agent doesn't spend all its time planning.
+A plan is just a quest. The platform is the single source of truth for plan
+content, item status, and lifecycle (``draft`` → ``open`` → ``closed``); the
+only local state is a tiny per-team cursor recording when the agent last
+planned and which quests it published.
 
-Multiple plans can be active simultaneously:
-  - **default** plan: driven by the cadence config, auto-replans on schedule.
-  - **goal** plans: user-initiated via a specific prompt/goal, coexist with
-    the default plan and complete when all items are done.
+The planning loop has three moving parts, all driven from the heartbeat:
 
-Cycle states:
-    planning  →  pending_review  →  active  →  (back to planning | completed)
+- **Creation**: when the cadence comes due and the work inbox has drained,
+  a planning run publishes a new draft quest scoped to one focus.
+- **Approval**: draft quests auto-promote to ``open`` after the review window
+  elapses (when ``auto_approve`` is set); reviewer comments route through the
+  feedback run instead.
+- **Feedback**: comments on the agent's own quests trigger a review run that
+  revises the quest in place and moves its lifecycle status.
 """
 
 from __future__ import annotations
@@ -21,45 +24,84 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Optional
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel
 
 from ..constants import _INTERVAL_RE, parse_json_from_llm
+from ..constants import parse_interval_seconds as parse_cadence_seconds
 from ..memory.focus import build_focus_memory_context, remember_work_direction
 from ..syncing import normalize_status, read_field
 
 if TYPE_CHECKING:
     from ..agent import OuroAgent
-    from ..teams import TeamContext
 
 logger = logging.getLogger(__name__)
 
 
-def _plan_doc_store(agent: "OuroAgent", team_id: str | None):
-    if team_id:
-        return agent.doc_store_for(team_id)
-    return agent.doc_store
+# ---------------------------------------------------------------------------
+# Planning cursor — the only local planning state
+# ---------------------------------------------------------------------------
 
 
-def _plan_quest_name_instruction(goal: str = "") -> str:
-    """Instruction for natural plan quest titles."""
-    if goal:
-        return (
-            "Name it with a concise, natural title that is just the goal or focus "
-            "area. Do not include generic planning labels, dates, agent names, "
-            "team names, or internal keys."
-        )
-    return (
-        "Name it with a concise, natural title for the current focus in your own "
-        "words. Do not include generic planning labels, dates, agent names, team "
-        "names, or internal keys."
-    )
+class PlanningCursor(BaseModel):
+    """Per-team planning bookkeeping stored at ``teams/<id>/planning.json``.
+
+    ``pending_quest_ids`` tracks draft quests this agent published and is the
+    auto-approval worklist; entries are removed once a quest leaves ``draft``
+    (or disappears from the platform).
+    """
+
+    last_planned_at: str = ""
+    last_quest_id: str = ""
+    pending_quest_ids: list[str] = []
+
+
+def _cursor_path(workspace: Path, team_id: str) -> Path:
+    return workspace / "teams" / team_id / "planning.json"
+
+
+def load_cursor(workspace: Path, team_id: str) -> PlanningCursor:
+    path = _cursor_path(workspace, team_id)
+    if not path.exists():
+        return PlanningCursor()
+    try:
+        return PlanningCursor(**json.loads(path.read_text()))
+    except Exception:
+        logger.warning("Failed to load planning cursor %s", path)
+        return PlanningCursor()
+
+
+def save_cursor(workspace: Path, team_id: str, cursor: PlanningCursor) -> None:
+    path = _cursor_path(workspace, team_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(cursor.model_dump(), f, indent=2)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def planning_due(
+    cursor: PlanningCursor, cadence: str, now: Optional[datetime] = None
+) -> bool:
+    """True when at least one cadence interval has passed since the last plan."""
+    cadence_secs = parse_cadence_seconds(cadence)
+    if not cadence_secs:
+        return False
+    last = _parse_iso_datetime(cursor.last_planned_at)
+    if last is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return (now - last).total_seconds() >= cadence_secs
 
 
 # ---------------------------------------------------------------------------
-# Data model
+# Quest item helpers (API objects or dicts)
 # ---------------------------------------------------------------------------
 
 
@@ -81,529 +123,189 @@ def _parse_iso_datetime(value: object) -> Optional[datetime]:
     return parsed
 
 
-class PlanItem(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid4())[:8])
-    description: str
-    status: Literal["pending", "in_progress", "done", "skipped"] = "pending"
-    notes: str = ""
-    # Deferral metadata: a waiting item is still open work, but is parked
-    # pending something external (`waiting_on`) and/or a future date
-    # (`waiting_until`). Waiting items are treated as non-actionable so they
-    # don't block starting new work. When `waiting_check_every` (an interval
-    # like "1d") is set, the item is a recurring check: it resurfaces each time
-    # `waiting_until` comes due, then `waiting_until` is advanced by the interval.
-    waiting_on: str = ""
-    waiting_until: Optional[str] = None
-    waiting_check_every: Optional[str] = None
+def item_is_waiting(item: Any, now: Optional[datetime] = None) -> bool:
+    """True when a quest item (dict or API object) is parked and not actionable.
 
-    def is_waiting(self, now: Optional[datetime] = None) -> bool:
-        """True when this item is parked and not actionable yet.
-
-        An item counts as waiting only while it is unfinished (pending or
-        in_progress). A `waiting_until` in the future keeps it parked; if only
-        `waiting_on` is set (no date), it stays parked until cleared.
-        """
-        if self.status in ("done", "skipped"):
-            return False
-        deadline = _parse_iso_datetime(self.waiting_until)
-        if deadline is not None:
-            now = now or datetime.now(timezone.utc)
-            return deadline > now
-        # A recurring check with no next-time set is due now (it will be
-        # re-parked once handled), so it should not count as waiting.
-        if self.waiting_check_every:
-            return False
-        return bool(self.waiting_on.strip())
-
-
-class PlanCycle(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    status: Literal[
-        "planning", "pending_review", "active", "completed", "cancelled"
-    ] = "planning"
-    kind: Literal["default", "goal"] = "default"
-    goal: str = ""
-    plan_text: str = ""
-    items: list[PlanItem] = []
-    quest_id: Optional[str] = None
-    team_id: Optional[str] = None
-    created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    activated_at: Optional[str] = None
-    completed_at: Optional[str] = None
-    heartbeats_completed: int = 0
-    human_feedback: Optional[str] = None
-    revision_count: int = 0
-
-    @model_validator(mode="before")
-    @classmethod
-    def _discard_legacy_post_id(cls, values):
-        """Ignore legacy post-backed plan ids so stale plans replan as quests."""
-        if isinstance(values, dict) and "post_id" in values:
-            values.pop("post_id", None)
-        return values
-
-    @property
-    def items_done(self) -> int:
-        return sum(1 for i in self.items if i.status in ("done", "skipped"))
-
-    @property
-    def all_items_complete(self) -> bool:
-        return bool(self.items) and all(
-            i.status in ("done", "skipped") for i in self.items
-        )
-
-    def has_actionable_items(self, now: Optional[datetime] = None) -> bool:
-        """Any item that can be worked on right now.
-
-        An item is actionable when it is pending or in_progress and not parked
-        (waiting). When nothing is actionable — because everything is
-        done/skipped or merely waiting on something external — the cycle has no
-        work left to advance and the agent should start a new one instead of
-        idling on the parked items.
-        """
-        return any(
-            i.status in ("pending", "in_progress") and not i.is_waiting(now)
-            for i in self.items
-        )
-
-    @property
-    def needs_replan_stale_active(self) -> bool:
-        """Active plan without a platform quest should be replaced.
-
-        Quest items are the source of truth for plan progress. Old post-backed
-        plans cannot be safely updated by execution heartbeats.
-        """
-        return self.status == "active" and not self.quest_id
-
-
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
-
-
-class PlanStore:
-    """Read/write plan cycles as JSON files in the workspace.
-
-    Supports multiple concurrent active plans stored under ``active/``:
-    the default cadence plan lives at ``active/default.json`` while
-    user-created goal plans live at ``active/goal-{id}.json``.  Completed
-    plans are archived under ``history/``.
-
-    When *team_id* is set, cycles saved through this store inherit it.
+    An unfinished item with a future ``waiting_until`` (or a ``waiting_on``
+    reason and no date) is treated as waiting so it stays out of the work
+    inbox until it comes due. A recurring check (``waiting_check_every``) with
+    no next-time set is due now.
     """
+    status = read_field(item, "status")
+    if status in ("done", "skipped"):
+        return False
+    deadline = _parse_iso_datetime(read_field(item, "waiting_until"))
+    if deadline is not None:
+        now = now or datetime.now(timezone.utc)
+        return deadline > now
+    if read_field(item, "waiting_check_every"):
+        return False
+    waiting_on = read_field(item, "waiting_on") or ""
+    return bool(str(waiting_on).strip())
 
-    def __init__(self, plans_dir: Path, team_id: str | None = None):
-        self._dir = plans_dir
-        self._active_dir = plans_dir / "active"
-        self._history_dir = plans_dir / "history"
-        self.team_id = team_id
-        self._migrate_legacy()
 
-    # -- migration from single-file current.json --------------------------
+def item_is_open(item: Any) -> bool:
+    return read_field(item, "status") in ("pending", "in_progress")
 
-    def _migrate_legacy(self) -> None:
-        legacy = self._dir / "current.json"
-        if not legacy.exists():
-            return
-        try:
-            data = json.loads(legacy.read_text())
-            cycle = PlanCycle(**data)
-            if cycle.kind not in ("default", "goal"):
-                cycle.kind = "default"
-            if self.team_id and not cycle.team_id:
-                cycle.team_id = self.team_id
-            self.save(cycle)
-            legacy.unlink(missing_ok=True)
-            logger.info(
-                "Migrated legacy current.json → active/%s", self._filename(cycle)
-            )
-        except Exception:
-            logger.exception("Failed to migrate legacy current.json")
 
-    # -- path helpers ------------------------------------------------------
-
-    def _filename(self, cycle: PlanCycle) -> str:
-        if cycle.kind == "default":
-            return "default.json"
-        return f"goal-{cycle.id}.json"
-
-    def _plan_path(self, cycle: PlanCycle) -> Path:
-        return self._active_dir / self._filename(cycle)
-
-    # -- read operations ---------------------------------------------------
-
-    def _load_file(self, path: Path) -> Optional[PlanCycle]:
-        if not path.exists():
-            return None
-        try:
-            return PlanCycle(**json.loads(path.read_text()))
-        except Exception:
-            logger.warning("Failed to load plan from %s", path)
-            return None
-
-    def load_default(self) -> Optional[PlanCycle]:
-        """Load the default cadence plan (if any)."""
-        return self._load_file(self._active_dir / "default.json")
-
-    def load_all_active(self) -> list[PlanCycle]:
-        """Load every active plan (default + goals).
-
-        Self-heals legacy husks: plans whose ids were rewritten to
-        ``[deleted]`` by older asset-deleted sweeps are moved to history
-        instead of being returned (current sweeps archive them outright).
-        """
-        if not self._active_dir.exists():
-            return []
-        plans: list[PlanCycle] = []
-        for f in sorted(self._active_dir.glob("*.json")):
-            cycle = self._load_file(f)
-            if not cycle:
-                continue
-            if "[deleted]" in (cycle.quest_id or "") or "[deleted]" in cycle.id:
-                self._archive_husk(f)
-                continue
-            plans.append(cycle)
-        return plans
-
-    def _archive_husk(self, path: Path) -> None:
-        """Move a deleted-quest husk out of active/ into history/."""
-        try:
-            self._history_dir.mkdir(parents=True, exist_ok=True)
-            path.rename(self._history_dir / path.name)
-            logger.info("Archived deleted-quest plan husk: %s", path.name)
-        except OSError:
-            logger.warning("Failed to archive plan husk %s", path)
-
-    def load_by_quest_id(self, quest_id: str) -> Optional[PlanCycle]:
-        """Find an active plan by its Ouro quest ID."""
-        for cycle in self.load_all_active():
-            if cycle.quest_id == quest_id:
-                return cycle
-        return None
-
-    def load_by_id(self, cycle_id: str) -> Optional[PlanCycle]:
-        """Find an active plan by its cycle ID (prefix match)."""
-        for cycle in self.load_all_active():
-            if cycle.id.startswith(cycle_id):
-                return cycle
-        return None
-
-    # -- write operations --------------------------------------------------
-
-    def save(self, cycle: PlanCycle) -> None:
-        """Persist a plan cycle to the active directory."""
-        if self.team_id and not cycle.team_id:
-            cycle.team_id = self.team_id
-        self._active_dir.mkdir(parents=True, exist_ok=True)
-        dest = self._plan_path(cycle)
-        data = cycle.model_dump()
-        fd, tmp = tempfile.mkstemp(dir=self._active_dir, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(data, f, indent=2)
-            os.replace(tmp, dest)
-        except Exception:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            raise
-
-    def archive(self, cycle: PlanCycle, ouro_client=None) -> PlanCycle:
-        """Move a plan to history and remove it from active.
-
-        If *ouro_client* is provided and the cycle has a quest_id, the Ouro
-        quest is updated to reflect its final status.
-        """
-        if cycle.status not in ("completed", "cancelled"):
-            cycle.status = "completed"
-        cycle.completed_at = datetime.now(timezone.utc).isoformat()
-
-        if ouro_client and cycle.quest_id:
-            update_quest_status(ouro_client, cycle)
-
-        self._history_dir.mkdir(parents=True, exist_ok=True)
-        history_path = self._history_dir / f"{cycle.id}.json"
-        history_path.write_text(json.dumps(cycle.model_dump(), indent=2))
-
-        active_path = self._plan_path(cycle)
-        active_path.unlink(missing_ok=True)
-        return cycle
-
-    # -- backward-compat aliases -------------------------------------------
-
-    def load_current(self) -> Optional[PlanCycle]:
-        """Alias for :meth:`load_default` (backward compatibility)."""
-        return self.load_default()
-
-    def save_current(self, cycle: PlanCycle) -> None:
-        """Alias for :meth:`save` (backward compatibility)."""
-        self.save(cycle)
-
-    def archive_current(self, ouro_client=None) -> Optional[PlanCycle]:
-        """Archive the default plan (backward compatibility)."""
-        default = self.load_default()
-        if not default:
-            return None
-        return self.archive(default, ouro_client=ouro_client)
-
-    # -- history -----------------------------------------------------------
-
-    def load_history(self, limit: int = 5) -> list[PlanCycle]:
-        if not self._history_dir.exists():
-            return []
-        files = sorted(
-            self._history_dir.glob("*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        cycles: list[PlanCycle] = []
-        for f in files[:limit]:
+def normalize_item(item: Any) -> dict[str, Any]:
+    """Convert a QuestItem-like API object or dict into a plain dict."""
+    if isinstance(item, dict):
+        data = dict(item)
+    else:
+        dump = getattr(item, "model_dump", None)
+        if callable(dump):
             try:
-                cycles.append(PlanCycle(**json.loads(f.read_text())))
-            except Exception:
-                logger.warning("Skipping corrupt plan history file: %s", f)
-        return cycles
+                data = dump(mode="json")
+            except TypeError:
+                data = dump()
+        else:
+            data = dict(getattr(item, "__dict__", {}) or {})
+        # SDK models may drop backend-only fields (waiting metadata); pull
+        # them through explicitly when reachable.
+        for key in ("waiting_on", "waiting_until", "waiting_check_every"):
+            if key not in data:
+                value = read_field(item, key)
+                if value:
+                    data[key] = value
+    data["id"] = str(data.get("id") or "")
+    data["quest_id"] = str(data.get("quest_id") or "")
+    data.setdefault("description", "")
+    data.setdefault("status", "pending")
+    return data
 
 
-# ---------------------------------------------------------------------------
-# Plan item helpers
-# ---------------------------------------------------------------------------
+def quest_status(quest: Any) -> str:
+    """Normalized lifecycle status of a quest API object."""
+    return normalize_status(
+        read_field(quest, "quest.status") or read_field(quest, "status")
+    )
 
 
-def render_plan_items(items: list[PlanItem], include_ids: bool = True) -> str:
-    """Render plan items as a status list for context injection."""
+def quest_description_text(quest: Any) -> str:
+    """Extract the quest description as plain text/markdown."""
+    description = read_field(quest, "description")
+    if isinstance(description, str):
+        return description
+    text = read_field(description, "text") if description else None
+    return str(text or "")
+
+
+def quest_items(quest: Any) -> list[dict[str, Any]]:
+    quest_id = str(read_field(quest, "id") or "")
+    items = []
+    for item in read_field(quest, "items", []) or []:
+        data = normalize_item(item)
+        data["quest_id"] = data["quest_id"] or quest_id
+        items.append(data)
+    return items
+
+
+def render_quest_items(items: list[dict[str, Any]], include_ids: bool = True) -> str:
+    """Render quest items as a status list for prompt context."""
     lines: list[str] = []
     for item in items:
-        marker = "x" if item.status in ("done", "skipped") else " "
-        line = f"[{marker}] {item.description}"
-        if include_ids:
-            line += f" (item_id: {item.id})"
-        if item.is_waiting():
-            detail = item.waiting_on.strip() or "external event"
-            if item.waiting_check_every:
-                cadence = f", checks every {item.waiting_check_every}"
-            else:
-                cadence = ""
-            if item.waiting_until:
-                line += f" [waiting on {detail} until {item.waiting_until}{cadence}]"
+        status = item.get("status") or "pending"
+        marker = "x" if status in ("done", "skipped") else " "
+        line = f"[{marker}] {item.get('description') or '(no description)'}"
+        if include_ids and item.get("id"):
+            line += f" (item_id: {item['id']})"
+        if item_is_waiting(item):
+            detail = str(item.get("waiting_on") or "").strip() or "external event"
+            cadence = (
+                f", checks every {item['waiting_check_every']}"
+                if item.get("waiting_check_every")
+                else ""
+            )
+            if item.get("waiting_until"):
+                line += f" [waiting on {detail} until {item['waiting_until']}{cadence}]"
             else:
                 line += f" [waiting on {detail}{cadence}]"
-        elif item.status == "in_progress":
+        elif status == "in_progress":
             line += " [in_progress]"
-        if item.notes:
-            line += f" — {item.notes}"
+        if item.get("notes"):
+            line += f" — {item['notes']}"
         lines.append(line)
     return "\n".join(lines)
 
 
-def render_numbered_plan_items(items: list[PlanItem], include_ids: bool = True) -> str:
-    """Render plan items with explicit 1-indexed numbering for review prompts."""
+def render_numbered_quest_items(
+    items: list[dict[str, Any]], include_ids: bool = True
+) -> str:
+    """Render quest items with explicit 1-indexed numbering for review prompts."""
     if not items:
         return ""
-    base_lines = render_plan_items(items, include_ids=include_ids).splitlines()
+    base_lines = render_quest_items(items, include_ids=include_ids).splitlines()
     return "\n".join(
         f"{idx}. {line}" for idx, line in enumerate(base_lines, start=1) if line.strip()
     )
 
 
-def render_plan_context(cycle: PlanCycle) -> str:
-    """Build the structured plan context block injected into the heartbeat playbook."""
-    total = len(cycle.items)
-    done = cycle.items_done
-    if cycle.kind == "goal" and cycle.goal:
-        label = f"Goal Plan: {cycle.goal}"
-    else:
-        label = "Default Plan"
-    parts = [f"## {label} (id: {cycle.id[:8]}, quest: {cycle.quest_id or 'n/a'})"]
-    if cycle.human_feedback:
-        parts.append(f"Controller / reviewer direction: {cycle.human_feedback}\n")
-    if cycle.plan_text and total:
-        parts.append(f"Plan notes:\n{cycle.plan_text}\n")
-    if total:
-        parts.append(f"Progress: {done}/{total} items complete\n")
-        parts.append(render_plan_items(cycle.items))
-    elif cycle.plan_text:
-        parts.append(cycle.plan_text)
-    return "\n".join(parts)
+# ---------------------------------------------------------------------------
+# Own-quest discovery
+# ---------------------------------------------------------------------------
 
 
-def format_plans_index_for_prompt(plans: list[PlanCycle]) -> str:
-    """Short list of plan Ouro quest ids for system prompts (no plan body).
+def search_own_quests(agent: "OuroAgent", limit: int = 20) -> list[dict[str, Any]]:
+    """Search the agent's own quests (newest activity first) as plain dicts."""
+    own_user_id = getattr(agent, "own_user_id", None)
+    if not own_user_id:
+        return []
+    try:
+        ouro = agent._get_ouro_client()
+        search = getattr(getattr(ouro, "assets", None), "search", None)
+        if not search:
+            return []
+        kwargs: dict[str, Any] = {
+            "asset_type": "quest",
+            "user_id": str(own_user_id),
+            "sort": "updated",
+            "limit": limit,
+        }
+        org_id = getattr(agent.config.agent, "org_id", None)
+        if org_id:
+            kwargs["org_id"] = str(org_id)
+        raw = search(**kwargs)
+        if isinstance(raw, dict):
+            raw = raw.get("data") or raw.get("results") or []
+        return [asset for asset in raw or [] if isinstance(asset, dict)]
+    except Exception as e:
+        logger.warning("Failed to search own quests: %s", e)
+        return []
 
-    Lets the model call ``get_asset`` on a quest id when it needs the full plan.
+
+def format_quests_index_for_prompt(quests: list[dict[str, Any]]) -> str:
+    """Short list of the agent's own quest ids for system prompts.
+
+    Lets the model call ``get_asset`` on a quest id when it needs details.
     """
-
     lines: list[str] = []
-    for p in plans:
-        if p.status not in ("active", "pending_review") or not p.quest_id:
+    for quest in quests:
+        quest_id = str(quest.get("id") or "")
+        if not quest_id:
             continue
-        lines.append(
-            f"- `{p.quest_id}` — asset type: quest; plan kind: {p.kind}; "
-            f"status: {p.status}; cycle_id: {p.id[:8]}"
-        )
+        name = str(quest.get("name") or "Untitled quest")
+        team = str(quest.get("team_id") or "")
+        line = f"- `{quest_id}` — {name}"
+        if team:
+            line += f" (team: {team})"
+        lines.append(line)
     if not lines:
         return ""
     return (
-        "These quests hold plan content on the platform. "
-        "Use `get_asset` with the quest id if you need the full text.\n\n"
+        "Your own quests on the platform (newest activity first). "
+        "Use `get_asset` with a quest id when you need its full plan and items.\n\n"
         + "\n".join(lines)
     )
 
 
-def render_all_plans_context(plans: list[PlanCycle]) -> str:
-    """Build context for all active plans, injected into the heartbeat playbook."""
-    if not plans:
-        return ""
-    parts = [render_plan_context(p) for p in plans if p.status == "active"]
-    if not parts:
-        return ""
-    return "\n\n".join(parts)
+# ---------------------------------------------------------------------------
+# Quest lifecycle helpers
+# ---------------------------------------------------------------------------
 
 
-def parse_plan_items(raw: list[dict]) -> list[PlanItem]:
-    """Parse items from LLM JSON or API response into PlanItem instances."""
-    items: list[PlanItem] = []
-    for entry in raw:
-        if isinstance(entry, str):
-            entry = {"description": entry}
-        items.append(
-            PlanItem(
-                id=entry.get("id", str(uuid4())[:8]),
-                description=entry.get("description", ""),
-                status=entry.get("status", "pending"),
-                notes=entry.get("notes", ""),
-                waiting_on=entry.get("waiting_on") or "",
-                waiting_until=entry.get("waiting_until") or None,
-                waiting_check_every=entry.get("waiting_check_every") or None,
-            )
-        )
-    return items
-
-
-_PLAN_ITEM_STATUS_ALIASES = {
-    "complete": "done",
-    "completed": "done",
-    "closed": "done",
-    "skip": "skipped",
-    "in-progress": "in_progress",
-    "active": "in_progress",
-    "running": "in_progress",
-}
-
-
-def _status_from_api(value: object) -> str:
-    """Normalize platform item status into the local PlanItem vocabulary."""
-    status = normalize_status(
-        value,
-        aliases=_PLAN_ITEM_STATUS_ALIASES,
-        default="pending",
-    )
-    return (
-        status if status in {"pending", "in_progress", "done", "skipped"} else "pending"
-    )
-
-
-def _plan_items_from_api_objects(api_items: object) -> list[PlanItem]:
-    """Convert QuestItem-like API objects or dicts into PlanItems."""
-    items: list[PlanItem] = []
-    for item in api_items or []:
-        items.append(
-            PlanItem(
-                id=str(read_field(item, "id") or str(uuid4())[:8]),
-                description=str(read_field(item, "description", "") or ""),
-                status=_status_from_api(read_field(item, "status", "pending")),  # type: ignore[arg-type]
-                notes=str(read_field(item, "notes", "") or ""),
-                waiting_on=str(read_field(item, "waiting_on", "") or ""),
-                waiting_until=(read_field(item, "waiting_until", None) or None),
-                waiting_check_every=(
-                    read_field(item, "waiting_check_every", None) or None
-                ),
-            )
-        )
-    return items
-
-
-def refresh_items_from_api(ouro_client, quest_id: str) -> list[PlanItem]:
-    """Fetch quest items from the API and return as PlanItems."""
-    if not ouro_client or not quest_id:
-        return []
-    try:
-        api_items = ouro_client.quests.list_items(quest_id)
-        return _plan_items_from_api_objects(api_items)
-    except Exception as e:
-        logger.warning("Failed to fetch items for quest %s: %s", quest_id, e)
-        return []
-
-
-def reconcile_plan_with_remote_quest(
-    plan_store: PlanStore,
-    cycle: PlanCycle | None,
-    ouro_client,
-) -> PlanCycle | None:
-    """Refresh local plan state from its Ouro quest, archiving terminal quests.
-
-    The platform quest is authoritative here.  This is intentionally one-way:
-    when the remote quest is already closed/cancelled, we archive local JSON
-    without calling ``update_quest_status`` and pushing stale local state back.
-    """
-    if not cycle or not cycle.quest_id or not ouro_client:
-        return cycle
-
-    try:
-        quest = ouro_client.quests.retrieve(cycle.quest_id)
-    except Exception as e:
-        logger.warning("Failed to retrieve plan quest %s: %s", cycle.quest_id, e)
-        return cycle
-
-    remote_status = normalize_status(
-        read_field(quest, "quest.status") or read_field(quest, "status"),
-    )
-    remote_items = _plan_items_from_api_objects(read_field(quest, "items", []))
-    if remote_items:
-        cycle.items = remote_items
-
-    remote_done = bool(remote_items) and all(
-        item.status in ("done", "skipped") for item in remote_items
-    )
-    if remote_status in {"closed", "cancelled"} or remote_done:
-        cycle.status = "cancelled" if remote_status == "cancelled" else "completed"
-        archived = plan_store.archive(cycle, ouro_client=None)
-        logger.info(
-            "Archived local plan %s after remote quest %s status=%s done=%s",
-            cycle.id[:8],
-            cycle.quest_id,
-            remote_status or "unknown",
-            remote_done,
-        )
-        return None
-
-    plan_store.save(cycle)
-    return cycle
-
-
-def update_quest_status(ouro_client, cycle: PlanCycle, **kwargs) -> None:
-    """Sync the platform quest lifecycle with the local planning cycle."""
-    if not ouro_client or not cycle.quest_id:
-        return
-    try:
-        update_kw: dict = {}
-        if cycle.status in ("planning", "pending_review"):
-            update_kw["status"] = "draft"
-        elif cycle.status == "active":
-            update_kw["status"] = "open"
-        elif cycle.status == "completed":
-            update_kw["status"] = "closed"
-        elif cycle.status == "cancelled":
-            update_kw["status"] = "closed"
-        if update_kw:
-            ouro_client.quests.update(cycle.quest_id, **update_kw)
-    except Exception as e:
-        logger.warning("Failed to update plan quest status %s: %s", cycle.quest_id, e)
-
-
-def comment_on_plan(ouro_client, quest_id: str, markdown: str) -> None:
-    """Post a comment on the plan quest to communicate status changes."""
+def comment_on_quest(ouro_client, quest_id: str, markdown: str) -> None:
+    """Post a comment on a quest to communicate status changes."""
     if not ouro_client or not quest_id:
         return
     try:
@@ -611,43 +313,19 @@ def comment_on_plan(ouro_client, quest_id: str, markdown: str) -> None:
         content.from_markdown(markdown)
         ouro_client.comments.create(content=content, parent_id=quest_id)
     except Exception as e:
-        logger.warning("Failed to comment on plan quest %s: %s", quest_id, e)
+        logger.warning("Failed to comment on quest %s: %s", quest_id, e)
 
 
-def remember_plan_feedback_direction(
-    agent: "OuroAgent",
-    cycle: PlanCycle,
-    feedback: str | None,
-) -> None:
-    """Store plan-review feedback that should influence future planning."""
-    agent_cfg = getattr(getattr(agent, "config", None), "agent", None)
-    agent_name = getattr(agent_cfg, "name", "")
-    if not agent_name:
-        return
-    source = f"plan-feedback:{cycle.quest_id or cycle.id}"
-    remember_work_direction(
-        getattr(agent, "memory", None),
-        agent_name,
-        feedback,
-        source=source,
-        run_id=getattr(agent, "_current_run_id", "") or cycle.id,
-        team_id=cycle.team_id,
-        asset_id=cycle.quest_id,
-        strength=0.8,
-        text_prefix="Planning guidance from review feedback",
-    )
-
-
-def notify_controller_plan_ready(
+def notify_controller_quest_ready(
     ouro_client, quest_id: str, controller_username: str | None
 ) -> None:
-    """Notify the configured controller that a plan is awaiting review."""
+    """Notify the configured controller that a plan quest awaits review."""
     if not controller_username:
         return
     username = controller_username.strip().lstrip("@")
     if not username:
         return
-    comment_on_plan(
+    comment_on_quest(
         ouro_client,
         quest_id,
         # Backtick-wrapped `{@username}` is the only form Ouro's markdown parser
@@ -656,20 +334,102 @@ def notify_controller_plan_ready(
     )
 
 
-# ---------------------------------------------------------------------------
-# Interval parsing
-# ---------------------------------------------------------------------------
+def set_quest_status(ouro_client, quest_id: str, status: str) -> bool:
+    """Move a quest's lifecycle status. Returns True on success."""
+    if not ouro_client or not quest_id:
+        return False
+    try:
+        ouro_client.quests.update(quest_id, status=status)
+        return True
+    except Exception as e:
+        logger.warning("Failed to set quest %s status=%s: %s", quest_id, status, e)
+        return False
 
-from ..constants import parse_interval_seconds as parse_cadence_seconds  # noqa: E402
+
+def auto_approve_due_drafts(
+    agent: "OuroAgent",
+    team_ids: list[str],
+    now: Optional[datetime] = None,
+) -> int:
+    """Promote cursor-tracked draft quests to ``open`` after the review window.
+
+    Only quests the planning loop itself published (tracked in each team's
+    cursor) are eligible — a draft someone deliberately parked never
+    auto-opens. Quests that already left ``draft`` (or were deleted) are
+    dropped from the pending list. Returns the number of quests opened.
+    """
+    planning_cfg = agent.config.planning
+    if not planning_cfg.auto_approve:
+        return 0
+    review_secs = parse_cadence_seconds(planning_cfg.review_window)
+    if not review_secs:
+        return 0
+
+    workspace = agent.config.agent.workspace
+    now = now or datetime.now(timezone.utc)
+    ouro = agent._get_ouro_client()
+    opened = 0
+
+    for team_id in team_ids:
+        cursor = load_cursor(workspace, team_id)
+        if not cursor.pending_quest_ids:
+            continue
+        still_pending: list[str] = []
+        for quest_id in cursor.pending_quest_ids:
+            try:
+                quest = ouro.quests.retrieve(quest_id)
+            except Exception as e:
+                logger.info(
+                    "Dropping unreachable pending quest %s from cursor: %s",
+                    quest_id[:8],
+                    e,
+                )
+                continue
+            status = quest_status(quest)
+            if status != "draft":
+                continue
+            created = _parse_iso_datetime(read_field(quest, "created_at"))
+            if created is not None and (now - created).total_seconds() < review_secs:
+                still_pending.append(quest_id)
+                continue
+            if set_quest_status(ouro, quest_id, "open"):
+                comment_on_quest(
+                    ouro,
+                    quest_id,
+                    "Review window elapsed with no feedback — plan auto-activated.",
+                )
+                opened += 1
+                logger.info("Auto-approved plan quest %s", quest_id[:8])
+            else:
+                still_pending.append(quest_id)
+        if still_pending != cursor.pending_quest_ids:
+            cursor.pending_quest_ids = still_pending
+            save_cursor(workspace, team_id, cursor)
+    return opened
 
 
-def expected_heartbeats(cadence: str, heartbeat_every: str) -> Optional[int]:
-    """How many heartbeat work sessions fit in one planning cadence."""
-    cadence_secs = parse_cadence_seconds(cadence)
-    beat_secs = parse_cadence_seconds(heartbeat_every)
-    if not cadence_secs or not beat_secs:
-        return None
-    return max(1, cadence_secs // beat_secs)
+def remember_plan_feedback_direction(
+    agent: "OuroAgent",
+    quest_id: str,
+    team_id: str | None,
+    feedback: str | None,
+) -> None:
+    """Store plan-review feedback that should influence future planning."""
+    agent_cfg = getattr(getattr(agent, "config", None), "agent", None)
+    agent_name = getattr(agent_cfg, "name", "")
+    if not agent_name:
+        return
+    remember_work_direction(
+        getattr(agent, "memory", None),
+        agent_name,
+        feedback,
+        source=f"plan-feedback:{quest_id}",
+        run_id=getattr(agent, "_current_run_id", "") or quest_id,
+        team_id=team_id,
+        asset_id=quest_id,
+        strength=0.8,
+        text_prefix="Planning guidance from review feedback",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -677,37 +437,48 @@ def expected_heartbeats(cadence: str, heartbeat_every: str) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 
-def build_previous_cycle_context(previous: Optional[PlanCycle]) -> str:
-    """Item-level outcome of the last archived plan, for fresh planning runs.
+def build_previous_quest_context(ouro_client, quest_id: str) -> str:
+    """Item-level outcome of the last planning quest, for fresh planning runs.
 
-    The previous plan's prose alone loses unfinished work; showing the items
-    with their statuses, notes, and waiting metadata lets the model explicitly
-    adopt, defer, or drop each open thread instead of silently forgetting it.
+    Showing the previous quest's items with statuses and waiting metadata lets
+    the model scope the new plan as a distinct focus instead of silently
+    duplicating open threads.
     """
-    if not previous:
+    if not ouro_client or not quest_id:
         return ""
+    try:
+        quest = ouro_client.quests.retrieve(quest_id)
+    except Exception as e:
+        logger.debug("Failed to fetch previous plan quest %s: %s", quest_id, e)
+        return ""
+
+    items = quest_items(quest)
+    done = sum(1 for i in items if i.get("status") in ("done", "skipped"))
     parts = [
         "## Previous Plan Outcome",
-        f"Status: {previous.status}; "
-        f"{previous.items_done}/{len(previous.items)} items completed "
-        f"over {previous.heartbeats_completed} heartbeats.",
+        f"Quest `{quest_id}` — {read_field(quest, 'name') or 'Untitled'} "
+        f"(status: {quest_status(quest) or 'unknown'}); "
+        f"{done}/{len(items)} items completed.",
     ]
-    if previous.plan_text:
-        parts.append(f"\nPlan notes:\n{previous.plan_text}")
-    if previous.items:
-        parts.append(f"\nItems:\n{render_plan_items(previous.items, include_ids=False)}")
-    open_items = [i for i in previous.items if i.status in ("pending", "in_progress")]
-    if open_items:
+    description = quest_description_text(quest)
+    if description:
+        parts.append(f"\nPlan notes:\n{description}")
+    if items:
+        parts.append(f"\nItems:\n{render_quest_items(items, include_ids=False)}")
+    if any(item_is_open(i) for i in items):
         parts.append(
-            "\nThe unfinished items above are open threads. For each one, "
-            "explicitly adopt it into the new plan, park it as a waiting item, "
-            "or drop it — and say why in the plan description. Do not let open "
-            "work silently disappear."
+            "\nThe unfinished items above stay tracked on their own quest, which "
+            "remains open until they resolve — you'll keep advancing them as open "
+            "quest work, so they are not lost. Do NOT copy them into this plan. "
+            "Scope this plan to a distinct new focus; only reference them here if "
+            "this plan genuinely depends on them."
         )
     return "\n".join(parts)
 
 
-def build_recent_activity_context(agent: "OuroAgent", team_id: str | None, limit: int = 8) -> str:
+def build_recent_activity_context(
+    agent: "OuroAgent", team_id: str | None, limit: int = 8
+) -> str:
     """Digest of recent runs from the run log, so planning isn't blind.
 
     Read-only tools are available during planning, but the digest keeps the
@@ -752,60 +523,6 @@ def build_recent_activity_context(agent: "OuroAgent", team_id: str | None, limit
         "you actually did and how it went — not as direction by themselves.\n"
         + "\n".join(lines)
     )
-
-# ---------------------------------------------------------------------------
-# Cycle decision logic
-# ---------------------------------------------------------------------------
-
-
-def next_action(
-    current: Optional[PlanCycle],
-    cadence: str,
-    min_heartbeats: int,
-    review_window: str,
-    auto_approve: bool,
-    now: Optional[datetime] = None,
-) -> Literal["plan", "check_review", "execute"]:
-    """Determine what the heartbeat should do given the current plan cycle state."""
-    now = now or datetime.now(timezone.utc)
-
-    if current is None:
-        return "plan"
-
-    if current.status == "planning":
-        return "plan"
-
-    if current.status == "pending_review":
-        if current.human_feedback:
-            return "execute"
-
-        review_secs = parse_cadence_seconds(review_window)
-        if review_secs:
-            created = datetime.fromisoformat(current.created_at)
-            if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            elapsed = (now - created).total_seconds()
-            if elapsed >= review_secs and auto_approve:
-                return "execute"
-
-        return "check_review"
-
-    if current.status == "active":
-        if current.needs_replan_stale_active:
-            return "plan"
-        # Replan when there is no actionable work left. This covers both a fully
-        # complete plan and one whose only remaining items are parked (waiting on
-        # external replies or a future date) — in either case idling would waste
-        # the cycle, so start fresh instead.
-        if (
-            not current.has_actionable_items(now)
-            and current.heartbeats_completed >= min_heartbeats
-        ):
-            return "plan"
-        return "execute"
-
-    # completed or unknown — start fresh
-    return "plan"
 
 
 # ---------------------------------------------------------------------------
@@ -867,94 +584,20 @@ Step 2. After create_quest succeeds, end the turn with a final message that is o
 ```
 """
 
-CONTINUATION_PLANNING_PROMPT_TEMPLATE = """\
-You are revising your current plan.{goal_section}
 
-The current items, recent activity, and guidance you need are included below;
-you may also use read-only tools (search_assets, get_asset, get_comments) for
-brief, targeted inspection. Review what's been completed and what needs to
-change for the upcoming period ({budget_description}).
-If the context includes work-direction guidance, use it to adjust focus,
-scope, and negative constraints before inventing new work.
-Ground every focus change in the current user goal, an approved quest item,
-work-direction memory, or explicit evidence you have evaluated. Recent platform
-activity alone is not a reason to prioritize a topic.
-
-{item_quality_bar}
-
-## Current Items
-{current_items_section}
-
-{previous_plan_section}
-
-{context_section}
-
-You may add new items, remove items that are no longer relevant, or adjust priorities.
-Items that are already done stay done.
-
-IMPORTANT: Do NOT attempt to execute any plan items — only revise and update the plan.
-Use only the tools listed below.
-
-Step 1. Update the plan description if context has changed:
-   Call update_quest (id: {quest_id}){quest_instructions}.
-   Only update description_markdown unless you intentionally need to change the
-   quest lifecycle status. Pending-review plans should stay `draft`; approved
-   plans should be `open`. Do NOT change the quest name.
-
-Step 2. Manage items as needed:
-   - Use the item_id values shown below when calling item tools.
-   - create_quest_items(quest_id, items): batch-add new task descriptions
-   - update_quest_item(quest_id, item_id, ...): change description, notes, or status
-   - delete_quest_item(quest_id, item_id): remove irrelevant items (only if no entries)
-   - If the item list below seems stale, call list_quest_items(quest_id) before editing.
-
-Step 3. After all updates, end the turn with a final message that is only this JSON:
-```json
-{{"quest_id": "{quest_id}"}}
-```
-"""
-
-REVIEW_PROMPT_TEMPLATE = """\
-You published a plan as an Ouro quest (asset ID: {quest_id}).
-Check if there are any comments on that quest with feedback from a human reviewer
-(use get_comments with parent_id={quest_id}).
-
-IMPORTANT: get_comments only returns top-level comments. Reviewer feedback is
-often a REPLY to your own "ready for review" comment, which is nested one level
-deeper. For each top-level comment authored by you, call get_comments again with
-that comment's id to fetch its replies before concluding there is no feedback.
-
-Current plan status: {current_status}
-
-Your current plan:
-{plan_text}
-
-If there is feedback, revise your plan to incorporate it and update the quest
-(update_quest).  Then reply to the reviewer with a comment (write_comment on the
-quest) summarizing what you changed and what the plan's next status should be.
-
-If there are no comments or the comments don't require changes, keep the plan as-is.
-
-Do NOT execute any plan items — only review feedback and revise.
-
-IMPORTANT — approval vs. revision:
-- Set "next_status": "active" ONLY when the reviewer explicitly approves the plan
-  with positive affirmation (e.g. "good to go", "approved", "looks good", "ship it").
-- Set "next_status": "pending_review" when the reviewer requests changes or provides
-  directional feedback WITHOUT explicit approval. The plan will be revised and
-  re-posted for another round of review.
-- If the reviewer asks you to deactivate, cancel, stop, shelve, or archive the
-  plan, set "next_status": "cancelled" and keep "revised_plan" equal to the
-  current plan text unless explicit content edits were requested.
-- If there are no comments at all, set feedback_summary to null and
-  "next_status": "pending_review" if the plan is still awaiting review, or
-  "active" if it is already active.
-
-Return a JSON summary:
-```json
-{{"revised_plan": "<the updated plan text, or the original if no changes>", "feedback_summary": "<brief summary of feedback received, or null if none>", "next_status": "active|pending_review|cancelled"}}
-```
-"""
+def _plan_quest_name_instruction(goal: str = "") -> str:
+    """Instruction for natural plan quest titles."""
+    if goal:
+        return (
+            "Name it with a concise, natural title that is just the goal or focus "
+            "area. Do not include generic planning labels, dates, agent names, "
+            "team names, or internal keys."
+        )
+    return (
+        "Name it with a concise, natural title for the current focus in your own "
+        "words. Do not include generic planning labels, dates, agent names, team "
+        "names, or internal keys."
+    )
 
 
 def _cadence_description(cadence: str) -> str:
@@ -968,6 +611,15 @@ def _cadence_description(cadence: str) -> str:
     if val != 1:
         label += "s"
     return f"{val} {label}"
+
+
+def expected_heartbeats(cadence: str, heartbeat_every: str) -> Optional[int]:
+    """How many heartbeat work sessions fit in one planning cadence."""
+    cadence_secs = parse_cadence_seconds(cadence)
+    beat_secs = parse_cadence_seconds(heartbeat_every)
+    if not cadence_secs or not beat_secs:
+        return None
+    return max(1, cadence_secs // beat_secs)
 
 
 def _budget_description(cadence: str, heartbeat_every: str = "") -> str:
@@ -990,29 +642,17 @@ def build_planning_prompt(
     cadence: str,
     team_id: Optional[str] = None,
     org_id: Optional[str] = None,
-    previous_plan: Optional[PlanCycle] = None,
-    current_plan: Optional[PlanCycle] = None,
+    previous_plan_section: str = "",
     extra_context: str = "",
-    agent_name: str = "",
     goal: str = "",
-    team_context: Optional["TeamContext"] = None,
     heartbeat_every: str = "",
 ) -> str:
-    """Build a planning or continuation-planning prompt.
+    """Build a fresh-plan prompt that asks the LLM to create a new quest.
 
-    If *current_plan* has a quest_id, produces a continuation prompt that asks
-    the LLM to update the existing quest.  Otherwise produces a fresh-plan
-    prompt that asks the LLM to create a new quest.
-
-    When *goal* is provided the plan is framed around achieving that goal.
-
-    Accepts *team_context* (preferred) or raw *team_id*/*org_id* for backward
-    compatibility.
+    Each planning run produces its own newly-scoped quest; the agent never
+    appends the next focus onto a prior quest. When *goal* is provided the
+    plan is framed around achieving that goal.
     """
-    if team_context:
-        team_id = team_context.team_id
-        org_id = team_context.org_id
-
     quest_parts = []
     if org_id:
         quest_parts.append(f'org_id="{org_id}"')
@@ -1028,38 +668,6 @@ def build_planning_prompt(
             f"> {goal}\n\n"
             f"Structure your plan around this focus area."
         )
-
-    # Continuation planning: update existing quest
-    if current_plan and current_plan.quest_id:
-        current_items_section = (
-            render_plan_items(current_plan.items, include_ids=True)
-            if current_plan.items
-            else current_plan.plan_text
-        )
-
-        previous_plan_section = ""
-        if previous_plan and previous_plan.plan_text:
-            previous_plan_section = (
-                "## Previous Completed Plan\n" f"{previous_plan.plan_text}\n"
-            )
-
-        context_section = ""
-        if extra_context:
-            context_section = f"## Additional Context\n{extra_context}"
-
-        return CONTINUATION_PLANNING_PROMPT_TEMPLATE.format(
-            budget_description=_budget_description(cadence, heartbeat_every),
-            item_quality_bar=PLAN_ITEM_QUALITY_BAR,
-            current_items_section=current_items_section,
-            quest_id=current_plan.quest_id,
-            quest_instructions=quest_instructions,
-            previous_plan_section=previous_plan_section,
-            context_section=context_section,
-            goal_section=goal_section,
-        )
-
-    # Fresh plan: create a new quest
-    previous_plan_section = build_previous_cycle_context(previous_plan)
 
     context_section = ""
     if extra_context:
@@ -1077,14 +685,16 @@ def build_planning_prompt(
 
 
 FEEDBACK_REVIEW_PROMPT_TEMPLATE = """\
-You received direct feedback on your plan (Ouro quest ID: {quest_id}).
+You received feedback on one of your quests (Ouro quest ID: {quest_id}).
 
-Current plan status: {current_status}
+Current quest lifecycle status: {current_status}
+(draft = awaiting approval before execution; open = approved and being
+executed; closed = finished or shelved.)
 
 Current structured quest items (frontend numbering is 1-indexed):
 {current_items_section}
 
-Your current plan:
+Current quest description:
 {plan_text}
 
 Feedback received:
@@ -1095,8 +705,8 @@ Feedback received:
 Steps:
 1. First interpret any "item N" references against the structured quest item list
    above, using its 1-indexed numbering. Do NOT infer item numbers from prose headings,
-   markdown bullets, or the plan body.
-2. Revise your plan to incorporate this feedback (if changes are needed).
+   markdown bullets, or the quest description.
+2. Revise the quest to incorporate this feedback (if changes are needed).
 3. Manage structured quest items directly as needed:
    - Use the item_id values shown above when calling item tools.
    - update_quest_item(quest_id, item_id, ...): change description, notes, status,
@@ -1104,35 +714,83 @@ Steps:
    - delete_quest_item(quest_id, item_id): remove irrelevant items (only if no entries)
    - If you remove or reorder items, normalize sort_order to match the frontend's 1-indexed numbering (1, 2, 3, ...).
    - If the list above seems stale, call list_quest_items(quest_id) before editing.
-4. If you revised the prose plan body, update the quest (update_quest).
-5. {reply_instruction} Summarize what you changed, and if the plan is not yet
-   approved, note that you're awaiting their go-ahead before executing.
+4. If you revised the quest description, update it with update_quest. Do not
+   change the quest's lifecycle status yourself — report it in the JSON below.
+5. {reply_instruction} Summarize what you changed, and if the quest is still a
+   draft, note that you're awaiting their go-ahead before executing.
 
-Do NOT execute any plan items — only review feedback and revise.
+Do NOT execute any quest items — only review feedback and revise.
 
 IMPORTANT — approval vs. revision:
 - {approval_guidance}
 
-IMPORTANT — deactivation / cancellation:
+IMPORTANT — closing / cancellation:
 - If the reviewer asks you to deactivate, cancel, stop, shelve, or archive the
-  plan, do NOT rewrite the plan body unless they also asked for textual edits.
-- In that case, set "next_status": "cancelled" and keep "revised_plan" equal
-  to the current plan text unless explicit content edits were requested.
-- A cancelled plan should be treated as inactive and should no longer be
-  awaiting approval or execution.
+  quest, do NOT rewrite the quest description unless they also asked for
+  textual edits. Set "next_status": "closed".
 
 Return a JSON summary:
 ```json
-{{"revised_plan": "<the updated plan text, or the original if no changes>", "feedback_summary": "<brief summary of feedback received>", "next_status": "active|pending_review|cancelled"}}
+{{"feedback_summary": "<brief summary of feedback received>", "next_status": "draft|open|closed"}}
+```
+"""
+
+POLL_REVIEW_PROMPT_TEMPLATE = """\
+You published a plan as an Ouro quest (asset ID: {quest_id}).
+Check if there are any comments on that quest with feedback from a human reviewer
+(use get_comments with parent_id={quest_id}).
+
+IMPORTANT: get_comments only returns top-level comments. Reviewer feedback is
+often a REPLY to your own "ready for review" comment, which is nested one level
+deeper. For each top-level comment authored by you, call get_comments again with
+that comment's id to fetch its replies before concluding there is no feedback.
+
+Current quest lifecycle status: {current_status}
+(draft = awaiting approval before execution; open = approved and being
+executed; closed = finished or shelved.)
+
+Current structured quest items (frontend numbering is 1-indexed):
+{current_items_section}
+
+Current quest description:
+{plan_text}
+
+If there is feedback, revise the quest to incorporate it: update the
+description with update_quest and manage items with list_quest_items,
+create_quest_items, update_quest_item, and delete_quest_item. Then reply to the
+reviewer with a comment (write_comment) summarizing what you changed. Do not
+change the quest's lifecycle status yourself — report it in the JSON below.
+
+If there are no comments or the comments don't require changes, keep the quest as-is.
+
+Do NOT execute any quest items — only review feedback and revise.
+
+IMPORTANT — approval vs. revision:
+- {approval_guidance}
+
+Return a JSON summary:
+```json
+{{"feedback_summary": "<brief summary of feedback received, or null if none>", "next_status": "draft|open|closed"}}
 ```
 """
 
 
-def build_review_prompt(quest_id: str, plan_text: str, current_status: str) -> str:
-    return REVIEW_PROMPT_TEMPLATE.format(
-        quest_id=quest_id,
-        plan_text=plan_text,
-        current_status=current_status,
+def _approval_guidance(current_status: str) -> str:
+    if current_status == "open":
+        return (
+            "This quest is already open, which means it has already been approved. "
+            'Keep "next_status": "open" after incorporating feedback unless the '
+            "reviewer explicitly asks you to pause, stop, or hold execution "
+            "pending another review (then use \"draft\") or to cancel/close it "
+            '(then use "closed"). Reply as someone continuing an active plan, '
+            "not as someone waiting for initial approval."
+        )
+    return (
+        'Set "next_status": "open" ONLY when the feedback explicitly approves the '
+        'quest with positive affirmation (e.g. "good to go", "approved", "looks '
+        'good", "ship it"). Set "next_status": "draft" when the reviewer requests '
+        "changes or gives direction WITHOUT explicit approval — the quest stays "
+        "awaiting another round of review."
     )
 
 
@@ -1151,7 +809,9 @@ def build_feedback_review_prompt(
             f"parent_id `{reply_parent_id}`."
         )
     else:
-        reply_instruction = f"Reply on the plan quest by calling write_comment with parent_id `{quest_id}`."
+        reply_instruction = (
+            f"Reply on the quest by calling write_comment with parent_id `{quest_id}`."
+        )
 
     if thread_parent_id:
         thread_context = (
@@ -1162,70 +822,57 @@ def build_feedback_review_prompt(
     else:
         thread_context = ""
 
-    normalized_items_section = current_items_section or "(no quest items)"
-    if normalized_items_section != "(no quest items)":
-        item_lines = [
-            line.strip()
-            for line in normalized_items_section.splitlines()
-            if line.strip()
-        ]
-        if item_lines and not item_lines[0].startswith("1. "):
-            normalized_items_section = "\n".join(
-                f"{idx}. {line}" for idx, line in enumerate(item_lines, start=1)
-            )
-
-    if current_status == "active":
-        approval_guidance = (
-            "This plan is already active, which means it has already been approved. "
-            "Keep it active after incorporating feedback unless the reviewer explicitly "
-            "asks you to pause, stop, or hold execution pending another review. In the "
-            'normal case, set "next_status": "active" and reply as someone continuing an '
-            "active plan, not as someone waiting for initial approval."
-        )
-    else:
-        approval_guidance = (
-            'Set "next_status": "active" ONLY when the feedback explicitly approves the plan '
-            'with positive affirmation (e.g. "good to go", "approved", "looks good", "ship it"). '
-            'Set "next_status": "pending_review" when the reviewer requests changes or gives '
-            "direction WITHOUT explicit approval. The plan will be revised and re-posted for "
-            "another round of review."
-        )
-
     return FEEDBACK_REVIEW_PROMPT_TEMPLATE.format(
         quest_id=quest_id,
-        current_status=current_status,
-        current_items_section=normalized_items_section,
-        plan_text=plan_text,
+        current_status=current_status or "unknown",
+        current_items_section=current_items_section or "(no quest items)",
+        plan_text=plan_text or "(no description)",
         feedback_text=feedback_text,
         reply_instruction=reply_instruction,
         thread_context=thread_context,
-        approval_guidance=approval_guidance,
+        approval_guidance=_approval_guidance(current_status),
+    )
+
+
+def build_poll_review_prompt(
+    quest_id: str,
+    plan_text: str,
+    current_items_section: str,
+    current_status: str,
+) -> str:
+    return POLL_REVIEW_PROMPT_TEMPLATE.format(
+        quest_id=quest_id,
+        current_status=current_status or "unknown",
+        current_items_section=current_items_section or "(no quest items)",
+        plan_text=plan_text or "(no description)",
+        approval_guidance=_approval_guidance(current_status),
     )
 
 
 # ---------------------------------------------------------------------------
-# Orchestration (previously in agent.py)
+# Planning run — create a new plan quest
 # ---------------------------------------------------------------------------
 
 
-async def run_planning_heartbeat(
-    agent: OuroAgent,
+def _plan_doc_store(agent: "OuroAgent", team_id: str | None):
+    if team_id:
+        return agent.doc_store_for(team_id)
+    return agent.doc_store
+
+
+async def run_planning_run(
+    agent: "OuroAgent",
     hb_model,
-    plan_store: PlanStore,
+    team_id: str,
     servers: list[str],
-    continuation: Optional[PlanCycle] = None,
     goal: str = "",
-    kind: str = "default",
 ) -> Optional[str]:
-    """Run a planning heartbeat: generate or revise a plan.
+    """Run a planning run: publish a fresh, newly-scoped draft quest.
 
-    If *continuation* is provided (an active cycle with a quest_id), the
-    prompt asks the LLM to revise and update the existing quest.  Otherwise
-    a fresh plan is created.
-
-    When *goal* is given the plan is framed around achieving it.
-    *kind* controls whether this is a ``"default"`` cadence plan or a
-    ``"goal"`` plan that coexists alongside the default.
+    Every planning run creates its own quest — the agent never appends the
+    next focus onto a prior quest. When *goal* is given the plan is framed
+    around achieving it. The team cursor records the new quest for the
+    auto-approval loop.
     """
     from ..memory.reflection import write_log
     from .profiles import RunMode
@@ -1236,22 +883,17 @@ async def run_planning_heartbeat(
         if planning_cfg.model
         else hb_model
     )
-    previous = plan_store.load_history(limit=1)
-    previous_plan = previous[0] if previous else None
-
-    is_continuation = continuation and continuation.quest_id
     agent_cfg = agent.config.agent
+    workspace = agent_cfg.workspace
+    ouro = agent._get_ouro_client()
 
-    from ..teams import TeamContext as _TC
+    cursor = load_cursor(workspace, team_id)
+    previous_section = build_previous_quest_context(ouro, cursor.last_quest_id)
 
-    tc: _TC | None = None
-    if plan_store.team_id and agent_cfg.org_id:
-        tc = _TC(team_id=plan_store.team_id, org_id=agent_cfg.org_id)
-    active_doc_store = _plan_doc_store(agent, plan_store.team_id)
     direction_context = build_focus_memory_context(
         getattr(agent, "memory", None),
         agent_cfg.name,
-        team_id=plan_store.team_id,
+        team_id=team_id,
         heading="Work Direction Guidance",
         guidance=(
             "Use these memories as strong input when choosing focus and task "
@@ -1259,36 +901,29 @@ async def run_planning_heartbeat(
             "run, prefer the explicit goal."
         ),
     )
-
-    activity_context = build_recent_activity_context(agent, plan_store.team_id)
+    activity_context = build_recent_activity_context(agent, team_id)
     extra_context = "\n\n".join(
         part for part in (direction_context, activity_context) if part
     )
 
     prompt = build_planning_prompt(
         cadence=planning_cfg.cadence,
-        previous_plan=previous_plan,
-        current_plan=continuation if is_continuation else None,
-        agent_name=agent_cfg.name,
-        goal=goal,
-        team_context=tc,
+        team_id=team_id,
+        org_id=getattr(agent_cfg, "org_id", None),
+        previous_plan_section=previous_section,
         extra_context=extra_context,
-        heartbeat_every=getattr(
-            getattr(agent.config, "heartbeat", None), "every", ""
-        ) or "",
+        goal=goal,
+        heartbeat_every=getattr(getattr(agent.config, "heartbeat", None), "every", "")
+        or "",
     )
 
-    read_tools = ["ouro:search_assets", "ouro:get_asset", "ouro:get_comments"]
-    if is_continuation:
-        preload = read_tools + [
-            "ouro:update_quest",
-            "ouro:list_quest_items",
-            "ouro:create_quest_items",
-            "ouro:update_quest_item",
-            "ouro:delete_quest_item",
-        ]
-    else:
-        preload = read_tools + ["ouro:create_quest", "ouro:list_quest_items"]
+    preload = [
+        "ouro:search_assets",
+        "ouro:get_asset",
+        "ouro:get_comments",
+        "ouro:create_quest",
+        "ouro:list_quest_items",
+    ]
 
     result = await agent.run(
         prompt,
@@ -1296,95 +931,102 @@ async def run_planning_heartbeat(
         mode=RunMode.PLAN,
         allowed_servers=servers,
         preload_tools=preload,
-        team_id=plan_store.team_id,
+        team_id=team_id,
     )
-
-    if is_continuation:
-        cycle = continuation
-    else:
-        cycle = PlanCycle(status="pending_review", kind=kind, goal=goal)
 
     parsed = parse_json_from_llm(result)
-    if parsed:
-        cycle.plan_text = parsed.get("plan", cycle.plan_text or "")
-        if not is_continuation:
-            cycle.quest_id = parsed.get("quest_id")
-    else:
-        logger.warning("Could not parse planning result as JSON, storing raw result")
-        cycle.plan_text = result
+    quest_id = str((parsed or {}).get("quest_id") or "")
+    if not quest_id:
+        logger.warning("Planning run did not report a quest id; cursor not advanced")
+        return result
 
-    # Refresh items from the platform (source of truth)
-    ouro = agent._get_ouro_client()
-    if cycle.quest_id and ouro:
-        cycle.items = refresh_items_from_api(ouro, cycle.quest_id)
+    cursor.last_planned_at = datetime.now(timezone.utc).isoformat()
+    cursor.last_quest_id = quest_id
+    if quest_id not in cursor.pending_quest_ids:
+        cursor.pending_quest_ids.append(quest_id)
+    save_cursor(workspace, team_id, cursor)
 
-    if not is_continuation:
-        cycle.status = "pending_review"
-
-    plan_store.save(cycle)
-    if cycle.status == "pending_review" and cycle.quest_id:
-        notify_controller_plan_ready(
-            ouro,
-            cycle.quest_id,
-            agent.config.security.controller_username,
-        )
-
-    kind_label = "goal " if cycle.kind == "goal" else ""
-    action_label = "revised" if is_continuation else "created"
-    logger.info(
-        "Planning cycle %s %s%s (quest_id=%s)",
-        cycle.id,
-        kind_label,
-        action_label,
-        cycle.quest_id,
+    notify_controller_quest_ready(
+        ouro, quest_id, agent.config.security.controller_username
     )
-    quest_link = f" [plan](asset:{cycle.quest_id})" if cycle.quest_id else ""
+
+    goal_label = "goal " if goal else ""
+    logger.info("Planning run published %squest %s", goal_label, quest_id)
     write_log(
-        agent.config.agent.workspace,
-        f"[planning:{action_label}]{quest_link} {kind_label}plan {action_label}",
-        doc_store=active_doc_store,
-        agent_name=agent.config.agent.name,
+        workspace,
+        f"[planning:created] [plan](asset:{quest_id}) {goal_label}plan created",
+        doc_store=_plan_doc_store(agent, team_id),
+        agent_name=agent_cfg.name,
     )
     return result
 
 
-async def run_review_heartbeat(
-    agent: OuroAgent,
+# ---------------------------------------------------------------------------
+# Feedback / review run — revise a quest and move its lifecycle
+# ---------------------------------------------------------------------------
+
+
+async def run_quest_feedback_run(
+    agent: "OuroAgent",
     hb_model,
-    plan_store: PlanStore,
-    current: Optional[PlanCycle],
+    quest_id: str,
     servers: list[str],
-    inline_feedback: Optional[str] = None,
+    feedback: Optional[str] = None,
     reply_parent_id: str | None = None,
     thread_parent_id: str | None = None,
     prefetch=None,
     capability_envelope=None,
-) -> Optional[PlanCycle]:
-    """Check for human feedback on the plan quest and activate if reviewed.
+) -> Optional[str]:
+    """Review feedback on one of the agent's own quests.
 
-    If *inline_feedback* is provided (e.g. from a webhook event), it is
-    included directly in the prompt so the agent doesn't need to call
-    get_comments.
+    When *feedback* is provided (e.g. from a webhook event) it is included
+    directly in the prompt; otherwise the run polls the quest's comments.
+    The run's reported ``next_status`` moves the quest lifecycle
+    (draft/open/closed). Returns a short human-readable outcome, or None when
+    the quest could not be loaded.
     """
     from ..memory.reflection import write_log
     from .profiles import RunMode
 
-    active_doc_store = _plan_doc_store(agent, plan_store.team_id)
     ouro = agent._get_ouro_client()
+    try:
+        quest = ouro.quests.retrieve(quest_id)
+    except Exception as e:
+        logger.warning("Failed to retrieve quest %s for review: %s", quest_id, e)
+        return None
 
-    if not current or not current.quest_id:
-        if current:
-            current.status = "active"
-            current.activated_at = datetime.now(timezone.utc).isoformat()
-            plan_store.save(current)
-            logger.info("Plan cycle %s activated (no quest to review)", current.id)
-            write_log(
-                agent.config.agent.workspace,
-                "[planning:activated] Plan activated (no quest)",
-                doc_store=active_doc_store,
-                agent_name=agent.config.agent.name,
-            )
-        return current
+    current_status = quest_status(quest) or "unknown"
+    team_id = str(read_field(quest, "team_id") or "") or None
+    items = quest_items(quest)
+    items_section = (
+        render_numbered_quest_items(items) if items else "(no quest items)"
+    )
+    plan_text = quest_description_text(quest)
+
+    if feedback:
+        prompt = build_feedback_review_prompt(
+            quest_id=quest_id,
+            plan_text=plan_text,
+            current_items_section=items_section,
+            feedback_text=feedback,
+            current_status=current_status,
+            reply_parent_id=reply_parent_id,
+            thread_parent_id=thread_parent_id,
+        )
+    else:
+        prompt = build_poll_review_prompt(
+            quest_id=quest_id,
+            plan_text=plan_text,
+            current_items_section=items_section,
+            current_status=current_status,
+        )
+
+    planning_cfg = agent.config.planning
+    plan_model = (
+        agent._build_model(planning_cfg.model, heartbeat=True)
+        if planning_cfg.model
+        else hb_model
+    )
 
     review_preload = [
         "ouro:get_comments",
@@ -1396,39 +1038,6 @@ async def run_review_heartbeat(
         "ouro:delete_quest_item",
     ]
 
-    current_items = refresh_items_from_api(ouro, current.quest_id)
-    if current_items:
-        current.items = current_items
-    current_items_section = (
-        render_numbered_plan_items(current.items, include_ids=True)
-        if current.items
-        else "(no quest items)"
-    )
-
-    if inline_feedback:
-        prompt = build_feedback_review_prompt(
-            quest_id=current.quest_id,
-            plan_text=current.plan_text,
-            current_items_section=current_items_section,
-            feedback_text=inline_feedback,
-            current_status=current.status,
-            reply_parent_id=reply_parent_id,
-            thread_parent_id=thread_parent_id,
-        )
-    else:
-        prompt = build_review_prompt(
-            quest_id=current.quest_id,
-            plan_text=current.plan_text,
-            current_status=current.status,
-        )
-
-    planning_cfg = agent.config.planning
-    plan_model = (
-        agent._build_model(planning_cfg.model, heartbeat=True)
-        if planning_cfg.model
-        else hb_model
-    )
-
     result = await agent.run(
         prompt,
         model_override=plan_model,
@@ -1436,96 +1045,84 @@ async def run_review_heartbeat(
         allowed_servers=servers,
         preload_tools=review_preload,
         prefetch=prefetch,
-        team_id=plan_store.team_id,
+        team_id=team_id,
         capability_envelope=capability_envelope,
     )
 
     parsed = parse_json_from_llm(result)
-    if parsed:
-        feedback = parsed.get("feedback_summary")
-        revised = parsed.get("revised_plan")
-        next_status = parsed.get("next_status")
-        if next_status not in {"active", "pending_review", "cancelled"}:
-            next_status = "active" if current.status == "active" else "pending_review"
-
-        if feedback:
-            remember_plan_feedback_direction(agent, current, feedback)
-            if next_status != "cancelled":
-                current.plan_text = revised or current.plan_text
-                if current.quest_id and ouro:
-                    current.items = refresh_items_from_api(ouro, current.quest_id)
-
-            if next_status == "cancelled":
-                current.human_feedback = feedback
-                current.status = "cancelled"
-                current.completed_at = datetime.now(timezone.utc).isoformat()
-                archived = plan_store.archive(current, ouro_client=ouro)
-                logger.info(
-                    "Plan cycle %s cancelled via feedback: %s",
-                    current.id,
-                    feedback[:100],
-                )
-                quest_link = (
-                    f" [plan](asset:{current.quest_id})" if current.quest_id else ""
-                )
-                write_log(
-                    agent.config.agent.workspace,
-                    f"[planning:cancelled]{quest_link} Plan cancelled: {feedback[:100]}",
-                    doc_store=active_doc_store,
-                    agent_name=agent.config.agent.name,
-                )
-                return archived
-
-            if next_status == "active":
-                current.human_feedback = feedback
-                current.status = "active"
-                current.activated_at = datetime.now(timezone.utc).isoformat()
-                plan_store.save(current)
-                update_quest_status(ouro, current)
-                logger.info("Plan cycle %s activated with feedback", current.id)
-                quest_link = (
-                    f" [plan](asset:{current.quest_id})" if current.quest_id else ""
-                )
-                write_log(
-                    agent.config.agent.workspace,
-                    f"[planning:approved]{quest_link} Plan approved: {feedback[:100]}",
-                    doc_store=active_doc_store,
-                    agent_name=agent.config.agent.name,
-                )
-                return current
-            if next_status == "pending_review":
-                current.revision_count += 1
-                plan_store.save(current)
-                if current.status != "active":
-                    update_quest_status(ouro, current)
-                if current.status == "active":
-                    logger.info(
-                        "Plan cycle %s revised while active: %s",
-                        current.id,
-                        feedback[:100],
-                    )
-                else:
-                    logger.info(
-                        "Plan cycle %s revised (not yet approved): %s",
-                        current.id,
-                        feedback[:100],
-                    )
-                quest_link = (
-                    f" [plan](asset:{current.quest_id})" if current.quest_id else ""
-                )
-                log_prefix = (
-                    "Plan revised while active"
-                    if current.status == "active"
-                    else "Plan revised, pending approval"
-                )
-                write_log(
-                    agent.config.agent.workspace,
-                    f"[planning:revised]{quest_link} {log_prefix}: {feedback[:100]}",
-                    doc_store=active_doc_store,
-                    agent_name=agent.config.agent.name,
-                )
-                return None
-    else:
+    if not parsed:
         logger.warning("Could not parse review result as JSON")
+        return None
 
-    return None
+    feedback_summary = parsed.get("feedback_summary")
+    next_status = parsed.get("next_status")
+    if next_status not in {"draft", "open", "closed"}:
+        next_status = current_status
+
+    if feedback_summary:
+        remember_plan_feedback_direction(agent, quest_id, team_id, feedback_summary)
+
+    outcome = "unchanged"
+    if next_status != current_status:
+        if set_quest_status(ouro, quest_id, next_status):
+            outcome = f"{current_status} → {next_status}"
+        else:
+            outcome = "status update failed"
+
+    label = {
+        ("draft", "open"): "approved",
+        ("open", "closed"): "closed",
+        ("draft", "closed"): "cancelled",
+    }.get((current_status, next_status), "revised" if feedback_summary else "reviewed")
+    summary_text = (feedback_summary or "no feedback found")[:100]
+    logger.info("Quest %s review: %s (%s)", quest_id[:8], label, outcome)
+    write_log(
+        agent.config.agent.workspace,
+        f"[planning:{label}] [plan](asset:{quest_id}) {summary_text}",
+        doc_store=_plan_doc_store(agent, team_id),
+        agent_name=agent.config.agent.name,
+    )
+
+    if feedback_summary:
+        return f"Quest {label} ({outcome}): {feedback_summary}"
+    return f"No feedback found — quest remains {current_status}."
+
+
+# ---------------------------------------------------------------------------
+# Reviewable quest discovery (CLI / force helpers)
+# ---------------------------------------------------------------------------
+
+
+def find_reviewable_quests(
+    agent: "OuroAgent", limit: int = 10
+) -> list[dict[str, Any]]:
+    """The agent's own draft/open quests, drafts first (for review pickers)."""
+    ouro = agent._get_ouro_client()
+    reviewable: list[dict[str, Any]] = []
+    for asset in search_own_quests(agent, limit=25):
+        quest_id = str(asset.get("id") or "")
+        if not quest_id:
+            continue
+        try:
+            quest = ouro.quests.retrieve(quest_id)
+        except Exception:
+            continue
+        status = quest_status(quest)
+        if status not in ("draft", "open"):
+            continue
+        items = quest_items(quest)
+        done = sum(1 for i in items if i.get("status") in ("done", "skipped"))
+        reviewable.append(
+            {
+                "id": quest_id,
+                "name": str(read_field(quest, "name") or asset.get("name") or ""),
+                "status": status,
+                "team_id": str(read_field(quest, "team_id") or ""),
+                "items_total": len(items),
+                "items_done": done,
+            }
+        )
+        if len(reviewable) >= limit:
+            break
+    reviewable.sort(key=lambda q: (q["status"] != "draft",))
+    return reviewable

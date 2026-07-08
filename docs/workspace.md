@@ -33,7 +33,7 @@ workspace/
 └── teams/<team_id>/
     ├── MEMORY.md                # team-scoped working memory
     ├── logs/<period>.md         # team period logs
-    ├── plans/                   # PlanCycle JSON files
+    ├── planning.json            # planning cursor (last planned at, pending drafts)
     └── state.json               # doc-name → Ouro post UUID registry
 ```
 
@@ -109,8 +109,9 @@ Notable files:
 - `state.json` — registry maintained by `OuroDocStore` mapping document
   names to Ouro post UUIDs (and ownership flags). Persistence keeps doc
   identity stable across restarts.
-- `plans/<id>.json` — `PlanCycle` files written by the planning runner.
-  See [Planning](./planning.md).
+- `planning.json` — the planning cursor: when the team last planned,
+  the last plan quest, and drafts awaiting auto-approval. Plans
+  themselves live on the platform as quests. See [Planning](./planning.md).
 
 Slug + name metadata for each team gets cached in `state.json` so the
 doc store can format friendly post titles.

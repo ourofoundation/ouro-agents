@@ -65,6 +65,7 @@ class TestConfigModeOverrides(unittest.TestCase):
             "enabled": True,
             "model": "anthropic/claude-4.6-sonnet",
             "cadence": "4h",
+            # Retired knob: still accepted (and ignored) from legacy configs.
             "min_heartbeats": 5,
             "review_window": "1h",
             "auto_approve": False,
@@ -78,7 +79,7 @@ class TestConfigModeOverrides(unittest.TestCase):
         self.assertEqual(config.heartbeat.reasoning.effort, "low")
         self.assertTrue(config.planning.enabled)
         self.assertEqual(config.planning.model, "anthropic/claude-4.6-sonnet")
-        self.assertEqual(config.planning.min_heartbeats, 5)
+        self.assertEqual(config.planning.cadence, "4h")
         self.assertFalse(config.planning.auto_approve)
         self.assertEqual(config.modes.profiles["heartbeat"].max_steps, 8)
         self.assertEqual(config.modes.profiles["plan"].max_steps, 6)

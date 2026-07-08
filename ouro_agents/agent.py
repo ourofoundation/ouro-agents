@@ -108,7 +108,6 @@ from .utils.streaming import FinalAnswerStreamer, IntermediateContentStreamer
 from .uuid_v7 import uuid7_str
 
 if TYPE_CHECKING:
-    from .modes.planning import PlanCycle
     from .subagents.context import SubAgentContext
 
 logger = logging.getLogger(__name__)
@@ -620,21 +619,7 @@ class OuroAgent:
         if not notes_text and not team_id:
             notes_text = self.notes
 
-        from .modes.planning import PlanStore, format_plans_index_for_prompt
-
-        all_active_plans = []
-        if team_id:
-            store = PlanStore(
-                self._workspace / "teams" / team_id / "plans", team_id=team_id
-            )
-            all_active_plans.extend(store.load_all_active())
-        else:
-            for tid in self._sorted_team_ids():
-                store = PlanStore(
-                    self._workspace / "teams" / tid / "plans", team_id=tid
-                )
-                all_active_plans.extend(store.load_all_active())
-        plans_index_text = format_plans_index_for_prompt(all_active_plans)
+        plans_index_text = self._own_quests_index()
 
         return {
             "soul": self.soul,
@@ -644,6 +629,28 @@ class OuroAgent:
             "user_model": user_model_text,
             "plans_index": plans_index_text,
         }
+
+    _OWN_QUESTS_INDEX_TTL_SECS = 300
+
+    def _own_quests_index(self) -> str:
+        """Short prompt index of the agent's own quests, cached briefly.
+
+        The platform is the source of truth for plans; this index just gives
+        the model quest ids to look up. A small TTL cache keeps chat runs from
+        hitting the search API on every turn.
+        """
+        import time
+
+        cached = getattr(self, "_own_quests_index_cache", None)
+        now = time.monotonic()
+        if cached and now - cached[0] < self._OWN_QUESTS_INDEX_TTL_SECS:
+            return cached[1]
+
+        from .modes.planning import format_quests_index_for_prompt, search_own_quests
+
+        text = format_quests_index_for_prompt(search_own_quests(self, limit=10))
+        self._own_quests_index_cache = (now, text)
+        return text
 
     def _is_anthropic_model(self, model_id: str) -> bool:
         return model_id.startswith("anthropic/")
@@ -2897,10 +2904,10 @@ class OuroAgent:
 
         return await force_planning_heartbeat(self, goal=goal, team_id=team_id)
 
-    async def force_review_heartbeat(self, plan_id: str | None = None) -> Optional[str]:
+    async def force_review_heartbeat(self, quest_id: str | None = None) -> Optional[str]:
         from .modes.heartbeat import force_review_heartbeat
 
-        return await force_review_heartbeat(self, plan_id=plan_id)
+        return await force_review_heartbeat(self, quest_id=quest_id)
 
     def dream(
         self,
@@ -2962,52 +2969,52 @@ class OuroAgent:
                 )
         return results
 
-    async def handle_plan_feedback(
+    async def handle_quest_feedback(
         self,
         event_run,
         capability_envelope: Optional[CapabilityEnvelope] = None,
     ) -> Optional[str]:
-        """Handle feedback on a plan quest from an incoming event."""
-        from .modes.planning import PlanStore, run_review_heartbeat
+        """Handle feedback on one of the agent's own quests from an event.
+
+        Verifies ownership against the platform (provenance only checks the
+        payload); when the quest isn't ours or can't be loaded, the event
+        falls through to a normal run with the prebuilt task.
+        """
+        from .modes.planning import run_quest_feedback_run
+        from .syncing import read_field
 
         prov = event_run.provenance
-        if not prov or not prov.plan_cycle:
-            return None
+        quest_id = str(getattr(prov, "root_asset_id", "") or "")
+        own_quest = False
+        if quest_id and self.own_user_id:
+            try:
+                quest = self._get_ouro_client().quests.retrieve(quest_id)
+                own_quest = str(read_field(quest, "user_id") or "") == str(
+                    self.own_user_id
+                )
+            except Exception as e:
+                logger.warning("Failed to verify quest %s ownership: %s", quest_id, e)
 
-        event_team_id = getattr(event_run, "team_id", None)
-        plan_store: PlanStore | None = None
-        matched = None
-
-        search_teams = [event_team_id] if event_team_id else self._sorted_team_ids()
-        for tid in search_teams:
-            ps = PlanStore(self._workspace / "teams" / tid / "plans", team_id=tid)
-            m = ps.load_by_quest_id(prov.plan_cycle.quest_id)
-            if m:
-                plan_store = ps
-                matched = m
-                break
-
-        if matched and matched.status in ("pending_review", "active"):
+        if own_quest:
             hb_model_id = self.config.heartbeat.model or self.config.agent.model
             hb_model = self._build_model(hb_model_id, heartbeat=True)
             proactive_cfg = self.config.heartbeat.proactive
             servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
 
-            reviewed = await run_review_heartbeat(
+            result = await run_quest_feedback_run(
                 self,
                 hb_model,
-                plan_store,
-                matched,
+                quest_id,
                 servers,
-                inline_feedback=event_run.feedback_text or event_run.task,
+                feedback=event_run.feedback_text or event_run.task,
                 reply_parent_id=event_run.reply_parent_id,
                 thread_parent_id=event_run.thread_parent_id,
                 prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
                 capability_envelope=capability_envelope,
             )
-            if reviewed:
-                logger.info("Plan updated via event feedback (cycle %s)", reviewed.id)
-            return reviewed.plan_text if reviewed else None
+            if result is not None:
+                logger.info("Quest %s updated via event feedback", quest_id[:8])
+                return result
 
         return await self.run(
             task=event_run.task,

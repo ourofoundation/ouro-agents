@@ -65,26 +65,25 @@ PLANNING_FRAMING = (
     "You are entering a planning phase. The plan you write here drives everything "
     "you do until the next planning cycle, so its quality matters more than any "
     "single work session. Review the context you are given — previous plan "
-    "outcomes, recent activity, work-direction guidance — and create or revise "
-    "your plan for the upcoming period.\n"
+    "outcomes, recent activity, work-direction guidance — and create your plan "
+    "for the upcoming period.\n"
     "Put actionable work in quest task items, not markdown checklists in the plan "
     "description. Each item must name a concrete deliverable with a checkable "
     "done-condition and be sized to one heartbeat work session — never vague "
-    "activities like 'explore' or 'look into'. Carry unfinished work forward "
-    "deliberately: adopt it, park it as waiting, or drop it with a stated reason. "
+    "activities like 'explore' or 'look into'. "
     "Prefer a few items you can genuinely finish over an ambitious list you can't.\n"
-    "If updating an existing plan, revise the quest in place rather than creating "
-    "a new one, managing quest items directly with the quest item MCP tools "
-    "(create/update/delete) instead of rewriting them in prose. "
+    "Each planning run publishes its own newly-scoped quest. Unfinished items "
+    "from earlier plans stay tracked on their original quests, which remain open "
+    "until they resolve — do not copy them forward or fold them into the new plan. "
     "Do NOT execute any plan items or do actual work — your only job is to write "
     "the plan and publish it as a quest."
 )
 
 REVIEW_FRAMING = (
-    "You have a pending plan that may have received human feedback. "
-    "Check for comments on the plan quest, incorporate any feedback, "
-    "and finalize the plan. "
-    "Do NOT execute plan items — only check for feedback, revise if needed, and report."
+    "One of your quests may have received human feedback. "
+    "Check for comments on the quest, incorporate any feedback, and report the "
+    "quest's next lifecycle status (draft/open/closed) in your structured output. "
+    "Do NOT execute quest items — only check for feedback, revise if needed, and report."
 )
 
 # ---------------------------------------------------------------------------
@@ -119,8 +118,8 @@ PLAN_OUTPUT = (
     "containing the required structured JSON and no tool calls. "
     "Read-only tools (`search_assets`, `get_asset`, `get_comments`, `list_quest_items`) "
     "may be used for targeted inspection before writing. "
-    "In fresh planning runs, the only write tool is `create_quest`. In continuation/review "
-    "runs, you may use `update_quest`, `list_quest_items`, `create_quest_items`, "
+    "In planning runs, the only write tool is `create_quest`. In review runs, "
+    "you may use `update_quest`, `list_quest_items`, `create_quest_items`, "
     "`update_quest_item`, and `delete_quest_item` as needed before finishing."
 )
 

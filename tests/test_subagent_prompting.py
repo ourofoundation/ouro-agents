@@ -4,12 +4,11 @@ from ouro_agents.modes.framing import CHAT_FRAMING, HEARTBEAT_FRAMING
 from ouro_agents.modes.profiles import CHAT, HEARTBEAT, PLAN, REVIEW
 from ouro_agents.skills import load_startup_skills, resolve_skill, resolve_skills
 from ouro_agents.subagents.context import SubAgentContext
-from ouro_agents.subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT, PREFLIGHT_PROMPT
+from ouro_agents.subagents.preflight import PREFLIGHT_PROMPT
 from ouro_agents.subagents.prompts import DEVELOPER_PROMPT, EXECUTOR_PROMPT
 from ouro_agents.subagents.profiles import (
     DEVELOPER,
     EXECUTOR,
-    HEARTBEAT_PREFLIGHT,
     PREFLIGHT,
     RESEARCH,
     WRITER,
@@ -123,10 +122,9 @@ def test_preflight_task_context_is_slim_and_non_action_oriented(tmp_path):
 
 
 def test_preflight_prompts_require_plain_json_final_message():
-    for prompt in (PREFLIGHT_PROMPT, HEARTBEAT_PREFLIGHT_PROMPT):
-        assert "Finish by ending the turn with a final message" in prompt
-        assert "JSON object alone" in prompt
-        assert "final_answer" not in prompt
+    assert "Finish by ending the turn with a final message" in PREFLIGHT_PROMPT
+    assert "JSON object alone" in PREFLIGHT_PROMPT
+    assert "final_answer" not in PREFLIGHT_PROMPT
 
 
 def test_preflight_system_prompt_starts_with_preflight_role():
@@ -152,12 +150,6 @@ def test_preflight_prompts_limit_tool_use_and_recover():
     assert "Include a memory only if it would change what the main agent" in PREFLIGHT_PROMPT
     assert "End moderate/complex plans with a verification step" in PREFLIGHT_PROMPT
 
-    assert "call memory_recall at most once" in HEARTBEAT_PREFLIGHT_PROMPT
-    assert "memory_recall returns no useful context" in HEARTBEAT_PREFLIGHT_PROMPT
-    assert "previous response failed or was not accepted" in HEARTBEAT_PREFLIGHT_PROMPT
-    assert "Your job is analysis only" in HEARTBEAT_PREFLIGHT_PROMPT
-    assert "Never call side-effecting platform MCP tools" in HEARTBEAT_PREFLIGHT_PROMPT
-
 
 def test_ouro_skill_describes_quest_lifecycle_semantics():
     ouro_skill = resolve_skill("ouro")
@@ -178,15 +170,10 @@ def test_executor_and_developer_prompts_require_concrete_work():
 
 def test_preflight_profiles_only_allow_memory_recall():
     assert PREFLIGHT.allowed_tools == ["memory_recall"]
-    assert HEARTBEAT_PREFLIGHT.allowed_tools == ["memory_recall"]
     assert PREFLIGHT.preload_tools == []
-    assert HEARTBEAT_PREFLIGHT.preload_tools == []
     assert PREFLIGHT.include_work_directive is False
-    assert HEARTBEAT_PREFLIGHT.include_work_directive is False
     assert PREFLIGHT.include_tool_mechanics is False
-    assert HEARTBEAT_PREFLIGHT.include_tool_mechanics is False
     assert PREFLIGHT.include_asset_placement is False
-    assert HEARTBEAT_PREFLIGHT.include_asset_placement is False
     assert "soul" not in PREFLIGHT.shared_context_sections
 
 

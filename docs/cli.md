@@ -98,8 +98,8 @@ belongs to multiple teams, a TUI picker (`tui/team_picker.py`) prompts you
 to choose. The optional positional `prompt` becomes the goal/directive
 the planner builds around.
 
-The planner emits an Ouro **quest**, a numbered plan, and a `PlanCycle`
-under `workspace/teams/<team_id>/plans/`. See [Planning](./planning.md).
+The planner publishes an Ouro **quest** (as a draft awaiting review) and
+records it in the team's planning cursor. See [Planning](./planning.md).
 
 ## `review`
 
@@ -107,10 +107,11 @@ under `workspace/teams/<team_id>/plans/`. See [Planning](./planning.md).
 ouro-agents review
 ```
 
-Forces a review heartbeat. If multiple plans across teams are reviewable,
-a TUI picker (`tui/review_picker.py`) lets you pick which one. The review
-heartbeat re-checks comments on the quest, applies feedback, and either
-promotes the plan to `active` or keeps it in `pending_review`.
+Forces a review check on one of the agent's quests. If multiple quests
+are reviewable (draft or open), a TUI picker (`tui/review_picker.py`)
+lets you pick which one. The review run re-checks comments on the quest,
+applies feedback, and moves the quest's lifecycle status (`draft` →
+`open` on approval, or `closed` on cancellation).
 
 ## `runs`
 

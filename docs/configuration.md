@@ -170,10 +170,12 @@ Hoisted from `modes.planning`.
 |-------|------|---------|-------|
 | `enabled` | bool | `false` | Master switch for the planning cycle. |
 | `model` | str | none | Planner model; falls back to `agent.model`. |
-| `cadence` | str | `1d` | How often a new plan cycle is generated. |
-| `min_heartbeats` | int | 4 | Minimum heartbeats between plan cycles. |
-| `review_window` | str | `2h` | How long a plan stays in `pending_review` before auto-approval. |
-| `auto_approve` | bool | `true` | Skip controller review entirely. |
+| `cadence` | str | `1d` | How often a new plan quest may be published (per team; fires only once the work inbox drains). |
+| `review_window` | str | `2h` | How long a plan quest stays in `draft` before auto-approval. |
+| `auto_approve` | bool | `true` | Auto-open drafts after the review window with no feedback. |
+
+The retired `min_heartbeats` knob is still accepted from legacy configs and
+ignored — inbox depth now paces replanning naturally.
 
 The plan-loop max steps live in `modes.planning.max_steps` (which becomes
 the `plan` mode profile's step budget).

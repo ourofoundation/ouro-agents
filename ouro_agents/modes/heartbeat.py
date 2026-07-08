@@ -1,19 +1,25 @@
 """Heartbeat mode: scheduler, active hours, and orchestration.
 
-The heartbeat is the agent's autonomous tick — it runs on a timer, loads
-a playbook, integrates the planning cycle, and decides what to do next.
+The heartbeat is the agent's autonomous tick. Each tick:
+
+1. Loads the **work inbox** — actionable items across quests assigned to the
+   agent plus open quests it owns. Waiting items never enter the inbox.
+2. Runs planning bookkeeping: auto-approves draft plan quests whose review
+   window elapsed, and — when the inbox has drained and the planning cadence
+   is due — publishes a new draft plan quest.
+3. Works the top of the inbox, or falls back to the general playbook.
+
+A plan is just a quest; there is no separate plan-execution path.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
 
 from ..config import HeartbeatConfig
 from ..constants import parse_interval_seconds, parse_json_from_llm
@@ -151,48 +157,9 @@ def format_active_period_status(config: HeartbeatConfig) -> str:
     return f"period={start_str}–{end_str} ({tz_label}); now={state}; {beats_est}"
 
 
-def build_plan_execution_playbook(plan_context: str, min_heartbeats: int) -> str:
-    """Instruction block for working on an active plan during one heartbeat."""
-    guidance = (
-        "Treat this heartbeat as a bounded work session. Make one meaningful slice "
-        "of progress that changes platform state or produces a useful artifact, then stop. "
-        "Good slices include running a route, creating or updating a dataset/file/post, "
-        "adding a substantive comment, or completing a quest item with evidence. Do not "
-        "try to clear an entire multi-step plan in a single tick, and do not feel pressure "
-        "to use all available steps."
-    )
-    if min_heartbeats > 1:
-        guidance += (
-            f" This planning cycle is expected to unfold across at least "
-            f"{min_heartbeats} heartbeats before replanning, so leave room for "
-            "later heartbeats unless the remaining work is genuinely tiny."
-        )
-
-    return (
-        "You are executing a specific plan during this heartbeat.\n\n"
-        f"{plan_context}\n\n"
-        f"{guidance}\n\n"
-        "Use `update_quest_item` to mark an item `in_progress` before working on it. "
-        "When you complete an item, use `complete_quest_item` with a substantive "
-        "completion note and any produced asset id. Use `list_quest_items` if the "
-        "local item context seems stale.\n"
-        "If an item cannot progress right now because it is blocked on an external "
-        "event (a reply, a review) or a future date, do NOT leave it as plain "
-        "`in_progress`: call `update_quest_item` with `waiting_on` (why) and, when "
-        "known, `waiting_until` (ISO timestamp). Parked items are treated as "
-        "non-actionable so they won't hold up starting the next cycle; clear the "
-        "waiting fields (pass empty strings) when the item becomes workable again.\n"
-        "For work that needs a light recurring check (e.g. scan for a reply once a "
-        "day until it arrives), also set `waiting_check_every` (an interval like "
-        "'1d' or '6h'). The item will resurface on that cadence — do the check when "
-        "it does, then `complete_quest_item` once resolved to stop the recurrence. "
-        "You do not need to manually reschedule a recurring check; it re-parks "
-        "itself after each due tick.\n"
-        "IMPORTANT: If you complete the final item in a plan during this heartbeat, "
-        "you MUST use the `write_comment` MCP tool to comment on the plan's original quest "
-        "(using the quest id shown above). Summarize the work you accomplished and include "
-        "links to any posts or assets you created."
-    )
+# ---------------------------------------------------------------------------
+# Playbook / direction context loading
+# ---------------------------------------------------------------------------
 
 
 def _load_playbook(agent: "OuroAgent", heartbeat_doc_store) -> str | None:
@@ -447,21 +414,22 @@ def _recent_run_team_scores(
 
 
 def _select_planning_team_id(
-    agent: "OuroAgent", team_plan_stores: dict[str, object]
+    agent: "OuroAgent", candidate_team_ids: list[str]
 ) -> str | None:
-    candidate_ids = {
-        team_id
-        for team_id, store in team_plan_stores.items()
-        if store.load_default() is None and _planning_team_is_writable(agent, team_id)
-    }
-    if not candidate_ids:
+    """Pick the planning team by direction-memory and recent-activity signals.
+
+    Falls back to the first candidate (sorted order) when nothing scores.
+    """
+    if not candidate_team_ids:
         return None
+    if len(candidate_team_ids) == 1:
+        return candidate_team_ids[0]
 
     scored: dict[str, tuple[float, float, list[str]]] = {
-        team_id: (0.0, 0.0, []) for team_id in candidate_ids
+        team_id: (0.0, 0.0, []) for team_id in candidate_team_ids
     }
 
-    for team_id in candidate_ids:
+    for team_id in candidate_team_ids:
         score, signal_time, reason = _team_direction_score(agent, team_id)
         if score:
             total, latest, reasons = scored[team_id]
@@ -472,7 +440,7 @@ def _select_planning_team_id(
             )
 
     for team_id, (score, signal_time, reason) in _recent_run_team_scores(
-        agent, candidate_ids
+        agent, set(candidate_team_ids)
     ).items():
         total, latest, reasons = scored[team_id]
         scored[team_id] = (
@@ -487,7 +455,7 @@ def _select_planning_team_id(
         if score > 0
     ]
     if not ranked:
-        return None
+        return sorted(candidate_team_ids)[0]
     ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
     selected_score, _signal_time, selected, reasons = ranked[0]
     logger.info(
@@ -499,71 +467,9 @@ def _select_planning_team_id(
     return selected
 
 
-def _select_heartbeat_team_id(
-    team_plan_stores: dict[str, object],
-    agent: "OuroAgent" | None = None,
-) -> str | None:
-    ranked: list[tuple[int, str]] = []
-    priorities = {"active": 0, "pending_review": 1, "planning": 2}
-    for team_id, store in team_plan_stores.items():
-        default_plan = store.load_default()
-        if default_plan and default_plan.status in priorities:
-            ranked.append((priorities[default_plan.status], team_id))
-    if ranked:
-        ranked.sort()
-        selected = ranked[0][1]
-        logger.info(
-            "Selected heartbeat team %s (plan status=%s, %d teams with plans)",
-            selected[:8], ranked[0][0], len(ranked),
-        )
-        return selected
-    if len(team_plan_stores) == 1:
-        fallback = next(iter(team_plan_stores), None)
-        if agent is not None and fallback and not _planning_team_is_writable(
-            agent, fallback
-        ):
-            logger.info(
-                "No teams have active plans; only team %s is not writable by agents",
-                fallback[:8],
-            )
-            return None
-        logger.info(
-            "No teams have active plans; defaulting to only team %s",
-            fallback[:8] if fallback else "none",
-        )
-        return fallback
-    if agent is not None:
-        selected = _select_planning_team_id(agent, team_plan_stores)
-        if selected:
-            return selected
-    logger.info(
-        "No teams have active plans or planning-team signals; running general heartbeat unscoped (%d teams total)",
-        len(team_plan_stores),
-    )
-    return None
-
-
-def _item_is_waiting(item: Any, now: datetime | None = None) -> bool:
-    """True when a quest item (dict or object) is parked and not actionable yet.
-
-    Mirrors ``PlanItem.is_waiting``: an unfinished item with a future
-    ``waiting_until`` (or a ``waiting_on`` with no date) is treated as waiting so
-    it is kept out of the actionable inbox until it comes due.
-    """
-    from .planning import _parse_iso_datetime
-
-    status = _value(item, "status")
-    if status in ("done", "skipped"):
-        return False
-    deadline = _parse_iso_datetime(_value(item, "waiting_until"))
-    if deadline is not None:
-        now = now or datetime.now(timezone.utc)
-        return deadline > now
-    # A recurring check with no next-time set is due now.
-    if _value(item, "waiting_check_every"):
-        return False
-    waiting_on = _value(item, "waiting_on") or ""
-    return bool(str(waiting_on).strip())
+# ---------------------------------------------------------------------------
+# Work inbox — actionable quest items across assigned + owned quests
+# ---------------------------------------------------------------------------
 
 
 def _advance_due_recurring_items(
@@ -579,23 +485,23 @@ def _advance_due_recurring_items(
     heartbeat. Completing the item stops the recurrence. Failures are non-fatal:
     the item is still worked this heartbeat, just not rescheduled.
     """
-    from ..constants import parse_interval_seconds
+    from .planning import item_is_waiting
 
     now = now or datetime.now(timezone.utc)
     client = None
     for item in items:
-        every = _value(item, "waiting_check_every")
+        every = item.get("waiting_check_every")
         if not every:
             continue
-        if _value(item, "status") not in ("pending", "in_progress"):
+        if item.get("status") not in ("pending", "in_progress"):
             continue
-        if _item_is_waiting(item, now):
+        if item_is_waiting(item, now):
             continue
         seconds = parse_interval_seconds(str(every))
         if not seconds:
             continue
-        quest_id = _value(item, "quest_id")
-        item_id = _value(item, "id")
+        quest_id = item.get("quest_id")
+        item_id = item.get("id")
         if not quest_id or not item_id:
             continue
         next_iso = (now + timedelta(seconds=seconds)).isoformat()
@@ -611,12 +517,13 @@ def _advance_due_recurring_items(
                 e,
             )
             continue
-        if isinstance(item, dict):
-            item["waiting_until"] = next_iso
+        item["waiting_until"] = next_iso
 
 
 def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]:
     """Fetch actionable quest items assigned to this agent, if supported by the API."""
+    from .planning import item_is_waiting, normalize_item
+
     if not getattr(agent, "own_user_id", None):
         return []
     try:
@@ -630,48 +537,32 @@ def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict
             raw = raw.get("data") or []
         if not isinstance(raw, list):
             return []
-        return [
-            item
-            for item in raw
-            if isinstance(item, dict) and not _item_is_waiting(item)
-        ]
+        items = []
+        for item in raw:
+            if not isinstance(item, dict) or item_is_waiting(item):
+                continue
+            normalized = normalize_item(item)
+            normalized["inbox_source"] = "assigned"
+            items.append(normalized)
+        return items
     except Exception as e:
         logger.warning("Failed to load assigned quest items: %s", e)
         return []
 
 
-def _value(obj: Any, key: str, default: Any = None) -> Any:
-    if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
-
-
-def _as_dict(obj: Any) -> dict[str, Any]:
-    if isinstance(obj, dict):
-        return dict(obj)
-    dump = getattr(obj, "model_dump", None)
-    if callable(dump):
-        try:
-            return dump(mode="json")
-        except TypeError:
-            return dump()
-    values = getattr(obj, "__dict__", None)
-    if isinstance(values, dict):
-        return dict(values)
-    return {}
-
-
 def _quest_asset_summary(quest: Any, fallback: dict[str, Any]) -> dict[str, Any]:
-    quest_details = _value(quest, "quest")
+    from ..syncing import read_field
+
+    quest_details = read_field(quest, "quest")
     return {
-        "id": str(_value(quest, "id", fallback.get("id") or "")),
-        "name": _value(quest, "name", fallback.get("name") or "Untitled quest"),
-        "org_id": str(_value(quest, "org_id", fallback.get("org_id") or "")),
-        "team_id": str(_value(quest, "team_id", fallback.get("team_id") or "")),
-        "user_id": str(_value(quest, "user_id", fallback.get("user_id") or "")),
+        "id": str(read_field(quest, "id") or fallback.get("id") or ""),
+        "name": read_field(quest, "name") or fallback.get("name") or "Untitled quest",
+        "org_id": str(read_field(quest, "org_id") or fallback.get("org_id") or ""),
+        "team_id": str(read_field(quest, "team_id") or fallback.get("team_id") or ""),
+        "user_id": str(read_field(quest, "user_id") or fallback.get("user_id") or ""),
         "quest": {
-            "status": _value(quest_details, "status"),
-            "type": _value(quest_details, "type"),
+            "status": read_field(quest_details, "status"),
+            "type": read_field(quest_details, "type"),
         },
     }
 
@@ -679,45 +570,34 @@ def _quest_asset_summary(quest: Any, fallback: dict[str, Any]) -> dict[str, Any]
 def _load_owned_open_quest_items(
     agent: "OuroAgent",
     *,
-    quest_limit: int = 50,
+    quest_limit: int = 25,
     item_limit: int = 10,
 ) -> list[dict[str, Any]]:
     """Fetch actionable items from open quests owned by this agent.
 
-    Assigned items are the strongest signal, but agent-owned quests often encode
-    proactive work without assignee fields. Treat those open items as a second
-    inbox before falling back to self-directed heartbeat work.
+    Plan quests land here like any other owned quest — planning publishes a
+    quest and execution flows through this inbox. Draft quests are excluded
+    (they are awaiting approval), as are waiting items.
     """
+    from .planning import (
+        item_is_waiting,
+        quest_items,
+        quest_status,
+        search_own_quests,
+    )
+
     own_user_id = getattr(agent, "own_user_id", None)
     if not own_user_id:
         return []
     try:
         ouro = agent._get_ouro_client()
-        search = getattr(getattr(ouro, "assets", None), "search", None)
         retrieve = getattr(getattr(ouro, "quests", None), "retrieve", None)
-        if not search or not retrieve:
+        if not retrieve:
             logger.debug("Owned quest discovery is not available in this SDK")
             return []
 
-        search_kwargs: dict[str, Any] = {
-            "asset_type": "quest",
-            "user_id": str(own_user_id),
-            "sort": "updated",
-            "limit": quest_limit,
-        }
-        org_id = getattr(agent.config.agent, "org_id", None)
-        if org_id:
-            search_kwargs["org_id"] = str(org_id)
-        raw_assets = search(**search_kwargs)
-        if isinstance(raw_assets, dict):
-            raw_assets = raw_assets.get("data") or raw_assets.get("results") or []
-        if not isinstance(raw_assets, list):
-            return []
-
         actionable: list[dict[str, Any]] = []
-        for asset in raw_assets:
-            if not isinstance(asset, dict):
-                continue
+        for asset in search_own_quests(agent, limit=quest_limit):
             quest_id = str(asset.get("id") or "")
             if not quest_id:
                 continue
@@ -727,22 +607,18 @@ def _load_owned_open_quest_items(
                 logger.debug("Failed to retrieve owned quest %s: %s", quest_id[:8], e)
                 continue
 
-            quest_details = _value(quest, "quest")
-            if _value(quest_details, "status") != "open":
+            if quest_status(quest) != "open":
                 continue
 
             quest_asset = _quest_asset_summary(quest, asset)
-            for item in _value(quest, "items", []) or []:
-                status = _value(item, "status")
-                if status not in {"pending", "in_progress"}:
+            for item in quest_items(quest):
+                if item.get("status") not in ("pending", "in_progress"):
                     continue
-                if _item_is_waiting(item):
+                if item_is_waiting(item):
                     continue
-                item_dict = _as_dict(item)
-                item_dict.setdefault("id", str(_value(item, "id") or ""))
-                item_dict.setdefault("quest_id", quest_id)
-                item_dict["quest_asset"] = quest_asset
-                actionable.append(item_dict)
+                item["quest_asset"] = quest_asset
+                item["inbox_source"] = "owned"
+                actionable.append(item)
                 if len(actionable) >= item_limit:
                     return actionable
         return actionable
@@ -751,35 +627,57 @@ def _load_owned_open_quest_items(
         return []
 
 
-def _assigned_item_quest(item: dict[str, Any]) -> dict[str, Any]:
+def load_work_inbox(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]:
+    """The ranked, actionable quest-item inbox for one heartbeat tick.
+
+    Items assigned by others come first (strongest signal), then items from
+    the agent's own open quests, newest quest activity first. Waiting items
+    never appear; recurring checks appear only when due.
+    """
+    inbox = _load_assigned_quest_items(agent, limit=limit)
+    seen = {(item.get("quest_id"), item.get("id")) for item in inbox}
+    for item in _load_owned_open_quest_items(agent, item_limit=limit):
+        key = (item.get("quest_id"), item.get("id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        inbox.append(item)
+    return inbox[:limit]
+
+
+def _inbox_item_quest(item: dict[str, Any]) -> dict[str, Any]:
     quest = item.get("quest_asset")
     return quest if isinstance(quest, dict) else {}
 
 
-def _assigned_work_team_id(items: list[dict[str, Any]]) -> str | None:
+def inbox_team_id(items: list[dict[str, Any]], agent: "OuroAgent") -> str | None:
+    """Team scope for the tick: the top inbox item's team, when it's ours."""
+    known = set(_sorted_team_ids(agent))
     for item in items:
-        team_id = _assigned_item_quest(item).get("team_id")
-        if team_id:
-            return str(team_id)
+        team_id = str(_inbox_item_quest(item).get("team_id") or "")
+        if team_id and team_id in known:
+            return team_id
     return None
 
 
-def _format_assigned_quest_items(items: list[dict[str, Any]]) -> str:
+def _format_inbox_items(items: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for idx, item in enumerate(items, start=1):
-        quest = _assigned_item_quest(item)
+        quest = _inbox_item_quest(item)
         quest_id = str(item.get("quest_id") or quest.get("id") or "")
         quest_name = quest.get("name") or "Untitled quest"
         status = item.get("status") or "unknown"
         item_id = str(item.get("id") or "")
         description = item.get("description") or "(no description)"
-        submission_assets = item.get("submission_assets")
-        eval_route_id = item.get("eval_route_id")
         details = []
-        if submission_assets:
-            details.append(f"submission_assets={json.dumps(submission_assets)}")
-        if eval_route_id:
-            details.append(f"eval_route_id={eval_route_id}")
+        if item.get("inbox_source") == "assigned":
+            details.append("assigned to you")
+        if item.get("submission_assets"):
+            import json as _json
+
+            details.append(f"submission_assets={_json.dumps(item['submission_assets'])}")
+        if item.get("eval_route_id"):
+            details.append(f"eval_route_id={item['eval_route_id']}")
         suffix = f" ({'; '.join(details)})" if details else ""
         lines.append(
             f"{idx}. Quest `{quest_id}` — {quest_name}\n"
@@ -788,44 +686,60 @@ def _format_assigned_quest_items(items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_assigned_work_playbook(items: list[dict[str, Any]]) -> str:
-    """Instruction block for externally planned quest work assigned to the agent."""
+def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
+    """Instruction block for one heartbeat of quest work from the inbox."""
+    has_assigned = any(i.get("inbox_source") == "assigned" for i in items)
+    completion_guidance = (
+        "When a slice is complete on a quest you own, use `complete_quest_item` "
+        "with a substantive completion note and any produced asset id. "
+    )
+    if has_assigned:
+        completion_guidance += (
+            "For items assigned to you on a quest owned by someone else, prefer "
+            "`submit_quest_entry` with a substantive description and any produced "
+            "asset IDs; use `complete_quest_item` only when you are clearly "
+            "allowed to self-complete. Do not create a new quest or rewrite "
+            "someone else's plan unless the owner explicitly asks for that. "
+        )
     return (
-        "You are executing quest work assigned to you by someone else.\n\n"
-        "The quest owner is responsible for planning. Do not create a new planning "
-        "quest or rewrite the quest's plan unless the owner explicitly asks for that. "
-        "Choose one assigned pending or in-progress item, make one meaningful slice "
-        "of progress, and leave clear evidence.\n\n"
-        "## Assigned Quest Items\n"
-        f"{_format_assigned_quest_items(items)}\n\n"
+        "You are working your quest inbox this heartbeat.\n\n"
+        "These are the actionable items across quests assigned to you and open "
+        "quests you own, in priority order. Choose ONE item — normally the "
+        "first, unless a later item is clearly more urgent — make one "
+        "meaningful slice of progress that changes platform state or produces "
+        "a useful artifact, and leave clear evidence. Do not try to clear the "
+        "whole inbox in a single tick.\n\n"
+        "## Quest Inbox\n"
+        f"{_format_inbox_items(items)}\n\n"
         "Use `get_asset` or `list_quest_items` if you need more quest context. "
-        "Mark the item `in_progress` with `update_quest_item` if you have permission; "
-        "if that is rejected, continue with the work and report progress through a "
-        "submission or comment. For completion on a quest owned by someone else, "
-        "prefer `submit_quest_entry` with a substantive description and any produced "
-        "asset IDs. Use `complete_quest_item` only when you are clearly allowed to "
-        "self-complete the item. If blocked, comment on the quest with the blocker "
-        "and the next concrete question."
+        "Mark the item `in_progress` with `update_quest_item` before working "
+        "when appropriate. "
+        f"{completion_guidance}"
+        "If an item cannot progress right now because it is blocked on an "
+        "external event (a reply, a review) or a future date, do NOT leave it "
+        "as plain `in_progress`: call `update_quest_item` with `waiting_on` "
+        "(why) and, when known, `waiting_until` (ISO timestamp). Parked items "
+        "leave this inbox until they come due; clear the waiting fields (pass "
+        "empty strings) when the item becomes workable again. For work that "
+        "needs a light recurring check (e.g. scan for a reply once a day until "
+        "it arrives), also set `waiting_check_every` (an interval like '1d' or "
+        "'6h') — the item resurfaces on that cadence and re-parks itself after "
+        "each due tick; `complete_quest_item` stops the recurrence.\n"
+        "IMPORTANT: If you complete the final open item on a quest you own, "
+        "close the loop: use `write_comment` on that quest summarizing the work "
+        "accomplished (with links to produced assets), and set the quest's "
+        "status to \"closed\" with `update_quest`."
     )
 
 
-def build_owned_work_playbook(items: list[dict[str, Any]]) -> str:
-    """Instruction block for open quest work owned by the agent."""
-    return (
-        "You are executing one of your own open quests.\n\n"
-        "These quest items may not be explicitly assigned to you, but you own the "
-        "quest and it contains pending or in-progress work. Treat this as a stronger "
-        "priority than inventing new heartbeat work. Choose one item, make one "
-        "meaningful slice of progress, and leave clear evidence.\n\n"
-        "## Open Quest Items\n"
-        f"{_format_assigned_quest_items(items)}\n\n"
-        "Use `get_asset` or `list_quest_items` if you need more quest context. "
-        "Mark the item `in_progress` with `update_quest_item` before working when "
-        "appropriate. When a slice is complete, use `complete_quest_item` with a "
-        "substantive completion note and any produced asset id. If the quest item "
-        "is broader than one heartbeat, update the item notes or comment on the "
-        "quest with the concrete progress and next step."
-    )
+_INBOX_PRELOAD_TOOLS = [
+    "ouro:get_asset",
+    "ouro:list_quest_items",
+    "ouro:update_quest_item",
+    "ouro:complete_quest_item",
+    "ouro:submit_quest_entry",
+    "ouro:write_comment",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -865,7 +779,7 @@ def start_scheduler(agent, config: HeartbeatConfig):
             "m": {"minutes": val},
             "h": {"hours": val},
         }[unit]
-        
+
         tz = None
         if config.active_hours and "timezone" in config.active_hours:
             try:
@@ -873,7 +787,7 @@ def start_scheduler(agent, config: HeartbeatConfig):
                 tz = zoneinfo.ZoneInfo(config.active_hours["timezone"])
             except Exception:
                 pass
-        
+
         # Anchor date in the past to align intervals to the start time
         anchor = datetime(2024, 1, 1, start_hour, start_minute, tzinfo=tz)
         trigger = IntervalTrigger(**kwargs, start_date=anchor)
@@ -899,19 +813,19 @@ def start_scheduler(agent, config: HeartbeatConfig):
             logger.error("Heartbeat failed: %s", e)
 
     job = scheduler.add_job(
-        _run_heartbeat, 
+        _run_heartbeat,
         trigger,
         next_run_time=trigger.get_next_fire_time(None, datetime.now(timezone.utc))
     )
     scheduler.start()
-    
+
     next_run = job.next_run_time if hasattr(job, "next_run_time") else None
     next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S %Z") if next_run else "unknown"
     logger.info("Started heartbeat scheduler: every %s; %s; next_run=%s", config.every, format_active_period_status(config), next_run_str)
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat orchestration (previously agent.heartbeat)
+# Heartbeat orchestration
 # ---------------------------------------------------------------------------
 
 
@@ -932,18 +846,12 @@ async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
 
 
 async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
-    """Run a full heartbeat cycle: planning integration, playbook, and run."""
-    from ..memory.reflection import write_log
+    """Run a full heartbeat cycle: inbox, planning bookkeeping, and one run."""
     from .planning import (
-        PlanStore,
-        comment_on_plan,
-        next_action,
-        parse_cadence_seconds,
-        reconcile_plan_with_remote_quest,
-        render_all_plans_context,
-        run_planning_heartbeat,
-        run_review_heartbeat,
-        update_quest_status,
+        auto_approve_due_drafts,
+        load_cursor,
+        planning_due,
+        run_planning_run,
     )
     from .profiles import RunMode
 
@@ -956,371 +864,73 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         logger.warning("Failed to refresh platform context during heartbeat: %s", e)
 
     proactive_cfg = agent.config.heartbeat.proactive
-    planning_servers = (
-        proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
-    )
-    heartbeat_team_id: str | None = None
-    heartbeat_doc_store = agent.doc_store
-    team_plan_stores: dict[str, PlanStore] = {}
-    plan_store: Optional[PlanStore] = None
+    servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
     planning_cfg = agent.config.planning
-    assigned_items = _load_assigned_quest_items(agent)
-    owned_items = [] if assigned_items else _load_owned_open_quest_items(agent)
+    team_ids = _sorted_team_ids(agent)
 
-    # --- Planning cycle integration ---
-    if planning_cfg.enabled and not assigned_items and not owned_items:
-        logger.info(
-            "Planning enabled: cadence=%s, min_heartbeats=%d, auto_approve=%s",
-            planning_cfg.cadence, planning_cfg.min_heartbeats, planning_cfg.auto_approve,
-        )
-        workspace = agent.config.agent.workspace
+    inbox = load_work_inbox(agent)
+    logger.info("Work inbox: %d actionable item(s)", len(inbox))
 
-        # Build per-team PlanStores and choose one team context for this tick.
-        for tid in _sorted_team_ids(agent):
-            team_plan_stores[tid] = PlanStore(
-                workspace / "teams" / tid / "plans", team_id=tid,
-            )
+    # --- Planning bookkeeping ---
+    # Auto-approval always runs; a new plan is only published once the inbox
+    # has drained, so actionable work is finished before new quests appear.
+    # Waiting-only quests never hold the inbox open, so parked follow-ups
+    # don't block new plans.
+    if planning_cfg.enabled and team_ids:
+        try:
+            auto_approve_due_drafts(agent, team_ids)
+        except Exception:
+            logger.exception("Draft auto-approval failed")
 
-        # Migrate: if old flat workspace/plans/ exists, only auto-move when there
-        # is a single team — otherwise the first sorted id is arbitrary and pins
-        # plans to the wrong team.
-        legacy_plans = workspace / "plans"
-        sorted_team_ids = _sorted_team_ids(agent)
-        if legacy_plans.exists() and (legacy_plans / "active").exists():
-            if len(sorted_team_ids) != 1:
-                logger.warning(
-                    "Legacy workspace/plans/ exists but agent has %d teams; "
-                    "skipping auto-migration. Move contents to teams/<team_id>/plans/ "
-                    "manually or remove legacy plans/.",
-                    len(sorted_team_ids),
-                )
-            else:
-                first_tid = sorted_team_ids[0]
-                import shutil
-
-                dest = workspace / "teams" / first_tid / "plans"
-                if not dest.exists():
-                    dest.mkdir(parents=True, exist_ok=True)
-                    for child in legacy_plans.iterdir():
-                        if child.name in ("active", "history"):
-                            shutil.copytree(child, dest / child.name, dirs_exist_ok=True)
-                    shutil.rmtree(legacy_plans, ignore_errors=True)
-                    logger.info("Migrated legacy plans/ → teams/%s/plans/", first_tid)
-                    team_plan_stores[first_tid] = PlanStore(dest, team_id=first_tid)
-
-        if not team_plan_stores:
-            logger.warning("No teams discovered — cannot run planning without a team")
-            return None
-
-        ouro_client = agent._get_ouro_client()
-        for store in team_plan_stores.values():
-            for cycle in store.load_all_active():
-                reconcile_plan_with_remote_quest(store, cycle, ouro_client)
-
-        heartbeat_team_id = _select_heartbeat_team_id(team_plan_stores, agent=agent)
-        default_plan = None
-        if heartbeat_team_id:
-            plan_store = team_plan_stores[heartbeat_team_id]
-            default_plan = plan_store.load_default()
-            heartbeat_doc_store = agent.doc_store_for(heartbeat_team_id)
-
-        logger.info(
-            "Default plan for team %s: %s",
-            heartbeat_team_id[:8] if heartbeat_team_id else "none",
-            f"id={default_plan.id[:8]} status={default_plan.status} items={len(default_plan.items)}"
-            if default_plan else "none",
-        )
-
-        action = None
-        if plan_store:
-            action = next_action(
-                current=default_plan,
-                cadence=planning_cfg.cadence,
-                min_heartbeats=planning_cfg.min_heartbeats,
-                review_window=planning_cfg.review_window,
-                auto_approve=planning_cfg.auto_approve,
-            )
-            logger.info("Planning next_action=%s", action)
-
-        if action == "plan":
-            future_hb = has_future_heartbeat_in_active_window(agent.config.heartbeat)
-            if not future_hb:
-                if default_plan and default_plan.status == "active":
-                    if default_plan.needs_replan_stale_active or default_plan.all_items_complete:
-                        stale_window = default_plan.needs_replan_stale_active
-                        plan_store.archive(
-                            default_plan, ouro_client=agent._get_ouro_client()
-                        )
-                        reason = (
-                            "stale (no quest/items)"
-                            if stale_window
-                            else "complete"
-                        )
-                        logger.info(
-                            "Archived default plan %s at end of active window (%s)",
-                            default_plan.id[:8],
-                            reason,
-                        )
+        if not inbox:
+            workspace = agent.config.agent.workspace
+            due_teams = [
+                tid
+                for tid in team_ids
+                if _planning_team_is_writable(agent, tid)
+                and planning_due(load_cursor(workspace, tid), planning_cfg.cadence)
+            ]
+            if due_teams and not has_future_heartbeat_in_active_window(
+                agent.config.heartbeat
+            ):
                 logger.info(
                     "Skipping planning: no future heartbeat remains in active window"
                 )
-                return None
-            if default_plan and default_plan.status == "active":
-                if default_plan.needs_replan_stale_active:
+            elif due_teams:
+                team_id = _select_planning_team_id(agent, due_teams)
+                if team_id:
                     logger.info(
-                        "Archiving defunct active plan %s (no quest, no items); "
-                        "starting fresh planning cycle",
-                        default_plan.id[:8],
+                        "Planning cadence due for team %s; publishing a new plan quest",
+                        team_id[:8],
                     )
-                    plan_store.archive(
-                        default_plan, ouro_client=agent._get_ouro_client()
-                    )
-                    return await run_planning_heartbeat(
-                        agent, hb_model, plan_store, planning_servers
-                    )
-                if default_plan.all_items_complete:
-                    logger.info(
-                        "Plan %s complete; archiving and starting fresh planning cycle",
-                        default_plan.id[:8],
-                    )
-                    plan_store.archive(
-                        default_plan, ouro_client=agent._get_ouro_client()
-                    )
-                    return await run_planning_heartbeat(
-                        agent, hb_model, plan_store, planning_servers
-                    )
-                logger.info(
-                    "Continuing planning for active plan %s (%d/%d items done)",
-                    default_plan.id[:8],
-                    default_plan.items_done,
-                    len(default_plan.items),
-                )
-                return await run_planning_heartbeat(
-                    agent,
-                    hb_model,
-                    plan_store,
-                    planning_servers,
-                    continuation=default_plan,
-                )
-            logger.info("No existing plan; starting fresh planning cycle")
-            return await run_planning_heartbeat(
-                agent, hb_model, plan_store, planning_servers
-            )
+                    return await run_planning_run(agent, hb_model, team_id, servers)
+    elif planning_cfg.enabled:
+        logger.info("No teams discovered — planning requires a team")
 
-        if action == "check_review":
-            logger.info("Checking for review feedback on plan %s",
-                        default_plan.id[:8] if default_plan else "none")
-            reviewed = await run_review_heartbeat(
-                agent, hb_model, plan_store, default_plan, planning_servers
-            )
-            if reviewed:
-                logger.info("Plan %s approved after review", reviewed.id[:8])
-                default_plan = reviewed
-
-        if (
-            action == "execute"
-            and default_plan
-            and default_plan.status == "pending_review"
-        ):
-            default_plan.status = "active"
-            default_plan.activated_at = datetime.now(timezone.utc).isoformat()
-            plan_store.save(default_plan)
-            update_quest_status(agent._get_ouro_client(), default_plan)
-            comment_on_plan(
-                agent._get_ouro_client(),
-                default_plan.quest_id,
-                "Review window elapsed with no feedback — plan auto-activated.",
-            )
-            logger.info(
-                "Plan %s auto-approved (review window elapsed)", default_plan.id[:8]
-            )
-            quest_link = (
-                f" [plan](asset:{default_plan.quest_id})" if default_plan.quest_id else ""
-            )
-            write_log(
-                agent.config.agent.workspace,
-                f"[planning:auto-approved]{quest_link} Plan activated without feedback",
-                doc_store=heartbeat_doc_store,
-                agent_name=agent.config.agent.name,
-            )
-
-        if default_plan and default_plan.status == "active":
-            default_plan.heartbeats_completed += 1
-            plan_store.save(default_plan)
-            logger.info(
-                "Plan %s: heartbeats_completed=%d",
-                default_plan.id[:8], default_plan.heartbeats_completed,
-            )
-
-        # --- Goal plans: auto-approve / auto-complete (selected team only) ---
-        if plan_store:
-            now_utc = datetime.now(timezone.utc)
-            review_secs = parse_cadence_seconds(planning_cfg.review_window)
-            for gp in plan_store.load_all_active():
-                if gp.kind != "goal":
-                    continue
-                if (
-                    gp.status == "pending_review"
-                    and planning_cfg.auto_approve
-                    and review_secs
-                ):
-                    created = datetime.fromisoformat(gp.created_at)
-                    if created.tzinfo is None:
-                        created = created.replace(tzinfo=timezone.utc)
-                    if (now_utc - created).total_seconds() >= review_secs:
-                        gp.status = "active"
-                        gp.activated_at = now_utc.isoformat()
-                        plan_store.save(gp)
-                        update_quest_status(agent._get_ouro_client(), gp)
-                        comment_on_plan(
-                            agent._get_ouro_client(),
-                            gp.quest_id,
-                            "Review window elapsed — goal plan auto-activated.",
-                        )
-                        logger.info("Goal plan %s auto-approved", gp.id[:8])
-                if gp.status == "active":
-                    gp.heartbeats_completed += 1
-                    if gp.all_items_complete:
-                        plan_store.archive(gp, ouro_client=agent._get_ouro_client())
-                        logger.info("Goal plan %s completed (all items done)", gp.id[:8])
-                    else:
-                        plan_store.save(gp)
-    else:
-        if planning_cfg.enabled:
-            if assigned_items:
-                logger.info(
-                    "Assigned quest work is waiting; deferring self-planning this heartbeat"
-                )
-            else:
-                logger.info(
-                    "Owned open quest work is waiting; deferring self-planning this heartbeat"
-                )
-        else:
-            logger.info("Planning disabled; skipping planning cycle")
-
-    # --- Check for active plans that need execution ---
-    extra_tools = []
-    preload_tools = []
+    # --- Work the inbox ---
+    heartbeat_team_id: str | None = None
+    heartbeat_doc_store = agent.doc_store
     playbook = None
     heartbeat_source = "none"
+    preload_tools: list[str] = []
 
-    if assigned_items:
-        _advance_due_recurring_items(agent, assigned_items)
-        assigned_team_id = _assigned_work_team_id(assigned_items)
-        if assigned_team_id and assigned_team_id in _sorted_team_ids(agent):
-            heartbeat_team_id = assigned_team_id
-            heartbeat_doc_store = agent.doc_store_for(assigned_team_id)
-        playbook = build_assigned_work_playbook(assigned_items)
-        heartbeat_source = "assigned-quest-items"
-        preload_tools = [
-            "ouro:list_assigned_quest_items",
-            "ouro:get_asset",
-            "ouro:list_quest_items",
-            "ouro:update_quest_item",
-            "ouro:submit_quest_entry",
-            "ouro:list_quest_entries",
-            "ouro:complete_quest_item",
-            "ouro:write_comment",
-        ]
-        logger.info("Executing assigned quest work: %d item(s)", len(assigned_items))
+    if inbox:
+        _advance_due_recurring_items(agent, inbox)
+        heartbeat_team_id = inbox_team_id(inbox, agent)
+        if heartbeat_team_id:
+            heartbeat_doc_store = agent.doc_store_for(heartbeat_team_id)
+        playbook = build_quest_work_playbook(inbox)
+        heartbeat_source = "quest-inbox"
+        preload_tools = list(_INBOX_PRELOAD_TOOLS)
 
-    if not playbook and owned_items:
-        _advance_due_recurring_items(agent, owned_items)
-        owned_team_id = _assigned_work_team_id(owned_items)
-        if owned_team_id and owned_team_id in _sorted_team_ids(agent):
-            heartbeat_team_id = owned_team_id
-            heartbeat_doc_store = agent.doc_store_for(owned_team_id)
-        playbook = build_owned_work_playbook(owned_items)
-        heartbeat_source = "owned-open-quest-items"
-        preload_tools = [
-            "ouro:search_assets",
-            "ouro:get_asset",
-            "ouro:list_quest_items",
-            "ouro:update_quest_item",
-            "ouro:complete_quest_item",
-            "ouro:write_comment",
-        ]
-        logger.info("Executing owned open quest work: %d item(s)", len(owned_items))
-
-    if not playbook and planning_cfg.enabled and plan_store:
-        scoped_store = team_plan_stores.get(heartbeat_team_id, plan_store)
-        active_plans = [
-            p for p in scoped_store.load_all_active() if p.status == "active"
-        ]
-        logger.info(
-            "Active plans for execution: %d",
-            len(active_plans),
-        )
-        if active_plans:
-            from ..subagents.profiles import HEARTBEAT_PREFLIGHT
-            from ..subagents.preflight import parse_heartbeat_preflight_result
-            from .planning import render_plan_context
-
-            playbook_for_preflight = _load_playbook(agent, heartbeat_doc_store)
-
-            preflight_context = f"## Active Plans\n{render_all_plans_context(active_plans)}"
-            direction_context = _load_work_direction_context(agent, heartbeat_team_id)
-            if direction_context:
-                preflight_context = f"{direction_context}\n\n{preflight_context}"
-            if playbook_for_preflight:
-                preflight_context = f"## Playbook\n{playbook_for_preflight}\n\n{preflight_context}"
-
-            logger.info("Running heartbeat preflight with %d active plan(s)...", len(active_plans))
-            preflight_result = agent._run_subagent(
-                HEARTBEAT_PREFLIGHT,
-                preflight_context,
-                run_id=getattr(agent, "_current_run_id", None) or "",
-                team_id=heartbeat_team_id,
-                doc_store=heartbeat_doc_store,
-            )
-
-            preflight = parse_heartbeat_preflight_result(preflight_result.text)
-            logger.info(
-                "Preflight decision: action=%s plan_id=%s reasoning=%s",
-                preflight.action, preflight.plan_id, preflight.reasoning,
-            )
-
-            if preflight.action == "skip":
-                logger.info("Heartbeat skipped by preflight: %s", preflight.reasoning)
-                return None
-
-            if preflight.action == "work_on_plan" and preflight.plan_id:
-                target_plan = next(
-                    (p for p in active_plans if p.id.startswith(preflight.plan_id)),
-                    None,
-                )
-                if target_plan:
-                    logger.info(
-                        "Executing plan %s (%d items, %d done)",
-                        target_plan.id[:8],
-                        len(target_plan.items),
-                        target_plan.items_done,
-                    )
-                    playbook = build_plan_execution_playbook(
-                        render_plan_context(target_plan),
-                        planning_cfg.min_heartbeats,
-                    )
-                    heartbeat_source = f"plan:{target_plan.id[:8]}"
-                    preload_tools = [
-                        "ouro:list_quest_items",
-                        "ouro:update_quest_item",
-                        "ouro:complete_quest_item",
-                        "ouro:write_comment",
-                    ]
-                else:
-                    logger.warning(
-                        "Preflight chose plan_id=%s but no matching active plan found",
-                        preflight.plan_id,
-                    )
-
-    # If no plan was selected, load the general playbook
+    # --- Fall back to the general playbook ---
     if not playbook:
         playbook = _load_playbook(agent, heartbeat_doc_store)
         if playbook:
             heartbeat_source = "playbook"
     if not playbook:
         logger.info(
-            "No heartbeat playbook found and no active plan to execute "
+            "No heartbeat playbook found and no quest inbox work "
             "(checked team doc store, global doc store, and local HEARTBEAT.md)"
         )
         return None
@@ -1350,7 +960,6 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         playbook,
         model_override=hb_model,
         mode=RunMode.HEARTBEAT,
-        extra_tools=extra_tools,
         preload_tools=preload_tools,
         preserve_existing_usage=True,
         team_id=heartbeat_team_id,
@@ -1379,11 +988,11 @@ async def force_planning_heartbeat(
     goal: str = "",
     team_id: str | None = None,
 ) -> Optional[str]:
-    """Force a planning cycle regardless of cadence/timing (CLI entry point).
+    """Force a planning run regardless of cadence/timing (CLI entry point).
 
     When *goal* is provided the plan is framed around achieving it.
     """
-    from .planning import PlanStore, run_planning_heartbeat
+    from .planning import run_planning_run
 
     hb_model_id = agent.config.heartbeat.model or agent.config.agent.model
     hb_model = agent._build_model(hb_model_id, heartbeat=True)
@@ -1402,49 +1011,26 @@ async def force_planning_heartbeat(
         logger.info("Requested planning team %s was not found", team_id)
         return None
     if not selected_team_id:
-        logger.info("No team-scoped plan store available for forced planning heartbeat")
+        logger.info("No team available for forced planning run")
         return None
-    plan_store = PlanStore(
-        agent.config.agent.workspace / "teams" / selected_team_id / "plans",
-        team_id=selected_team_id,
-    )
 
-    if goal:
-        return await run_planning_heartbeat(
-            agent,
-            hb_model,
-            plan_store,
-            servers,
-            goal=goal,
-            kind="goal",
-        )
-    else:
-        default = plan_store.load_default()
-        if default and default.status == "active":
-            plan_store.archive(default, ouro_client=agent._get_ouro_client())
-        return await run_planning_heartbeat(agent, hb_model, plan_store, servers)
+    return await run_planning_run(
+        agent, hb_model, selected_team_id, servers, goal=goal
+    )
 
 
 async def force_review_heartbeat(
-    agent: OuroAgent, plan_id: str | None = None
+    agent: OuroAgent, quest_id: str | None = None
 ) -> Optional[str]:
-    """Force a review check on a selected plan (CLI entry point)."""
-    from .planning import PlanStore, run_review_heartbeat
+    """Force a review check on one of the agent's quests (CLI entry point)."""
+    from .planning import find_reviewable_quests, run_quest_feedback_run
 
-    workspace = agent.config.agent.workspace
-    plan_store: PlanStore | None = None
-    current = None
-
-    for tid in _sorted_team_ids(agent):
-        ps = PlanStore(workspace / "teams" / tid / "plans", team_id=tid)
-        match = ps.load_by_id(plan_id) if plan_id else ps.load_default()
-        if match:
-            plan_store = ps
-            current = match
-            break
-
-    if not current or current.status not in ("pending_review", "active"):
-        logger.info("No plan cycle to review")
+    selected = quest_id
+    if not selected:
+        reviewable = find_reviewable_quests(agent, limit=1)
+        selected = reviewable[0]["id"] if reviewable else None
+    if not selected:
+        logger.info("No reviewable quest found")
         return None
 
     hb_model_id = agent.config.heartbeat.model or agent.config.agent.model
@@ -1458,14 +1044,4 @@ async def force_review_heartbeat(
     proactive_cfg = agent.config.heartbeat.proactive
     servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
 
-    plan_text_before = current.plan_text
-    reviewed = await run_review_heartbeat(agent, hb_model, plan_store, current, servers)
-    if reviewed:
-        return f"Plan approved and activated.\n\n{reviewed.plan_text}"
-    reloaded = plan_store.load_by_id(current.id)
-    if reloaded and reloaded.plan_text != plan_text_before:
-        return f"Plan revised (pending approval, revision {reloaded.revision_count}).\n\n{reloaded.plan_text}"
-    if reloaded:
-        status = reloaded.status.replace("_", " ")
-        return f"No feedback found - plan remains {status}."
-    return "No feedback found - plan was not updated."
+    return await run_quest_feedback_run(agent, hb_model, selected, servers)

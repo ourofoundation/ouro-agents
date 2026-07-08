@@ -91,7 +91,7 @@ Per-team state lives under:
 
 ```
 workspace/teams/<team_id>/
-├── plans/        # plan cycles for this team
+├── planning.json # planning cursor (last planned at, pending drafts)
 ├── state.json    # name → post UUID registry
 └── ...
 ```
@@ -100,15 +100,16 @@ See [Workspace layout](./workspace.md) and [Teams](./teams.md).
 
 ## Planning
 
-Planning is a multi-cycle loop that turns a goal into an Ouro **quest**:
+A plan is just an Ouro **quest**:
 
-1. A `plan` heartbeat (or `ouro-agents plan` / `force_planning_heartbeat`)
-   asks the planning model for a numbered plan, posts it to Ouro as a
-   quest, and persists a `PlanCycle`.
-2. While the quest is `pending_review`, comments and replies on the quest
-   are routed by the webhook handler into a `review` heartbeat.
-3. The review loop edits the plan based on feedback, marks items done /
-   blocked, or auto-approves when no controller is configured.
+1. A planning run (heartbeat cadence, or `ouro-agents plan` /
+   `force_planning_heartbeat`) asks the planning model for a plan and
+   publishes it as a **draft quest**; the per-team cursor records it.
+2. While the quest is a draft, comments and replies on it are routed by
+   the webhook handler into a `review` run; with no feedback the draft
+   auto-opens after the review window.
+3. Once open, the quest's items are worked through the heartbeat's quest
+   inbox like any other quest the agent owns.
 
 See [Planning](./planning.md).
 
@@ -121,7 +122,7 @@ Events are:
   trigger several runs (configurable per event in `event_pooling`).
 - **Routed** to specialized paths:
   - `asset.deleted` → deterministic cleanup (no LLM).
-  - Plan-feedback events → `handle_plan_feedback` → review heartbeat.
+  - Quest-feedback events → `handle_quest_feedback` → review run.
   - Chat events → realtime activity + streaming reply.
   - Otherwise → a normal `OuroAgent.run()` in the appropriate mode.
 
@@ -146,7 +147,7 @@ A single chat run (webhook-triggered) roughly looks like:
 event → server                                 # FastAPI handle_event
   → event_pool.submit                          # debounce
   → _run_event_task
-    → handle_plan_feedback?                    # plan-routing branch
+    → handle_quest_feedback?                   # quest-routing branch
     → asset.deleted?                           # cleanup branch
     → OuroAgent.run(task, mode=CHAT, ...)
       → resolve mode profile + overrides

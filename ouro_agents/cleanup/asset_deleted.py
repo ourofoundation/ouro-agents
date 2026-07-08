@@ -305,7 +305,7 @@ def _is_plan_json(path: Path) -> bool:
 def _archive_plan_file(path: Path, data: dict) -> bool:
     """Move an active plan whose backing quest was deleted to ``history/``.
 
-    Mirrors ``PlanStore.archive``: mark the cycle cancelled, write it to the
+    Legacy-workspace hygiene: mark the cycle cancelled, write it to the
     sibling ``history/`` directory, and remove the active file. A plan whose
     own quest is gone has no platform counterpart left to track, so removing
     it entirely beats leaving a ``[deleted]`` husk in the active index.

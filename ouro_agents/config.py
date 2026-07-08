@@ -235,7 +235,6 @@ class PlanningConfig(BaseModel):
     enabled: bool = False
     model: Optional[str] = None
     cadence: str = "1d"
-    min_heartbeats: int = 4
     review_window: str = "2h"
     auto_approve: bool = True
 
@@ -456,6 +455,8 @@ _PLANNING_SECTION_KEYS = {
     "enabled",
     "model",
     "cadence",
+    # Retired knob, still routed here so legacy configs don't leak it into
+    # the plan mode profile (PlanningConfig ignores it).
     "min_heartbeats",
     "review_window",
     "auto_approve",

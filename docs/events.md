@@ -78,29 +78,29 @@ The order of branches in the server handler:
 2. **Cleanup** — `asset.deleted` runs the deterministic cleanup and
    returns. No LLM is invoked.
 3. **Mark notifications read** — best-effort, before the run starts.
-4. **Plan feedback** — if `provenance.is_plan_feedback`, dispatch the
-   review heartbeat through `OuroAgent.handle_plan_feedback`.
+4. **Quest feedback** — if `provenance.is_quest_feedback`, dispatch the
+   review run through `OuroAgent.handle_quest_feedback`.
 5. **`new-conversation`** — no-op; nothing to respond to until a message
    arrives.
 6. **Normal run** — otherwise, build a `ServerAgentObserver` (which
    streams activity into Ouro for chat events) and call
    `OuroAgent.run(task, mode, conversation_id, team_id, prefetch, ...)`.
 
-## Provenance and plan-feedback events
+## Provenance and quest-feedback events
 
-`resolve_event_provenance` inspects the incoming event for plan-cycle
-metadata (a quest id, a post that belongs to an active plan cycle, etc.)
-and produces an `EventProvenance` with:
+`resolve_event_provenance` inspects the incoming payload (thread-root
+asset and author) against the cached agent identity and produces an
+`AssetProvenance` with:
 
-- `is_plan_feedback`
-- `is_historical_plan_feedback`
-- `plan_cycle.quest_id`
+- `is_own_asset`
+- `root_asset_id` / `root_asset_type`
+- `is_quest_feedback` (own asset whose thread root is a quest)
 - `team_id`
 
-When `is_plan_feedback=True`, the handler routes through
-`handle_plan_feedback`, which finds the matching plan cycle across
-teams and dispatches a `review` heartbeat with the inline feedback text.
-This keeps quest comments tightly integrated with the planning loop.
+When `is_quest_feedback=True`, the handler routes through
+`handle_quest_feedback`, which re-verifies quest ownership against the
+platform and dispatches a `review` run with the inline feedback text.
+If verification fails, the event falls back to the normal comment run.
 
 ## Adding a new event type
 

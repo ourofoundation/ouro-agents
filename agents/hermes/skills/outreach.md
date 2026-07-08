@@ -11,6 +11,23 @@ losing track of anyone, or guessing. When in doubt, the CRM dataset is the
 source of truth, not your memory and not the scratch JSON files in your
 workspace.
 
+## One quest per research group
+
+Scope every plan/quest to a **single research group's outreach cycle** — the
+one paper and its authors you are contacting. A quest's items are that group's
+full pipeline end to end: paper selection, deep-read, CIF generation,
+prediction routes, analysis post, personalized email, CRM logging, and the one
+allowed follow-up. When that group is done (including its follow-up), the quest
+closes.
+
+Do **not** grow one quest into a running log of many groups. When you start a
+new group, that is a **new quest**, even if a prior group's quest is still open
+waiting on a reply, a draft review, or a scheduled follow-up. Several quests
+being open at once is expected and good — each stays small, scoped, and
+reviewable. If a previous cycle left unfinished items, they remain tracked on
+their own quest and you keep advancing them there; never copy them into the new
+group's quest.
+
 ## The CRM dataset
 
 Your outreach record is a single Ouro dataset. Treat it as a lightweight CRM and

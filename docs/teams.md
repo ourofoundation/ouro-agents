@@ -45,13 +45,13 @@ For team-scoped runs:
 - The doc store routes through `doc_store_for(team_id)`, which is a
   `CompositeDocStore(local, ouro)` (or local-only when the team isn't
   writable by agents).
-- Plan cycles read/write under `teams/<team_id>/plans/`.
+- The planning cursor lives at `teams/<team_id>/planning.json`.
 
 ## Untargeted runs
 
 When no `team_id` is provided, runs use the root doc store
 (`CompositeDocStore(local, ouro=None)` — root posts stay local-only) and
-load all teams' active plans into the prompt's `Plans Index` block. This
+load the agent's own quests into the prompt's `Plans Index` block. This
 is the default for `ouro-agents run` and `ouro-agents chat` until a team
 is explicitly chosen.
 
@@ -77,11 +77,12 @@ even when only the id is known.
 Plans are always team-scoped. `force_planning_heartbeat(team_id=...)`
 refuses to run without a team id; the CLI uses `tui/team_picker.py` to
 prompt when needed. Quest creation goes into the team's Ouro workspace
-and the resulting `PlanCycle` is stored under `teams/<team_id>/plans/`.
+and the team's planning cursor (`teams/<team_id>/planning.json`) records
+the published quest.
 
-Cross-team plan-feedback events are routed by `handle_plan_feedback`,
-which searches all teams for the matching `quest_id` if the event itself
-doesn't carry the team.
+Quest-feedback events are routed by `handle_quest_feedback`, which
+verifies quest ownership against the platform and scopes the review run
+to the quest's own team.
 
 ## Writeability fallback
 

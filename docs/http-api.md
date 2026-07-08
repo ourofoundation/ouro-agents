@@ -105,8 +105,8 @@ handler:
 4. Routes:
    - `asset.deleted` → deterministic cleanup, no LLM. See
      [Cleanup](./cleanup.md).
-   - Plan-feedback events → `OuroAgent.handle_plan_feedback` → review
-     heartbeat. See [Planning](./planning.md).
+   - Quest-feedback events → `OuroAgent.handle_quest_feedback` → review
+     run. See [Planning](./planning.md).
    - `new-conversation` → no-op.
    - Otherwise → `OuroAgent.run(...)` in the appropriate mode with a
      `ServerAgentObserver` that streams the reply back to Ouro.

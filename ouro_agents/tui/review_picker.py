@@ -2,44 +2,36 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ..modes.planning import PlanCycle
+from typing import Any
 
 
-REVIEWABLE_PLAN_STATUSES = {"pending_review", "active"}
+REVIEWABLE_QUEST_STATUSES = {"draft", "open"}
 
 
 @dataclass(frozen=True)
 class ReviewPlanOption:
-    cycle_id: str
+    quest_id: str
     title: str
     subtitle: str
 
 
-def reviewable_plans(plans: list["PlanCycle"]) -> list["PlanCycle"]:
-    return [plan for plan in plans if plan.status in REVIEWABLE_PLAN_STATUSES]
-
-
-def build_review_plan_options(plans: list["PlanCycle"]) -> list[ReviewPlanOption]:
+def build_review_plan_options(quests: list[dict[str, Any]]) -> list[ReviewPlanOption]:
+    """Build picker options from quest dicts (id, name, status, items_*)."""
     options: list[ReviewPlanOption] = []
-    for plan in reviewable_plans(plans):
-        if plan.kind == "goal" and plan.goal:
-            title = f"Goal plan: {_truncate(plan.goal, 72)}"
-        else:
-            title = "Default plan"
-
-        total = len(plan.items)
+    for quest in quests:
+        if quest.get("status") not in REVIEWABLE_QUEST_STATUSES:
+            continue
+        title = _truncate(quest.get("name") or "Untitled quest", 72)
+        total = int(quest.get("items_total") or 0)
         progress = (
-            f"{plan.items_done}/{total} complete" if total else "no task items"
+            f"{quest.get('items_done', 0)}/{total} complete"
+            if total
+            else "no task items"
         )
-        status = plan.status.replace("_", " ")
-        quest = plan.quest_id or "no quest"
-        subtitle = f"{status} | {progress} | {quest} | {plan.id[:8]}"
+        subtitle = f"{quest.get('status')} | {progress} | {quest.get('id', '')[:8]}"
         options.append(
             ReviewPlanOption(
-                cycle_id=plan.id,
+                quest_id=str(quest.get("id") or ""),
                 title=title,
                 subtitle=subtitle,
             )
@@ -47,14 +39,14 @@ def build_review_plan_options(plans: list["PlanCycle"]) -> list[ReviewPlanOption
     return options
 
 
-def choose_review_plan(plans: list["PlanCycle"]) -> str | None:
-    options = build_review_plan_options(plans)
+def choose_review_plan(quests: list[dict[str, Any]]) -> str | None:
+    options = build_review_plan_options(quests)
     if not options:
         return None
     if len(options) == 1:
-        return options[0].cycle_id
+        return options[0].quest_id
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return options[0].cycle_id
+        return options[0].quest_id
 
     from textual.app import App, ComposeResult  # type: ignore[reportMissingImports]
     from textual.binding import Binding  # type: ignore[reportMissingImports]
@@ -130,7 +122,7 @@ def choose_review_plan(plans: list["PlanCycle"]) -> str | None:
         def on_list_view_selected(self, event: ListView.Selected) -> None:
             item = event.item
             if isinstance(item, ReviewPlanItem):
-                self.exit(item.option.cycle_id)
+                self.exit(item.option.quest_id)
 
         def action_cancel(self) -> None:
             self.exit(None)

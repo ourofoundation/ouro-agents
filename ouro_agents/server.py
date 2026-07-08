@@ -156,7 +156,7 @@ def _event_envelope(event_run: EventRunContext):
     assert agent_instance is not None
     surface = (
         EventSurface.PLAN_REVIEW
-        if event_run.provenance and event_run.provenance.is_plan_feedback
+        if event_run.provenance and event_run.provenance.is_quest_feedback
         else event_run.surface
     )
     role = actor_role_for(
@@ -793,17 +793,17 @@ async def _run_event_task(event_run: EventRunContext) -> None:
 
     # Route active/pending plan feedback to the dedicated review path
     prov = event_run.provenance
-    if prov and prov.is_plan_feedback:
+    if prov and prov.is_quest_feedback:
         try:
-            await agent_instance.handle_plan_feedback(
+            await agent_instance.handle_quest_feedback(
                 event_run,
                 capability_envelope=capability_envelope,
             )
             get_display().flush_pending_run_summary()
         except RunCancelled:
-            logger.info("Cancelled plan feedback event run")
+            logger.info("Cancelled quest feedback event run")
         except Exception:
-            logger.exception("Failed to handle plan feedback event")
+            logger.exception("Failed to handle quest feedback event")
         return
 
     if event_run.event_type == "new-conversation":
@@ -1055,13 +1055,11 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
 
     try:
         event_data = body.get("data", {}) or {}
-        planning_cfg = agent_instance.config.planning
         agent_cfg = agent_instance.config.agent
 
         provenance = resolve_event_provenance(
             event_data=event_data,
             workspace=agent_cfg.workspace,
-            planning_enabled=planning_cfg.enabled,
         )
 
         event_run = build_event_run_context(body, provenance=provenance)
@@ -1069,11 +1067,10 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         logger.warning("Invalid webhook payload: %s", body)
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}")
 
-    if provenance and provenance.is_plan_feedback:
+    if provenance and provenance.is_quest_feedback:
         logger.info(
-            "Event provenance: plan_feedback=%s historical=%s team_id=%s",
-            provenance.is_plan_feedback,
-            provenance.is_historical_plan_feedback,
+            "Event provenance: quest_feedback on %s team_id=%s",
+            provenance.root_asset_id,
             provenance.team_id,
         )
 

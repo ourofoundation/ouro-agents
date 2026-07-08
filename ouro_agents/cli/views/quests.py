@@ -9,27 +9,18 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Select, St
 from ..widgets.activity import ActivityLog
 
 
-def _quest_progress(cycle: Any) -> str:
-    items = getattr(cycle, "items", []) or []
-    total = len(items)
+def _quest_progress(quest: dict[str, Any]) -> str:
+    total = int(quest.get("items_total") or 0)
     if not total:
         return "no items"
-    done = sum(1 for item in items if getattr(item, "status", "") in ("done", "skipped"))
-    return f"{done}/{total}"
-
-
-def _quest_title(cycle: Any) -> str:
-    goal = getattr(cycle, "goal", "") or ""
-    if goal:
-        return goal
-    return "Default quest" if getattr(cycle, "kind", "") == "default" else "Quest"
+    return f"{quest.get('items_done', 0)}/{total}"
 
 
 class QuestItem(ListItem):
-    def __init__(self, cycle: Any, *, team_label: str = "") -> None:
-        self.cycle = cycle
-        title = _quest_title(cycle)
-        subtitle_parts = [str(getattr(cycle, "status", "")), _quest_progress(cycle)]
+    def __init__(self, quest: dict[str, Any], *, team_label: str = "") -> None:
+        self.quest = quest
+        title = quest.get("name") or "Untitled quest"
+        subtitle_parts = [str(quest.get("status") or ""), _quest_progress(quest)]
         if team_label:
             subtitle_parts.append(team_label)
         subtitle = " · ".join(part for part in subtitle_parts if part)

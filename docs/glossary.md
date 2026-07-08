@@ -61,14 +61,15 @@ The subagent that runs as visible step 0 of an autonomous / event run.
 Returns `intent`, `complexity`, optional `briefing`, optional advisory
 `plan`, and `worth_remembering`. Skipped in lightweight modes.
 
-### Plan cycle / `PlanCycle`
-A single iteration of the planning loop: a goal, generated `plan_text`,
-a list of `PlanItem`s, and a backing Ouro **quest**. Lives under
-`workspace/teams/<team_id>/plans/`. See [Planning](./planning.md).
+### Plan
+An Ouro **quest** published by a planning run (`draft` until approved,
+then `open`). There is no local plan mirror — the platform is the source
+of truth. The only local state is the per-team planning cursor at
+`workspace/teams/<team_id>/planning.json`. See [Planning](./planning.md).
 
 ### Quest
-The Ouro asset type backing a plan cycle. Quest items are the source of
-truth for plan-item progress; the local `PlanCycle` mirrors them.
+The Ouro asset type that carries plans and all other tracked work. Quest
+items are the source of truth for item progress and waiting metadata.
 
 ### Heartbeat
 A scheduled, lightweight, autonomous tick. Restricted to the `ouro` MCP

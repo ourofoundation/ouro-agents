@@ -70,52 +70,6 @@ research ahead of an artifact the user directly asked for.
 - Your final message must be the JSON object alone — no surrounding prose."""
 
 
-HEARTBEAT_PREFLIGHT_PROMPT = """\
-You are the preflight analyst for an autonomous heartbeat.
-Your job is to decide what the agent should focus on during this heartbeat tick.
-
-Your job is analysis only. Do not execute heartbeat work, post comments, update \
-quests, or perform any side effects. If the playbook mentions MCP tools such as \
-write_comment, create_post, execute_route, or update_quest, treat those as \
-instructions for the main heartbeat agent later — never call them during \
-preflight.
-
-You will be provided with the current autonomous playbook, current work-direction
-guidance when available, and a list of active plans.
-Decide whether the agent should:
-1. Work on a specific active plan ("work_on_plan").
-2. Execute the general playbook ("general_heartbeat").
-3. Do nothing / skip this heartbeat ("skip").
-
-Treat current work-direction guidance as stronger than stale active plans, task
-files, or broad research interests. If active plans conflict with current
-direction, choose "general_heartbeat" unless a listed plan clearly supports that
-direction. For active plans or ambiguous choices, call memory_recall at most once
-with batched queries if recent context would materially improve the decision.
-Include a query for current work-direction guidance when plan choice is unclear.
-Otherwise, do not call tools.
-If memory_recall returns no useful context, still choose an action and reply with valid JSON.
-
-Assume active plans can span multiple heartbeats. If you choose "work_on_plan",
-you are choosing the best next slice of progress for this tick, not asking the
-agent to complete the whole plan right now.
-If active plans are too under-specified to choose responsibly, prefer
-"general_heartbeat" so the main agent can ask for direction or publish a
-direction-proposal post instead of forcing arbitrary quest progress.
-
-Finish by ending the turn with a final message that contains no tool calls and is \
-ONLY valid JSON matching this schema (no markdown fences, no explanation):
-{
-  "action": "work_on_plan" | "general_heartbeat" | "skip",
-  "plan_id": "8-char plan ID if action is work_on_plan, else null",
-  "reasoning": "Brief explanation of why you chose this action."
-}
-
-If a previous response failed or was not accepted, immediately reply with the best valid JSON you can produce.
-The only available heartbeat preflight tool is memory_recall. Never call side-effecting platform MCP tools.
-Your final message must be the JSON object alone — no surrounding prose."""
-
-
 # Cap on preflight-selected tool preloads: enough for a real hot path,
 # small enough that a rambling selection can't crowd the tool list.
 MAX_PREFLIGHT_TOOLS = 6
@@ -163,27 +117,3 @@ def parse_preflight_result(raw: str) -> PreflightResult:
     except Exception as e:
         logger.warning("Failed to parse preflight result, using defaults: %s", e)
         return PreflightResult(briefing=text if text else "")
-
-
-@dataclass
-class HeartbeatPreflightResult:
-    action: str = "general_heartbeat"
-    plan_id: str | None = None
-    reasoning: str = ""
-
-
-def parse_heartbeat_preflight_result(raw: str) -> HeartbeatPreflightResult:
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-    try:
-        data = json.loads(text)
-        return HeartbeatPreflightResult(
-            action=data.get("action", "general_heartbeat"),
-            plan_id=data.get("plan_id"),
-            reasoning=data.get("reasoning", ""),
-        )
-    except Exception as e:
-        logger.warning("Failed to parse heartbeat preflight result, using defaults: %s", e)
-        return HeartbeatPreflightResult()
