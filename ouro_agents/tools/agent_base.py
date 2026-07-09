@@ -1291,9 +1291,32 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
             self._reasoning_only_warned = True
 
     def process_tool_calls(self, chat_message, memory_step):
+        """Run tools, then label parallel observations so each result is attributable.
+
+        smolagents concatenates parallel tool observations into one blob with no
+        per-call delimiters. When that blob is later split across native
+        ``role:"tool"`` messages, models (especially GLM) lose track of which
+        result belongs to which call — e.g. a successful ``create_quest`` buried
+        under inspection output. Prefix each observation with a stable header
+        before the parent concatenates them.
+        """
         self._raise_if_cancelled()
+        parallel = bool(
+            chat_message.tool_calls and len(chat_message.tool_calls) > 1
+        )
         for output in super().process_tool_calls(chat_message, memory_step):
             self._raise_if_cancelled()
+            if (
+                parallel
+                and getattr(output, "observation", None) is not None
+                and getattr(output, "tool_call", None) is not None
+            ):
+                name = output.tool_call.name or "tool"
+                call_id = output.id or output.tool_call.id or ""
+                header = f"=== Tool result: {name} (id={call_id}) ==="
+                body = output.observation
+                if not str(body).startswith("=== Tool result:"):
+                    output.observation = f"{header}\n{body}"
             yield output
 
     def execute_tool_call(self, tool_name, arguments):

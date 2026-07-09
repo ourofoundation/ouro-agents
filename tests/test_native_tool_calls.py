@@ -93,6 +93,40 @@ class TestNativeToolCallReconstruction(unittest.TestCase):
         self.assertEqual(tool_msgs[0]["content"], "resA\nresB")
         self.assertTrue(tool_msgs[1]["content"])  # placeholder, non-empty
 
+    def test_labeled_multi_call_attributes_each_result(self):
+        calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "list_quest_items", "arguments": {"quest_id": "q"}},
+            },
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {"name": "create_quest", "arguments": {"name": "Plan"}},
+            },
+        ]
+        labeled = (
+            "=== Tool result: list_quest_items (id=call_1) ===\n"
+            "items: []\n"
+            "=== Tool result: create_quest (id=call_2) ===\n"
+            '{"id": "quest-xyz", "name": "Plan"}'
+        )
+        messages = [
+            _text_msg(MessageRole.TOOL_CALL, _calling_tools_text(calls)),
+            _text_msg(MessageRole.TOOL_RESPONSE, f"Observation:\n{labeled}"),
+        ]
+
+        cleaned = _clean(messages)
+
+        tool_msgs = [m for m in cleaned if m["role"] == "tool"]
+        self.assertEqual([m["tool_call_id"] for m in tool_msgs], ["call_1", "call_2"])
+        self.assertEqual(tool_msgs[0]["content"], "items: []")
+        self.assertEqual(
+            tool_msgs[1]["content"], '{"id": "quest-xyz", "name": "Plan"}'
+        )
+        self.assertNotIn("result included with the first tool call", tool_msgs[1]["content"])
+
     def test_error_step_carries_error_text_as_tool_message(self):
         calls = [
             {

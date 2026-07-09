@@ -228,24 +228,63 @@ def _parse_tool_call_render(text: str) -> tuple[str, Optional[list[dict[str, Any
     return kept, None
 
 
+_TOOL_RESULT_HEADER_RE = re.compile(
+    r"^=== Tool result: (?P<name>.+?) \(id=(?P<id>[^)]*)\) ===\s*$",
+    re.MULTILINE,
+)
+
+
+def _split_labeled_observations(
+    observation: Optional[str],
+) -> Optional[dict[str, str]]:
+    """Parse per-call bodies from a labeled parallel observation blob.
+
+    ``OuroToolCallingAgent.process_tool_calls`` prefixes each parallel result
+    with ``=== Tool result: <name> (id=<id>) ===``. When those headers are
+    present, return ``{call_id: body}`` so each native tool message can carry
+    its own result. Returns ``None`` when the blob is unlabeled (legacy /
+    single-call / error steps) so callers fall back.
+    """
+    if not observation or not observation.lstrip().startswith("=== Tool result:"):
+        return None
+    matches = list(_TOOL_RESULT_HEADER_RE.finditer(observation))
+    if not matches:
+        return None
+    by_id: dict[str, str] = {}
+    for idx, match in enumerate(matches):
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(observation)
+        body = observation[start:end].strip("\n")
+        call_id = match.group("id")
+        if call_id:
+            by_id[call_id] = body
+    return by_id or None
+
+
 def _build_tool_messages(
     calls: list[dict[str, Any]], observation: Optional[str]
 ) -> list[dict[str, Any]]:
     """One ``tool`` message per tool_call_id (API requires exact pairing).
 
-    smolagents concatenates all parallel results into a single observation blob
-    with no per-id delimiters, so the combined text rides on the first call and
-    later ids get a pointer placeholder (keeps the message array valid)."""
+    Prefer per-call bodies when the observation was labeled by
+    ``OuroToolCallingAgent`` (``=== Tool result: … ===`` headers). Otherwise
+    fall back to putting the combined blob on the first call and a pointer
+    placeholder on the rest — valid for the API, but weaker for the model.
+    """
+    by_id = _split_labeled_observations(observation)
     messages: list[dict[str, Any]] = []
     for idx, call in enumerate(calls):
-        if idx == 0:
+        call_id = call["id"]
+        if by_id is not None and call_id in by_id:
+            content = by_id[call_id]
+        elif idx == 0:
             content = observation if observation else ""
         elif observation:
             content = "(result included with the first tool call above)"
         else:
             content = ""
         messages.append(
-            {"role": "tool", "tool_call_id": call["id"], "content": content}
+            {"role": "tool", "tool_call_id": call_id, "content": content}
         )
     return messages
 

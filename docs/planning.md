@@ -97,7 +97,8 @@ quest's item-level outcome, a recent-activity digest from the run log,
 work-direction memory, and the heartbeat budget (cadence ÷ heartbeat
 interval). It carries an item quality bar — concrete deliverable, checkable
 done-condition, sized to one heartbeat — and allows read-only inspection
-tools; the only write tool is `create_quest`.
+tools. Write tools are `create_quest`, `create_quest_items`, and
+`update_quest`: publish once, then fix items/description in place if needed.
 
 Regular runs see a compact index of the agent's own quests (ids and names,
 cached briefly) in their system prompt, and can `get_asset` any of them for

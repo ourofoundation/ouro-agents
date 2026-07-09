@@ -563,11 +563,11 @@ activity alone is not a reason to prioritize a topic.
 {context_section}
 
 IMPORTANT: You MUST do both of the following steps. Do NOT skip the quest creation.
-Besides read-only inspection, the only write tool you may use is create_quest.
+Allowed write tools: create_quest, create_quest_items, update_quest.
 Do NOT attempt to execute any plan items or do actual work — only write and
 publish the plan.
 
-Step 1. Call create_quest to publish your plan{quest_instructions}.
+Step 1. Call create_quest exactly once to publish your plan{quest_instructions}.
    {quest_name_instruction}
    - Pass status="draft" so the plan quest is not live until approved.
    - Pass description_markdown with **prose context**: background, reasoning,
@@ -577,8 +577,13 @@ Step 1. Call create_quest to publish your plan{quest_instructions}.
      this plan does differently because of it.
    - Pass items as a list of specific, actionable task descriptions (strings).
      Each item becomes a trackable task on the platform.
+   - Call create_quest alone (not in parallel with inspection tools) so its
+     result is unambiguous. Finish any read-only inspection first.
+   - If create_quest succeeds but items are missing or wrong, fix that quest
+     in place with create_quest_items / update_quest. Do NOT call create_quest
+     again — never publish a second plan quest in the same run.
 
-Step 2. After create_quest succeeds, end the turn with a final message that is only this JSON:
+Step 2. After the plan quest is ready, end the turn with a final message that is only this JSON:
 ```json
 {{"quest_id": "<the asset id from create_quest>"}}
 ```
@@ -922,6 +927,8 @@ async def run_planning_run(
         "ouro:get_asset",
         "ouro:get_comments",
         "ouro:create_quest",
+        "ouro:create_quest_items",
+        "ouro:update_quest",
         "ouro:list_quest_items",
     ]
 

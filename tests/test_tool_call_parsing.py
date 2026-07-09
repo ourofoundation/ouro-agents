@@ -1042,5 +1042,98 @@ class TestRunObservationCompaction(unittest.TestCase):
             self.assertNotIn(_RUN_COMPACT_MARKER, step.observations)
 
 
+class TestParallelObservationLabeling(unittest.TestCase):
+    """Parallel tool results get per-call headers before concatenation."""
+
+    @staticmethod
+    def _tool_call(call_id: str, name: str):
+        from smolagents.models import ChatMessageToolCall, ChatMessageToolCallFunction
+
+        return ChatMessageToolCall(
+            id=call_id,
+            type="function",
+            function=ChatMessageToolCallFunction(name=name, arguments={}),
+        )
+
+    def test_labels_each_parallel_observation(self):
+        from smolagents import tool
+        from smolagents.memory import ActionStep, Timing
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        @tool
+        def alpha() -> str:
+            """First parallel tool."""
+            return "alpha-result"
+
+        @tool
+        def beta() -> str:
+            """Second parallel tool."""
+            return "beta-result"
+
+        agent = SanitizedToolCallingAgent(
+            tools=[alpha, beta],
+            model=_FakeModelWithToolCalls(),
+        )
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=None,
+            tool_calls=[
+                self._tool_call("call_a", "alpha"),
+                self._tool_call("call_b", "beta"),
+            ],
+        )
+        memory_step = ActionStep(
+            step_number=1,
+            timing=Timing(start_time=0.0, end_time=0.0),
+        )
+
+        outputs = list(agent.process_tool_calls(message, memory_step))
+        tool_outputs = [o for o in outputs if getattr(o, "observation", None)]
+        self.assertEqual(len(tool_outputs), 2)
+        by_id = {o.id: o.observation for o in tool_outputs}
+        self.assertTrue(
+            by_id["call_a"].startswith("=== Tool result: alpha (id=call_a) ===")
+        )
+        self.assertIn("alpha-result", by_id["call_a"])
+        self.assertTrue(
+            by_id["call_b"].startswith("=== Tool result: beta (id=call_b) ===")
+        )
+        self.assertIn("beta-result", by_id["call_b"])
+        self.assertIn("=== Tool result: alpha (id=call_a) ===", memory_step.observations)
+        self.assertIn("=== Tool result: beta (id=call_b) ===", memory_step.observations)
+
+    def test_single_call_is_unlabeled(self):
+        from smolagents import tool
+        from smolagents.memory import ActionStep, Timing
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        @tool
+        def alone() -> str:
+            """Single tool call."""
+            return "solo"
+
+        agent = SanitizedToolCallingAgent(
+            tools=[alone],
+            model=_FakeModelWithToolCalls(),
+        )
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=None,
+            tool_calls=[self._tool_call("call_1", "alone")],
+        )
+        memory_step = ActionStep(
+            step_number=1,
+            timing=Timing(start_time=0.0, end_time=0.0),
+        )
+
+        outputs = list(agent.process_tool_calls(message, memory_step))
+        tool_outputs = [o for o in outputs if getattr(o, "observation", None)]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0].observation, "solo")
+        self.assertNotIn("=== Tool result:", memory_step.observations or "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -112,6 +112,12 @@ def test_build_planning_prompt_asks_for_draft_status():
 
     assert 'status="draft"' in prompt
     assert "create_quest" in prompt
+    assert "create_quest_items" in prompt
+    assert "update_quest" in prompt
+    assert "Call create_quest exactly once" in prompt
+    assert "never publish a second plan quest" in prompt
+    assert "Call create_quest alone" in prompt
+    assert "create_quest_items / update_quest" in prompt
 
 
 def test_build_focus_memory_context_filters_and_formats_guidance():
@@ -407,6 +413,14 @@ def test_run_planning_run_records_cursor_and_notifies_controller(tmp_path):
     agent = _fake_agent(
         tmp_path, ouro, json.dumps({"quest_id": "plan-quest-1"})
     )
+    captured = {}
+
+    async def _run(prompt, **kwargs):
+        captured["kwargs"] = kwargs
+        agent.prompt = prompt
+        return json.dumps({"quest_id": "plan-quest-1"})
+
+    agent.run = _run
 
     result = asyncio.run(
         run_planning_run(
@@ -418,6 +432,9 @@ def test_run_planning_run_records_cursor_and_notifies_controller(tmp_path):
     )
 
     assert result is not None
+    assert "ouro:create_quest" in captured["kwargs"]["preload_tools"]
+    assert "ouro:create_quest_items" in captured["kwargs"]["preload_tools"]
+    assert "ouro:update_quest" in captured["kwargs"]["preload_tools"]
     cursor = load_cursor(tmp_path, "team-1")
     assert cursor.last_quest_id == "plan-quest-1"
     assert cursor.pending_quest_ids == ["plan-quest-1"]
