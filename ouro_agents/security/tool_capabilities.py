@@ -20,6 +20,7 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:get_asset_connections": Capability.READ_PLATFORM,
     "ouro:get_compatible_routes": Capability.READ_PLATFORM,
     "ouro:delete_asset": Capability.UPDATE_ASSET,
+    "ouro:share_asset": Capability.UPDATE_ASSET,
     # Users
     "ouro:get_me": Capability.READ_PLATFORM,
     "ouro:search_users": Capability.READ_PLATFORM,

@@ -82,6 +82,22 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
         for team in teams:
             parts.append(_format_team_line(team))
 
+    controllers = context.get("controllers") or []
+    if controllers:
+        parts.append("\nYour controllers (privileged humans who operate you):")
+        for controller in controllers:
+            username = controller.get("username")
+            user_id = controller.get("user_id", "?")
+            if username:
+                parts.append(f"- @{username} (user_id: {user_id})")
+            else:
+                parts.append(f"- user_id: {user_id}")
+        parts.append(
+            "When you create a private asset that a controller needs to see, "
+            "call share_asset with their user_id (role read unless they need "
+            "write/admin). Mentions and links do not grant access."
+        )
+
     if not parts:
         return ""
     parts.append(

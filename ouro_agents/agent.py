@@ -338,19 +338,53 @@ class OuroAgent:
 
         cache_path = self._workspace / "data" / "platform_context.json"
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(context, indent=2))
 
         self._own_user_id = (context.get("profile") or {}).get("id")
         self._resolve_security_actors()
+        context["controllers"] = self._controller_context_entries()
+
+        cache_path.write_text(json.dumps(context, indent=2))
 
         self.team_registry.refresh(context, self.config.agent.org_id)
         logger.info(
-            "Refreshed platform context: %d orgs, %d teams",
+            "Refreshed platform context: %d orgs, %d teams, %d controllers",
             len(context["organizations"]),
             len(self.team_registry.team_ids()),
+            len(context["controllers"]),
         )
         if self._mcp_connected:
             self._init_doc_store()
+
+    def _controller_context_entries(self) -> list[dict]:
+        """Build controller username/user_id pairs for platform context prompts."""
+        security = self.config.security
+        id_cache = self._load_security_id_cache()
+        entries: list[dict] = []
+        seen: set[str] = set()
+
+        for raw_entry in security.controllers or []:
+            entry = str(raw_entry or "").strip()
+            if not entry:
+                continue
+            if self._looks_like_user_id(entry):
+                if entry not in seen:
+                    seen.add(entry)
+                    entries.append({"user_id": entry})
+                continue
+
+            username = entry.lstrip("@")
+            user_id = id_cache.get(username)
+            if not user_id or user_id in seen:
+                continue
+            seen.add(user_id)
+            entries.append({"username": username, "user_id": user_id})
+
+        for user_id in security.resolved_controller_ids or []:
+            if user_id not in seen:
+                seen.add(user_id)
+                entries.append({"user_id": user_id})
+
+        return entries
 
     @staticmethod
     def _team_context_entry(team) -> dict:

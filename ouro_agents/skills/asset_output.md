@@ -23,8 +23,9 @@ When your work produces reusable content, save it as an Ouro asset:
      "content": "<full output text>"
    }
    ```
-   Always include `visibility` — the parent agent uses it to decide whether further
-   action (sharing, changing access) is needed.
+   Always include `visibility`. If it is `private` and the parent agent or a
+   controller needs access, call `share_asset` with their `user_id` from
+   PLATFORM CONTEXT **before** finishing — mentions and links do not grant access.
 
 3. If the create tool is unavailable, return the full content directly in
    your final message as plain text.

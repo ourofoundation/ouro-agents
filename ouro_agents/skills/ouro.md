@@ -36,6 +36,10 @@ flow for any new post, dataset, file, quest, or route output:
 5. Create with explicit `org_id` and `team_id` (`create_post`, `create_dataset`,
   `create_file`, etc.). Team names are slugs: lowercase letters, numbers, dashes.
 6. Inspect the created asset or returned result before reporting success.
+7. If the asset is **private** and a controller (or named collaborator) must
+  review it, call `share_asset` with their `user_id` from PLATFORM CONTEXT
+  (role `read` unless they need write/admin). Mentions, links, and embeds do
+  **not** grant access — private assets stay invisible until shared.
 
 If the user doesn't specify an org and more than one plausible org exists,
 inspect context or ask before creating. Treat new `asset_id`s as important

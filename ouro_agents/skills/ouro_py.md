@@ -24,6 +24,9 @@ ouro = get_ouro_client()
   - `with_pagination=True` returns dict with `data` + `pagination`
 - `retrieve(id)` → Post | File | Dataset | etc. (dispatches by type)
 - `download(id, output_path=None, asset_type=None)` → dict with `id`, `path`, `filename`, `content_type`, `bytes`
+- `share(id, user_id, role="read")` → None — grant read/write/admin on any asset type
+  - Private assets stay invisible until shared; mentions/links do not grant access
+  - Prefer this over `files.share` (which delegates here)
 
 ### Posts (ouro.posts)
 - `list(query="", limit=20, offset=0, scope=None, org_id=None, team_id=None, **kwargs)` → list[Post]
@@ -61,7 +64,7 @@ ouro = get_ouro_client()
 - `retrieve(id)` → File
 - `update(id, file_path=None, file_content=None, file_name=None, name=None, description=None, **kwargs)` → File
 - `delete(id)` → None
-- `share(file_id, user_id, role="read")` → None
+- `share(file_id, user_id, role="read")` → None — delegates to `ouro.assets.share`
 
 ### Conversations (ouro.conversations)
 - `create(member_user_ids, name=None, summary=None, org_id=None, team_id=None)` → Conversation
