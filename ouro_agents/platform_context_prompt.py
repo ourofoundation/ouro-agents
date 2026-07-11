@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+# Team blurbs belong in the ID roster, not as full wiki pages. Long
+# descriptions (onboarding guides, competition rules, embedded asset
+# blocks) otherwise dominate every system prompt.
+_MAX_TEAM_DESCRIPTION_CHARS = 240
+
 
 def _description_text(raw) -> str:
     if raw is None:
@@ -14,8 +19,21 @@ def _description_text(raw) -> str:
     return str(raw)
 
 
+def _truncate_team_description(
+    raw, max_chars: int = _MAX_TEAM_DESCRIPTION_CHARS
+) -> str:
+    """Collapse whitespace and hard-cap length for prompt injection."""
+    text = " ".join(_description_text(raw).split())
+    if len(text) <= max_chars:
+        return text
+    cut = text.rfind(" ", 0, max_chars)
+    if cut < max_chars // 2:
+        cut = max_chars
+    return text[:cut].rstrip(" ,.;:") + "…"
+
+
 def _format_team_line(team: dict) -> str:
-    desc = _description_text(team.get("description"))
+    desc = _truncate_team_description(team.get("description"))
     name = team.get("name", "?")
     tid = team.get("id", "?")
     oid = team.get("org_id", "?")

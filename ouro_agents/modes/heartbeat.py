@@ -72,7 +72,11 @@ def is_within_active_hours(config: HeartbeatConfig) -> bool:
 
 
 def estimate_beats_per_period(config: HeartbeatConfig) -> str:
-    if not config.active_hours or "start" not in config.active_hours or "end" not in config.active_hours:
+    if (
+        not config.active_hours
+        or "start" not in config.active_hours
+        or "end" not in config.active_hours
+    ):
         return "continuous"
 
     try:
@@ -170,9 +174,7 @@ def _load_playbook(agent: "OuroAgent", heartbeat_doc_store) -> str | None:
             heartbeat_doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
         )
     if not playbook and heartbeat_doc_store is not agent.doc_store and agent.doc_store:
-        playbook = (
-            agent.doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
-        )
+        playbook = agent.doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
     if not playbook:
         heartbeat_path = agent.config.agent.workspace / "HEARTBEAT.md"
         if heartbeat_path.exists():
@@ -402,7 +404,11 @@ def _recent_run_team_scores(
         base = 60.0 if trusted_actor else 30.0
         score = max(1.0, base - float(index))
         signal_time = _parse_signal_time(row.get("started_at"))
-        reason = "recent controller/trusted activity" if trusted_actor else "recent agent activity"
+        reason = (
+            "recent controller/trusted activity"
+            if trusted_actor
+            else "recent agent activity"
+        )
         current = scores.get(team_id)
         if (
             current is None
@@ -520,7 +526,9 @@ def _advance_due_recurring_items(
         item["waiting_until"] = next_iso
 
 
-def _load_assigned_quest_items(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]:
+def _load_assigned_quest_items(
+    agent: "OuroAgent", limit: int = 10
+) -> list[dict[str, Any]]:
     """Fetch actionable quest items assigned to this agent, if supported by the API."""
     from .planning import item_is_waiting, normalize_item
 
@@ -675,13 +683,33 @@ def _format_inbox_items(items: list[dict[str, Any]]) -> str:
         if item.get("submission_assets"):
             import json as _json
 
-            details.append(f"submission_assets={_json.dumps(item['submission_assets'])}")
+            details.append(
+                f"submission_assets={_json.dumps(item['submission_assets'])}"
+            )
         if item.get("eval_route_id"):
             details.append(f"eval_route_id={item['eval_route_id']}")
         suffix = f" ({'; '.join(details)})" if details else ""
+        # A due recurring/parked item carries a handoff note from the tick
+        # that parked it. Without it the item reads as fresh work and the
+        # agent will redo slices that are already done.
+        waiting_note = ""
+        if item.get("waiting_on") or item.get("waiting_check_every"):
+            parts = []
+            if item.get("waiting_on"):
+                parts.append(f"note from when it was parked: {item['waiting_on']}")
+            if item.get("waiting_check_every"):
+                parts.append(
+                    f"recurring check every {item['waiting_check_every']} — "
+                    "verify the awaited event, act only on what's new, and "
+                    "complete the item if its work is already done"
+                )
+            waiting_note = (
+                "\n   This item resurfaced from a waiting state; "
+                + "; ".join(parts)
+            )
         lines.append(
             f"{idx}. Quest `{quest_id}` — {quest_name}\n"
-            f"   Item `{item_id}` [{status}]: {description}{suffix}"
+            f"   Item `{item_id}` [{status}]: {description}{suffix}{waiting_note}"
         )
     return "\n".join(lines)
 
@@ -709,6 +737,12 @@ def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
         "meaningful slice of progress that changes platform state or produces "
         "a useful artifact, and leave clear evidence. Do not try to clear the "
         "whole inbox in a single tick.\n\n"
+        "If an item says it resurfaced from a waiting state, treat the parked "
+        "note as the handoff from the prior tick: verify the awaited event, "
+        "do only what is still unfinished, and `complete_quest_item` when the "
+        "item's Done criteria are already met. Do not redo finished slices "
+        "(sends already logged, prospects already seeded, drafts already "
+        "posted) just because the description still lists them.\n\n"
         "## Quest Inbox\n"
         f"{_format_inbox_items(items)}\n\n"
         "Use `get_asset` or `list_quest_items` if you need more quest context. "
@@ -728,7 +762,7 @@ def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
         "IMPORTANT: If you complete the final open item on a quest you own, "
         "close the loop: use `write_comment` on that quest summarizing the work "
         "accomplished (with links to produced assets), and set the quest's "
-        "status to \"closed\" with `update_quest`."
+        'status to "closed" with `update_quest`.'
     )
 
 
@@ -784,6 +818,7 @@ def start_scheduler(agent, config: HeartbeatConfig):
         if config.active_hours and "timezone" in config.active_hours:
             try:
                 import zoneinfo
+
                 tz = zoneinfo.ZoneInfo(config.active_hours["timezone"])
             except Exception:
                 pass
@@ -808,20 +843,28 @@ def start_scheduler(agent, config: HeartbeatConfig):
 
             await agent.heartbeat()
             if job and hasattr(job, "next_run_time") and job.next_run_time:
-                logger.info("Next heartbeat scheduled for: %s", job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
+                logger.info(
+                    "Next heartbeat scheduled for: %s",
+                    job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                )
         except Exception as e:
             logger.error("Heartbeat failed: %s", e)
 
     job = scheduler.add_job(
         _run_heartbeat,
         trigger,
-        next_run_time=trigger.get_next_fire_time(None, datetime.now(timezone.utc))
+        next_run_time=trigger.get_next_fire_time(None, datetime.now(timezone.utc)),
     )
     scheduler.start()
 
     next_run = job.next_run_time if hasattr(job, "next_run_time") else None
     next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S %Z") if next_run else "unknown"
-    logger.info("Started heartbeat scheduler: every %s; %s; next_run=%s", config.every, format_active_period_status(config), next_run_str)
+    logger.info(
+        "Started heartbeat scheduler: every %s; %s; next_run=%s",
+        config.every,
+        format_active_period_status(config),
+        next_run_str,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1014,9 +1057,7 @@ async def force_planning_heartbeat(
         logger.info("No team available for forced planning run")
         return None
 
-    return await run_planning_run(
-        agent, hb_model, selected_team_id, servers, goal=goal
-    )
+    return await run_planning_run(agent, hb_model, selected_team_id, servers, goal=goal)
 
 
 async def force_review_heartbeat(

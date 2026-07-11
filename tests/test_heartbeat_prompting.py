@@ -127,6 +127,67 @@ def test_quest_work_playbook_adds_assigned_guidance_when_needed():
     assert "assigned to you" in mixed
 
 
+def test_quest_work_playbook_surfaces_parked_handoff_for_due_recurring_items():
+    """Due recurring items must show the prior tick's waiting_on note.
+
+    Without it the item reads as fresh work and the agent redoes slices that
+    were already finished before the item was parked (e.g. DCVC follow-up
+    sent + prospects seeded, then resurfaced on a 1d check).
+    """
+    playbook = build_quest_work_playbook(
+        [
+            {
+                "id": "019f438b-b65d-7d50-8a6e-d7bc73f2e8a7",
+                "quest_id": "019f438b-b62e-72ce-9a90-b5c578c57e23",
+                "status": "in_progress",
+                "description": (
+                    "Sponsor follow-up and new prospect identification: "
+                    "send DCVC follow-up to Kiersten Stead."
+                ),
+                "waiting_on": (
+                    "DCVC 14-day follow-up threshold (Kiersten Stead sent "
+                    "June 27, eligible July 11). 2 new sponsor prospects "
+                    "already seeded: Heising-Simons Foundation and Simons "
+                    "Foundation."
+                ),
+                "waiting_check_every": "1d",
+                "quest_asset": {
+                    "id": "019f438b-b62e-72ce-9a90-b5c578c57e23",
+                    "name": "Outreach: cycle 16 pipeline",
+                },
+                "inbox_source": "owned",
+            }
+        ]
+    )
+
+    assert "resurfaced from a waiting state" in playbook
+    assert "2 new sponsor prospects already seeded" in playbook
+    assert "recurring check every 1d" in playbook
+    assert "complete the item if its work is already done" in playbook
+    assert "Do not redo finished slices" in playbook
+
+
+def test_quest_work_playbook_omits_waiting_note_for_plain_items():
+    playbook = build_quest_work_playbook(
+        [
+            {
+                "id": "item-plain",
+                "quest_id": "quest-a",
+                "status": "pending",
+                "description": "Draft a sponsor email",
+                "quest_asset": {"id": "quest-a", "name": "Outreach"},
+                "inbox_source": "owned",
+            }
+        ]
+    )
+
+    assert "Draft a sponsor email" in playbook
+    # Preamble mentions resurfaced items in general; plain items must not get
+    # a per-item parked handoff line.
+    assert "note from when it was parked" not in playbook
+    assert "recurring check every" not in playbook.split("## Quest Inbox", 1)[1]
+
+
 def test_has_future_heartbeat_in_active_window_before_last_tick():
     cfg = HeartbeatConfig(
         model="test-model",
@@ -168,7 +229,9 @@ def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):
                     active_hours=None,
                 ),
                 planning=SimpleNamespace(enabled=False),
-                agent=SimpleNamespace(model="main-model", workspace=workspace, name="hermes"),
+                agent=SimpleNamespace(
+                    model="main-model", workspace=workspace, name="hermes"
+                ),
             )
             self.doc_store = _DocStore()
 
@@ -648,7 +711,9 @@ def test_run_heartbeat_skips_planning_when_cadence_not_due(tmp_path):
                 ),
             )
             self.doc_store = SimpleNamespace(
-                read=lambda key: "General playbook" if key == "HEARTBEAT:hermes" else None
+                read=lambda key: (
+                    "General playbook" if key == "HEARTBEAT:hermes" else None
+                )
             )
             self.team_registry = SimpleNamespace(
                 team_ids=lambda: {"team-a"},
@@ -731,7 +796,9 @@ def test_force_planning_heartbeat_uses_explicit_team_id(tmp_path):
                     model="heartbeat-model",
                     proactive=SimpleNamespace(enabled=False, servers=[]),
                 ),
-                agent=SimpleNamespace(model="main-model", workspace=tmp_path, name="hermes"),
+                agent=SimpleNamespace(
+                    model="main-model", workspace=tmp_path, name="hermes"
+                ),
             )
             self.team_registry = _Registry()
 
@@ -786,7 +853,9 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
         cost_usd=0.02,
     )
 
-    rows = display._usage_rows(total, duration_s=1.5, subagent_ledger=[("preflight", preflight)])
+    rows = display._usage_rows(
+        total, duration_s=1.5, subagent_ledger=[("preflight", preflight)]
+    )
 
     assert rows[0][1] == "main-model"
     assert rows[1][0] == "sub:preflight"
