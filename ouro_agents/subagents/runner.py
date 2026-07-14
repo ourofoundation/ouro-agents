@@ -404,7 +404,7 @@ def _build_chain_delegate(
         return json.loads(payload)
 
     @tool
-    def delegate(tasks: list) -> str:
+    def delegate(tasks: list[dict]) -> str:
         """Delegate one or more sub-tasks to specialized subagents.
 
         Nested delegates run task specs in order. The parent agent's top-level

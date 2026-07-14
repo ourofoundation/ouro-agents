@@ -179,7 +179,7 @@ def make_load_tool(
         }
 
     @tool
-    def load_tool(tool_names: list) -> str:
+    def load_tool(tool_names: list[str]) -> str:
         """Load deferred MCP tools, or browse a collapsed server's tools.
 
         Two uses, mixable in one call:

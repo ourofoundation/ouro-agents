@@ -99,7 +99,7 @@ def make_memory_tools(
 
     @tool
     def memory_recall(
-        queries: list,
+        queries: list[dict],
         scope: Optional[str] = None,
         subject_type: Optional[str] = None,
         subject_id: Optional[str] = None,

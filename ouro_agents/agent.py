@@ -1402,7 +1402,7 @@ class OuroAgent:
             return delegate_success_payload(result, subagent, mode, summary)
 
         @tool
-        def delegate(tasks: list) -> str:
+        def delegate(tasks: list[dict]) -> str:
             """Delegate one or more tasks to specialized subagents (multiple run in parallel). See the SUBAGENTS section in the system prompt for when to delegate. Subagents publish their own asset and return its `asset_id`/`link` — surface that link; do NOT republish or paste the full body.
 
             Args:

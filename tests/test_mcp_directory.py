@@ -1,10 +1,15 @@
 import json
+from pathlib import Path
 
+from smolagents.models import get_tool_json_schema
+
+from ouro_agents.memory.tools import make_memory_tools
 from ouro_agents.tools.mcp_tools import (
     format_deferred_directory,
     make_load_tool,
     short_tool_description,
 )
+from ouro_agents.tools.skills_tools import make_load_skill_tool
 
 
 def _index():
@@ -101,3 +106,32 @@ def test_load_tool_still_loads_a_qualified_tool():
     assert result["status"] == "loaded"
     assert result["call_as"] == "send_email"
     assert agent.tools["send_email"] is target
+
+
+def _array_items(tool, param: str) -> dict:
+    props = get_tool_json_schema(tool)["function"]["parameters"]["properties"]
+    items = props[param].get("items")
+    assert items is not None, f"{tool.name}.{param} missing items in schema"
+    return items
+
+
+def test_batch_tool_schemas_include_array_items(tmp_path: Path):
+    """Bare `list` annotations omit `items`, which makes some models emit []."""
+
+    class _Backend:
+        def search(self, *args, **kwargs):
+            return []
+
+        def count(self):
+            return 0
+
+    load_tool = make_load_tool({}, [], {})
+    assert _array_items(load_tool, "tool_names") == {"type": "string"}
+
+    load_skill = make_load_skill_tool(tmp_path)
+    assert _array_items(load_skill, "skill_names") == {"type": "string"}
+
+    memory_recall = next(
+        t for t in make_memory_tools(_Backend(), agent_id="hermes") if t.name == "memory_recall"
+    )
+    assert _array_items(memory_recall, "queries")["type"] == "object"

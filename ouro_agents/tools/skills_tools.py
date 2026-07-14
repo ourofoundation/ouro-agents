@@ -15,7 +15,7 @@ def make_load_skill_tool(workspace: Path):
     available_names = list_skill_names(workspace, include_always=False)
 
     @tool
-    def load_skill(skill_names: list) -> str:
+    def load_skill(skill_names: list[str]) -> str:
         """Load one or more skills into the current run context.
 
         Use this when you need detailed guidance from a skill in the available
