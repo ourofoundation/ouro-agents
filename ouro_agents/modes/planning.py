@@ -525,10 +525,152 @@ def build_recent_activity_context(
     )
 
 
+def _snippet_text(text: object, max_len: int) -> str:
+    flat = " ".join(str(text or "").split())
+    return flat[: max_len - 1] + "…" if len(flat) > max_len else flat
+
+
+def build_quest_history_context(
+    agent: "OuroAgent", limit: int = 15
+) -> str:
+    """Compact digest of the agent's own recent quests across teams.
+
+    Lets planning see structural repetition that a single previous-quest
+    retrospective cannot surface.
+    """
+    ouro = None
+    try:
+        ouro = agent._get_ouro_client()
+    except Exception:
+        return ""
+    if not ouro:
+        return ""
+
+    assets = search_own_quests(agent, limit=limit)
+    if not assets:
+        return ""
+
+    lines: list[str] = [
+        "## Your Recent Quests",
+        "Newest activity first. If your proposed plan structurally repeats "
+        "these (same item shapes with a swapped domain), take a different "
+        "approach or decline to plan. Do not reuse item phrasing from this "
+        "digest.",
+    ]
+    for asset in assets:
+        quest_id = str(asset.get("id") or "")
+        if not quest_id:
+            continue
+        name = str(asset.get("name") or "Untitled")
+        team_id = str(asset.get("team_id") or "")
+        created = str(asset.get("created_at") or "")[:10]
+        try:
+            quest = ouro.quests.retrieve(quest_id)
+        except Exception:
+            lines.append(
+                f"- `{quest_id}` — {name} ({created or 'unknown date'}"
+                f"{f', team {team_id[:8]}' if team_id else ''}): "
+                "(could not load items)"
+            )
+            continue
+        items = quest_items(quest)
+        done = sum(1 for i in items if i.get("status") in ("done", "skipped"))
+        status = quest_status(quest) or "unknown"
+        item_bits = [
+            _snippet_text(i.get("description"), 90) for i in items[:6]
+        ]
+        items_line = "; ".join(item_bits) if item_bits else "(no items)"
+        if len(items) > 6:
+            items_line += f"; …(+{len(items) - 6} more)"
+        lines.append(
+            f"- `{quest_id}` — {name} [{status}] "
+            f"({created or 'unknown date'}"
+            f"{f', team {team_id[:8]}' if team_id else ''}; "
+            f"{done}/{len(items)} done): {items_line}"
+        )
+    if len(lines) <= 2:
+        return ""
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
-# Prompt templates
+# Standing planning guidance (PLANNING.md)
 # ---------------------------------------------------------------------------
 
+PLANNING_MD_NAME = "PLANNING.md"
+PLANNING_MD_MAX_CHARS = 8000  # ~2k tokens
+
+
+def planning_md_path(workspace: Path) -> Path:
+    return workspace / PLANNING_MD_NAME
+
+
+def load_planning_guidance(workspace: Path) -> str:
+    """Return PLANNING.md body, truncated to the standing-guidance budget."""
+    path = planning_md_path(workspace)
+    if not path.exists():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except Exception as e:
+        logger.warning("Failed to read %s: %s", path, e)
+        return ""
+    if not text:
+        return ""
+    if len(text) > PLANNING_MD_MAX_CHARS:
+        text = text[: PLANNING_MD_MAX_CHARS - 1] + "…"
+    return (
+        "## Standing Planning Guidance\n"
+        "Binding policy from controller feedback. Follow these constraints "
+        "when scoping plans. Dream/reflection should consolidate this file "
+        "rather than silently discarding older bullets.\n\n"
+        f"{text}"
+    )
+
+
+def append_planning_guidance(
+    workspace: Path,
+    feedback: str,
+    *,
+    source: str = "controller",
+    when: Optional[datetime] = None,
+) -> bool:
+    """Append a timestamped controller-feedback bullet to PLANNING.md."""
+    text = (feedback or "").strip()
+    if not text:
+        return False
+    when = when or datetime.now(timezone.utc)
+    stamp = when.strftime("%Y-%m-%d")
+    bullet = f"- [{stamp}] ({source}) {text}"
+    path = planning_md_path(workspace)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = ""
+        if path.exists():
+            existing = path.read_text(encoding="utf-8")
+        if not existing.strip():
+            header = (
+                "# Standing Planning Guidance\n\n"
+                "Controller feedback that should shape every planning run. "
+                "Consolidate via dream/reflection; do not silently truncate.\n\n"
+            )
+            path.write_text(header + bullet + "\n", encoding="utf-8")
+        else:
+            sep = "" if existing.endswith("\n") else "\n"
+            path.write_text(existing + sep + bullet + "\n", encoding="utf-8")
+        return True
+    except Exception as e:
+        logger.warning("Failed to append planning guidance: %s", e)
+        return False
+
+
+def _is_controller_feedback(agent: "OuroAgent", author_user_id: str | None) -> bool:
+    """True when *author_user_id* is a configured controller."""
+    if not author_user_id:
+        return False
+    security = getattr(getattr(agent, "config", None), "security", None)
+    resolved = getattr(security, "resolved_controller_ids", None) or []
+    return str(author_user_id) in {str(x) for x in resolved}
 PLAN_ITEM_QUALITY_BAR = """\
 Every plan item must pass this bar:
 - It names a concrete deliverable or observable outcome (an asset created or
@@ -537,24 +679,40 @@ Every plan item must pass this bar:
   or "look into Y" as the artifact the exploration should produce.
 - It is sized to roughly one heartbeat work session. Split anything bigger.
 - Its done-condition is checkable from the item text alone: a reviewer should
-  be able to tell from the platform whether it happened."""
+  be able to tell from the platform whether it happened.
+- The plan description must state explicitly what is *different* from your
+  recent quests (see Your Recent Quests). At least one item must be a work
+  type not present in that history digest — do not ship the same pipeline
+  with only the domain swapped.
+- Do not reuse item phrasing from recent quests. If your proposed items
+  structurally repeat recent quests (same shapes, same post→email conveyor),
+  either take a genuinely different approach or decline to plan (skip path).
+- When later work depends on earlier findings, prefer 2–3 concrete items plus
+  an explicit **checkpoint item** whose deliverable is revising the quest
+  itself (add/rewrite remaining items and leave a comment explaining the
+  pivot) over 4 pre-scripted deliverables. No vague "TBD" placeholders —
+  the checkpoint's done-condition is checkable (items changed + rationale
+  comment exists)."""
 
 PLANNING_PROMPT_TEMPLATE = """\
 You are entering a planning phase.{goal_section}
 
-Your previous plan's outcome, recent activity, and work-direction guidance are
-included below. You may also use read-only tools (search_assets, get_asset,
+Your previous plan's outcome, recent quests, outcome evidence, standing
+planning guidance, recent activity, and work-direction memory are included
+below. You may also use read-only tools (search_assets, get_asset,
 get_comments, list_quest_items) to inspect specific assets or threads before
 scoping items — but keep inspection brief and targeted; most of what you need
-is already here. Then create a plan for the upcoming period.
+is already here. Then create a plan for the upcoming period — or decline to
+plan when that is the better call.
 
 Your plan should be realistic given the time available ({budget_description}),
 specific enough to guide your heartbeats, and flexible enough to adapt.
-If the context includes work-direction guidance, use it to choose focus,
-scope, and negative constraints before inventing new work.
+If the context includes work-direction guidance or Standing Planning Guidance,
+treat them as binding constraints when choosing focus, scope, and negative
+constraints before inventing new work.
 Ground every focus choice in the current user goal, an approved quest item,
-work-direction memory, or explicit evidence you have evaluated. Recent platform
-activity alone is not a reason to prioritize a topic.
+work-direction memory, standing guidance, or explicit evidence you have
+evaluated. Recent platform activity alone is not a reason to prioritize a topic.
 
 {item_quality_bar}
 
@@ -562,19 +720,36 @@ activity alone is not a reason to prioritize a topic.
 
 {context_section}
 
-IMPORTANT: You MUST do both of the following steps. Do NOT skip the quest creation.
 Allowed write tools: create_quest, create_quest_items, update_quest.
 Do NOT attempt to execute any plan items or do actual work — only write and
-publish the plan.
+publish the plan, or skip.
+
+You may skip planning when any of these hold:
+- Open quests still have real backlog (including waiting/parked items) that
+  should be worked before inventing new focus.
+- Outcome evidence shows the recent pattern produced near-zero external
+  engagement and you do not yet have a different approach.
+- Nothing novel is worth committing to given Your Recent Quests and Standing
+  Planning Guidance.
+If you skip, do NOT call create_quest. End the turn with only this JSON:
+```json
+{{"quest_id": null, "skip_reason": "<brief reason>"}}
+```
+
+Otherwise do both of the following steps. Do NOT skip quest creation unless
+using the skip path above.
 
 Step 1. Call create_quest exactly once to publish your plan{quest_instructions}.
    {quest_name_instruction}
    - Pass status="draft" so the plan quest is not live until approved.
    - Pass description_markdown with **prose context**: background, reasoning,
      focus areas. Use headers and paragraphs — no checklists in the description.
-   - If a Previous Plan Outcome is shown above, open the description with a
-     short retrospective (2-3 sentences): what worked, what didn't, and what
-     this plan does differently because of it.
+   - Open the description with a short retrospective (2-3 sentences) that grades
+     the previous plan against **outcomes** (did anyone respond, use, or build
+     on the work?), not just item completion. Completion without engagement is
+     not success. If a pattern shows repeated near-zero external engagement,
+     name it as failing and change approach.
+   - Explicitly state what this plan does differently from recent quests.
    - Pass items as a list of specific, actionable task descriptions (strings).
      Each item becomes a trackable task on the platform.
    - Call create_quest alone (not in parallel with inspection tools) so its
@@ -877,9 +1052,12 @@ async def run_planning_run(
     Every planning run creates its own quest — the agent never appends the
     next focus onto a prior quest. When *goal* is given the plan is framed
     around achieving it. The team cursor records the new quest for the
-    auto-approval loop.
+    auto-approval loop. The model may skip with ``quest_id: null``; the
+    cursor's ``last_planned_at`` still advances so the cadence does not
+    immediately re-fire.
     """
     from ..memory.reflection import write_log
+    from .outcomes import build_outcome_evidence_context
     from .profiles import RunMode
 
     planning_cfg = agent.config.planning
@@ -907,8 +1085,19 @@ async def run_planning_run(
         ),
     )
     activity_context = build_recent_activity_context(agent, team_id)
+    history_context = build_quest_history_context(agent)
+    outcome_context = build_outcome_evidence_context(agent)
+    guidance_context = load_planning_guidance(workspace)
     extra_context = "\n\n".join(
-        part for part in (direction_context, activity_context) if part
+        part
+        for part in (
+            guidance_context,
+            history_context,
+            outcome_context,
+            direction_context,
+            activity_context,
+        )
+        if part
     )
 
     prompt = build_planning_prompt(
@@ -930,6 +1119,7 @@ async def run_planning_run(
         "ouro:create_quest_items",
         "ouro:update_quest",
         "ouro:list_quest_items",
+        "ouro:get_impact",
     ]
 
     result = await agent.run(
@@ -942,7 +1132,24 @@ async def run_planning_run(
     )
 
     parsed = parse_json_from_llm(result)
-    quest_id = str((parsed or {}).get("quest_id") or "")
+    quest_id_raw = (parsed or {}).get("quest_id")
+    skip_reason = str((parsed or {}).get("skip_reason") or "").strip()
+
+    # Explicit skip: advance cadence cursor, do not publish.
+    if parsed is not None and (quest_id_raw is None or quest_id_raw == ""):
+        cursor.last_planned_at = datetime.now(timezone.utc).isoformat()
+        save_cursor(workspace, team_id, cursor)
+        reason = skip_reason or "no novel focus worth committing"
+        logger.info("Planning run skipped for team %s: %s", team_id[:8], reason)
+        write_log(
+            workspace,
+            f"[planning:skipped] {reason}",
+            doc_store=_plan_doc_store(agent, team_id),
+            agent_name=agent_cfg.name,
+        )
+        return result
+
+    quest_id = str(quest_id_raw or "")
     if not quest_id:
         logger.warning("Planning run did not report a quest id; cursor not advanced")
         return result
@@ -983,6 +1190,7 @@ async def run_quest_feedback_run(
     thread_parent_id: str | None = None,
     prefetch=None,
     capability_envelope=None,
+    feedback_author_user_id: str | None = None,
 ) -> Optional[str]:
     """Review feedback on one of the agent's own quests.
 
@@ -992,6 +1200,7 @@ async def run_quest_feedback_run(
     (draft/open/closed). Returns a short human-readable outcome, or None when
     the quest could not be loaded.
     """
+    from ..memory.focus import is_directional_feedback
     from ..memory.reflection import write_log
     from .profiles import RunMode
 
@@ -1068,6 +1277,17 @@ async def run_quest_feedback_run(
 
     if feedback_summary:
         remember_plan_feedback_direction(agent, quest_id, team_id, feedback_summary)
+        # Durable standing guidance for controller directional feedback.
+        guidance_text = feedback or feedback_summary
+        if (
+            _is_controller_feedback(agent, feedback_author_user_id)
+            and is_directional_feedback(guidance_text)
+        ):
+            append_planning_guidance(
+                agent.config.agent.workspace,
+                guidance_text,
+                source="controller",
+            )
 
     outcome = "unchanged"
     if next_status != current_status:

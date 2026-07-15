@@ -653,6 +653,140 @@ def load_work_inbox(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]
     return inbox[:limit]
 
 
+def count_plans_created_since(
+    agent: "OuroAgent",
+    *,
+    since: datetime,
+    team_ids: list[str] | None = None,
+) -> int:
+    """How many plan quests this agent published on or after *since*.
+
+    Prefers per-team planning cursors (``last_planned_at`` / ``last_quest_id``)
+    so skips that advance the cursor still count toward the daily budget.
+    Falls back to own-quest created_at when cursors are empty.
+    """
+    from .planning import load_cursor, search_own_quests
+
+    workspace = agent.config.agent.workspace
+    counted_ids: set[str] = set()
+    count = 0
+    for team_id in team_ids or _sorted_team_ids(agent):
+        cursor = load_cursor(workspace, team_id)
+        last_at = None
+        if cursor.last_planned_at:
+            try:
+                text = cursor.last_planned_at
+                if text.endswith("Z"):
+                    text = text[:-1] + "+00:00"
+                last_at = datetime.fromisoformat(text)
+                if last_at.tzinfo is None:
+                    last_at = last_at.replace(tzinfo=timezone.utc)
+            except ValueError:
+                last_at = None
+        if last_at is not None and last_at >= since:
+            count += 1
+            if cursor.last_quest_id:
+                counted_ids.add(cursor.last_quest_id)
+
+    # Also count additional own quests created in-window that cursors missed
+    # (e.g. multi-plan same day before skip path existed).
+    try:
+        for asset in search_own_quests(agent, limit=30):
+            quest_id = str(asset.get("id") or "")
+            if not quest_id or quest_id in counted_ids:
+                continue
+            created_raw = str(asset.get("created_at") or "")
+            if not created_raw:
+                continue
+            try:
+                text = created_raw
+                if text.endswith("Z"):
+                    text = text[:-1] + "+00:00"
+                created = datetime.fromisoformat(text)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if created >= since:
+                count += 1
+                counted_ids.add(quest_id)
+    except Exception as e:
+        logger.debug("Failed to count recent plan quests: %s", e)
+    return count
+
+
+def count_owned_open_backlog(agent: "OuroAgent", *, quest_limit: int = 25) -> int:
+    """Open owned-quest items including waiting/parked ones.
+
+    Waiting items are excluded from the work inbox (so they don't starve
+    heartbeats) but still represent real backlog that should block minting
+    new plans.
+    """
+    from .planning import (
+        item_is_open,
+        quest_items,
+        quest_status,
+        search_own_quests,
+    )
+
+    own_user_id = getattr(agent, "own_user_id", None)
+    if not own_user_id:
+        return 0
+    try:
+        ouro = agent._get_ouro_client()
+    except Exception:
+        return 0
+    total = 0
+    try:
+        for asset in search_own_quests(agent, limit=quest_limit):
+            quest_id = str(asset.get("id") or "")
+            if not quest_id:
+                continue
+            try:
+                quest = ouro.quests.retrieve(quest_id)
+            except Exception:
+                continue
+            status = quest_status(quest)
+            if status != "open":
+                continue
+            for item in quest_items(quest):
+                if item_is_open(item):
+                    total += 1
+    except Exception as e:
+        logger.warning("Failed to count owned backlog: %s", e)
+    return total
+
+
+def planning_budget_blocks(
+    agent: "OuroAgent",
+    team_ids: list[str],
+    *,
+    now: datetime | None = None,
+) -> str | None:
+    """Return a human reason to skip planning, or None if planning may run."""
+    planning_cfg = agent.config.planning
+    now = now or datetime.now(timezone.utc)
+    max_per_day = int(getattr(planning_cfg, "max_plans_per_day", 2) or 0)
+    backlog_limit = int(getattr(planning_cfg, "backlog_limit", 8) or 0)
+
+    if max_per_day > 0:
+        since = now - timedelta(hours=24)
+        created = count_plans_created_since(agent, since=since, team_ids=team_ids)
+        if created >= max_per_day:
+            return (
+                f"plan budget exhausted ({created}/{max_per_day} plans in last 24h)"
+            )
+
+    if backlog_limit > 0:
+        backlog = count_owned_open_backlog(agent)
+        if backlog >= backlog_limit:
+            return (
+                f"open backlog too large ({backlog} items >= limit {backlog_limit}, "
+                "including waiting/parked)"
+            )
+    return None
+
+
 def _inbox_item_quest(item: dict[str, Any]) -> dict[str, Any]:
     quest = item.get("quest_asset")
     return quest if isinstance(quest, dict) else {}
@@ -717,6 +851,7 @@ def _format_inbox_items(items: list[dict[str, Any]]) -> str:
 def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
     """Instruction block for one heartbeat of quest work from the inbox."""
     has_assigned = any(i.get("inbox_source") == "assigned" for i in items)
+    has_owned = any(i.get("inbox_source") == "owned" for i in items)
     completion_guidance = (
         "When a slice is complete on a quest you own, use `complete_quest_item` "
         "with a substantive completion note and any produced asset id. "
@@ -728,6 +863,18 @@ def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
             "asset IDs; use `complete_quest_item` only when you are clearly "
             "allowed to self-complete. Do not create a new quest or rewrite "
             "someone else's plan unless the owner explicitly asks for that. "
+        )
+    adaptive_guidance = ""
+    if has_owned:
+        adaptive_guidance = (
+            "Adaptive quests: on quests you own, if completed work invalidates "
+            "or improves a later pending item, update or replace that item with "
+            "`update_quest_item` / `create_quest_items` (and delete stale ones "
+            "with `delete_quest_item` when allowed) and leave a `write_comment` "
+            "on the quest explaining the pivot. Never execute an item you know "
+            "is stale. Checkpoint items whose deliverable is revising the quest "
+            "are done when the remaining items reflect the new direction and "
+            "the rationale comment exists.\n\n"
         )
     return (
         "You are working your quest inbox this heartbeat.\n\n"
@@ -743,6 +890,7 @@ def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
         "item's Done criteria are already met. Do not redo finished slices "
         "(sends already logged, prospects already seeded, drafts already "
         "posted) just because the description still lists them.\n\n"
+        f"{adaptive_guidance}"
         "## Quest Inbox\n"
         f"{_format_inbox_items(items)}\n\n"
         "Use `get_asset` or `list_quest_items` if you need more quest context. "
@@ -770,9 +918,12 @@ _INBOX_PRELOAD_TOOLS = [
     "ouro:get_asset",
     "ouro:list_quest_items",
     "ouro:update_quest_item",
+    "ouro:create_quest_items",
+    "ouro:delete_quest_item",
     "ouro:complete_quest_item",
     "ouro:submit_quest_entry",
     "ouro:write_comment",
+    "ouro:update_quest",
 ]
 
 
@@ -927,26 +1078,30 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
 
         if not inbox:
             workspace = agent.config.agent.workspace
-            due_teams = [
-                tid
-                for tid in team_ids
-                if _planning_team_is_writable(agent, tid)
-                and planning_due(load_cursor(workspace, tid), planning_cfg.cadence)
-            ]
-            if due_teams and not has_future_heartbeat_in_active_window(
-                agent.config.heartbeat
-            ):
-                logger.info(
-                    "Skipping planning: no future heartbeat remains in active window"
-                )
-            elif due_teams:
-                team_id = _select_planning_team_id(agent, due_teams)
-                if team_id:
+            block_reason = planning_budget_blocks(agent, team_ids)
+            if block_reason:
+                logger.info("Skipping planning: %s", block_reason)
+            else:
+                due_teams = [
+                    tid
+                    for tid in team_ids
+                    if _planning_team_is_writable(agent, tid)
+                    and planning_due(load_cursor(workspace, tid), planning_cfg.cadence)
+                ]
+                if due_teams and not has_future_heartbeat_in_active_window(
+                    agent.config.heartbeat
+                ):
                     logger.info(
-                        "Planning cadence due for team %s; publishing a new plan quest",
-                        team_id[:8],
+                        "Skipping planning: no future heartbeat remains in active window"
                     )
-                    return await run_planning_run(agent, hb_model, team_id, servers)
+                elif due_teams:
+                    team_id = _select_planning_team_id(agent, due_teams)
+                    if team_id:
+                        logger.info(
+                            "Planning cadence due for team %s; publishing a new plan quest",
+                            team_id[:8],
+                        )
+                        return await run_planning_run(agent, hb_model, team_id, servers)
     elif planning_cfg.enabled:
         logger.info("No teams discovered — planning requires a team")
 

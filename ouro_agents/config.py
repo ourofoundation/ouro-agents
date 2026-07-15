@@ -237,6 +237,10 @@ class PlanningConfig(BaseModel):
     cadence: str = "1d"
     review_window: str = "2h"
     auto_approve: bool = True
+    # Global caps across all teams for one agent process.
+    max_plans_per_day: int = 2
+    # Open owned-quest items (including waiting/parked) that block new plans.
+    backlog_limit: int = 8
 
 
 class SecurityConfig(BaseModel):
@@ -460,6 +464,8 @@ _PLANNING_SECTION_KEYS = {
     "min_heartbeats",
     "review_window",
     "auto_approve",
+    "max_plans_per_day",
+    "backlog_limit",
 }
 
 

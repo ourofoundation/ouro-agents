@@ -36,6 +36,7 @@ def _summary_template() -> dict[str, Any]:
     return {
         "compacted": False,
         "promoted": 0,
+        "outcome_lessons": 0,
         "skills_distilled": 0,
         "strength_decayed": 0,
         "memories_deleted": 0,
@@ -1428,6 +1429,69 @@ def _consolidate_user_comments(
     return merged
 
 
+def _store_outcome_lessons(
+    agent: Any | None,
+    *,
+    agent_id: str,
+    backend: MemoryBackend,
+    team_id: str | None,
+    dry_run: bool,
+    plan: DreamPlan | None,
+) -> int:
+    """Persist outcome-based direction memories from recent quest engagement."""
+    if agent is None:
+        if plan:
+            plan.add_skip("outcome_lessons", "no_agent")
+        return 0
+    if dry_run:
+        if plan:
+            plan.add_skip("outcome_lessons", "dry_run")
+        return 0
+    try:
+        from ..modes.outcomes import build_outcome_evidence_context
+        from .focus import remember_work_direction
+
+        digest = build_outcome_evidence_context(agent, limit=8)
+        if not digest:
+            if plan:
+                plan.add_skip("outcome_lessons", "no_evidence")
+            return 0
+
+        # Extract a compact lesson: if most recent quests show zero external
+        # engagement, store an explicit negative constraint.
+        zeroish = digest.count("0 external comments") + digest.count(
+            "0 quality views"
+        )
+        lesson = (
+            "Recent quests produced little or no external engagement. Prefer "
+            "novel approaches over repeating completed pipelines; grade success "
+            "by replies, comments, uses, and entries from others — not item "
+            "completion alone.\n\n"
+            f"{digest}"
+        )
+        if zeroish < 2:
+            lesson = (
+                "Outcome evidence from recent quests (use when planning):\n\n"
+                f"{digest}"
+            )
+
+        stored = remember_work_direction(
+            backend,
+            agent_id,
+            lesson[:1500],
+            source="dream:outcome_lessons",
+            team_id=team_id,
+            strength=0.85,
+            text_prefix="Outcome lesson",
+        )
+        return 1 if stored else 0
+    except Exception as e:
+        logger.warning("Failed to store outcome lessons: %s", e)
+        if plan:
+            plan.add_warning(f"outcome_lessons failed: {e}")
+        return 0
+
+
 def run_refinement_phase(
     agent: Any | None,
     *,
@@ -1556,6 +1620,18 @@ def run_dream(
             model,
             doc_store=doc_store,
             agent_name=agent_id,
+            dry_run=dry_run,
+            plan=plan,
+        )
+
+    # Outcome-evidence lessons: grade recent quests by external engagement and
+    # store directional memories so planning stops affirming empty pipelines.
+    with _time_phase(dream_result, "outcome_lessons"):
+        results["outcome_lessons"] = _store_outcome_lessons(
+            agent,
+            agent_id=agent_id,
+            backend=backend,
+            team_id=team_id,
             dry_run=dry_run,
             plan=plan,
         )

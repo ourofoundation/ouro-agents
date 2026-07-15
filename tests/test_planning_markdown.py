@@ -192,8 +192,10 @@ def test_build_planning_prompt_includes_direction_extra_context():
     assert "## Additional Context" in prompt
     assert "Work Direction Guidance" in prompt
     assert "Focus on dataset quality" in prompt
-    assert "use it to choose focus" in prompt
-    assert "Recent platform\nactivity alone is not a reason to prioritize a topic" in prompt
+    assert "choosing focus" in prompt
+    assert "Recent platform\nactivity alone is not a reason to prioritize a topic" in prompt or (
+        "Recent platform activity alone is not a reason to prioritize a topic" in prompt
+    )
 
 
 def test_build_recent_activity_context_digests_run_log():
@@ -704,3 +706,213 @@ def test_run_quest_feedback_run_approves_draft_to_open(tmp_path):
 
     assert "approved" in result
     assert ouro.quests.updates == [("plan-quest-1", {"status": "open"})]
+
+
+# ---------------------------------------------------------------------------
+# Anti-stale planning: history, skip, PLANNING.md, quality bar
+# ---------------------------------------------------------------------------
+
+
+def test_build_planning_prompt_allows_skip_and_requires_novelty():
+    prompt = build_planning_prompt(cadence="12h", heartbeat_every="1h")
+
+    assert '"quest_id": null' in prompt
+    assert "skip_reason" in prompt
+    assert "Standing Planning Guidance" in prompt or "decline to plan" in prompt
+    assert "checkpoint item" in prompt
+    assert "what is *different*" in prompt or "different from your" in prompt
+    assert "Completion without engagement is not success" in prompt or "outcomes" in prompt
+
+
+def test_build_quest_history_context_summarizes_recent_quests():
+    from ouro_agents.modes.planning import build_quest_history_context
+
+    class FakeQuests:
+        def retrieve(self, quest_id):
+            return SimpleNamespace(
+                id=quest_id,
+                name=f"Quest {quest_id}",
+                quest=SimpleNamespace(status="open"),
+                items=[
+                    SimpleNamespace(
+                        id="i1",
+                        description="Paper deep-read and CIF pipeline",
+                        status="done",
+                    ),
+                    SimpleNamespace(
+                        id="i2",
+                        description="Draft outreach email",
+                        status="pending",
+                    ),
+                ],
+            )
+
+    agent = SimpleNamespace(
+        own_user_id="user-1",
+        config=SimpleNamespace(agent=SimpleNamespace(org_id=None)),
+        _get_ouro_client=lambda: SimpleNamespace(
+            quests=FakeQuests(),
+            assets=SimpleNamespace(
+                search=lambda **kwargs: [
+                    {
+                        "id": "q1",
+                        "name": "Cycle 22",
+                        "team_id": "team-aaa",
+                        "created_at": "2026-07-11T00:00:00+00:00",
+                    }
+                ]
+            ),
+        ),
+    )
+
+    context = build_quest_history_context(agent)
+    assert "## Your Recent Quests" in context
+    assert "Cycle 22" in context
+    assert "Paper deep-read" in context
+    assert "1/2 done" in context
+
+
+def test_run_planning_run_skip_advances_cursor_without_quest(tmp_path):
+    ouro = SimpleNamespace(comments=_FakeComments(), quests=SimpleNamespace())
+    agent = _fake_agent(
+        tmp_path,
+        ouro,
+        json.dumps({"quest_id": None, "skip_reason": "recent cycles are repetitive"}),
+    )
+
+    result = asyncio.run(
+        run_planning_run(
+            agent,
+            hb_model=SimpleNamespace(model_id="heartbeat-model"),
+            team_id="team-1",
+            servers=["ouro"],
+        )
+    )
+
+    assert result is not None
+    cursor = load_cursor(tmp_path, "team-1")
+    assert cursor.last_planned_at
+    assert cursor.last_quest_id == ""
+    assert cursor.pending_quest_ids == []
+    assert ouro.comments.created == []
+
+
+def test_append_and_load_planning_guidance(tmp_path):
+    from ouro_agents.modes.planning import (
+        append_planning_guidance,
+        load_planning_guidance,
+    )
+
+    assert load_planning_guidance(tmp_path) == ""
+    assert append_planning_guidance(
+        tmp_path,
+        "Stop repeating the CIF pipeline.",
+        source="controller",
+        when=datetime(2026, 7, 14, tzinfo=timezone.utc),
+    )
+    loaded = load_planning_guidance(tmp_path)
+    assert "## Standing Planning Guidance" in loaded
+    assert "Stop repeating the CIF pipeline." in loaded
+    assert "2026-07-14" in loaded
+
+
+def test_controller_feedback_appends_planning_md(tmp_path):
+    class FakeMemory:
+        def add(self, *args, **kwargs):
+            return None
+
+    class FakeQuests:
+        def retrieve(self, _quest_id):
+            return SimpleNamespace(
+                id="plan-quest-1",
+                name="Plan",
+                team_id="team-1",
+                description="# Plan",
+                quest=SimpleNamespace(status="open"),
+                items=[],
+            )
+
+        def update(self, *_args, **_kwargs):
+            return None
+
+    ouro = SimpleNamespace(quests=FakeQuests())
+    agent = _feedback_agent(
+        tmp_path,
+        ouro,
+        json.dumps(
+            {
+                "feedback_summary": "Stop the formulaic cycle pattern.",
+                "next_status": "open",
+            }
+        ),
+    )
+    agent.memory = FakeMemory()
+    agent.config.security.resolved_controller_ids = ["controller-1"]
+
+    asyncio.run(
+        run_quest_feedback_run(
+            agent,
+            hb_model=None,
+            quest_id="plan-quest-1",
+            servers=["ouro"],
+            feedback=(
+                "These quests have become very stale and formulaic. "
+                "Stop repeating the CIF-validate-ML-predict pipeline."
+            ),
+            feedback_author_user_id="controller-1",
+        )
+    )
+
+    from ouro_agents.modes.planning import planning_md_path
+
+    text = planning_md_path(tmp_path).read_text()
+    assert "stale and formulaic" in text
+
+
+def test_non_controller_feedback_does_not_append_planning_md(tmp_path):
+    class FakeMemory:
+        def add(self, *args, **kwargs):
+            return None
+
+    class FakeQuests:
+        def retrieve(self, _quest_id):
+            return SimpleNamespace(
+                id="plan-quest-1",
+                name="Plan",
+                team_id="team-1",
+                description="# Plan",
+                quest=SimpleNamespace(status="open"),
+                items=[],
+            )
+
+        def update(self, *_args, **_kwargs):
+            return None
+
+    ouro = SimpleNamespace(quests=FakeQuests())
+    agent = _feedback_agent(
+        tmp_path,
+        ouro,
+        json.dumps(
+            {
+                "feedback_summary": "Please focus on evaluation quality.",
+                "next_status": "open",
+            }
+        ),
+    )
+    agent.memory = FakeMemory()
+    agent.config.security.resolved_controller_ids = ["controller-1"]
+
+    asyncio.run(
+        run_quest_feedback_run(
+            agent,
+            hb_model=None,
+            quest_id="plan-quest-1",
+            servers=["ouro"],
+            feedback="Please focus on evaluation quality before shipping more routes.",
+            feedback_author_user_id="someone-else",
+        )
+    )
+
+    from ouro_agents.modes.planning import planning_md_path
+
+    assert not planning_md_path(tmp_path).exists()

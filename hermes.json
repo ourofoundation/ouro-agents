@@ -81,10 +81,12 @@
       "enabled": true,
       "model": "z-ai/glm-5.2",
       "max_steps": 20,
-      "cadence": "4h",
+      "cadence": "6h",
       "min_heartbeats": 4,
-      "review_window": "1h",
-      "auto_approve": true
+      "review_window": "2h",
+      "auto_approve": true,
+      "max_plans_per_day": 2,
+      "backlog_limit": 8
     },
     "heartbeat": {
       "enabled": true,

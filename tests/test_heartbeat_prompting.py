@@ -672,9 +672,12 @@ def test_run_heartbeat_works_inbox_before_planning(tmp_path):
         "ouro:get_asset",
         "ouro:list_quest_items",
         "ouro:update_quest_item",
+        "ouro:create_quest_items",
+        "ouro:delete_quest_item",
         "ouro:complete_quest_item",
         "ouro:submit_quest_entry",
         "ouro:write_comment",
+        "ouro:update_quest",
     ]
 
 
@@ -891,3 +894,108 @@ def test_usage_rows_can_show_reasoning_when_enabled():
     assert len(rows[0]) == 11
     assert "Reasoning" in display._usage_table_headers()
     assert rows[0][8] == "3"
+
+
+def test_quest_work_playbook_allows_mid_quest_revision_on_owned_quests():
+    playbook = build_quest_work_playbook(
+        [
+            {
+                "id": "item-a",
+                "quest_id": "quest-a",
+                "status": "pending",
+                "description": "Checkpoint: revise remaining items",
+                "quest_asset": {"id": "quest-a", "name": "Adaptive"},
+                "inbox_source": "owned",
+            }
+        ]
+    )
+
+    assert "Adaptive quests" in playbook
+    assert "Never execute an item you know is stale" in playbook
+    assert "`create_quest_items`" in playbook
+
+
+def test_planning_budget_blocks_on_max_plans_per_day(tmp_path):
+    from datetime import timedelta, timezone
+
+    from ouro_agents.modes.heartbeat import planning_budget_blocks
+    from ouro_agents.modes.planning import PlanningCursor, save_cursor
+
+    now = datetime(2026, 7, 14, 18, 0, tzinfo=timezone.utc)
+    save_cursor(
+        tmp_path,
+        "team-a",
+        PlanningCursor(
+            last_planned_at=(now - timedelta(hours=2)).isoformat(),
+            last_quest_id="q1",
+        ),
+    )
+    save_cursor(
+        tmp_path,
+        "team-b",
+        PlanningCursor(
+            last_planned_at=(now - timedelta(hours=5)).isoformat(),
+            last_quest_id="q2",
+        ),
+    )
+
+    agent = SimpleNamespace(
+        config=SimpleNamespace(
+            agent=SimpleNamespace(workspace=tmp_path),
+            planning=SimpleNamespace(max_plans_per_day=2, backlog_limit=8),
+        ),
+        own_user_id="user-1",
+        _get_ouro_client=lambda: SimpleNamespace(
+            assets=SimpleNamespace(search=lambda **kwargs: []),
+            quests=SimpleNamespace(),
+        ),
+    )
+
+    reason = planning_budget_blocks(agent, ["team-a", "team-b"], now=now)
+    assert reason is not None
+    assert "plan budget exhausted" in reason
+
+
+def test_planning_budget_blocks_on_backlog_including_waiting(tmp_path):
+    from ouro_agents.modes.heartbeat import planning_budget_blocks
+
+    class FakeQuests:
+        def retrieve(self, quest_id):
+            return SimpleNamespace(
+                id=quest_id,
+                quest=SimpleNamespace(status="open"),
+                items=[
+                    SimpleNamespace(
+                        id="i1",
+                        description="Parked follow-up",
+                        status="in_progress",
+                        waiting_on="reply",
+                        waiting_until="2099-01-01T00:00:00+00:00",
+                    ),
+                    SimpleNamespace(
+                        id="i2",
+                        description="Another pending",
+                        status="pending",
+                    ),
+                ],
+            )
+
+    agent = SimpleNamespace(
+        config=SimpleNamespace(
+            agent=SimpleNamespace(workspace=tmp_path),
+            planning=SimpleNamespace(max_plans_per_day=10, backlog_limit=2),
+        ),
+        own_user_id="user-1",
+        _get_ouro_client=lambda: SimpleNamespace(
+            quests=FakeQuests(),
+            assets=SimpleNamespace(
+                search=lambda **kwargs: [
+                    {"id": "quest-1", "name": "Sponsor sprint"}
+                ]
+            ),
+        ),
+    )
+
+    reason = planning_budget_blocks(agent, ["team-1"])
+    assert reason is not None
+    assert "open backlog too large" in reason

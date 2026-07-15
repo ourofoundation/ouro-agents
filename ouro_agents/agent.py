@@ -3045,6 +3045,7 @@ class OuroAgent:
                 thread_parent_id=event_run.thread_parent_id,
                 prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
                 capability_envelope=capability_envelope,
+                feedback_author_user_id=event_run.actor_user_id,
             )
             if result is not None:
                 logger.info("Quest %s updated via event feedback", quest_id[:8])
