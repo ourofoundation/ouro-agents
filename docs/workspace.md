@@ -26,6 +26,9 @@ workspace/
 ├── memory/                      # mem0 + Chroma store (do not edit)
 ├── skills/                      # workspace skill overrides
 ├── subagents/                   # custom SubAgentProfile files (json/yaml)
+├── projects/<slug>/             # agent-authored artifacts, one dir per effort
+├── drafts/                      # agent-authored drafts (emails, posts)
+├── scratch/                     # disposable intermediates / cross-run state
 ├── shared/
 │   ├── memory/MEMORY.md         # unscoped agent memory (no team context)
 │   ├── logs/<period>.md         # root period logs (daily/weekly/biweekly)
@@ -40,6 +43,14 @@ workspace/
 Legacy workspaces may still have `shared/daily/` or `teams/<id>/daily/` until
 the startup migration moves them to `logs/`. The doc store reads both during
 the transition.
+
+## Agent-authored files
+
+Agents are instructed (via the `WORKSPACE FILE ORGANIZATION` prompt section
+and the `filesystem` skill) to never write new files at the workspace root.
+Their own artifacts go under `projects/<slug>/` (one directory per ongoing
+effort), `drafts/` (outgoing drafts), or `scratch/` (disposable). The root is
+reserved for framework files and directories listed above.
 
 ## SOUL.md (required)
 

@@ -487,6 +487,7 @@ def _format_task_context(
         "conversation_state",
         "plans_index",
         "working_memory",
+        "workspace_layout",
     )
     ordered_shared_keys = (
         tuple(shared_context_sections)

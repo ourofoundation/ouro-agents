@@ -57,10 +57,19 @@ state_path.write_text(json.dumps(state, indent=2))
 
 ## File Organization
 
-Keep the workspace tidy:
-- `workspace/drafts/` — work-in-progress content before publishing
-- `workspace/data/` — downloaded or generated data files
-- `workspace/scratch/` — intermediate state, including data carried across runs
+**Never write new files at the workspace root** — it is reserved for framework
+files (SOUL.md, NOTES.md, MEMORY.md, runs.db) and framework-managed directories
+(memory/, teams/, conversations/, data/, skills/). Put your own files here:
+
+- `projects/<slug>/` — all artifacts for a project or ongoing work cycle
+  (analyses, results, generated files, post drafts). One directory per effort,
+  reused across runs. Don't invent a new top-level directory per run or cycle;
+  use a subdirectory of the project (e.g. `projects/novomag/cycle24/`).
+- `drafts/` — outgoing drafts not tied to a project (emails, follow-ups, posts).
+- `scratch/` — disposable intermediates and cross-run state. Safe to delete.
+
+Overwrite working files in place instead of creating `_v2`/`_fixed`/`_final`
+copies, and reuse one canonical filename per recurring artifact.
 
 ## Upload Pattern
 

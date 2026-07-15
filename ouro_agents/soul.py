@@ -30,6 +30,26 @@ MCP_TOOL_RULES = (
     "it has direct access to the Ouro Python SDK."
 )
 
+WORKSPACE_LAYOUT_RULES = (
+    "Your workspace persists across runs. Keep it organized — future runs (and other "
+    "subagents) must be able to find things without searching.\n\n"
+    "**Never write new files at the workspace root.** The root is reserved for "
+    "framework files (SOUL.md, NOTES.md, MEMORY.md, runs.db) and framework-managed "
+    "directories (memory/, teams/, conversations/, data/, skills/).\n\n"
+    "Put your own files here:\n"
+    "- `projects/<slug>/` — all artifacts for a project or work cycle (analyses, "
+    "results, generated structures/files, post drafts). One directory per ongoing "
+    "effort; reuse it across runs instead of inventing new top-level names.\n"
+    "- `drafts/` — outgoing drafts not tied to a project (emails, follow-ups, posts).\n"
+    "- `scratch/` — disposable intermediates and cross-run state. Safe to delete.\n\n"
+    "Rules:\n"
+    "- Before writing, check whether a fitting `projects/` directory already exists.\n"
+    "- Overwrite working files in place instead of writing `_v2`/`_fixed`/`_final` "
+    "copies; the run log preserves history.\n"
+    "- Reuse one canonical filename per artifact (e.g. `crm_updates.json`), not a new "
+    "name per run."
+)
+
 SUBAGENT_RULES = (
     "Subagents run in their own context. Use `delegate` with a list of task specs "
     "(multiple tasks run in parallel). Each spec: `subagent`, `task`, optional `asset_refs` and `return_mode`.\n\n"
@@ -65,6 +85,7 @@ SECTION_PRIORITY = {
     "working_memory": 12,
     "subagents": 13,
     "tool_rules": 14,
+    "workspace_layout": 14.5,
     "skills": 15,
     "skill_directory": 16,
 }
@@ -203,6 +224,11 @@ def build_shared_prompt_sections(
 
     if working_memory:
         sections["working_memory"] = f"## WORKING MEMORY\n{working_memory}"
+
+    if workspace_root:
+        sections["workspace_layout"] = (
+            f"## WORKSPACE FILE ORGANIZATION\n{WORKSPACE_LAYOUT_RULES}"
+        )
 
     return sections
 
