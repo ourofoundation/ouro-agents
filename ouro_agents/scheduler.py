@@ -416,7 +416,9 @@ class AgentScheduler:
                 has_recent_dream_activity,
                 read_dream_marker,
                 run_dream,
+                scope_has_dream_work,
                 write_dream_marker,
+                write_dream_status,
             )
             from .memory.naming import period_key, period_key_offset
 
@@ -467,6 +469,21 @@ class AgentScheduler:
                     logger.debug("Dream: skipping team %s (no recent activity)", team_id)
                     continue
 
+                # Skip empty scopes: logs exist but carry no meaningful
+                # content, the memory doc is empty, and there are no vector
+                # memories — a run there would be pure overhead.
+                if not scope_has_dream_work(
+                    doc_store,
+                    agent.memory,
+                    agent.config.agent.name,
+                    rhythm,
+                    team_id=team_id,
+                    current_period=current_period,
+                    previous_period=previous_period,
+                ):
+                    logger.info("Dream: skipping empty scope %s", team_id[:8])
+                    continue
+
                 results_by_scope[team_id] = run_dream(
                     workspace=workspace,
                     backend=agent.memory,
@@ -480,6 +497,15 @@ class AgentScheduler:
                 )
 
             write_dream_marker(workspace, current_period)
+            status = write_dream_status(workspace, current_period, results_by_scope)
+            if status.get("scopes_with_failures"):
+                logger.warning(
+                    "Dream cycle for %s finished with failures in %d/%d scopes: %s",
+                    current_period,
+                    status["scopes_with_failures"],
+                    status["scopes_run"],
+                    status["failures"],
+                )
             logger.info("Dream cycle complete: %s", results_by_scope)
         except Exception:
             logger.exception("Dream cycle failed")

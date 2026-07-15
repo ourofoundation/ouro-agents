@@ -117,6 +117,13 @@ class DreamResult:
         )
         if self.audit_path:
             out["audit_log"] = self.audit_path
+        failures = [
+            _short_excerpt(w, 200)
+            for w in self.plan.warnings
+            if "failed" in w.lower()
+        ] + [_short_excerpt(e, 200) for e in self.errors]
+        if failures:
+            out["failures"] = failures
         return out
 
     def to_audit_dict(self) -> dict[str, Any]:
@@ -637,6 +644,46 @@ def has_recent_dream_activity(
             for daily_key in _daily_keys_for_previous_period(rhythm)
         )
     return False
+
+
+def scope_has_dream_work(
+    doc_store,
+    backend: MemoryBackend | None,
+    agent_name: str,
+    rhythm: str,
+    team_id: str | None = None,
+    current_period: str | None = None,
+    previous_period: str | None = None,
+) -> bool:
+    """Return True if a dream run on this scope could do anything useful.
+
+    A scope is empty (and safely skippable) when it has no meaningful recent
+    log content, an empty working-memory doc, and zero vector memories.
+    Fails open: any probe error keeps the scope in the run.
+    """
+    try:
+        memory_content = (doc_store.read(doc_store.memory_name(agent_name)) or "").strip()
+        if memory_content:
+            return True
+
+        current_period = current_period or period_key(rhythm)
+        previous_period = previous_period or period_key_offset(rhythm, -1)
+        for log_period in (current_period, previous_period):
+            content = (doc_store.read(doc_store.log_name(agent_name, log_period)) or "").strip()
+            if len(content) >= 20:
+                return True
+        if rhythm in {"weekly", "biweekly"}:
+            for daily_key in _daily_keys_for_previous_period(rhythm):
+                content = (doc_store.read(doc_store.log_name(agent_name, daily_key)) or "").strip()
+                if len(content) >= 20:
+                    return True
+
+        if backend is not None and team_id:
+            return bool(backend.get_all(agent_id=agent_name, limit=1, team_id=team_id))
+        return False
+    except Exception as e:
+        logger.debug("scope_has_dream_work probe failed (%s); keeping scope", e)
+        return True
 
 
 def promote_log_entries(
@@ -1320,6 +1367,33 @@ def review_stale_memories(
                     _set_memory_metadata(mem, metadata)
             else:
                 result["uncertain"] += 1
+                # Sticky uncertainty: a second consecutive "uncertain" verdict
+                # with no explicit evidence is forced to mark_stale so the same
+                # memory stops re-entering the review pool every period.
+                prior_uncertain = bool(
+                    mem
+                    and str((mem.metadata or {}).get("last_review_status") or "")
+                    == "uncertain"
+                )
+                if (
+                    prior_uncertain
+                    and not _has_explicit_review_evidence(evidence)
+                    and action not in {"mark_stale", "lower_strength"}
+                ):
+                    action = "mark_stale"
+                    reason = reason or (
+                        "Second consecutive uncertain verdict without evidence; "
+                        "marking stale to stop repeat review."
+                    )
+                    verdict_metadata = _review_metadata(
+                        period=current_period,
+                        requested_status=requested_status,
+                        effective_status=effective_status,
+                        evidence=evidence,
+                        action=action,
+                        reason=reason,
+                        replacement=replacement,
+                    )
                 metadata = verdict_metadata
                 if action in {"mark_stale", "lower_strength"} and mem:
                     metadata = {
@@ -1543,6 +1617,73 @@ def run_refinement_phase(
             plan.add_warning(f"Refinement phase failed: {e}")
         logger.warning("Dream refinement phase failed: %s", e)
         return summary
+
+
+# ---------------------------------------------------------------------------
+# Cycle status (failure surfacing)
+# ---------------------------------------------------------------------------
+
+
+def _dream_status_path(workspace: Path) -> Path:
+    return workspace / "data" / "dream_status.json"
+
+
+def write_dream_status(
+    workspace: Path,
+    period: str,
+    results_by_scope: dict[str, dict],
+) -> dict[str, Any]:
+    """Persist a compact health summary of the last dream cycle.
+
+    Returns the status dict. Failures per scope come from the ``failures``
+    key each ``run_dream`` summary now carries.
+    """
+    scope_failures = {
+        scope: summary.get("failures", [])
+        for scope, summary in results_by_scope.items()
+        if summary.get("failures")
+    }
+    status = {
+        "period": period,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "scopes_run": len(results_by_scope),
+        "scopes_with_failures": len(scope_failures),
+        "failures": scope_failures,
+    }
+    path = _dream_status_path(workspace)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(status, indent=2, sort_keys=True))
+    except OSError as e:
+        logger.warning("Failed to write dream status: %s", e)
+    return status
+
+
+def read_dream_status(workspace: Path) -> dict[str, Any] | None:
+    path = _dream_status_path(workspace)
+    try:
+        if path.exists():
+            return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("Failed to read dream status: %s", e)
+    return None
+
+
+def dream_health_note(workspace: Path) -> str:
+    """Human-readable note about the last dream cycle, or "" when healthy."""
+    status = read_dream_status(workspace)
+    if not status or not status.get("scopes_with_failures"):
+        return ""
+    lines = [
+        f"The last dream (memory maintenance) cycle for period {status.get('period')} "
+        f"had failures in {status['scopes_with_failures']} of {status.get('scopes_run')} scopes. "
+        "Memory promotion/review may be incomplete for those scopes; flag this to a "
+        "controller if it persists.",
+    ]
+    for scope, failures in list(status.get("failures", {}).items())[:5]:
+        for failure in failures[:2]:
+            lines.append(f"- [{scope[:8]}] {failure}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

@@ -345,6 +345,98 @@ def test_dream_review_can_delete_with_explicit_evidence(tmp_path: Path):
     assert backend.deleted == ["mem-api"]
 
 
+def test_dream_review_second_uncertain_without_evidence_marks_stale(tmp_path: Path):
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    backend = _UpdateBackend(
+        [
+            MemoryResult(
+                id="mem-churn",
+                text="Old decision with low confidence",
+                category="decision",
+                strength=0.6,
+                stability="evolving",
+                created_at=old,
+                metadata={"last_review_status": "uncertain"},
+            )
+        ]
+    )
+    store = LocalDocStore(tmp_path, agent_name="hermes", team_id="team-42", rhythm="daily")
+    store.write(store.memory_name("hermes"), "# Memory\n\n## Facts\n- Existing fact.")
+
+    summary = run_dream(
+        tmp_path,
+        backend,
+        "hermes",
+        _memory_config(),
+        _ReviewModel(
+            [
+                {
+                    "id": "mem-churn",
+                    "status": "uncertain",
+                    "evidence": "none",
+                    "action": "keep",
+                    "reason": "still no evidence",
+                }
+            ]
+        ),
+        doc_store=store,
+        team_id="team-42",
+    )
+
+    assert summary["dream_review"]["uncertain"] == 1
+    metadata = backend.updated[-1][1]
+    assert backend.updated[-1][0] == "mem-churn"
+    assert metadata["last_review_action"] == "mark_stale"
+    # mark_stale halves strength and flips stability so the memory leaves
+    # the review candidate pool next period.
+    assert metadata["stability"] == "stable"
+    # Strength decay runs earlier in the cycle, so just verify the review
+    # halved whatever remained (floored at 0.1) rather than pin an exact value.
+    assert 0.1 <= metadata["strength"] < 0.6
+
+
+def test_dream_review_first_uncertain_does_not_force_stale(tmp_path: Path):
+    old = (datetime.now(timezone.utc) - timedelta(days=45)).isoformat()
+    backend = _UpdateBackend(
+        [
+            MemoryResult(
+                id="mem-first",
+                text="Old decision with low confidence",
+                category="decision",
+                strength=0.6,
+                stability="evolving",
+                created_at=old,
+            )
+        ]
+    )
+    store = LocalDocStore(tmp_path, agent_name="hermes", team_id="team-42", rhythm="daily")
+    store.write(store.memory_name("hermes"), "# Memory\n\n## Facts\n- Existing fact.")
+
+    run_dream(
+        tmp_path,
+        backend,
+        "hermes",
+        _memory_config(),
+        _ReviewModel(
+            [
+                {
+                    "id": "mem-first",
+                    "status": "uncertain",
+                    "evidence": "none",
+                    "action": "keep",
+                    "reason": "no evidence yet",
+                }
+            ]
+        ),
+        doc_store=store,
+        team_id="team-42",
+    )
+
+    metadata = backend.updated[-1][1]
+    assert metadata["last_review_action"] == "keep"
+    assert "stability" not in metadata
+
+
 class _DistillModel:
     def __init__(self, proposals):
         self.proposals = proposals
@@ -468,3 +560,94 @@ def test_distill_skills_dry_run_plans_without_writing(tmp_path: Path):
     assert backend.updated == []
     assert plan.operations[0].kind == "skill_distillation"
     assert plan.operations[0].status == "planned"
+
+
+def test_scope_has_dream_work_skips_empty_scope(tmp_path: Path):
+    from ouro_agents.memory.dream import scope_has_dream_work
+
+    store = LocalDocStore(tmp_path, agent_name="hermes", team_id="team-42", rhythm="daily")
+    backend = _UpdateBackend([])
+
+    # Trivial log, empty memory doc, zero vector memories -> skip
+    store.write(store.log_name("hermes", period_key("daily")), "# Log\n")
+    assert not scope_has_dream_work(store, backend, "hermes", "daily", team_id="team-42")
+
+    # Meaningful log content -> run
+    store.write(
+        store.log_name("hermes", period_key("daily")),
+        "# Log\n\n- Durable lesson worth promoting later.\n",
+    )
+    assert scope_has_dream_work(store, backend, "hermes", "daily", team_id="team-42")
+
+
+def test_scope_has_dream_work_runs_when_memories_exist(tmp_path: Path):
+    from ouro_agents.memory.dream import scope_has_dream_work
+
+    store = LocalDocStore(tmp_path, agent_name="hermes", team_id="team-42", rhythm="daily")
+    backend = _UpdateBackend([_reinforced_direction()])
+    assert scope_has_dream_work(store, backend, "hermes", "daily", team_id="team-42")
+
+    # Non-empty memory doc alone is also enough
+    empty_backend = _UpdateBackend([])
+    store.write(store.memory_name("hermes"), "# Memory\n\n## Facts\n- Something.")
+    assert scope_has_dream_work(store, empty_backend, "hermes", "daily", team_id="team-42")
+
+
+def test_dream_status_surfaces_failures(tmp_path: Path):
+    from ouro_agents.memory.dream import (
+        dream_health_note,
+        read_dream_status,
+        write_dream_status,
+    )
+
+    assert dream_health_note(tmp_path) == ""
+
+    write_dream_status(
+        tmp_path,
+        "2026-W29",
+        {
+            "shared": {"promoted": 0},
+            "team-42": {
+                "promoted": 0,
+                "failures": ["Log promotion failed: Error code: 402"],
+            },
+        },
+    )
+
+    status = read_dream_status(tmp_path)
+    assert status["scopes_run"] == 2
+    assert status["scopes_with_failures"] == 1
+
+    note = dream_health_note(tmp_path)
+    assert "2026-W29" in note
+    assert "1 of 2 scopes" in note
+    assert "402" in note
+
+    # Healthy cycle clears the note
+    write_dream_status(tmp_path, "2026-W30", {"shared": {"promoted": 1}})
+    assert dream_health_note(tmp_path) == ""
+
+
+def test_run_dream_summary_includes_failures(tmp_path: Path):
+    class _FailingModel:
+        def __call__(self, messages):
+            raise RuntimeError("Error code: 402 - insufficient credits")
+
+    store = LocalDocStore(tmp_path, agent_name="hermes", team_id="team-42", rhythm="daily")
+    store.write(store.memory_name("hermes"), "# Memory\n\n## Facts\n- Existing fact.")
+    store.write(
+        store.log_name("hermes", period_key_offset("daily", -1)),
+        "# Log\n\n- Durable lesson worth promoting.\n",
+    )
+
+    summary = run_dream(
+        tmp_path,
+        _UpdateBackend([]),
+        "hermes",
+        _memory_config(),
+        _FailingModel(),
+        doc_store=store,
+        team_id="team-42",
+    )
+
+    assert any("402" in f for f in summary.get("failures", []))

@@ -1133,6 +1133,12 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         )
         return None
 
+    from ..memory.dream import dream_health_note
+
+    health_note = dream_health_note(agent.config.agent.workspace)
+    if health_note:
+        playbook = f"{playbook}\n\n## Memory Maintenance Health\n{health_note}"
+
     direction_context = _load_work_direction_context(agent, heartbeat_team_id)
     if direction_context:
         playbook = (
