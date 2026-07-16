@@ -1,12 +1,14 @@
-# Docker build command: 
+# Docker build command:
 # docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
 
 
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Pin pymatgen-core to a release with manylinux wheels; newer sdist-only
+# versions need a C compiler that slim does not include.
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir \
         ouro-py==0.10.4 \
@@ -14,6 +16,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         ase \
         numpy \
         pandas \
+        "pymatgen-core==2026.5.18" \
         pymatgen \
         scipy \
         spglib \
