@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1
 # versions need a C compiler that slim does not include.
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir \
-        ouro-py==0.10.4 \
+        ouro-py==0.10.5 \
         httpx \
         ase \
         numpy \
