@@ -71,7 +71,7 @@ class SandboxConfig(BaseModel):
     memory: Optional[str] = "1g"
     cpus: Optional[float] = 1.0
     pids_limit: Optional[int] = 256
-    timeout_seconds: int = Field(default=30, ge=1)
+    timeout_seconds: int = Field(default=300, ge=1)
     max_output_chars: int = Field(default=50_000, ge=1)
     enable_shell: bool = False
     env_allowlist: List[str] = Field(

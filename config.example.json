@@ -16,7 +16,7 @@
       "memory": "1g",
       "cpus": 1.0,
       "pids_limit": 256,
-      "timeout_seconds": 30,
+      "timeout_seconds": 300,
       "max_output_chars": 50000,
       "enable_shell": false,
       "env_allowlist": [

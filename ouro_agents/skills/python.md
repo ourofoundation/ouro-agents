@@ -19,7 +19,15 @@ You have a `run_python` tool that executes code in a sandboxed Python environmen
 
 - Simple factual answers you already know — just answer directly.
 - Fetching web content — use the `search` MCP tools instead.
-- Interacting with Ouro — use the `ouro` MCP tools instead.
+- One-off Ouro lookups or single asset reads/writes — use the `ouro` MCP tools
+  (faster than spinning up sandbox code for a single call).
+
+## When to Prefer `run_python` + ouro-py
+
+For **bulk / multi-step platform work** (paginate hundreds of files, walk
+connections, build datasets, batch downloads), use `run_python` with
+`get_ouro_client()` — see the **ouro-py** skill. Do not paginate thousands of
+assets via MCP tool calls; write a script that checkpoints to the workspace.
 
 ## Usage Notes
 

@@ -57,7 +57,19 @@ ouro = get_ouro_client()
 - `delete(id)` → None
 
 ### Files (ouro.files)
+- `search(query="", **kwargs)` → list[File] | dict
+  - Always scopes to `asset_type="file"`
+  - First-class file filters: `extension` (e.g. `"cif"` or `["cif", "xyz"]`),
+    `file_type` (`"image"` | `"video"` | `"audio"` | `"pdf"`)
+  - Other kwargs: `limit`, `offset`, `scope`, `org_id`, `team_id`, `user_id`,
+    `visibility`, `sort`, `time_window`, `metadata_filters`
+  - `with_pagination=True` returns `{"data": list[File], "pagination": ...}`
+  - Pagination is transparent: `limit=None` fetches **all** matches, `limit>200`
+    paginates internally. Bulk discovery is one call:
+    `cifs = ouro.files.search(extension="cif", scope="all", limit=None)`
+  - Leave `query` empty for exhaustive collection (semantic search caps results)
 - `list(query="", limit=20, offset=0, scope=None, org_id=None, team_id=None, **kwargs)` → list[File]
+  - Thin wrapper around `search` (also accepts `extension` / `file_type`)
 - `create(name, visibility, file_path=None, file_content=None, file_name=None, description=None, **kwargs)` → File
   - Use `file_path` for local files or `file_content` (bytes) + `file_name` for in-memory
   - Pass `org_id` and `team_id` in kwargs
@@ -106,9 +118,19 @@ ouro = get_ouro_client()
   `write_file`, etc.)
 
 ## Strategy
-1. Use `run_python` for ALL Ouro interactions — write code that does the full workflow
+1. Prefer `run_python` + ouro-py for **bulk / multi-step** Ouro work (paginate
+   files, walk connections, build datasets). One-off reads/writes can stay on MCP.
 2. Start by getting the client: `ouro = get_ouro_client()`
-3. Chain multiple operations in a single `run_python` call when possible
-4. Use print() to show intermediate results and progress
-5. Handle errors with try/except and provide clear error messages
-6. For large data operations, process in batches
+3. Chain related operations in one `run_python` call when they fit under the
+   sandbox timeout; for large jobs, **paginate and checkpoint to workspace files**
+   across multiple calls (e.g. write `scratch/batch_offset.json` + progress JSON).
+4. On timeout the Docker worker resets — next `run_python` starts fresh. Workspace
+   files persist; in-memory variables do not. Resume from your checkpoint.
+5. Use print() to show intermediate results and progress
+6. Handle errors with try/except and provide clear error messages
+7. Collect files with `ouro.files.search(extension="cif", scope="all", limit=None)` —
+   it paginates internally. Use explicit `offset` + `with_pagination=True` only
+   for checkpointed resumption across sandbox resets. There is no need to use
+   `assets.search` + local `.cif` filtering.
+8. Pass filter kwargs directly (`extension=`, `team_id=`, `scope=`), not as a
+   nested `filters=` or `params=` dict

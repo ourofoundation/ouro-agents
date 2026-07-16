@@ -188,7 +188,7 @@ DEVELOPER = SubAgentProfile(
     can_load_mcp_tools=True,
     preload_tools=["ouro:create_post"],
     delegatable=True,
-    max_steps=12,
+    max_steps=24,
     needs_python_tool=True,
     skills=["ouro", "ouro_py", "ouro_markdown", "asset_output"],
 )

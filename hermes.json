@@ -34,7 +34,7 @@
       "memory": "4g",
       "cpus": 2.0,
       "pids_limit": 512,
-      "timeout_seconds": 60,
+      "timeout_seconds": 300,
       "max_output_chars": 50000,
       "env_allowlist": [
         "OURO_API_KEY",
@@ -74,6 +74,9 @@
     },
     "executor": {
       "max_steps": 24
+    },
+    "developer": {
+      "max_steps": 32
     }
   },
   "modes": {

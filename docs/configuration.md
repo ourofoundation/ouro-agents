@@ -66,7 +66,7 @@ Controls how code execution tools run.
   "memory": "1g",
   "cpus": 1.0,
   "pids_limit": 256,
-  "timeout_seconds": 30,
+  "timeout_seconds": 300,
   "max_output_chars": 50000,
   "enable_shell": false,
   "env_allowlist": ["OURO_API_KEY", "OURO_BASE_URL"]
@@ -83,7 +83,7 @@ Controls how code execution tools run.
 | `memory` | str \| null | `1g` | Docker memory limit. |
 | `cpus` | float \| null | `1.0` | Docker CPU quota. |
 | `pids_limit` | int \| null | `256` | Docker process limit. |
-| `timeout_seconds` | int | `30` | Per-call timeout for Docker sandbox tools. Timed-out Python calls stop the container session; timed-out shell commands return a timeout result. |
+| `timeout_seconds` | int | `300` | Per-call timeout for Docker sandbox tools. On timeout the worker is reset and the next `run_python`/`run_shell` call starts a fresh session (workspace files persist; in-memory state does not). Timed-out shell commands that finish inside the worker return a timeout result without resetting. |
 | `max_output_chars` | int | `50000` | Captured stdout/stderr/result truncation limit. |
 | `enable_shell` | bool | `false` | When `mode` is `docker`, expose a `run_shell(command)` tool that executes non-interactive shell commands inside the same sandbox container. Ignored in local mode. |
 | `env_allowlist` | list[str] | `["OURO_API_KEY", "OURO_BASE_URL"]` | Host environment variables passed through to the container. |

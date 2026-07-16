@@ -312,17 +312,39 @@ class DockerSandboxSession:
             )
 
     def close(self) -> None:
+        """Permanently shut down this sandbox session (end of run)."""
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            process = self._process
-            self._process = None
+            self._teardown_worker(regenerate_name=False)
+
+    def _reset_worker(self) -> None:
+        """Kill the current worker so the next call can start a fresh one.
+
+        Used after a per-call timeout. Workspace files persist; in-memory Python
+        state does not. Unlike ``close()``, this leaves the session reopenable.
+        """
+        # Caller already holds ``self._lock`` (from execute / execute_shell).
+        self._teardown_worker(regenerate_name=True)
+
+    def _teardown_worker(self, *, regenerate_name: bool) -> None:
+        """Stop the container and clear process state. Caller holds ``_lock``."""
+        process = self._process
+        container_name = self.container_name
+        self._process = None
+        self._stderr_lines = []
+        while True:
+            try:
+                self._messages.get_nowait()
+            except queue.Empty:
+                break
 
         if process is not None:
             try:
-                if process.stdin:
-                    process.stdin.close()
+                stdin = getattr(process, "stdin", None)
+                if stdin is not None:
+                    stdin.close()
             except OSError:
                 pass
             try:
@@ -333,10 +355,13 @@ class DockerSandboxSession:
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     process.kill()
+            except Exception:
+                # Fake / already-dead process objects in tests
+                pass
 
         try:
             subprocess.run(
-                ["docker", "rm", "-f", self.container_name],
+                ["docker", "rm", "-f", container_name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -344,11 +369,19 @@ class DockerSandboxSession:
         except FileNotFoundError:
             pass
 
+        if regenerate_name:
+            self.container_name = _docker_name(
+                f"ouro-sandbox-{self.agent_name}-{self.run_id}-{uuid.uuid4().hex[:8]}"
+            )
+
     def _ensure_started(self) -> None:
         if self._closed:
             raise RuntimeError("Docker sandbox session is closed")
         if self._process is not None and self._process.poll() is None:
             return
+        # Stale dead process (crash / prior teardown race): clear before restart.
+        if self._process is not None:
+            self._teardown_worker(regenerate_name=True)
         self.workspace.mkdir(parents=True, exist_ok=True)
         args = self._docker_run_args()
         logger.info("Starting Docker sandbox %s", self.container_name)
@@ -446,9 +479,16 @@ class DockerSandboxSession:
             try:
                 message = self._messages.get(timeout=timeout)
             except queue.Empty as exc:
-                self.close()
+                # Reset (do not permanently close) so the next run_python call
+                # can start a fresh worker. Bulk jobs should paginate/checkpoint
+                # across calls rather than holding one call open indefinitely.
+                self._reset_worker()
                 raise TimeoutError(
-                    f"Docker sandbox timed out after {timeout} seconds"
+                    f"Docker sandbox timed out after {timeout} seconds. "
+                    "Worker reset — the next run_python/run_shell call starts a "
+                    "fresh session (workspace files persist; in-memory variables "
+                    "do not). Paginate or checkpoint to disk and continue in a "
+                    "shorter call."
                 ) from exc
             if message.get("id") == request_id:
                 return message

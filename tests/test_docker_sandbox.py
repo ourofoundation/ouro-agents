@@ -142,6 +142,70 @@ class TestDockerSandboxSession(unittest.TestCase):
             self.assertEqual(result.exit_code, 0)
             self.assertFalse(result.timed_out)
 
+    def test_timeout_resets_worker_instead_of_permanently_closing(self):
+        with TemporaryDirectory() as tmpdir:
+            config = SandboxConfig(mode="docker", timeout_seconds=1)
+            session = DockerSandboxSession(
+                config=config,
+                workspace=Path(tmpdir),
+                agent_name="test-agent",
+                run_id="run-timeout",
+            )
+            original_name = session.container_name
+            session._process = SimpleNamespace(
+                stdin=SimpleNamespace(close=lambda: None),
+                poll=lambda: 0,
+                wait=lambda timeout=None: None,
+                terminate=lambda: None,
+                kill=lambda: None,
+            )
+
+            with patch("subprocess.run") as docker_rm:
+                with self.assertRaises(TimeoutError) as ctx:
+                    session._wait_for_response("missing-request")
+
+            self.assertIn("Worker reset", str(ctx.exception))
+            self.assertFalse(session._closed)
+            self.assertIsNone(session._process)
+            self.assertNotEqual(session.container_name, original_name)
+            docker_rm.assert_called()
+            self.assertEqual(docker_rm.call_args.args[0][:3], ["docker", "rm", "-f"])
+
+            # Next ensure_started must be allowed to reopen (not "session is closed").
+            ensure_calls = []
+
+            def fake_ensure():
+                ensure_calls.append(True)
+                session._process = SimpleNamespace(
+                    stdin=SimpleNamespace(
+                        write=lambda *_: None,
+                        flush=lambda: None,
+                        close=lambda: None,
+                    ),
+                    poll=lambda: None,
+                    wait=lambda timeout=None: None,
+                    terminate=lambda: None,
+                    kill=lambda: None,
+                )
+
+            with (
+                patch.object(session, "_ensure_started", side_effect=fake_ensure),
+                patch.object(
+                    session,
+                    "_wait_for_response",
+                    return_value={"ok": True, "stdout": "ok", "stderr": "", "result": None},
+                ),
+            ):
+                result = session.execute("print(1)")
+
+            self.assertEqual(ensure_calls, [True])
+            self.assertEqual(result.logs, "ok")
+
+            session.close()
+            self.assertTrue(session._closed)
+            with self.assertRaisesRegex(RuntimeError, "session is closed"):
+                session._ensure_started()
+
     @unittest.skipUnless(
         os.environ.get("RUN_DOCKER_SANDBOX_TESTS") == "1" and shutil.which("docker"),
         "set RUN_DOCKER_SANDBOX_TESTS=1 with Docker available to run",

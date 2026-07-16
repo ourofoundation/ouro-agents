@@ -329,6 +329,8 @@ def make_python_tool(
         """
         try:
             result = executor(code)
+        except TimeoutError as e:
+            return f"Execution error: TimeoutError: {e}"
         except Exception as e:
             return f"Execution error: {type(e).__name__}: {e}"
 
@@ -352,7 +354,11 @@ def make_python_tool(
         - Use normal Python APIs: `pathlib.Path`, `open()`, `shutil`, `glob`,
           `zipfile`, installed packages, and `subprocess.run(...)`.
         - Keep file reads and writes under `WORKSPACE_ROOT` / `{sandbox_config.workspace_mount}`.
-        - In-memory state is discarded when the run ends, but workspace files persist.
+        - Per-call timeout is `{sandbox_config.timeout_seconds}` seconds. On timeout the
+          worker resets and the next call starts fresh — workspace files persist,
+          in-memory variables do not. For bulk platform work, paginate and checkpoint
+          to disk across multiple `run_python` calls instead of one giant loop.
+        - In-memory state is also discarded when the run ends, but workspace files persist.
 
         Common patterns:
         - Read JSON: `data = json.loads(Path("data.json").read_text())`

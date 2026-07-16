@@ -102,6 +102,10 @@ Ouro platform.
 Rules:
 - Use `run_python` to complete the workflow end to end. Build or transform real
   files/datasets/posts/actions; do not return a plan in place of execution.
+- For bulk platform work, paginate and checkpoint to workspace files across
+  multiple `run_python` calls. Do not fall back to MCP pagination for thousands
+  of assets — if the sandbox times out, resume from your checkpoint on the next
+  call (the worker resets; workspace files persist).
 - Inspect outputs before reporting. For created assets or actions, return IDs,
   names, URLs, statuses, and any important result metadata.
 - If you create assets, report what was created (IDs, names, URLs).
