@@ -631,5 +631,133 @@ class TestApplyReflection(unittest.TestCase):
             self.assertEqual(backend.items[0]["metadata"]["category"], "direction")
 
 
+class _SearchableFakeBackend(_FakeMemoryBackend):
+    def __init__(self, existing_texts=None):
+        super().__init__()
+        self.existing_texts = existing_texts or []
+
+    def search(self, query, agent_id, **kwargs):
+        return [
+            types.SimpleNamespace(id=f"existing-{i}", text=text)
+            for i, text in enumerate(self.existing_texts)
+        ]
+
+
+def _candidate(text, strength=0.5, supersedes=None):
+    return {
+        "text": text,
+        "subject_type": "agent",
+        "subject_id_hint": "self",
+        "category": "fact",
+        "basis": "observed",
+        "stability": "stable",
+        "team_ids": [],
+        "asset_ids": [],
+        "strength": strength,
+        "supersedes": supersedes or [],
+    }
+
+
+class TestReflectionDeduplication(unittest.TestCase):
+    def _store(self, candidates, backend):
+        result = ReflectionResult(facts_to_store=candidates)
+        return store_reflection_memories(
+            result,
+            backend,
+            agent_id="agent-1",
+            user_id="user-1",
+            run_id="run-1",
+        )
+
+    def test_batch_near_duplicates_collapse_to_strongest(self):
+        backend = _SearchableFakeBackend()
+        stored = self._store(
+            [
+                _candidate(
+                    "C15 MgCu2 Laves phase survives Orb v3 relaxation with symmetry intact",
+                    strength=0.5,
+                ),
+                _candidate(
+                    "C15 MgCu2 Laves phase survives Orb v3 relaxation with symmetry intact,"
+                    " distinguishing C14 from C15 under MLIP relaxation",
+                    strength=0.8,
+                    supersedes=["old-1"],
+                ),
+            ],
+            backend,
+        )
+        self.assertEqual(stored, 1)
+        self.assertIn("distinguishing", backend.items[0]["text"])
+        self.assertEqual(backend.deleted, ["old-1"])
+
+    def test_distinct_candidates_are_kept(self):
+        backend = _SearchableFakeBackend()
+        stored = self._store(
+            [
+                _candidate("alice prefers benchmark results in the eval-lab team"),
+                _candidate("the alloy-corpus dataset stores formation energy in eV/atom"),
+            ],
+            backend,
+        )
+        self.assertEqual(stored, 2)
+
+    def test_over_extraction_capped_at_max(self):
+        max_memories = _reflection_module.MAX_REFLECTION_MEMORIES
+        backend = _SearchableFakeBackend()
+        distinct_texts = [
+            "alice prefers dark mode in every editor she uses",
+            "the staging database runs postgres seventeen on port 5433",
+            "hermes reviews pull requests every morning before standup",
+            "the eval-lab team publishes weekly benchmark summaries on fridays",
+            "orb v3 relaxation requires ICSD-anchored input geometries",
+            "deployment to modal needs the org-scoped access token",
+            "quest entries on closable quests allow one submission per item",
+            "the chemistry team feed surfaces spinel oxide discussion threads",
+        ]
+        candidates = [
+            _candidate(text, strength=0.1 * (i + 1))
+            for i, text in enumerate(distinct_texts[: max_memories + 3])
+        ]
+        stored = self._store(candidates, backend)
+        self.assertEqual(stored, max_memories)
+        # The strongest candidates survive the cap.
+        texts = [item["text"] for item in backend.items]
+        self.assertIn(distinct_texts[max_memories + 2], texts)
+
+    def test_cross_run_duplicate_skipped(self):
+        backend = _SearchableFakeBackend(
+            existing_texts=[
+                "spglib does not have a get_spacegroup_number function; use"
+                " get_symmetry_dataset()['number'] instead"
+            ]
+        )
+        stored = self._store(
+            [
+                _candidate(
+                    "spglib does not have a get_spacegroup_number function, use"
+                    " get_symmetry_dataset()['number'] instead"
+                )
+            ],
+            backend,
+        )
+        self.assertEqual(stored, 0)
+
+    def test_supersedes_bypasses_cross_run_duplicate_check(self):
+        backend = _SearchableFakeBackend(
+            existing_texts=["the agreed build priority order is mCGCNN first"]
+        )
+        stored = self._store(
+            [
+                _candidate(
+                    "the agreed build priority order is mCGCNN first",
+                    supersedes=["existing-0"],
+                )
+            ],
+            backend,
+        )
+        self.assertEqual(stored, 1)
+        self.assertEqual(backend.deleted, ["existing-0"])
+
+
 if __name__ == "__main__":
     unittest.main()

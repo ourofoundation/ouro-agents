@@ -33,11 +33,22 @@ The admission test: store something only if it would change what the agent \
 does in a FUTURE conversation or run. If a future model reading the sentence \
 cold could not act differently because of it, leave it out.
 
+The retrieval test: for each candidate, name (to yourself) the concrete \
+future situation and the memory_recall query that should surface it. If you \
+cannot imagine the query a future run would issue, the memory will never be \
+found — drop it.
+
+Budget: most runs merit 0–3 candidates; 5 is the hard maximum. An empty \
+result is a good result for routine runs. When one decision or finding could \
+be phrased several ways, store ONE consolidated sentence, not variants.
+
 Strategy:
-- If memory_recall is available, search for existing memories about the \
-  current topic first (batch queries in one call). Use the results both to \
-  avoid storing duplicates and to collect the IDs of memories your new \
-  candidates supersede.
+- If memory_recall is available, ALWAYS search for existing memories about \
+  the current topic first (batch queries in one call). Use the results both \
+  to avoid storing duplicates and to collect the IDs of memories your new \
+  candidates supersede. When the run updates a plan, priority list, or \
+  conclusion that recall surfaced, your candidate must list the old memory \
+  in supersedes rather than sit alongside it.
 
 Output ONLY valid JSON matching this schema (no markdown fences):
 {
@@ -62,7 +73,26 @@ Writing candidates:
   for explicit human guidance and hard-won lessons.
 - If entity files provide background, use them to add richer context to facts \
   (e.g. "User prefers X for project Y" instead of just "User prefers X").
-- Do NOT store facts that duplicate or closely overlap with existing memories.
+- Do NOT store facts that duplicate or closely overlap with existing memories. \
+  Two sentences that would lead a future run to the same action are duplicates \
+  even if worded differently; keep the more complete one.
+- Write in the language the agent operates in (match the run context language); \
+  do not mix languages within a sentence.
+
+Do NOT store (common failure modes):
+- Run-status snapshots that will be stale within days: "X is deployed but not \
+  yet registered", "Y is awaiting execution", "Z is in progress". If the next \
+  step matters, store the durable decision or finding instead, or leave it to \
+  the daily log.
+- The same priority list or agreement restated from multiple angles. One run \
+  that settles a 4-item build order yields ONE direction memory listing the \
+  order, not one memory per item plus one per participant's endorsement.
+- Intermediate reasoning that a final consolidated finding already covers. \
+  Store the conclusion; the steps that led there belong in the daily log or a \
+  published post.
+- Anything fully recoverable from an asset the agent would naturally re-read \
+  (schemas, file contents, post text). Store the pointer plus the non-obvious \
+  takeaway, not a transcription.
 
 Field rules:
 - basis: Use stated for explicit human instructions/preferences/facts, observed \
@@ -137,6 +167,9 @@ Candidate: {"text": "The [alloy-corpus dataset](asset:d3adbeef-0000-0000-0000-00
 
 Input: a heartbeat run posted one comment and the result was "commented on the post"; no human guidance appeared.
 Candidates: [] — the comment itself is task plumbing that would not change future behavior. Record it as one daily_log_entries episode with the asset link instead.
+
+Input: a run where the agent and a collaborator agreed on a 4-item build priority order, with the collaborator endorsing item 1 as the biggest unblock; memory_recall surfaced an older memory listing a different priority order (id "abc-123").
+Candidate (exactly ONE, not one per item or per endorsement): {"text": "As of 2026-07-09, the agreed build priority order is: (1) mCGCNN magnetic moment predictor — hermes called it the biggest unblock, (2) pre-relaxation energy gate, (3) bias-corrected hull route, (4) band structure route.", "subject_type": "agent", "subject_id_hint": "self", "category": "direction", "basis": "stated", "stability": "evolving", "strength": "high", "team_ids": [], "asset_ids": [], "verification_hint": "confirm current priorities with hermes", "supersedes": ["abc-123"]}
 
 When finished, end the turn with a final message containing ONLY the JSON."""
 

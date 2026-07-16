@@ -6,6 +6,7 @@ update the salience detector and keeps reflection tied to meaningful change.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -144,6 +145,94 @@ def record_reflection_turn(
     _save_reflected_turn(conversations_dir, conversation_id, turn_count)
 
 
+# Hard cap on stored memories per reflection. The reflector prompt asks for
+# 0-3 candidates; anything past this is over-extraction, keep the strongest.
+MAX_REFLECTION_MEMORIES = 5
+
+# Token-overlap threshold above which two memory texts are treated as
+# restatements of the same fact.
+NEAR_DUPLICATE_JACCARD = 0.6
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def _memory_tokens(text: str) -> set[str]:
+    normalized = _MD_LINK_RE.sub(r"\1", text.lower())
+    return set(_WORD_RE.findall(normalized))
+
+
+def is_near_duplicate_text(a: str, b: str) -> bool:
+    """True when two memory texts are near-restatements of each other."""
+    ta, tb = _memory_tokens(a), _memory_tokens(b)
+    if not ta or not tb:
+        return False
+    overlap = len(ta & tb) / len(ta | tb)
+    return overlap >= NEAR_DUPLICATE_JACCARD
+
+
+def collapse_near_duplicates(items: list) -> list:
+    """Collapse near-duplicate candidates within one reflection batch.
+
+    When two candidates restate the same fact, keep the one with more content
+    (higher strength wins ties on the side of explicit human guidance).
+    """
+    kept: list = []
+    for item in items:
+        replaced = False
+        for i, existing in enumerate(kept):
+            if not is_near_duplicate_text(item.text, existing.text):
+                continue
+            better = (item.strength, len(item.text)) > (
+                existing.strength,
+                len(existing.text),
+            )
+            if better:
+                # Carry over any supersede instructions from the dropped twin.
+                item.supersedes = list(
+                    dict.fromkeys([*existing.supersedes, *item.supersedes])
+                )
+                kept[i] = item
+            else:
+                existing.supersedes = list(
+                    dict.fromkeys([*existing.supersedes, *item.supersedes])
+                )
+            replaced = True
+            logger.info(
+                "Collapsed near-duplicate reflection candidates: %r ~ %r",
+                item.text[:60],
+                existing.text[:60],
+            )
+            break
+        if not replaced:
+            kept.append(item)
+    return kept
+
+
+def _existing_near_duplicate(item, memory_backend, agent_id: str) -> Optional[str]:
+    """Return the text of a stored memory that already covers ``item``, if any.
+
+    ``supersedes`` wins over the duplicate check: if the candidate explicitly
+    retires memories, it is an update, not a duplicate.
+    """
+    if item.supersedes:
+        return None
+    try:
+        results = memory_backend.search(
+            query=item.text,
+            agent_id=agent_id,
+            limit=3,
+            scope="global",
+        )
+    except Exception as e:
+        logger.debug("Cross-run duplicate check failed: %s", e)
+        return None
+    for result in results or []:
+        if is_near_duplicate_text(item.text, result.text):
+            return result.text
+    return None
+
+
 def _reflection_candidates(result: ReflectionResult) -> list[dict]:
     candidates = [
         candidate
@@ -206,8 +295,27 @@ def store_reflection_memories(
             "Rejected reflected memory (%s): %s", error.reason, error.text[:80]
         )
 
+    items = collapse_near_duplicates(items)
+    if len(items) > MAX_REFLECTION_MEMORIES:
+        logger.info(
+            "Reflection over-extracted %d candidates; keeping the %d strongest",
+            len(items),
+            MAX_REFLECTION_MEMORIES,
+        )
+        items = sorted(
+            items, key=lambda i: (i.strength, len(i.text)), reverse=True
+        )[:MAX_REFLECTION_MEMORIES]
+
     stored = 0
     for item in items:
+        duplicate_of = _existing_near_duplicate(item, memory_backend, agent_id)
+        if duplicate_of:
+            logger.info(
+                "Skipped reflected memory already covered by stored memory: %s ~ %s",
+                item.text[:60],
+                duplicate_of[:60],
+            )
+            continue
         try:
             memory_backend.add(
                 item.text,
