@@ -102,10 +102,14 @@ Ouro platform.
 Rules:
 - Use `run_python` to complete the workflow end to end. Build or transform real
   files/datasets/posts/actions; do not return a plan in place of execution.
-- For bulk platform work, paginate and checkpoint to workspace files across
-  multiple `run_python` calls. Do not fall back to MCP pagination for thousands
-  of assets — if the sandbox times out, resume from your checkpoint on the next
-  call (the worker resets; workspace files persist).
+- For bulk platform work, write a workspace `.py` script and run it end to end.
+  Checkpoint local progress periodically when the work may exceed one sandbox
+  call; do not turn a large job into many hand-rolled agent batches. Do not fall
+  back to MCP pagination for thousands of assets. Dataset create/update already
+  chunk large JSON uploads, so call the SDK once from the script.
+- If a job can be retried, persist the dataset ID and use deterministic row IDs
+  with `data_mode="upsert"` when appending could duplicate rows. On timeout the
+  worker resets but workspace files persist.
 - Inspect outputs before reporting. For created assets or actions, return IDs,
   names, URLs, statuses, and any important result metadata.
 - If you create assets, report what was created (IDs, names, URLs).

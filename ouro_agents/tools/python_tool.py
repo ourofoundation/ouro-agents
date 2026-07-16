@@ -356,8 +356,9 @@ def make_python_tool(
         - Keep file reads and writes under `WORKSPACE_ROOT` / `{sandbox_config.workspace_mount}`.
         - Per-call timeout is `{sandbox_config.timeout_seconds}` seconds. On timeout the
           worker resets and the next call starts fresh — workspace files persist,
-          in-memory variables do not. For bulk platform work, paginate and checkpoint
-          to disk across multiple `run_python` calls instead of one giant loop.
+          in-memory variables do not. For bulk platform work, write a workspace script
+          and checkpoint local progress periodically when needed; dataset create/update
+          automatically chunk large JSON uploads.
         - In-memory state is also discarded when the run ends, but workspace files persist.
 
         Common patterns:

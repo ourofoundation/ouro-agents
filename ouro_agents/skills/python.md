@@ -27,12 +27,16 @@ You have a `run_python` tool that executes code in a sandboxed Python environmen
 For **bulk / multi-step platform work** (paginate hundreds of files, walk
 connections, build datasets, batch downloads), use `run_python` with
 `get_ouro_client()` — see the **ouro-py** skill. Do not paginate thousands of
-assets via MCP tool calls; write a script that checkpoints to the workspace.
+assets via MCP tool calls; write a workspace script that checkpoints local
+progress and can resume. Dataset create/update automatically chunk large JSON
+uploads, so call the SDK once rather than manually appending small batches.
 
 ## Usage Notes
 
 - State persists across calls within a single run. Define a variable in one call, use it in the next.
 - In-memory state does NOT survive past the end of a run. To carry data forward, write it to the workspace (e.g. `scratch/state.json`) — see the **filesystem** skill.
+- For resumable uploads, persist the dataset ID and use deterministic row IDs
+  with `data_mode="upsert"` when rerunning could duplicate appended rows.
 - Print statements are captured — use `print()` to inspect intermediate values.
 - In Docker sandbox mode, code runs inside a container with the workspace at `WORKSPACE_ROOT` (normally `/workspace`). You can use normal Python APIs like `pathlib`, `open`, `zipfile`, installed packages, and `subprocess.run(...)`.
 - In local compatibility mode, imports are restricted and legacy workspace helpers may be required.

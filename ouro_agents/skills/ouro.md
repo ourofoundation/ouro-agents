@@ -112,9 +112,19 @@ can be inspected or embedded when explaining what happened.
 as a JSON row array (`[{"col": "val"}]`); for local files pass `data_path`
 (`.csv`, `.json`, `.jsonl`/`.ndjson`, `.parquet`). Prefer `query_dataset` over
 downloading when inspecting or analyzing rows; use `limit` and `offset` to page
-through results. Use `enum_columns` for categorical columns with known values
-(for example `{"status": {"values": ["todo", "done"]}}`) so schema reads expose
-`semantic_type: "enum"` and `enum_values`.
+through results.
+  - **Reference columns**: pass `refs` on `create_dataset` (or `update_dataset`
+    to promote) so columns hold Ouro object ids with a real FK — e.g.
+    `{"file_id": {"kind": "asset", "asset_type": "file"}, "run_id": {"kind": "action"}}`.
+    Schema shows `semantic_type: "reference"` with `ref_kind` (+ optional
+    `asset_type`). Resolve names/URLs with `query_dataset(..., resolve_refs=true)`
+    (returns a `resolved_refs` sidecar).
+  - **Enum columns**: pass `enum_columns` for categorical columns with known
+    values (e.g. `{"status": {"values": ["todo", "done"]}}`) so schema reads
+    expose `semantic_type: "enum"` and `enum_values`.
+  - Structural column changes after creation use `edit_dataset_columns` (add /
+    update / rename / drop); pass `enum_values` on add/update for categoricals.
+    `update_dataset` stays for row ingest and whole-dataset metadata.
 - Quests: lifecycle language matters.
 "close" means set the quest status to `closed` with `update_quest`;
 "cancel" means set status to `cancelled`;
