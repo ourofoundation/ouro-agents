@@ -68,7 +68,8 @@ ouro = get_ouro_client()
   web_url, ...}`). Permission-aware; ids you can't see are omitted.
   `resolve_refs` is only for the paginated (non-SQL) path.
 - `schema(id)` → list[dict] (column definitions; check `semantic_type`,
-  `ref_kind`, `enum_values`)
+  `ref_kind`, `enum_values`). Fields expose both Postgres keys
+  (`column_name` / `data_type`) and aliases (`name` / `type`) — either pair works.
 - `stats(id)` → dict
 - `update(id, name=None, data=None, data_mode="append", description=None, refs=None, enum_columns=None, **kwargs)` → Dataset
   - `data_mode`: "append" | "overwrite" | "upsert"
@@ -156,6 +157,63 @@ ouro = get_ouro_client()
   local compatibility mode may still require workspace helpers (`read_file`,
   `write_file`, etc.)
 
+## Calculated properties on files (esp. CIFs)
+
+File metadata does **not** store ML / route-computed properties. Those live on
+successful **route actions** that used the file as an input.
+
+```python
+ouro = get_ouro_client()
+
+# 1. Every CIF you can see (browse mode — empty query)
+cifs = ouro.files.search(extension="cif", scope="all", limit=None)
+
+# 2. For each file, list successful runs that took it as input
+#    include_response=True is required — calculated props live on action.response
+bundle = ouro.assets.actions(
+    str(cif.id), role="input", status="success", include_response=True
+)
+for action in bundle["as_input"]:
+    route_name = (action.route or {}).get("name")
+    props = action.response or {}
+    # Common shapes:
+    #   ALIGNN: {"property": "Formation Energy …", "prediction": 0.21, "unit": "eV/atom", "model": "…"}
+    #   e_hull: {"e_above_hull": 0.16, "formation_energy_per_atom": -0.07, "formula": "…", …}
+    #   relax:  {"optimized_energy": -64.7, "starting_energy": 47.6, "model": "…", "steps": 194}
+
+# 3. Long-form dataset with references (one row per scalar property)
+dataset = ouro.datasets.create(
+    name="CIF calculated properties",
+    visibility="public",
+    org_id=org_id,
+    team_id=team_id,
+    data=rows,  # list[dict] with file_id / action_id / route_id / property_name / value_…
+    refs={
+        "file_id": "file",      # asset ref, target type file
+        "action_id": "action",  # action ref
+        "route_id": "route",    # asset ref, target type route
+    },
+)
+```
+
+Notes for bulk collection:
+- Prefer a **long-form** table (one row per property) over a wide sparse table —
+  response shapes differ by route.
+- Skip nested payloads (`file`, `decomposition`, symmetry dicts, plots); keep
+  scalars (`int`/`float`/`str`/`bool`).
+- There is no batch actions API — one `assets.actions` call per file. For
+  thousands of files, use a workspace script with a JSONL checkpoint and modest
+  concurrency (e.g. `ThreadPoolExecutor`), not hundreds of agent tool calls.
+  Pass `include_response=True` when you need calculated properties; leave it
+  false for compact status/lineage browsing. The SDK auto-pages `as_input`
+  (server page size 200) when `limit` is omitted.
+- When creating a dataset with **many reference ids**, large uploads are
+  validated via a bulk RPC (`lookup_dataset_ref_ids`). Still prefer inspecting
+  `dataset.row_ingest` / `ingest_warning` after each write.
+- `role="output"` / `created_by` is the action that *produced* the file (e.g. a
+  relaxation output CIF); property predictions usually sit on `role="input"`.
+- Reference example script: `ouro-py/examples/build_cif_properties_dataset.py`
+
 ## Strategy
 1. Prefer `run_python` + ouro-py for **bulk / multi-step** Ouro work (paginate
    files, walk connections, build datasets). One-off reads/writes can stay on MCP.
@@ -181,3 +239,5 @@ ouro = get_ouro_client()
    `assets.search` + local `.cif` filtering.
 10. Pass filter kwargs directly (`extension=`, `team_id=`, `scope=`), not as a
    nested `filters=` or `params=` dict
+11. For "properties of these CIFs/files", read `ouro.assets.actions(..., role="input")`
+    and flatten `action.response` — do not expect them on `file.metadata`

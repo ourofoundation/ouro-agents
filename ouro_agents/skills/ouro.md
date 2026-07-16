@@ -107,8 +107,9 @@ actions still preserve the `action_id` (`{"action_status": "error", ...}`) and
 can be inspected or embedded when explaining what happened.
 Use `list_asset_actions(asset_id)` to find runs that produced an asset
 (`created_by`) or used it as input (`as_input`) — do not scrape posts for
-action IDs. Connection graphs may include `action_id` on `action` edges for
-follow-up with `get_action`.
+action IDs. Leave `include_response` false for compact browsing; set it true
+when you need calculated properties from `action.response`. Connection graphs
+may include `action_id` on `action` edges for follow-up with `get_action`.
 
 ## Data, quests, and conversations
 
@@ -121,8 +122,9 @@ through results.
     to promote) so columns hold Ouro object ids with a real FK — e.g.
     `{"file_id": {"kind": "asset", "asset_type": "file"}, "run_id": {"kind": "action"}}`.
     Schema shows `semantic_type: "reference"` with `ref_kind` (+ optional
-    `asset_type`). Resolve names/URLs with `query_dataset(..., resolve_refs=true)`
-    (returns a `resolved_refs` sidecar).
+    `asset_type`). Column fields also include `name`/`type` aliases alongside
+    `column_name`/`data_type`. Resolve names/URLs with
+    `query_dataset(..., resolve_refs=true)` (returns a `resolved_refs` sidecar).
   - **Enum columns**: pass `enum_columns` for categorical columns with known
     values (e.g. `{"status": {"values": ["todo", "done"]}}`) so schema reads
     expose `semantic_type: "enum"` and `enum_values`.
