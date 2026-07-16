@@ -27,6 +27,14 @@ ouro = get_ouro_client()
 - `share(id, user_id, role="read")` → None — grant read/write/admin on any asset type
   - Private assets stay invisible until shared; mentions/links do not grant access
   - Prefer this over `files.share` (which delegates here)
+- `connections(id)` → list[dict] lineage edges (references, action outputs, …).
+  Action edges include `action_id` but not the action response — use `actions()` for results.
+- `actions(id, role="both", status=None, side_effects=None)` →
+  `{"created_by": Action|None, "as_input": list[Action]}`
+  - `role="input"`: runs that used this asset as input
+  - `role="output"`: the action that produced this asset (if any)
+  - `role="both"` (default): both sides in one call
+  Prefer this over scraping posts for action IDs.
 
 ### Posts (ouro.posts)
 - `list(query="", limit=20, offset=0, scope=None, org_id=None, team_id=None, **kwargs)` → list[Post]
@@ -131,7 +139,12 @@ ouro = get_ouro_client()
 ## Important notes
 - All resource methods use `retrieve(id)`, not `get(id)`
 - `datasets.query(id)` returns a pandas DataFrame — you can use standard pandas
-  operations on it when pandas is installed in the configured sandbox
+  operations on it when pandas is installed in the configured sandbox.
+  Never use a DataFrame in a boolean context (`if rows:` / `if not rows:`) —
+  that raises `ValueError: The truth value of a DataFrame is ambiguous`.
+  Use `if rows.empty:` / `if not rows.empty:`, or
+  `rows.to_dict(orient="records")` when you want list-of-dicts.
+  Prefer MCP `query_dataset` when you only need JSON rows in the agent loop.
 - For creating assets, always pass `org_id` and `team_id` from the Platform context
 - `description` params accept a plain string or a Content object
 - When creating datasets, `data` must be non-empty (at least 1 row, 1 column)

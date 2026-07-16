@@ -1053,25 +1053,44 @@ class OuroAgent:
 
         mcpadapt doesn't translate anyOf: [{type: X}, {type: null}] into
         smolagents' nullable flag, causing validation errors when the LLM
-        sends null or omits optional parameters.  We also remove anyOf after
-        extracting type info so smolagents' get_tool_json_schema doesn't
-        crash on entries missing a "type" key (e.g. from Any).
+        sends null or omits optional parameters.  It also forces a missing
+        top-level ``type`` to ``"string"`` even when ``anyOf`` allows
+        multiple types (e.g. string | array), which makes smolagents reject
+        valid array arguments.  We collapse non-null ``anyOf`` types into
+        ``type`` (string or list) and remove ``anyOf`` so smolagents'
+        schema helpers don't crash on entries missing a ``type`` key.
         """
         for schema in getattr(mcp_tool, "inputs", {}).values():
             any_of = schema.get("anyOf", [])
-            has_null = any(item.get("type") == "null" for item in any_of)
-            has_default = "default" in schema
+            if not any_of:
+                if "default" in schema:
+                    schema["nullable"] = True
+                continue
 
-            if has_null:
-                non_null = [item for item in any_of if item.get("type") != "null"]
-                if non_null:
-                    schema["type"] = non_null[0].get("type", "string")
-                else:
-                    schema.setdefault("type", "string")
+            has_null = any(item.get("type") == "null" for item in any_of)
+            non_null_types = [
+                item.get("type", "string")
+                for item in any_of
+                if item.get("type") != "null"
+            ]
+            # Deduplicate while preserving order
+            seen: set[str] = set()
+            unique_types: list[str] = []
+            for t in non_null_types:
+                if t not in seen:
+                    seen.add(t)
+                    unique_types.append(t)
+
+            if not unique_types:
+                schema.setdefault("type", "string")
+            elif len(unique_types) == 1:
+                schema["type"] = unique_types[0]
+            else:
+                schema["type"] = unique_types
+
+            if has_null or "default" in schema:
                 schema["nullable"] = True
-                del schema["anyOf"]
-            elif has_default:
-                schema["nullable"] = True
+            del schema["anyOf"]
 
     def _connect_one_server(self, server: MCPServerConfig) -> None:
         if server.transport == "stdio":

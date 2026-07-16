@@ -105,6 +105,10 @@ to check status, or `get_action(action_id, wait=true, timeout=...)` to wait. For
 routes known to be slow, pass a larger `timeout=` on the initial call. Errored
 actions still preserve the `action_id` (`{"action_status": "error", ...}`) and
 can be inspected or embedded when explaining what happened.
+Use `list_asset_actions(asset_id)` to find runs that produced an asset
+(`created_by`) or used it as input (`as_input`) — do not scrape posts for
+action IDs. Connection graphs may include `action_id` on `action` edges for
+follow-up with `get_action`.
 
 ## Data, quests, and conversations
 
