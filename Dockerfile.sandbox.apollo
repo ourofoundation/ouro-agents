@@ -1,5 +1,9 @@
 # Apollo's sandbox: the shared base plus git for cloning model repos.
 # Build the base first: docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
+
+# Docker build command: 
+# docker build -f Dockerfile.sandbox.apollo -t ouro-agents-sandbox-apollo:latest .
+
 FROM ouro-agents-sandbox:latest
 
 RUN apt-get update \
