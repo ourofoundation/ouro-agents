@@ -7,11 +7,11 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+# Heavy / rarely-changing deps first so ouro-py bumps don't invalidate this layer.
 # Pin pymatgen-core to a release with manylinux wheels; newer sdist-only
 # versions need a C compiler that slim does not include.
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir \
-        ouro-py==0.10.5 \
         httpx \
         ase \
         numpy \
@@ -22,5 +22,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         spglib \
         requests \
         modal
+
+# Thin layer: bump this pin without rebuilding the stack above.
+RUN python -m pip install --no-cache-dir ouro-py==0.10.6
 
 WORKDIR /workspace
