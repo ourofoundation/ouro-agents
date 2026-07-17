@@ -1049,8 +1049,12 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
     )
     from .profiles import RunMode
 
-    hb_model_id = agent.config.heartbeat.model or agent.config.agent.model
-    hb_model = agent._build_model(hb_model_id, heartbeat=True)
+    hb_model_id = (
+        (agent._model_id_for_role("heartbeat") if hasattr(agent, "_model_id_for_role") else None)
+        or agent.config.heartbeat.model
+        or agent.config.agent.model
+    )
+    hb_model = agent._build_model(hb_model_id, heartbeat=True, role="heartbeat")
 
     try:
         agent._refresh_platform_context()
@@ -1198,8 +1202,12 @@ async def force_planning_heartbeat(
     """
     from .planning import run_planning_run
 
-    hb_model_id = agent.config.heartbeat.model or agent.config.agent.model
-    hb_model = agent._build_model(hb_model_id, heartbeat=True)
+    hb_model_id = (
+        (agent._model_id_for_role("heartbeat") if hasattr(agent, "_model_id_for_role") else None)
+        or agent.config.heartbeat.model
+        or agent.config.agent.model
+    )
+    hb_model = agent._build_model(hb_model_id, heartbeat=True, role="heartbeat")
 
     try:
         agent._refresh_platform_context()
@@ -1235,8 +1243,12 @@ async def force_review_heartbeat(
         logger.info("No reviewable quest found")
         return None
 
-    hb_model_id = agent.config.heartbeat.model or agent.config.agent.model
-    hb_model = agent._build_model(hb_model_id, heartbeat=True)
+    hb_model_id = (
+        (agent._model_id_for_role("heartbeat") if hasattr(agent, "_model_id_for_role") else None)
+        or agent.config.heartbeat.model
+        or agent.config.agent.model
+    )
+    hb_model = agent._build_model(hb_model_id, heartbeat=True, role="heartbeat")
 
     try:
         agent._refresh_platform_context()

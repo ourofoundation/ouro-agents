@@ -74,26 +74,29 @@ The `subagents` block in `config.json` carries non-prompt overrides:
 
 ```json
 "subagents": {
-  "default_model": "google/gemini-2.5-flash",
   "writer": { "model": "anthropic/claude-sonnet-4" },
   "research": { "max_steps": 30 },
   "preflight": {
-    "model": "xiaomi/mimo-v2-flash",
-    "reasoning": { "effort": "none" },
     "max_steps": 4
   }
 }
 ```
+
+With a top-level `models` block, preflight/research/reflector default to
+`light` and writer/executor/developer to `strong`, so most profiles only
+need `max_steps`. An explicit `model` (as on `writer` above) still wins.
 
 Resolution cascade for the model used by a subagent run:
 
 1. `profile.model_override` (rarely set in code).
 2. `subagents.<name>.model` from config.
 3. `subagents.default_model`.
-4. `agent.model` (last-resort fallback).
+4. Role→tier from top-level `models` (e.g. research → `light`).
+5. `agent.model` (last-resort fallback).
 
 `max_steps` and `reasoning` use the same precedence inside their respective
-domains.
+domains. With `models` set, prefer omitting per-profile `model` /
+`reasoning` and let the tier map choose.
 
 ## The `delegate` tool
 

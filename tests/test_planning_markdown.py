@@ -377,7 +377,7 @@ def _fake_agent(workspace, ouro_client, run_result, controller="reviewer"):
             self.prompt = prompt
             return run_result
 
-        def _build_model(self, model_id, heartbeat=False):
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
             return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
 
         def _get_ouro_client(self):

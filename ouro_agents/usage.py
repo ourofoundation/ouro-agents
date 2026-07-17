@@ -717,6 +717,15 @@ def _chunk_has_content_delta(chunk: Any) -> bool:
 def _merge_stream_reasoning_chunk(
     reasoning_by_choice: dict[int, str], chunk: Any
 ) -> list[str]:
+    """Accumulate streamed reasoning text, handling both stream shapes.
+
+    Providers either send true incremental deltas (each chunk is new text) or
+    growing snapshots (each chunk restates everything so far). Snapshots are
+    detected via ``startswith``; anything else is appended verbatim. Never use
+    substring membership to dedupe — deltas that repeat earlier words (``"the"``,
+    ``"not"``, ...) are legitimate new text, and dropping them silently mangles
+    the reasoning transcript.
+    """
     deltas: list[str] = []
     choices = _usage_field(chunk, "choices") or []
     for index, choice in enumerate(choices):
@@ -727,15 +736,17 @@ def _merge_stream_reasoning_chunk(
         if not text:
             continue
         current = reasoning_by_choice.get(index, "")
-        if current and text.startswith(current):
-            reasoning_by_choice[index] = text
-            new_text = text[len(current) :]
-            if new_text:
-                deltas.append(new_text)
-        elif not current:
+        if not current:
             reasoning_by_choice[index] = text
             deltas.append(text)
-        elif text not in current:
+        elif text == current:
+            # Exact resend of the current snapshot; nothing new.
+            continue
+        elif text.startswith(current):
+            # Growing-snapshot stream: emit only the new suffix.
+            reasoning_by_choice[index] = text
+            deltas.append(text[len(current) :])
+        else:
             reasoning_by_choice[index] = current + text
             deltas.append(text)
     return deltas

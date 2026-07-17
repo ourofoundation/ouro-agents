@@ -36,7 +36,29 @@ KNOWN_REPLAYABLE_REASONING_FORMATS = frozenset(
 # (without it, GLM re-derives state every step and repeats actions). This is
 # only safe when the model is pinned to a single provider so replay never
 # crosses providers — see ``openrouter_provider`` in the agent config.
-REPLAYABLE_UNKNOWN_REASONING_MODEL_PREFIXES = ("z-ai/",)
+# Moonshot Kimi (``moonshotai/``) likewise requires the complete assistant
+# message (including reasoning_details) to be replayed verbatim in tool loops;
+# OpenRouter tags its details ``unknown`` since there is no canonical format.
+REPLAYABLE_UNKNOWN_REASONING_MODEL_PREFIXES = ("z-ai/", "moonshotai/")
+
+# First-party OpenRouter provider slug for each replay-allowlisted family.
+# Replaying ``format="unknown"`` reasoning is only safe same-provider, so
+# model builds hard-pin these families to their first-party endpoint
+# (overriding any config-level ``allow_fallbacks``).
+FIRST_PARTY_PROVIDER_BY_PREFIX = {
+    "z-ai/": "z-ai",
+    "moonshotai/": "moonshotai",
+}
+
+
+def first_party_provider_slug(model_id: str | None) -> str | None:
+    """Provider slug a replay-allowlisted model must be pinned to, if any."""
+    if not model_id:
+        return None
+    for prefix, slug in FIRST_PARTY_PROVIDER_BY_PREFIX.items():
+        if model_id.startswith(prefix):
+            return slug
+    return None
 
 # Set by the model wrapper for the duration of request preparation so the
 # (globally patched) message-cleaning pass can tell which model is being built.

@@ -529,9 +529,9 @@ def _build_default_model(agent: "OuroAgent"):
     if refinement_cfg and getattr(refinement_cfg, "model", None):
         model_id = refinement_cfg.model
     if not model_id:
-        model_id = getattr(cfg.heartbeat, "model", None) or cfg.agent.model
+        model_id = agent._utility_model_id()
     try:
-        return agent._build_model(model_id, heartbeat=True)
+        return agent._build_model(model_id, role="refinement")
     except Exception as exc:
         logger.warning("Refinement: failed to build model %s: %s", model_id, exc)
         return None

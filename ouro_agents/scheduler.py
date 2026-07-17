@@ -439,8 +439,8 @@ class AgentScheduler:
 
             logger.info("Running dream cycle for period %s (rhythm=%s)...", current_period, rhythm)
             hb_model = agent._build_model(
-                agent.config.heartbeat.model or agent.config.agent.model,
-                heartbeat=True,
+                agent._utility_model_id(),
+                role="utility",
             )
             results_by_scope: dict[str, dict] = {}
             results_by_scope["shared"] = run_dream(
@@ -594,8 +594,8 @@ class AgentScheduler:
 
             # Use the cheap model (same one used for classification/reflection)
             model = self._agent._build_model(
-                self._agent.config.heartbeat.model or self._agent.config.agent.model,
-                heartbeat=True,
+                self._agent._utility_model_id(),
+                role="utility",
             )
 
             result = refine(

@@ -12,30 +12,29 @@
   },
   "agent": {
     "name": "athena",
-    "model": "qwen/qwen3.7-plus",
-    "reasoning": {
-      "effort": "medium"
-    },
     "workspace": "./agents/athena",
     "org_id": "00000000-0000-0000-0000-000000000000"
   },
-  "subagents": {
-    "preflight": {
-      "model": "qwen/qwen3.7-plus",
+  "models": {
+    "strong": {
+      "id": "qwen/qwen3.7-plus",
+      "reasoning": {
+        "effort": "medium"
+      }
+    },
+    "light": {
+      "id": "xiaomi/mimo-v2-flash",
       "reasoning": {
         "effort": "none"
-      },
+      }
+    }
+  },
+  "subagents": {
+    "preflight": {
       "max_steps": 4
     },
     "research": {
-      "model": "xiaomi/mimo-v2-flash",
-      "reasoning": {
-        "effort": "low"
-      },
       "max_steps": 10
-    },
-    "writer": {
-      "model": "qwen/qwen3.7-plus"
     },
     "executor": {
       "max_steps": 24
@@ -44,7 +43,6 @@
   "modes": {
     "planning": {
       "enabled": true,
-      "model": "qwen/qwen3.7-plus",
       "max_steps": 20,
       "cadence": "4h",
       "min_heartbeats": 4,
@@ -54,7 +52,6 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "qwen/qwen3.7-plus",
       "max_steps": 20,
       "active_hours": {
         "start": "09:00",
@@ -73,7 +70,6 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/athena/memory",
-    "extraction_model": "xiaomi/mimo-v2-flash",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "max_retrieval_tokens": 1500,

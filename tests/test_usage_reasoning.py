@@ -69,6 +69,14 @@ class TestUnknownReasoningReplayAllowlist(unittest.TestCase):
         self.assertNotIn("reasoning_details", fields)
         self.assertEqual(fields.get("reasoning"), "thinking...")
 
+    def test_unknown_details_kept_for_kimi(self):
+        token = active_model_id.set("moonshotai/kimi-k3")
+        try:
+            fields = replayable_reasoning_fields(self._glm_message())
+        finally:
+            active_model_id.reset(token)
+        self.assertIn("reasoning_details", fields)
+
     def test_unknown_details_kept_for_allowlisted_model(self):
         token = active_model_id.set("z-ai/glm-5.2")
         try:
@@ -177,6 +185,37 @@ class TestVisibleReasoningLogging(unittest.TestCase):
 
         self.assertEqual(streamed, ["inspect ", "the workspace"])
         self.assertEqual(persisted, ["inspect the workspace"])
+
+    def test_delta_stream_keeps_repeated_words(self):
+        # Regression: deltas that are substrings of already-accumulated text
+        # ("the", "not", ...) used to be silently dropped, producing degraded
+        # word-salad reasoning transcripts for true delta streams (e.g. Kimi).
+        tracker = UsageTracker()
+        persisted: list[str] = []
+        words = ["check", " the", " memory", ",", " then", " check", " the", " runs"]
+        chunks = [
+            _response(
+                id="resp_stream",
+                choices=[_choice(delta=_message(reasoning=word))],
+            )
+            for word in words
+        ] + [
+            _response(
+                id="resp_stream",
+                usage={"prompt_tokens": 7, "completion_tokens": 3},
+                choices=[_choice(delta=_message(content="done"))],
+            )
+        ]
+
+        list(
+            _wrap_stream(
+                iter(chunks),
+                tracker,
+                reasoning_callback=persisted.append,
+            )
+        )
+
+        self.assertEqual(persisted, ["check the memory, then check the runs"])
 
 
 class TestEnsureUsagePresent(unittest.TestCase):

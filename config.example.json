@@ -1,10 +1,6 @@
 {
   "agent": {
     "name": "hermes",
-    "model": "xiaomi/mimo-v2-flash",
-    "reasoning": {
-      "effort": "medium"
-    },
     "workspace": "./workspace",
     "org_id": "00000000-0000-0000-0000-000000000000",
     "sandbox": {
@@ -25,6 +21,20 @@
       ]
     }
   },
+  "models": {
+    "strong": {
+      "id": "anthropic/claude-4.6-sonnet",
+      "reasoning": {
+        "effort": "medium"
+      }
+    },
+    "light": {
+      "id": "xiaomi/mimo-v2-flash",
+      "reasoning": {
+        "effort": "none"
+      }
+    }
+  },
   "security": {
     "controllers": [
       "your-handle"
@@ -34,21 +44,10 @@
   },
   "subagents": {
     "preflight": {
-      "model": "xiaomi/mimo-v2-flash",
-      "reasoning": {
-        "effort": "none"
-      },
       "max_steps": 4
     },
     "research": {
-      "model": "xiaomi/mimo-v2-flash",
-      "reasoning": {
-        "effort": "low"
-      },
       "max_steps": 10
-    },
-    "writer": {
-      "model": "xiaomi/mimo-v2-flash"
     },
     "executor": {
       "max_steps": 24
@@ -63,7 +62,6 @@
     },
     "planning": {
       "enabled": true,
-      "model": "anthropic/claude-4.6-sonnet",
       "cadence": "4h",
       "min_heartbeats": 4,
       "review_window": "1h",
@@ -73,7 +71,6 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "xiaomi/mimo-v2-flash",
       "active_hours": {
         "start": "09:00",
         "end": "17:00",
@@ -92,7 +89,6 @@
   "memory": {
     "provider": "mem0",
     "path": "./workspace/memory",
-    "extraction_model": "xiaomi/mimo-v2-flash",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "max_retrieval_tokens": 1500,
@@ -134,35 +130,12 @@
   ],
   "server": {
     "host": "0.0.0.0",
-    "port": 8000
+    "port": 8000,
+    "webhook_path": "/ouro-agents/events"
   },
   "prompt_caching": {
     "enabled": true,
     "ttl": "5m"
   },
-  "display": {
-    "usage_table": {
-      "show_reasoning": false
-    },
-    "serve_progress": {
-      "enabled": true,
-      "style": "timeline",
-      "show_spinner": true,
-      "show_prefetch": true,
-      "show_token_updates": true,
-      "show_subagents": true
-    }
-  },
-  "run_log": {
-    "enabled": true,
-    "capture_steps": true,
-    "capture_reasoning": true,
-    "capture_observations": true,
-    "max_observation_chars": 0,
-    "capture_subagent_runs": true,
-    "expose_to_agent": true,
-    "agent_default_scope": "team",
-    "agent_max_results": 10,
-    "agent_max_detail_chars": 6000
-  }
+  "env_file": ".env"
 }

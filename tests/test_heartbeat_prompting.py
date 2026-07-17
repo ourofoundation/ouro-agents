@@ -235,7 +235,7 @@ def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):
             )
             self.doc_store = _DocStore()
 
-        def _build_model(self, model_id, heartbeat=False):
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
             return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
 
         def _refresh_platform_context(self):
@@ -304,7 +304,7 @@ def test_run_heartbeat_appends_team_direction_when_unscoped(tmp_path):
             self.doc_store = _DocStore()
             self.team_registry = _Registry()
 
-        def _build_model(self, model_id, heartbeat=False):
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
             return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
 
         def _refresh_platform_context(self):
@@ -389,7 +389,7 @@ def test_run_heartbeat_selects_planning_team_from_direction_memory(tmp_path):
             self.doc_store = _DocStore()
             self.team_registry = _Registry()
 
-        def _build_model(self, model_id, heartbeat=False):
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
             return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
 
         def _refresh_platform_context(self):
@@ -640,7 +640,7 @@ def test_run_heartbeat_works_inbox_before_planning(tmp_path):
                 get_team=lambda tid: SimpleNamespace(id=tid, agent_can_create=True),
             )
 
-        def _build_model(self, model_id, heartbeat=False):
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
             return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
 
         def _refresh_platform_context(self):
@@ -723,7 +723,7 @@ def test_run_heartbeat_skips_planning_when_cadence_not_due(tmp_path):
                 get_team=lambda tid: SimpleNamespace(id=tid, agent_can_create=True),
             )
 
-        def _build_model(self, model_id, heartbeat=False):
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
             return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
 
         def _refresh_platform_context(self):
@@ -805,7 +805,7 @@ def test_force_planning_heartbeat_uses_explicit_team_id(tmp_path):
             )
             self.team_registry = _Registry()
 
-        def _build_model(self, model_id, heartbeat=False):
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
             return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
 
         def _refresh_platform_context(self):

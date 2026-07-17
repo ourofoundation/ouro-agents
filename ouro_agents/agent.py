@@ -27,8 +27,10 @@ from .config import (
     RunMode,
     merge_openrouter_provider,
     merge_reasoning,
+    tier_spec_for_role,
 )
 from .constants import openrouter_attribution_headers
+from .provider_reasoning import first_party_provider_slug
 from .display import OuroDisplay, create_logger, get_display
 from .memory import create_memory_backend
 from .memory.conversation_state import (
@@ -715,16 +717,58 @@ class OuroAgent:
         """
         return bool(self._QWEN_EXPLICIT_CACHE_RE.match(model_id))
 
+    def _model_id_for_role(self, role: str) -> Optional[str]:
+        """OpenRouter model id for a harness role from ``models`` tiers, if set."""
+        tiers = self.config.models
+        if tiers is None:
+            return None
+        return tier_spec_for_role(tiers, role).id
+
+    def _utility_model_id(self) -> str:
+        """Cheap model for compaction / summarize / dream / similar utilities."""
+        return (
+            self._model_id_for_role("utility")
+            or self.config.heartbeat.model
+            or self.config.agent.model
+        )
+
     def _resolve_reasoning(
         self,
         *,
         subagent_profile: Optional[str] = None,
         heartbeat: bool = False,
+        role: Optional[str] = None,
     ) -> Optional[ReasoningConfig]:
-        """Merge global + optional heartbeat overlay + optional subagent override."""
-        layers: list[Optional[ReasoningConfig]] = [self.config.agent.reasoning]
-        if heartbeat:
-            layers.append(self.config.heartbeat.reasoning)
+        """Merge tier defaults + optional heartbeat/subagent overlays.
+
+        With ``models`` configured, the role's tier supplies the base reasoning
+        (so light roles do not inherit ``strong`` effort). Without tiers, keep
+        the legacy cascade: ``agent.reasoning`` → heartbeat → subagent.
+        """
+        effective_role = (
+            role
+            or subagent_profile
+            or ("heartbeat" if heartbeat else "agent")
+        )
+        tiers = self.config.models
+        layers: list[Optional[ReasoningConfig]]
+        if tiers is not None:
+            layers = [tier_spec_for_role(tiers, effective_role).reasoning]
+            if effective_role == "agent":
+                layers.append(self.config.agent.reasoning)
+        else:
+            layers = [self.config.agent.reasoning]
+            if heartbeat or effective_role in {
+                "heartbeat",
+                "utility",
+                "extraction",
+                "refinement",
+            }:
+                layers.append(self.config.heartbeat.reasoning)
+
+        if heartbeat or effective_role == "heartbeat":
+            if tiers is not None:
+                layers.append(self.config.heartbeat.reasoning)
         if subagent_profile:
             override = self.config.subagents.profiles.get(subagent_profile)
             if override and override.reasoning is not None:
@@ -736,10 +780,21 @@ class OuroAgent:
         *,
         subagent_profile: Optional[str] = None,
         heartbeat: bool = False,
+        role: Optional[str] = None,
     ) -> Optional[dict]:
-        """Merge global + optional heartbeat overlay + optional subagent override."""
+        """Merge global + tier + optional heartbeat/subagent provider overlays."""
+        effective_role = (
+            role
+            or subagent_profile
+            or ("heartbeat" if heartbeat else "agent")
+        )
         layers: list[Optional[dict]] = [self.config.openrouter_provider]
-        if heartbeat:
+        tiers = self.config.models
+        if tiers is not None:
+            tier_provider = tier_spec_for_role(tiers, effective_role).openrouter_provider
+            if tier_provider:
+                layers.append(tier_provider)
+        if heartbeat or effective_role == "heartbeat":
             layers.append(self.config.heartbeat.openrouter_provider)
         if subagent_profile:
             override = self.config.subagents.profiles.get(subagent_profile)
@@ -763,6 +818,15 @@ class OuroAgent:
 
         if reasoning is not None:
             r = reasoning.model_dump(exclude_none=True)
+            if model_id.startswith("moonshotai/"):
+                # Kimi K3 has thinking always on and accepts only effort "max".
+                # Map other efforts away; keep exclude / explicit max.
+                exclude = r.get("exclude")
+                r = {"enabled": True}
+                if exclude is not None:
+                    r["exclude"] = exclude
+                if reasoning.effort == "max":
+                    r["effort"] = "max"
             if r:
                 body["reasoning"] = r
 
@@ -777,6 +841,17 @@ class OuroAgent:
         # (Harmless if the route ignores the flag.)
         if model_id.startswith("minimax/"):
             body["reasoning_split"] = True
+
+        # Families whose format="unknown" reasoning we replay must never route
+        # across providers (the blocks are provider-specific). Hard-pin them to
+        # their first-party endpoint, overriding config-level fallbacks.
+        pin_slug = first_party_provider_slug(model_id)
+        if pin_slug:
+            provider = {
+                **(provider or {}),
+                "order": [pin_slug],
+                "allow_fallbacks": False,
+            }
 
         if provider:
             body["provider"] = provider
@@ -821,6 +896,7 @@ class OuroAgent:
         reasoning: Optional[ReasoningConfig] = None,
         subagent_profile: Optional[str] = None,
         heartbeat: bool = False,
+        role: Optional[str] = None,
         usage_tracker: Optional[UsageTracker] = None,
     ) -> TrackedOpenAIModel:
         model_kwargs = {}
@@ -830,11 +906,13 @@ class OuroAgent:
             else self._resolve_reasoning(
                 subagent_profile=subagent_profile,
                 heartbeat=heartbeat,
+                role=role,
             )
         )
         provider = self._resolve_openrouter_provider(
             subagent_profile=subagent_profile,
             heartbeat=heartbeat,
+            role=role,
         )
         extra_body = self._build_openrouter_extra_body(model_id, resolved, provider)
         if extra_body:
@@ -918,8 +996,8 @@ class OuroAgent:
 
         try:
             summary_model = self._build_model(
-                self.config.heartbeat.model or self.config.agent.model,
-                heartbeat=True,
+                self._utility_model_id(),
+                role="utility",
             )
             result = summary_model(
                 [
@@ -1674,11 +1752,13 @@ class OuroAgent:
             profile.model_override
             or (override.model if override else None)
             or self.config.subagents.default_model
+            or self._model_id_for_role(profile.name)
             or self.config.agent.model
         )
         return self._build_model(
             model_id,
             subagent_profile=profile.name,
+            role=profile.name,
             usage_tracker=usage_tracker,
         )
 
@@ -1709,8 +1789,8 @@ class OuroAgent:
         from .subagents.context import SubAgentContext
 
         compactor_model = self._build_model(
-            self.config.heartbeat.model or self.config.agent.model,
-            heartbeat=True,
+            self._utility_model_id(),
+            role="utility",
             usage_tracker=usage_tracker,
         )
 
@@ -2669,8 +2749,8 @@ class OuroAgent:
         )
         main_max_steps = profile.max_steps
         compactor_model = self._build_model(
-            self.config.heartbeat.model or self.config.agent.model,
-            heartbeat=True,
+            self._utility_model_id(),
+            role="utility",
         )
         # NOTE: tool persistence/emission (observer.on_step_persist) is
         # deliberately NOT registered as a smolagents step_callback. smolagents
@@ -2928,8 +3008,8 @@ class OuroAgent:
             if profile.update_conversation_state and conversation_id:
                 try:
                     state_model = self._build_model(
-                        self.config.heartbeat.model or self.config.agent.model,
-                        heartbeat=True,
+                        self._utility_model_id(),
+                        role="utility",
                     )
                     new_conv_state = update_state(
                         conv_state, task, str(result), state_model
@@ -3020,8 +3100,8 @@ class OuroAgent:
         from .memory.dream import run_dream
 
         model = self._build_model(
-            self.config.heartbeat.model or self.config.agent.model,
-            heartbeat=True,
+            self._utility_model_id(),
+            role="utility",
         )
         results: dict[str, dict] = {}
 
@@ -3093,8 +3173,12 @@ class OuroAgent:
                 logger.warning("Failed to verify quest %s ownership: %s", quest_id, e)
 
         if own_quest:
-            hb_model_id = self.config.heartbeat.model or self.config.agent.model
-            hb_model = self._build_model(hb_model_id, heartbeat=True)
+            hb_model_id = (
+                self._model_id_for_role("heartbeat")
+                or self.config.heartbeat.model
+                or self.config.agent.model
+            )
+            hb_model = self._build_model(hb_model_id, heartbeat=True, role="heartbeat")
             proactive_cfg = self.config.heartbeat.proactive
             servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
 

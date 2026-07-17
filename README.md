@@ -46,7 +46,7 @@ export OPENROUTER_API_KEY=sk-or-...
 export OURO_API_KEY=ouro_...
 
 cp config.example.json config.json
-# edit config.json: set agent.name, agent.model, agent.org_id, mcp_servers[].command
+# edit config.json: set agent.name, models, agent.org_id, mcp_servers[].command
 
 ouro-agents chat
 ```
@@ -150,30 +150,35 @@ Minimal `config.json` shape (full reference in
 {
   "agent": {
     "name": "hermes",
-    "model": "anthropic/claude-4.6-sonnet",
     "org_id": "00000000-0000-0000-0000-000000000000",
     "workspace": "./workspace"
+  },
+  "models": {
+    "strong": {
+      "id": "anthropic/claude-4.6-sonnet",
+      "reasoning": { "effort": "medium" }
+    },
+    "light": {
+      "id": "google/gemini-2.5-flash",
+      "reasoning": { "effort": "none" }
+    }
   },
   "modes": {
     "run":      { "max_steps": 60 },
     "chat":     { "max_steps": 40 },
-    "planning": { "enabled": true, "model": "anthropic/claude-4.6-sonnet", "cadence": "4h" },
+    "planning": { "enabled": true, "cadence": "4h" },
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "openai/gpt-4.1-mini",
       "active_hours": { "start": "09:00", "end": "17:00", "timezone": "America/Chicago" }
     }
   },
   "subagents": {
-    "default_model": "google/gemini-2.5-flash",
-    "writer":   { "model": "anthropic/claude-sonnet-4" },
     "research": { "max_steps": 30 }
   },
   "memory": {
     "provider": "mem0",
     "path": "./workspace/memory",
-    "extraction_model": "google/gemini-2.5-flash",
     "embedder": "openai/text-embedding-3-small"
   },
   "mcp_servers": [
@@ -189,9 +194,10 @@ Minimal `config.json` shape (full reference in
 }
 ```
 
-`controller.username` mentions a human `{@username}` when a plan enters
-review. `subagents.<name>` overrides the model / max steps / reasoning
-for any subagent profile. See the docs for everything else.
+`models.strong` / `models.light` (and optional `mid`) are the preferred way
+to pick models — the harness assigns them by role. Explicit
+`subagents.<name>.model` / `modes.*.model` overrides still win. See the docs
+for everything else.
 
 ## Development
 

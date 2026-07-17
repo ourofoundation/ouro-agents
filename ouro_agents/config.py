@@ -14,7 +14,8 @@ from .modes.profiles import RunMode  # noqa: F401
 from .memory.naming import Rhythm
 
 # OpenRouter unified `reasoning` request field (effort vs max_tokens; model-dependent).
-ReasoningEffort = Literal["xhigh", "high", "medium", "low", "minimal", "none"]
+# ``max`` is accepted by Moonshot Kimi K3 (thinking always on; only effort it honors).
+ReasoningEffort = Literal["xhigh", "high", "medium", "low", "minimal", "none", "max"]
 
 
 class ReasoningConfig(BaseModel):
@@ -50,6 +51,150 @@ def merge_openrouter_provider(
     return merged or None
 
 
+ModelTierName = Literal["strong", "mid", "light"]
+
+
+class ModelTierSpec(BaseModel):
+    """One named model bundle: OpenRouter id + optional reasoning defaults."""
+
+    id: str
+    reasoning: Optional[ReasoningConfig] = None
+    openrouter_provider: Optional[Dict[str, Any]] = None
+
+
+class ModelTiersConfig(BaseModel):
+    """Opinionated model roster. Configure once; roles pick a tier.
+
+    ``strong`` — main agent, planning, writer, executor, developer.
+    ``light`` — preflight, research, reflector, extraction, utilities
+    (compaction, summarize, dream, refinement).
+    ``mid`` — optional; heartbeat uses it when set, otherwise ``strong``.
+    """
+
+    strong: ModelTierSpec
+    light: ModelTierSpec
+    mid: Optional[ModelTierSpec] = None
+
+
+# Role → preferred tier. ``mid`` falls back to ``strong`` when unset.
+MODEL_ROLE_TIERS: Dict[str, ModelTierName] = {
+    "agent": "strong",
+    "planning": "strong",
+    "writer": "strong",
+    "executor": "strong",
+    "developer": "strong",
+    "planner": "strong",
+    "heartbeat": "mid",
+    "preflight": "light",
+    "research": "light",
+    "reflector": "light",
+    "utility": "light",
+    "extraction": "light",
+    "refinement": "light",
+}
+
+
+def tier_spec_for_role(
+    tiers: ModelTiersConfig, role: str
+) -> ModelTierSpec:
+    """Resolve the tier bundle for a harness role (mid → strong if unset)."""
+    preferred = MODEL_ROLE_TIERS.get(role, "strong")
+    if preferred == "mid" and tiers.mid is None:
+        preferred = "strong"
+    return getattr(tiers, preferred)
+
+
+def _tier_id(models_data: dict[str, Any], name: str) -> Optional[str]:
+    spec = models_data.get(name)
+    if isinstance(spec, dict):
+        model_id = spec.get("id")
+        if isinstance(model_id, str) and model_id.strip():
+            return model_id.strip()
+    return None
+
+
+def _tier_reasoning_payload(
+    models_data: dict[str, Any], name: str
+) -> Optional[dict[str, Any]]:
+    spec = models_data.get(name)
+    if not isinstance(spec, dict):
+        return None
+    reasoning = spec.get("reasoning")
+    return reasoning if isinstance(reasoning, dict) else None
+
+
+def _hydrate_from_model_tiers(expanded_data: dict[str, Any]) -> None:
+    """Fill required model fields from ``models`` when callers omit them.
+
+    Explicit ``model`` / ``reasoning`` / ``extraction_model`` values always win.
+    Per-subagent models are intentionally left unset so runtime resolution can
+    apply the role→tier map.
+
+    Reads tier ``id`` values from the raw dict so a bad ``reasoning`` field
+    still hydrates model ids (and the main parse reports the reasoning error
+    alone, instead of also failing on missing agent/heartbeat/extraction).
+    """
+    models_data = expanded_data.get("models")
+    if not isinstance(models_data, dict):
+        return
+
+    strong_id = _tier_id(models_data, "strong")
+    light_id = _tier_id(models_data, "light")
+    mid_id = _tier_id(models_data, "mid")
+    heartbeat_id = mid_id or strong_id
+    strong_reasoning = _tier_reasoning_payload(models_data, "strong")
+    heartbeat_reasoning = (
+        _tier_reasoning_payload(models_data, "mid")
+        if mid_id
+        else strong_reasoning
+    )
+
+    if not strong_id or not light_id:
+        return
+
+    agent = expanded_data.setdefault("agent", {})
+    if isinstance(agent, dict):
+        agent.setdefault("model", strong_id)
+        if agent.get("reasoning") is None and strong_reasoning is not None:
+            agent["reasoning"] = strong_reasoning
+
+    memory = expanded_data.setdefault("memory", {})
+    if isinstance(memory, dict):
+        memory.setdefault("extraction_model", light_id)
+
+    modes = expanded_data.get("modes")
+    if not isinstance(modes, dict):
+        modes = {}
+        expanded_data["modes"] = modes
+
+    heartbeat = modes.get("heartbeat")
+    if not isinstance(heartbeat, dict):
+        # Allow top-level heartbeat before promotion runs.
+        heartbeat = expanded_data.get("heartbeat")
+        if not isinstance(heartbeat, dict):
+            heartbeat = {}
+            modes["heartbeat"] = heartbeat
+        else:
+            modes.setdefault("heartbeat", heartbeat)
+    if heartbeat_id:
+        heartbeat.setdefault("model", heartbeat_id)
+    if (
+        heartbeat.get("reasoning") is None
+        and heartbeat_reasoning is not None
+    ):
+        heartbeat["reasoning"] = heartbeat_reasoning
+
+    planning = modes.get("planning")
+    if not isinstance(planning, dict):
+        planning = expanded_data.get("planning")
+        if not isinstance(planning, dict):
+            planning = {}
+            modes["planning"] = planning
+        else:
+            modes.setdefault("planning", planning)
+    planning.setdefault("model", strong_id)
+
+
 class AgentConfig(BaseModel):
     name: str
     model: str
@@ -57,6 +202,7 @@ class AgentConfig(BaseModel):
     org_id: Optional[str] = None
     sandbox: "SandboxConfig" = Field(default_factory=lambda: SandboxConfig())
     # Default OpenRouter reasoning for the main agent model (see ``ReasoningConfig``).
+    # When ``models`` is set, this defaults to ``models.strong.reasoning``.
     reasoning: Optional[ReasoningConfig] = None
 
 
@@ -569,6 +715,9 @@ class RefinementConfig(BaseModel):
 
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
+    # Named model roster. When set, roles pick strong/mid/light by default and
+    # per-mode / per-subagent ``model`` fields become optional overrides.
+    models: Optional[ModelTiersConfig] = None
     # OpenRouter: top-level ``provider`` routing block applied to every model build
     # unless overridden per-profile / per-agent. See
     # https://openrouter.ai/docs/features/provider-routing.
@@ -626,6 +775,10 @@ class OuroAgentsConfig(BaseSettings):
             return obj
 
         expanded_data = replace_env_vars(data)
+
+        # Apply model-tier defaults before other migrations so agent.model /
+        # heartbeat.model / extraction_model are present for required fields.
+        _hydrate_from_model_tiers(expanded_data)
 
         # Migrate legacy per-mode config fields into modes.<name>. The old
         # "chat" key now maps to the single CHAT profile (chat and chat-reply

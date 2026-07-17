@@ -14,10 +14,6 @@
   },
   "agent": {
     "name": "apollo",
-    "model": "z-ai/glm-5.2",
-    "reasoning": {
-      "effort": "high"
-    },
     "workspace": "./agents/apollo",
     "org_id": "00000000-0000-0000-0000-000000000000",
     "sandbox": {
@@ -47,6 +43,20 @@
       ]
     }
   },
+  "models": {
+    "strong": {
+      "id": "z-ai/glm-5.2",
+      "reasoning": {
+        "effort": "high"
+      }
+    },
+    "light": {
+      "id": "xiaomi/mimo-v2.5",
+      "reasoning": {
+        "effort": "none"
+      }
+    }
+  },
   "openrouter_provider": {
     "ignore": [
       "Parasail"
@@ -55,28 +65,13 @@
   },
   "subagents": {
     "preflight": {
-      "model": "xiaomi/mimo-v2.5",
-      "reasoning": {
-        "effort": "none"
-      },
       "max_steps": 4
     },
     "research": {
-      "model": "xiaomi/mimo-v2.5",
-      "reasoning": {
-        "effort": "none"
-      },
       "max_steps": 10
     },
     "reflector": {
-      "model": "xiaomi/mimo-v2.5",
-      "reasoning": {
-        "effort": "none"
-      },
       "max_steps": 10
-    },
-    "writer": {
-      "model": "z-ai/glm-5.2"
     },
     "executor": {
       "max_steps": 24
@@ -88,7 +83,6 @@
     },
     "planning": {
       "enabled": false,
-      "model": "z-ai/glm-5.2",
       "max_steps": 20,
       "cadence": "8h",
       "min_heartbeats": 4,
@@ -98,7 +92,6 @@
     "heartbeat": {
       "enabled": true,
       "every": "6h",
-      "model": "z-ai/glm-5.2",
       "max_steps": 20,
       "active_hours": {
         "start": "08:30",
@@ -113,7 +106,6 @@
   "memory": {
     "provider": "mem0",
     "path": "./agents/apollo/memory",
-    "extraction_model": "xiaomi/mimo-v2.5",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "max_retrieval_tokens": 1500,

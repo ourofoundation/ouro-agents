@@ -16,6 +16,7 @@ def make_agent(
     agent = OuroAgent.__new__(OuroAgent)
     agent.config = SimpleNamespace(
         agent=SimpleNamespace(reasoning=None),
+        models=None,
         prompt_caching=SimpleNamespace(enabled=caching_enabled, ttl=caching_ttl),
         heartbeat=SimpleNamespace(
             reasoning=None,
@@ -172,6 +173,102 @@ class TestModelProviderOverrides(unittest.TestCase):
             agent._build_model("deepseek/deepseek-v4-pro")
 
         self.assertNotIn("extra_body", tracked_model.call_args.kwargs)
+
+    def test_replay_allowlisted_families_are_pinned_first_party(self):
+        # Kimi/GLM reasoning_details (format="unknown") are only replayable
+        # same-provider, so builds must hard-pin them even when the global
+        # config allows fallbacks.
+        agent = self._make_agent(
+            openrouter_provider={"allow_fallbacks": True},
+        )
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("moonshotai/kimi-k3")
+
+        provider = tracked_model.call_args.kwargs["extra_body"]["provider"]
+        self.assertEqual(provider["order"], ["moonshotai"])
+        self.assertFalse(provider["allow_fallbacks"])
+
+    def test_glm_is_pinned_to_zai(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("z-ai/glm-5.2")
+
+        provider = tracked_model.call_args.kwargs["extra_body"]["provider"]
+        self.assertEqual(provider["order"], ["z-ai"])
+        self.assertFalse(provider["allow_fallbacks"])
+
+    def test_other_models_are_not_pinned(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("xiaomi/mimo-v2.5")
+
+        extra_body = tracked_model.call_args.kwargs.get("extra_body")
+        if extra_body is not None:
+            self.assertNotIn("provider", extra_body)
+
+    def test_kimi_reasoning_effort_is_normalized_to_enabled(self):
+        # K3 thinking is always on; non-max efforts must not be forwarded.
+        from ouro_agents.config import ReasoningConfig
+
+        agent = self._make_agent()
+        agent.config.agent.reasoning = ReasoningConfig(effort="medium")
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("moonshotai/kimi-k3")
+
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(reasoning, {"enabled": True})
+
+    def test_kimi_reasoning_effort_max_is_forwarded(self):
+        from ouro_agents.config import ReasoningConfig
+
+        agent = self._make_agent()
+        agent.config.agent.reasoning = ReasoningConfig(effort="max")
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("moonshotai/kimi-k3")
+
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(reasoning, {"enabled": True, "effort": "max"})
+
+    def test_non_kimi_reasoning_effort_is_forwarded(self):
+        from ouro_agents.config import ReasoningConfig
+
+        agent = self._make_agent()
+        agent.config.agent.reasoning = ReasoningConfig(effort="medium")
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("z-ai/glm-5.2")
+
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(reasoning, {"effort": "medium"})
 
     def test_minimax_routes_request_reasoning_split(self):
         # MiniMax leaks tool-call tokens into content when its thinking shares

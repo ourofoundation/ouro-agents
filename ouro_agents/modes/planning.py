@@ -1061,9 +1061,17 @@ async def run_planning_run(
     from .profiles import RunMode
 
     planning_cfg = agent.config.planning
+    tier_model = None
+    if hasattr(agent, "_model_id_for_role"):
+        tier_model = agent._model_id_for_role("planning")
+    plan_model_id = (
+        planning_cfg.model
+        or tier_model
+        or getattr(hb_model, "model_id", None)
+    )
     plan_model = (
-        agent._build_model(planning_cfg.model, heartbeat=True)
-        if planning_cfg.model
+        agent._build_model(plan_model_id, role="planning")
+        if plan_model_id
         else hb_model
     )
     agent_cfg = agent.config.agent
@@ -1238,9 +1246,17 @@ async def run_quest_feedback_run(
         )
 
     planning_cfg = agent.config.planning
+    tier_model = None
+    if hasattr(agent, "_model_id_for_role"):
+        tier_model = agent._model_id_for_role("planning")
+    plan_model_id = (
+        planning_cfg.model
+        or tier_model
+        or getattr(hb_model, "model_id", None)
+    )
     plan_model = (
-        agent._build_model(planning_cfg.model, heartbeat=True)
-        if planning_cfg.model
+        agent._build_model(plan_model_id, role="planning")
+        if plan_model_id
         else hb_model
     )
 

@@ -13,7 +13,8 @@ point.
 
 ```json
 {
-  "agent":         { ... },   // includes optional ``reasoning``
+  "agent":         { ... },   // model/reasoning optional when ``models`` is set
+  "models":        { ... },   // preferred: strong / light / optional mid
   "prompt_caching":{ ... },
   "heartbeat":     { ... },     // populated from modes.heartbeat
   "planning":      { ... },     // populated from modes.planning
@@ -35,16 +36,69 @@ You typically write `heartbeat` and `planning` *inside* the `modes` block
 (see [§ modes](#modes)); the loader hoists them into top-level
 `HeartbeatConfig` / `PlanningConfig` objects automatically.
 
+## `models`
+
+Configure two or three model bundles once; the harness picks a tier per role.
+
+```json
+"models": {
+  "strong": {
+    "id": "z-ai/glm-5.2",
+    "reasoning": { "effort": "medium" }
+  },
+  "light": {
+    "id": "xiaomi/mimo-v2.5",
+    "reasoning": { "effort": "none" }
+  },
+  "mid": {
+    "id": "moonshotai/kimi-k3"
+  }
+}
+```
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `strong` | ModelTierSpec | required | Main agent, planning, writer, executor, developer. |
+| `light` | ModelTierSpec | required | Preflight, research, reflector, extraction, utilities (compact / summarize / dream / refinement). |
+| `mid` | ModelTierSpec | none | Heartbeat when set; otherwise heartbeat uses `strong`. |
+
+Each tier spec:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | str | OpenRouter model id. |
+| `reasoning` | ReasoningConfig | Default reasoning for that tier. |
+| `openrouter_provider` | object | Optional per-tier provider routing overlay. |
+
+When `models` is set, the loader fills `agent.model`, `agent.reasoning`,
+`modes.heartbeat.model`, `modes.planning.model`, and
+`memory.extraction_model` if those fields are omitted. Explicit values
+always win. Per-subagent `model` / `reasoning` overrides still win over
+the role→tier map.
+
+Role → tier map (code-owned, not configurable):
+
+| Role | Tier |
+|------|------|
+| agent, planning, writer, executor, developer, planner | strong |
+| heartbeat | mid → strong |
+| preflight, research, reflector | light |
+| utility, extraction, refinement | light |
+
+Legacy configs without `models` keep working: set `agent.model`,
+`modes.heartbeat.model`, `memory.extraction_model`, and per-subagent
+models as before.
+
 ## `agent`
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `name` | str | required | Display name, also used in doc-store keys. |
-| `model` | str | required | Default OpenRouter model id. |
+| `model` | str | required\* | Default OpenRouter model id. \*Filled from `models.strong` when omitted. |
 | `workspace` | path | `./workspace` | Workspace directory. |
 | `org_id` | str | none | Ouro organization the agent operates in. Required when using teams. |
 | `sandbox` | SandboxConfig | see below | Selects the `run_python` execution backend. |
-| `reasoning` | ReasoningConfig | none | Default OpenRouter reasoning for the main agent model (see below). |
+| `reasoning` | ReasoningConfig | none | Default OpenRouter reasoning for the main agent model (see below). Filled from `models.strong.reasoning` when omitted. |
 
 `agent.team_id` is **not** supported anymore — teams are discovered at
 runtime. The loader raises if it sees one.
@@ -169,7 +223,7 @@ Hoisted from `modes.planning`.
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
 | `enabled` | bool | `false` | Master switch for the planning cycle. |
-| `model` | str | none | Planner model; falls back to `agent.model`. |
+| `model` | str | none | Planner model; falls back to `models` planning tier, then the heartbeat model. |
 | `cadence` | str | `1d` | How often a new plan quest may be published (per team; fires only once the work inbox drains). |
 | `review_window` | str | `2h` | How long a plan quest stays in `draft` before auto-approval. |
 | `auto_approve` | bool | `true` | Auto-open drafts after the review window with no feedback. |
@@ -255,7 +309,7 @@ Vector memory backend + dream (consolidation) policy.
 |-------|---------|-------|
 | `provider` | `mem0` | Only `mem0` is shipped. |
 | `path` | `./workspace/memory` | Local store directory. |
-| `extraction_model` | required | Cheap model used by mem0 to extract facts. |
+| `extraction_model` | required\* | Cheap model used by mem0 to extract facts. \*Filled from `models.light` when omitted. |
 | `embedder` | required | Embedding model id (e.g. `openai/text-embedding-3-small`). |
 | `search_limit` | 10 | Default top-K per `memory_recall` query (per-query `limit` overrides). |
 | `max_retrieval_tokens` | 4000 | Global soft cap (tokens) on a single `memory_recall`'s combined output. |
