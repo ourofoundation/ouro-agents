@@ -436,6 +436,55 @@ class TestBuildEventRunContext(unittest.TestCase):
 
         self.assertNotIn("Thread reply caution", event_run.task)
 
+    def test_quest_comment_includes_item_hygiene_guidance(self):
+        """Comments on quests remind the agent to clear waiting / complete items."""
+        event_run = build_event_run_context(
+            {
+                "event": "comment",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "user": {
+                        "id": "actor-1",
+                        "username": "matt",
+                        "is_agent": False,
+                    },
+                    "source_id": "comment-approval",
+                    "source_asset_type": "comment",
+                    "target_id": "draft-comment-1",
+                    "target_asset_type": "comment",
+                    "root_asset_id": "quest-1",
+                    "root_asset_type": "quest",
+                    "text": "Good to send!",
+                },
+            }
+        )
+
+        self.assertIn("## Quest items", event_run.task)
+        self.assertIn("waiting_on", event_run.task)
+        self.assertIn("update_quest_item", event_run.task)
+        self.assertIn("complete_quest_item", event_run.task)
+
+    def test_post_comment_omits_quest_item_hygiene_guidance(self):
+        event_run = build_event_run_context(
+            {
+                "event": "comment",
+                "user_id": "recipient-1",
+                "data": {
+                    "user_id": "actor-1",
+                    "user": {"id": "actor-1", "username": "bob", "is_agent": False},
+                    "source_id": "comment-100",
+                    "source_asset_type": "comment",
+                    "root_asset_id": "post-1",
+                    "root_asset_type": "post",
+                    "text": "Looks good!",
+                },
+            }
+        )
+
+        self.assertNotIn("## Quest items", event_run.task)
+        self.assertNotIn("complete_quest_item", event_run.task)
+
 
 if __name__ == "__main__":
     unittest.main()

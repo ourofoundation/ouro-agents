@@ -45,9 +45,9 @@ Each value maps to a built-in `ModeProfile`.
 ### `chat`
 Interactive, conversation-aware. Used both by the local `ouro-agents chat`
 CLI and by webhook chat events (`new-message`, `new-conversation`). Loads
-conversation state, preloads the Ouro hot-path tools, and runs the same
-preflight/post-reflection pipeline as autonomous runs (the trivial-message
-regex fast-paths greetings; reflection runs in the background and never
+conversation state, preloads the Ouro hot-path tools, and skips preflight
+for lower reply latency (the trivial-message regex still fast-paths
+greetings; post-run reflection still runs in the background and never
 delays the reply). Default `max_steps=20`.
 
 Delivery is the observer's job, not the mode's: for webhook events the

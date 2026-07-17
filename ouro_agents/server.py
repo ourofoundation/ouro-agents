@@ -25,6 +25,7 @@ from .logging_config import uvicorn_log_config
 from .observer import AgentObserver, CompositeAgentObserver, ProgressEvent
 from .provenance import resolve_event_provenance
 from .publisher import OuroReplyPublisher
+from .rate_limit import RATE_LIMIT_FAIL_MESSAGE, RATE_LIMIT_NOTE, is_rate_limit_error
 from .security.policy import (
     ActorRole,
     EventSurface,
@@ -403,7 +404,11 @@ class ServerAgentObserver(AgentObserver):
 
     def _last_substantial_intermediate(self) -> Optional[dict[str, Any]]:
         for entry in reversed(self._intermediate_messages):
-            if len(str(entry.get("text", "")).strip()) >= _MIN_PROMOTABLE_INTERMEDIATE_CHARS:
+            text = str(entry.get("text", "")).strip()
+            # Rate-limit status notes are not answers — never promote them.
+            if text == RATE_LIMIT_NOTE:
+                continue
+            if len(text) >= _MIN_PROMOTABLE_INTERMEDIATE_CHARS:
                 return entry
         return None
 
@@ -888,15 +893,29 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 message=None,
             )
         logger.info("Cancelled webhook event run: %s", event_run.event_type)
-    except Exception:
+    except Exception as exc:
         observer.on_activity("thinking", None, False)
         server_observer.discard_pending_intermediate()
         terminal_progress.fail("failed")
         if reply_publisher and is_chat_event(event_run.event_type):
+            fail_msg = None
+            if is_rate_limit_error(exc) and event_run.conversation_id:
+                try:
+                    fail_msg = _persist_rate_limit_fail_message(
+                        event_run,
+                        turn_id=turn_id,
+                        message_id=stream_message_id,
+                        seq=server_observer._seq_for_message(stream_message_id),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist rate-limit failure message",
+                        exc_info=True,
+                    )
             reply_publisher.emit_llm_response_end(
                 conversation_id=event_run.conversation_id,
                 message_id=stream_message_id,
-                message=None,
+                message=fail_msg,
             )
         logger.exception("Failed to process webhook event: %s", event_run.event_type)
     finally:
@@ -941,6 +960,30 @@ def _persist_interrupted_message(
         )
     except Exception:
         logger.warning("Failed to persist interrupted message", exc_info=True)
+
+
+def _persist_rate_limit_fail_message(
+    event_run: EventRunContext,
+    *,
+    turn_id: str,
+    message_id: str,
+    seq: int,
+) -> Optional[dict]:
+    """Persist a user-visible explanation when a chat turn dies on 429."""
+    if not reply_publisher or not event_run.conversation_id:
+        return None
+    ouro = reply_publisher.client
+    content = content_from_markdown(ouro, RATE_LIMIT_FAIL_MESSAGE)
+    return Messages(ouro).create(
+        event_run.conversation_id,
+        id=message_id,
+        turn_id=turn_id,
+        seq=seq,
+        type="message",
+        text=content.text,
+        json=content.json,
+        metadata={"turn_final": True, "rate_limited": True},
+    )
 
 
 async def _handle_interrupt_event(event_run: EventRunContext) -> None:

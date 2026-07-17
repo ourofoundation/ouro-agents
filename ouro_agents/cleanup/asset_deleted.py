@@ -45,7 +45,7 @@ _UUID_RE = re.compile(
 #     [label](service:UUID)
 #     [label](route:UUID)
 #     [label](asset:UUID)
-_ASSET_LINK_TYPES = ("post", "dataset", "file", "service", "route", "asset")
+_ASSET_LINK_TYPES = ("post", "dataset", "file", "service", "route", "quest", "asset")
 
 # Files we never touch even if they contain the UUID.
 _SWEEP_EXCLUDE_DIRS = {

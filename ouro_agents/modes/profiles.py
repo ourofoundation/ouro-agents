@@ -125,11 +125,10 @@ CHAT_EXCLUDED_TOOLS = [
 ]
 
 
-# Chat runs the same preflight/reflection pipeline as autonomous runs:
-# preflight classifies the message, recalls memory, and picks tools to
-# preload (the trivial-message regex still fast-paths greetings), and
-# post-run reflection curates memory in a background thread so it adds
-# no reply latency.
+# Chat skips preflight for lower reply latency. Hot-path tools are
+# preloaded statically; post-run reflection still curates memory in a
+# background thread so it adds no reply latency. The trivial-message
+# regex still fast-paths greetings.
 CHAT = ModeProfile(
     name="chat",
     framing=CHAT_FRAMING,
@@ -138,6 +137,7 @@ CHAT = ModeProfile(
     preload_tools=CHAT_HOTPATH_PRELOADS,
     excluded_tools=CHAT_EXCLUDED_TOOLS,
     conversational=True,
+    skip_preflight=True,
     load_conversation_state=True,
     include_chat_conversation_id=True,
     append_conversation_turns=False,

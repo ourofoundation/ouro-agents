@@ -12,7 +12,7 @@
   },
   "agent": {
     "name": "hermes",
-    "model": "moonshotai/kimi-k3",
+    "model": "z-ai/glm-5.2",
     "reasoning": {
       "effort": "medium"
     },
@@ -70,7 +70,7 @@
       "max_steps": 10
     },
     "writer": {
-      "model": "moonshotai/kimi-k3"
+      "model": "z-ai/glm-5.2"
     },
     "executor": {
       "max_steps": 24
@@ -82,7 +82,7 @@
   "modes": {
     "planning": {
       "enabled": true,
-      "model": "moonshotai/kimi-k3",
+      "model": "z-ai/glm-5.2",
       "max_steps": 20,
       "cadence": "6h",
       "min_heartbeats": 4,
@@ -94,7 +94,7 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "model": "moonshotai/kimi-k3",
+      "model": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "medium"
       },

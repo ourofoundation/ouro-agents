@@ -30,6 +30,13 @@ def test_rewrite_markdown_replaces_typed_link_with_label_and_marker():
     assert new == "see my dataset [deleted] for details\n"
 
 
+def test_rewrite_markdown_replaces_quest_typed_link():
+    body = f"track in [my quest](quest:{_UUID})\n"
+    new, edits = rewrite_markdown(body, _UUID)
+    assert edits == 1
+    assert new == "track in my quest [deleted]\n"
+
+
 def test_rewrite_markdown_handles_empty_link_label():
     body = f"orphan: [](post:{_UUID})\n"
     new, edits = rewrite_markdown(body, _UUID)

@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional, Sequence
 from smolagents import OpenAIModel
 
 from .provider_reasoning import active_model_id, attach_reasoning_from_raw_response
+from .rate_limit import NotifyingRetrying, RetryCallback
 
 logger = logging.getLogger(__name__)
 
@@ -485,24 +486,54 @@ class TrackedOpenAIModel(OpenAIModel):
         tracker: Optional[UsageTracker] = None,
         reasoning_callback: Optional[ReasoningCallback] = None,
         reasoning_stream_callback: Optional[ReasoningCallback] = None,
+        retry_callback: Optional[RetryCallback] = None,
         cache_breakpoints: bool = False,
         cache_ttl: str = "5m",
+        client_kwargs: Optional[dict] = None,
         **kwargs,
     ):
         self._tracker = tracker or UsageTracker()
         self._reasoning_callback = reasoning_callback
         self._reasoning_stream_callback = reasoning_stream_callback
+        self._retry_callback = retry_callback
         # When set, inject Anthropic-style ``cache_control`` markers into the
         # outgoing message content blocks. Needed for providers (Alibaba/Qwen)
         # that only honor explicit per-message breakpoints, not OpenRouter's
         # top-level ``cache_control`` field.
         self._cache_breakpoints = cache_breakpoints
         self._cache_ttl = cache_ttl
-        super().__init__(*args, **kwargs)
+        # Disable the OpenAI SDK's own retries so long rate-limit sleeps go
+        # through smolagents' Retrying (which we wrap for chat UX). Callers
+        # can still override via client_kwargs.
+        merged_client_kwargs = {"max_retries": 0, **(client_kwargs or {})}
+        super().__init__(*args, client_kwargs=merged_client_kwargs, **kwargs)
+        self._install_notifying_retryer()
 
     @property
     def tracker(self) -> UsageTracker:
         return self._tracker
+
+    @property
+    def retry_callback(self) -> Optional[RetryCallback]:
+        return self._retry_callback
+
+    @retry_callback.setter
+    def retry_callback(self, callback: Optional[RetryCallback]) -> None:
+        self._retry_callback = callback
+        retryer = getattr(self, "retryer", None)
+        if isinstance(retryer, NotifyingRetrying):
+            retryer.retry_callback = callback
+
+    def _install_notifying_retryer(self) -> None:
+        retryer = getattr(self, "retryer", None)
+        if retryer is None:
+            return
+        if isinstance(retryer, NotifyingRetrying):
+            retryer.retry_callback = self._retry_callback
+            return
+        self.retryer = NotifyingRetrying(
+            retryer, retry_callback=self._retry_callback
+        )
 
     def _prepare_completion_kwargs(self, *args, **kwargs):
         # Expose the model id to the globally patched ``get_clean_message_list``

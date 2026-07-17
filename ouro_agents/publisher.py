@@ -52,13 +52,37 @@ class OuroReplyPublisher:
 
     @contextmanager
     def realtime_session(self) -> Iterator[None]:
-        """Open a websocket for the duration of a block, refreshing the token first."""
+        """Open a websocket for the duration of a block, refreshing the token first.
+
+        Only falls back to a non-realtime body when *opening* the websocket
+        fails. Exceptions raised by the wrapped body (e.g. model 429s) must
+        propagate unchanged — catching them and yielding again triggers
+        ``RuntimeError: generator didn't stop after throw()`` and hides the
+        original error from the chat fail-path.
+        """
         self.client.ensure_valid_token()
         try:
-            with self.client.websocket.session():
+            session_cm = self.client.websocket.session()
+        except Exception:
+            log.warning(
+                "Websocket session failed — falling back to non-realtime",
+                exc_info=True,
+            )
+            yield
+            return
+
+        entered = False
+        try:
+            with session_cm:
+                entered = True
                 yield
         except Exception:
-            log.warning("Websocket session failed — falling back to non-realtime", exc_info=True)
+            if entered:
+                raise
+            log.warning(
+                "Websocket session failed — falling back to non-realtime",
+                exc_info=True,
+            )
             yield
 
     def _safe_emit(self, fn, **kwargs) -> None:

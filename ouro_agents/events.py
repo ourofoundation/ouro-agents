@@ -60,6 +60,20 @@ _THREAD_REPLY_CAUTION = (
     "Prefer silence over a redundant reply."
 )
 
+# Comments on quests often unblock parked work (approval to send, go-ahead on
+# a draft). Agents that only do the side effect and reply leave items stuck
+# on `waiting_on` — remind them to close the item loop.
+_QUEST_COMMENT_GUIDANCE = """\
+## Quest items
+
+This comment is on a quest. If it unblocks an item you parked with \
+`waiting_on` (e.g. approval to send an email), do the work **and** update \
+the item: clear waiting fields with `update_quest_item` (pass empty strings \
+for `waiting_on` / `waiting_until` / `waiting_check_every`) and call \
+`complete_quest_item` when the item's Done criteria are met. Do not stop at \
+the side effect and a reply while the item still says it is waiting. Use \
+`list_quest_items` if you need item ids."""
+
 _QUEST_FEEDBACK_PRELOADS: List[str] = [
     "ouro:get_comments",
     "ouro:write_comment",
@@ -324,6 +338,9 @@ def _default_comment_task(
         if event_type == "mention"
         else _COMMENT_ENGAGEMENT_GUIDANCE
     )
+
+    if ctx.root_asset_type == "quest":
+        parts.append(_QUEST_COMMENT_GUIDANCE)
 
     if ctx.is_thread_reply:
         parts.append(_THREAD_REPLY_CAUTION)

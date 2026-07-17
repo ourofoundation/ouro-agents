@@ -28,6 +28,7 @@ from .config import (
     merge_openrouter_provider,
     merge_reasoning,
 )
+from .constants import openrouter_attribution_headers
 from .display import OuroDisplay, create_logger, get_display
 from .memory import create_memory_backend
 from .memory.conversation_state import (
@@ -80,6 +81,11 @@ from .tools.python_tool import make_code_tools
 from .tools.run_history_tools import make_run_history_tools
 from .tools.scheduler_tools import make_scheduler_tools
 from .tools.skills_tools import make_load_skill_tool
+from .rate_limit import (
+    RATE_LIMIT_NOTE,
+    RATE_LIMIT_NOTE_MIN_DELAY_S,
+    format_rate_limit_activity,
+)
 from .usage import (
     MirroredUsageTracker,
     TrackedOpenAIModel,
@@ -848,6 +854,9 @@ class OuroAgent:
             reasoning_callback=get_display().reasoning,
             cache_breakpoints=explicit_cache,
             cache_ttl=cache_cfg.ttl,
+            client_kwargs={
+                "default_headers": openrouter_attribution_headers(),
+            },
             **model_kwargs,
         )
 
@@ -2423,6 +2432,39 @@ class OuroAgent:
             model._reasoning_callback = _composed_reasoning
             model._reasoning_stream_callback = observer.on_reasoning_stream
 
+        _patched_retry_callback = False
+        _original_retry_callback = None
+        if observer and hasattr(model, "retry_callback"):
+            _patched_retry_callback = True
+            _original_retry_callback = getattr(model, "retry_callback", None)
+            rate_limit_note_sent = False
+            model_label = getattr(model, "model_id", "") or ""
+
+            def _on_provider_retry(
+                exc: BaseException, delay_s: float, attempt: int
+            ) -> None:
+                nonlocal rate_limit_note_sent
+                activity = format_rate_limit_activity(model_label, delay_s)
+                try:
+                    observer.on_activity("thinking", activity, True)
+                except Exception:
+                    logger.warning(
+                        "Failed to emit rate-limit activity update", exc_info=True
+                    )
+                if (
+                    delay_s >= RATE_LIMIT_NOTE_MIN_DELAY_S
+                    and not rate_limit_note_sent
+                ):
+                    rate_limit_note_sent = True
+                    try:
+                        observer.on_intermediate_end(uuid7_str(), RATE_LIMIT_NOTE)
+                    except Exception:
+                        logger.warning(
+                            "Failed to persist rate-limit note", exc_info=True
+                        )
+
+            model.retry_callback = _on_provider_retry
+
         if not preserve_existing_usage:
             self.reset_usage_tracking()
         run_id = conversation_id or f"run_{uuid4().hex[:12]}"
@@ -2941,6 +2983,8 @@ class OuroAgent:
         if _patched_reasoning_callbacks:
             model._reasoning_callback = _original_reasoning_cb
             model._reasoning_stream_callback = _original_reasoning_stream_cb
+        if _patched_retry_callback and hasattr(model, "retry_callback"):
+            model.retry_callback = _original_retry_callback
 
         return str(result)
 

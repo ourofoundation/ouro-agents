@@ -103,6 +103,24 @@ class TestModelProviderOverrides(unittest.TestCase):
 
         self.assertNotIn("tool_choice", tracked_model.call_args.kwargs)
 
+    def test_build_model_passes_openrouter_attribution_headers(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-4.1-mini")
+
+        client_kwargs = tracked_model.call_args.kwargs["client_kwargs"]
+        headers = client_kwargs["default_headers"]
+        self.assertEqual(headers["HTTP-Referer"], "https://ouro.foundation")
+        self.assertEqual(headers["X-OpenRouter-Title"], "Ouro")
+        self.assertEqual(
+            headers["X-OpenRouter-Categories"], "personal-agent,cloud-agent"
+        )
+
     def test_global_openrouter_provider_is_passed_in_extra_body(self):
         agent = self._make_agent(
             openrouter_provider={"ignore": ["Parasail"], "allow_fallbacks": True},

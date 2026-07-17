@@ -41,10 +41,10 @@ def test_chat_mode_is_conversational_and_work_modes_are_not():
     assert AUTONOMOUS.conversational is False
 
 
-def test_chat_mode_runs_preflight_and_post_reflection():
-    # Chat shares the full preflight/reflection pipeline with autonomous runs;
-    # only lightweight background modes (heartbeat/plan/review) skip it.
-    assert CHAT.skip_preflight is False
+def test_chat_mode_skips_preflight_keeps_post_reflection():
+    # Chat skips preflight for reply latency; reflection still runs in
+    # the background after the reply is sent.
+    assert CHAT.skip_preflight is True
     assert CHAT.skip_post_reflection is False
 
 
