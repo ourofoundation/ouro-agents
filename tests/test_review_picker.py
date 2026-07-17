@@ -11,14 +11,14 @@ class TestReviewPicker(unittest.TestCase):
                 "name": "Ship the sync flow",
                 "status": "draft",
                 "items_total": 1,
-                "items_done": 0,
+                "items_resolved": 0,
             },
             {
                 "id": "quest-goal",
                 "name": "Review the materialized graph sync flow",
                 "status": "open",
                 "items_total": 2,
-                "items_done": 1,
+                "items_resolved": 1,
             },
             {
                 "id": "quest-closed",
@@ -36,7 +36,7 @@ class TestReviewPicker(unittest.TestCase):
             options[1].title,
             "Review the materialized graph sync flow",
         )
-        self.assertIn("1/2 complete", options[1].subtitle)
+        self.assertIn("1/2 resolved", options[1].subtitle)
 
     def test_choose_review_plan_short_circuits_for_single_quest(self):
         selected = choose_review_plan(

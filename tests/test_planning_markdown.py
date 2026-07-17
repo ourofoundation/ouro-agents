@@ -252,7 +252,7 @@ def test_build_previous_quest_context_summarizes_outcome():
     )
 
     assert "## Previous Plan Outcome" in context
-    assert "1/2 items completed" in context
+    assert "1/2 items resolved" in context
     assert "Unfinished thread" in context
     assert "Do NOT copy them into this plan" in context
 

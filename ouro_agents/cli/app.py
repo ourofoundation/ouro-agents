@@ -722,7 +722,7 @@ class OuroApp(App[None]):
     def _render_quest_detail(self, quest: dict[str, Any]) -> str:
         total = int(quest.get("items_total") or 0)
         progress = (
-            f"{quest.get('items_done', 0)}/{total} items complete"
+            f"{quest.get('items_resolved', 0)}/{total} items resolved"
             if total
             else "no items"
         )

@@ -24,7 +24,7 @@ def build_review_plan_options(quests: list[dict[str, Any]]) -> list[ReviewPlanOp
         title = _truncate(quest.get("name") or "Untitled quest", 72)
         total = int(quest.get("items_total") or 0)
         progress = (
-            f"{quest.get('items_done', 0)}/{total} complete"
+            f"{quest.get('items_resolved', 0)}/{total} resolved"
             if total
             else "no task items"
         )

@@ -336,7 +336,7 @@ def collect_quest_outcome(
         "name": str(read_field(quest, "name") or "Untitled"),
         "status": quest_status(quest) or "unknown",
         "created_at": str(read_field(quest, "created_at") or "")[:10],
-        "items_done": done,
+        "items_resolved": done,
         "items_total": len(items),
         "produced_asset_ids": produced_ids,
         "metrics": totals,
@@ -348,7 +348,7 @@ def format_outcome_line(outcome: dict[str, Any]) -> str:
     return (
         f"- {outcome.get('name')} "
         f"({outcome.get('status')}, {outcome.get('created_at') or 'unknown date'}): "
-        f"items {outcome.get('items_done')}/{outcome.get('items_total')} done — "
+        f"items {outcome.get('items_resolved')}/{outcome.get('items_total')} resolved — "
         f"{m.get('external_comments', 0)} external comments, "
         f"{m.get('external_reactions', 0)} external reactions, "
         f"{m.get('quality_views', 0)} quality views, "

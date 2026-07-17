@@ -13,7 +13,7 @@ def _quest_progress(quest: dict[str, Any]) -> str:
     total = int(quest.get("items_total") or 0)
     if not total:
         return "no items"
-    return f"{quest.get('items_done', 0)}/{total}"
+    return f"{quest.get('items_resolved', 0)}/{total}"
 
 
 class QuestItem(ListItem):

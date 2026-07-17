@@ -458,7 +458,7 @@ def build_previous_quest_context(ouro_client, quest_id: str) -> str:
         "## Previous Plan Outcome",
         f"Quest `{quest_id}` — {read_field(quest, 'name') or 'Untitled'} "
         f"(status: {quest_status(quest) or 'unknown'}); "
-        f"{done}/{len(items)} items completed.",
+        f"{done}/{len(items)} items resolved.",
     ]
     description = quest_description_text(quest)
     if description:
@@ -586,7 +586,7 @@ def build_quest_history_context(
             f"- `{quest_id}` — {name} [{status}] "
             f"({created or 'unknown date'}"
             f"{f', team {team_id[:8]}' if team_id else ''}; "
-            f"{done}/{len(items)} done): {items_line}"
+            f"{done}/{len(items)} resolved): {items_line}"
         )
     if len(lines) <= 2:
         return ""
@@ -1346,7 +1346,7 @@ def find_reviewable_quests(
                 "status": status,
                 "team_id": str(read_field(quest, "team_id") or ""),
                 "items_total": len(items),
-                "items_done": done,
+                "items_resolved": done,
             }
         )
         if len(reviewable) >= limit:

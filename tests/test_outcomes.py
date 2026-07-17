@@ -15,7 +15,7 @@ def test_format_outcome_line_includes_external_metrics():
             "name": "Cycle 22",
             "status": "closed",
             "created_at": "2026-07-11",
-            "items_done": 4,
+            "items_resolved": 4,
             "items_total": 4,
             "produced_asset_ids": ["a1"],
             "metrics": {
@@ -28,7 +28,7 @@ def test_format_outcome_line_includes_external_metrics():
         }
     )
     assert "Cycle 22" in line
-    assert "4/4 done" in line
+    assert "4/4 resolved" in line
     assert "0 external comments" in line
     assert "14 quality views" in line
 
@@ -67,7 +67,7 @@ def test_collect_quest_outcome_uses_notes_asset_ids_and_counts_fallback():
     )
 
     outcome = collect_quest_outcome(ouro, quest, owner_user_id="owner-1")
-    assert outcome["items_done"] == 1
+    assert outcome["items_resolved"] == 1
     assert "019f4c4e-73f2-7dcb-a0a9-daf9840b712e" in outcome["produced_asset_ids"]
     assert outcome["metrics"]["views"] == 10
     assert outcome["metrics"]["external_comments"] == 1
