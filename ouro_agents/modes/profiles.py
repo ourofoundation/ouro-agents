@@ -98,19 +98,6 @@ AUTONOMOUS_ACTION_PRELOADS = [
     "ouro:get_action",
 ]
 
-# The org/team membership the discovery tools return is already in the platform
-# context, so preloading them wastes the slot. Preload the genuine hot path
-# instead: find things, inspect them, run a route and read its result, and the
-# single most common chat side-effect (replying with a comment). Anything heavier
-# or rarer (create_post, query_dataset, dataset views) stays one load_tool away.
-CHAT_HOTPATH_PRELOADS = [
-    "ouro:search_assets",
-    "ouro:get_asset",
-    "ouro:execute_route",
-    "ouro:get_action",
-    "ouro:write_comment",
-]
-
 # Chat runs ARE the conversation: the host injects history and posts the
 # final reply, so platform messaging tools are pure foot-guns there
 # (double-posting, reading the conversation it's already in). Removing them
@@ -125,16 +112,17 @@ CHAT_EXCLUDED_TOOLS = [
 ]
 
 
-# Chat skips preflight for lower reply latency. Hot-path tools are
-# preloaded statically; post-run reflection still curates memory in a
-# background thread so it adds no reply latency. The trivial-message
-# regex still fast-paths greetings.
+# Chat skips preflight for lower reply latency. No tools are preloaded:
+# most chat turns are conversational and need zero tools, so preloads only
+# added directory noise and prompt tokens. Everything stays one load_tool
+# away. Post-run reflection still curates memory in a background thread so
+# it adds no reply latency. The trivial-message regex still fast-paths
+# greetings.
 CHAT = ModeProfile(
     name="chat",
     framing=CHAT_FRAMING,
     output_format=CHAT_OUTPUT,
     max_steps=20,
-    preload_tools=CHAT_HOTPATH_PRELOADS,
     excluded_tools=CHAT_EXCLUDED_TOOLS,
     conversational=True,
     skip_preflight=True,

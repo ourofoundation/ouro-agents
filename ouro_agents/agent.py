@@ -863,7 +863,14 @@ class OuroAgent:
         model_id: str,
         *,
         reasoning: Optional[ReasoningConfig] = None,
+        conversational: bool = False,
     ) -> Optional[str]:
+        # Conversational (chat) runs must be free to answer a casual message
+        # with plain content and no tool call. smolagents' default
+        # `tool_choice="required"` forces a pointless tool call on every step
+        # of a greeting, so chat always uses `auto`.
+        if conversational:
+            return "auto"
         # Some upstream providers reject smolagents' default `tool_choice="required"`:
         #   - MiniMax routes return a 400 outright.
         #   - DeepSeek's own "DeepSeek" provider serves reasoning-enabled models
@@ -898,6 +905,7 @@ class OuroAgent:
         heartbeat: bool = False,
         role: Optional[str] = None,
         usage_tracker: Optional[UsageTracker] = None,
+        conversational: bool = False,
     ) -> TrackedOpenAIModel:
         model_kwargs = {}
         resolved = (
@@ -917,7 +925,9 @@ class OuroAgent:
         extra_body = self._build_openrouter_extra_body(model_id, resolved, provider)
         if extra_body:
             model_kwargs["extra_body"] = extra_body
-        tool_choice = self._default_tool_choice(model_id, reasoning=resolved)
+        tool_choice = self._default_tool_choice(
+            model_id, reasoning=resolved, conversational=conversational
+        )
         if tool_choice is not None:
             model_kwargs["tool_choice"] = tool_choice
 
@@ -2486,7 +2496,10 @@ class OuroAgent:
         token.raise_if_cancelled()
         run_started_at = time.monotonic()
         self.connect_mcp()
-        model = model_override or self._build_model(self.config.agent.model)
+        model = model_override or self._build_model(
+            self.config.agent.model,
+            conversational=resolve_mode_profile(mode).conversational,
+        )
         record.model = model.model_id if hasattr(model, "model_id") else str(model)
         record._model_obj = model
         active_doc_store = self._resolve_doc_store(team_id=team_id)

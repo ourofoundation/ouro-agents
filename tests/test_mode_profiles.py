@@ -2,7 +2,6 @@ from ouro_agents.modes.profiles import (
     AUTONOMOUS,
     AUTONOMOUS_ACTION_PRELOADS,
     CHAT,
-    CHAT_HOTPATH_PRELOADS,
     RunMode,
     apply_capability_envelope,
     resolve_mode_profile,
@@ -25,15 +24,11 @@ def test_chat_mode_keeps_subagents_available_for_explicit_work():
     assert resolve_mode_profile(RunMode.CHAT).allow_delegation is True
 
 
-def test_chat_mode_preloads_hotpath_tools():
-    assert CHAT.preload_tools == CHAT_HOTPATH_PRELOADS
-    assert resolve_mode_profile(RunMode.CHAT).preload_tools == [
-        "ouro:search_assets",
-        "ouro:get_asset",
-        "ouro:execute_route",
-        "ouro:get_action",
-        "ouro:write_comment",
-    ]
+def test_chat_mode_preloads_nothing():
+    # Most chat turns are conversational and need zero tools; everything
+    # stays one load_tool away.
+    assert CHAT.preload_tools == []
+    assert resolve_mode_profile(RunMode.CHAT).preload_tools == []
 
 
 def test_chat_mode_is_conversational_and_work_modes_are_not():

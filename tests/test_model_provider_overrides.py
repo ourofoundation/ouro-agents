@@ -91,6 +91,33 @@ class TestModelProviderOverrides(unittest.TestCase):
 
         self.assertEqual(tracked_model.call_args.kwargs["tool_choice"], "auto")
 
+    def test_conversational_runs_always_use_auto_tool_choice(self):
+        # Chat must be free to answer a casual message with plain content;
+        # smolagents' default tool_choice="required" forces pointless tool
+        # calls on greetings.
+        agent = self._make_agent()
+
+        self.assertEqual(
+            agent._default_tool_choice("openai/gpt-4.1-mini", conversational=True),
+            "auto",
+        )
+        self.assertEqual(
+            agent._default_tool_choice("moonshotai/kimi-k3", conversational=True),
+            "auto",
+        )
+
+    def test_build_model_passes_auto_tool_choice_for_conversational(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-4.1-mini", conversational=True)
+
+        self.assertEqual(tracked_model.call_args.kwargs["tool_choice"], "auto")
+
     def test_build_model_leaves_other_models_on_default_tool_choice(self):
         agent = self._make_agent()
 

@@ -133,4 +133,6 @@ Some providers reject smolagents' default `tool_choice="required"`.
 `OuroAgent._default_tool_choice` falls back to `auto` for known
 exceptions (MiniMax, DeepSeek, and Qwen when OpenRouter reasoning/thinking
 is enabled). Add another model-id prefix in that helper if you find a new
-one.
+one. Conversational (chat) runs always use `auto` regardless of model, so
+the agent can answer a casual message without being forced into a tool
+call.
