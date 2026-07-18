@@ -121,10 +121,7 @@
     "enabled": true,
     "events": {
       "new-message": {
-        "enabled": true,
-        "settle_seconds": 2,
-        "jitter_seconds": 3,
-        "max_wait_seconds": 8
+        "enabled": false
       },
       "comment": {
         "enabled": true,

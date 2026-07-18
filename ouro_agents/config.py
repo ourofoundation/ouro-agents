@@ -328,7 +328,9 @@ class EventPoolTimingConfig(BaseModel):
 
 def _default_event_pool_events() -> Dict[str, EventPoolTimingConfig]:
     return {
+        # Chat must stay snappy: no settle/jitter before the reply starts.
         "new-message": EventPoolTimingConfig(
+            enabled=False,
             settle_seconds=2.0,
             jitter_seconds=3.0,
             max_wait_seconds=8.0,

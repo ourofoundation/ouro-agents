@@ -195,6 +195,7 @@ class TestConfigModeOverrides(unittest.TestCase):
         config = self._load_config(_base_config())
 
         self.assertTrue(config.event_pooling.enabled)
+        self.assertFalse(config.event_pooling.events["new-message"].enabled)
         self.assertEqual(
             config.event_pooling.events["new-message"].settle_seconds,
             2.0,

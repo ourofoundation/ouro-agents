@@ -53,8 +53,8 @@ Every webhook is parsed into an `EventRunContext`
 
 Each event spec carries a `pool_key_fn`. Two strategies ship today:
 
-- `_conversation_pool_key` — keys on conversation id; bursts of chat
-  messages collapse into one run per conversation.
+- `_conversation_pool_key` — keys on conversation id (available if chat
+  pooling is re-enabled; off by default for reply latency).
 - `_thread_pool_key` — keys on the thread (or root asset) id so a flurry
   of comments on the same post is handled once.
 

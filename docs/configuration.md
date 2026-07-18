@@ -355,12 +355,15 @@ agent's local time.
 "event_pooling": {
   "enabled": true,
   "events": {
-    "new-message": { "settle_seconds": 2.0,  "jitter_seconds": 3.0,  "max_wait_seconds": 8.0  },
+    "new-message": { "enabled": false },
     "comment":     { "settle_seconds": 20.0, "jitter_seconds": 20.0, "max_wait_seconds": 90.0 },
     "mention":     { "settle_seconds": 20.0, "jitter_seconds": 20.0, "max_wait_seconds": 90.0 }
   }
 }
 ```
+
+Chat (`new-message`) pooling is off by default so replies start immediately.
+Comment/mention bursts still debounce.
 
 Per-event timing config (`EventPoolTimingConfig`):
 
