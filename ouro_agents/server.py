@@ -25,7 +25,11 @@ from .logging_config import uvicorn_log_config
 from .observer import AgentObserver, CompositeAgentObserver, ProgressEvent
 from .provenance import resolve_event_provenance
 from .publisher import OuroReplyPublisher
-from .rate_limit import RATE_LIMIT_FAIL_MESSAGE, RATE_LIMIT_NOTE, is_rate_limit_error
+from .provider_errors import (
+    RATE_LIMIT_FAIL_MESSAGE,
+    RATE_LIMIT_NOTE,
+    provider_fail_reply,
+)
 from .security.policy import (
     ActorRole,
     EventSurface,
@@ -897,19 +901,22 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         observer.on_activity("thinking", None, False)
         server_observer.discard_pending_intermediate()
         terminal_progress.fail("failed")
+        fail_reply = provider_fail_reply(exc)
         if reply_publisher and is_chat_event(event_run.event_type):
             fail_msg = None
-            if is_rate_limit_error(exc) and event_run.conversation_id:
+            if fail_reply and event_run.conversation_id:
                 try:
-                    fail_msg = _persist_rate_limit_fail_message(
+                    fail_msg = _persist_provider_fail_message(
                         event_run,
                         turn_id=turn_id,
                         message_id=stream_message_id,
                         seq=server_observer._seq_for_message(stream_message_id),
+                        text=fail_reply[0],
+                        metadata=fail_reply[1],
                     )
                 except Exception:
                     logger.warning(
-                        "Failed to persist rate-limit failure message",
+                        "Failed to persist provider failure message",
                         exc_info=True,
                     )
             reply_publisher.emit_llm_response_end(
@@ -917,6 +924,14 @@ async def _run_event_task(event_run: EventRunContext) -> None:
                 message_id=stream_message_id,
                 message=fail_msg,
             )
+        elif fail_reply and event_run.event_type in {"comment", "mention"}:
+            try:
+                _persist_provider_fail_comment(event_run, text=fail_reply[0])
+            except Exception:
+                logger.warning(
+                    "Failed to persist provider failure comment",
+                    exc_info=True,
+                )
         logger.exception("Failed to process webhook event: %s", event_run.event_type)
     finally:
         if (
@@ -962,18 +977,20 @@ def _persist_interrupted_message(
         logger.warning("Failed to persist interrupted message", exc_info=True)
 
 
-def _persist_rate_limit_fail_message(
+def _persist_provider_fail_message(
     event_run: EventRunContext,
     *,
     turn_id: str,
     message_id: str,
     seq: int,
+    text: str,
+    metadata: dict[str, Any],
 ) -> Optional[dict]:
-    """Persist a user-visible explanation when a chat turn dies on 429."""
+    """Persist a user-visible explanation when a chat turn dies on a provider error."""
     if not reply_publisher or not event_run.conversation_id:
         return None
     ouro = reply_publisher.client
-    content = content_from_markdown(ouro, RATE_LIMIT_FAIL_MESSAGE)
+    content = content_from_markdown(ouro, text)
     return Messages(ouro).create(
         event_run.conversation_id,
         id=message_id,
@@ -982,8 +999,42 @@ def _persist_rate_limit_fail_message(
         type="message",
         text=content.text,
         json=content.json,
+        metadata=metadata,
+    )
+
+
+def _persist_rate_limit_fail_message(
+    event_run: EventRunContext,
+    *,
+    turn_id: str,
+    message_id: str,
+    seq: int,
+) -> Optional[dict]:
+    """Persist a user-visible explanation when a chat turn dies on 429."""
+    return _persist_provider_fail_message(
+        event_run,
+        turn_id=turn_id,
+        message_id=message_id,
+        seq=seq,
+        text=RATE_LIMIT_FAIL_MESSAGE,
         metadata={"turn_final": True, "rate_limited": True},
     )
+
+
+def _persist_provider_fail_comment(
+    event_run: EventRunContext,
+    *,
+    text: str,
+) -> None:
+    """Leave a short comment when a comment/mention run dies on a provider error."""
+    if not reply_publisher:
+        return
+    parent_id = event_run.reply_parent_id or event_run.source_id
+    if not parent_id:
+        return
+    ouro = reply_publisher.client
+    content = content_from_markdown(ouro, text)
+    ouro.comments.create(content=content, parent_id=parent_id)
 
 
 async def _handle_interrupt_event(event_run: EventRunContext) -> None:

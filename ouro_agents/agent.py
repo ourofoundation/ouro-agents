@@ -83,7 +83,7 @@ from .tools.python_tool import make_code_tools
 from .tools.run_history_tools import make_run_history_tools
 from .tools.scheduler_tools import make_scheduler_tools
 from .tools.skills_tools import make_load_skill_tool
-from .rate_limit import (
+from .provider_errors import (
     RATE_LIMIT_NOTE,
     RATE_LIMIT_NOTE_MIN_DELAY_S,
     format_rate_limit_activity,

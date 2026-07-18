@@ -42,7 +42,7 @@
   },
   "models": {
     "strong": {
-      "id": "z-ai/glm-5.2",
+      "id": "google/gemini-2.5-flash",
       "reasoning": {
         "effort": "high"
       }

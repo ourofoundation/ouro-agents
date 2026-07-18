@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional, Sequence
 from smolagents import OpenAIModel
 
 from .provider_reasoning import active_model_id, attach_reasoning_from_raw_response
-from .rate_limit import NotifyingRetrying, RetryCallback
+from .provider_errors import NotifyingRetrying, RetryCallback
 
 logger = logging.getLogger(__name__)
 

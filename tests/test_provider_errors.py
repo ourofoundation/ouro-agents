@@ -1,4 +1,4 @@
-"""Tests for provider rate-limit detection, retry UX, and chat fail messaging."""
+"""Tests for provider rate-limit / credit detection, retry UX, and chat fail messaging."""
 
 from __future__ import annotations
 
@@ -9,18 +9,22 @@ import pytest
 
 from ouro_agents.config import RunMode
 from ouro_agents.events import EventRunContext
-from ouro_agents.rate_limit import (
+from ouro_agents.provider_errors import (
+    CREDIT_FAIL_MESSAGE,
     RATE_LIMIT_FAIL_MESSAGE,
     RATE_LIMIT_NOTE,
     RATE_LIMIT_NOTE_MIN_DELAY_S,
     NotifyingRetrying,
     format_rate_limit_activity,
+    is_credit_error,
     is_rate_limit_error,
     parse_retry_after_seconds,
+    provider_fail_reply,
     resolve_retry_delay,
 )
 from ouro_agents.server import (
     ServerAgentObserver,
+    _persist_provider_fail_comment,
     _persist_rate_limit_fail_message,
 )
 from ouro_agents.usage import TrackedOpenAIModel
@@ -34,6 +38,40 @@ def test_is_rate_limit_error_detects_429_and_message():
     exc = Exception("boom")
     exc.status_code = 429  # type: ignore[attr-defined]
     assert is_rate_limit_error(exc)
+
+
+def test_is_credit_error_detects_402_and_message():
+    openrouter_402 = Exception(
+        "Error code: 402 - {'error': {'message': 'This request requires more credits, or "
+        "fewer max_tokens. You requested up to 65536 tokens, but can only afford 13639.', "
+        "'code': 402}}"
+    )
+    assert is_credit_error(openrouter_402)
+    assert is_credit_error(Exception("Error code: 402 - insufficient credits"))
+    assert is_credit_error(Exception("can only afford 100 tokens"))
+    assert not is_credit_error(Exception("timeout connecting"))
+    assert not is_credit_error(Exception("Error code: 429 - rate limited"))
+
+    exc = Exception("payment required")
+    exc.status_code = 402  # type: ignore[attr-defined]
+    assert is_credit_error(exc)
+
+    # Credit errors must not be mistaken for retryable rate limits.
+    assert not is_rate_limit_error(openrouter_402)
+
+
+def test_provider_fail_reply_prefers_credit_over_rate_limit():
+    credit = provider_fail_reply(Exception("Error code: 402 - requires more credits"))
+    assert credit is not None
+    assert credit[0] == CREDIT_FAIL_MESSAGE
+    assert credit[1]["credit_exhausted"] is True
+
+    rate = provider_fail_reply(Exception("Error code: 429 - rate limited"))
+    assert rate is not None
+    assert rate[0] == RATE_LIMIT_FAIL_MESSAGE
+    assert rate[1]["rate_limited"] is True
+
+    assert provider_fail_reply(Exception("timeout")) is None
 
 
 def test_parse_retry_after_from_message_and_headers():
@@ -65,6 +103,13 @@ def test_is_rate_limit_error_walks_cause_chain():
     wrapped = RuntimeError("generator didn't stop after throw()")
     wrapped.__cause__ = root
     assert is_rate_limit_error(wrapped)
+
+
+def test_is_credit_error_walks_cause_chain():
+    root = Exception("Error code: 402 - requires more credits")
+    wrapped = RuntimeError("generator didn't stop after throw()")
+    wrapped.__cause__ = root
+    assert is_credit_error(wrapped)
 
 
 def test_format_rate_limit_activity():
@@ -162,8 +207,8 @@ def test_tracked_openai_model_disables_sdk_retries_and_wraps_retryer():
     assert len(seen) == 1
 
 
-def _event_run() -> EventRunContext:
-    return EventRunContext(
+def _event_run(**overrides) -> EventRunContext:
+    base = dict(
         event_type="new-message",
         task="hello",
         conversation_id="conv-1",
@@ -181,6 +226,8 @@ def _event_run() -> EventRunContext:
         provenance=None,
         trigger_turn_id=None,
     )
+    base.update(overrides)
+    return EventRunContext(**base)
 
 
 def test_rate_limit_note_not_promoted_as_final_answer():
@@ -259,6 +306,28 @@ def test_persist_rate_limit_fail_message():
     assert kwargs["metadata"]["rate_limited"] is True
     assert kwargs["metadata"]["turn_final"] is True
     assert kwargs["text"] == RATE_LIMIT_FAIL_MESSAGE
+
+
+def test_persist_credit_fail_comment():
+    publisher = MagicMock()
+    content = SimpleNamespace(text=CREDIT_FAIL_MESSAGE, json={"type": "doc"})
+    with (
+        patch("ouro_agents.server.reply_publisher", publisher),
+        patch("ouro_agents.server.content_from_markdown", return_value=content) as md,
+    ):
+        _persist_provider_fail_comment(
+            _event_run(
+                event_type="comment",
+                conversation_id=None,
+                reply_parent_id="parent-1",
+                mode=RunMode.AUTONOMOUS,
+            ),
+            text=CREDIT_FAIL_MESSAGE,
+        )
+    md.assert_called_once_with(publisher.client, CREDIT_FAIL_MESSAGE)
+    publisher.client.comments.create.assert_called_once_with(
+        content=content, parent_id="parent-1"
+    )
 
 
 def test_realtime_session_propagates_body_errors():

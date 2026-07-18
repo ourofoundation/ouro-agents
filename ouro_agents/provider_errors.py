@@ -1,4 +1,4 @@
-"""Shared helpers for provider rate-limit detection and chat UX."""
+"""Shared helpers for provider error detection and chat UX."""
 
 from __future__ import annotations
 
@@ -20,12 +20,19 @@ RATE_LIMIT_NOTE_MIN_DELAY_S = 15.0
 MIN_RATE_LIMIT_SLEEP_S = 15.0
 
 RATE_LIMIT_NOTE = (
-    "Hit a provider rate limit — retrying, this may take a couple of minutes."
+    "Hit a provider rate limit. Retrying, this may take a couple of minutes."
 )
 
 RATE_LIMIT_FAIL_MESSAGE = (
-    "Couldn't get a response — the model provider is rate-limiting right now. "
+    "Couldn't get a response. The model provider is rate-limiting right now. "
     "Try again in a bit."
+)
+
+# OpenRouter 402: account can't afford the requested max_tokens / generation.
+# Not retryable; credits need topping up (or max_tokens lowered).
+CREDIT_FAIL_MESSAGE = (
+    "Couldn't get a response. The model provider is out of credits right now. "
+    "Try again later."
 )
 
 _RETRY_AFTER_RE = re.compile(
@@ -34,16 +41,19 @@ _RETRY_AFTER_RE = re.compile(
 )
 
 
-def is_rate_limit_error(exc: BaseException) -> bool:
-    """Return True when *exc* (or its cause chain) looks like a 429 / rate-limit."""
+def _walk_exception_chain(exc: BaseException):
+    """Yield *exc* and each cause/context, without looping."""
     seen: set[int] = set()
     current: Optional[BaseException] = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if _is_rate_limit_error_one(current):
-            return True
+        yield current
         current = current.__cause__ or current.__context__
-    return False
+
+
+def is_rate_limit_error(exc: BaseException) -> bool:
+    """Return True when *exc* (or its cause chain) looks like a 429 / rate-limit."""
+    return any(_is_rate_limit_error_one(current) for current in _walk_exception_chain(exc))
 
 
 def _is_rate_limit_error_one(exc: BaseException) -> bool:
@@ -63,6 +73,47 @@ def _is_rate_limit_error_one(exc: BaseException) -> bool:
     if response is not None and getattr(response, "status_code", None) == 429:
         return True
     return False
+
+
+def is_credit_error(exc: BaseException) -> bool:
+    """Return True when *exc* looks like OpenRouter 402 / insufficient credits.
+
+    Distinct from rate limits: these are not retryable. The operator must add
+    credits (or lower max_tokens) before the next request can succeed.
+    """
+    return any(_is_credit_error_one(current) for current in _walk_exception_chain(exc))
+
+
+def _is_credit_error_one(exc: BaseException) -> bool:
+    error_str = str(exc).lower()
+    if (
+        "requires more credits" in error_str
+        or "insufficient credits" in error_str
+        or "can only afford" in error_str
+        or "out of credits" in error_str
+        or ("402" in error_str and "credit" in error_str)
+    ):
+        return True
+    status = getattr(exc, "status_code", None)
+    if status == 402:
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 402:
+        return True
+    # OpenAI SDK PaymentRequiredError / similar — code attribute.
+    code = getattr(exc, "code", None)
+    if code in (402, "402"):
+        return True
+    return False
+
+
+def provider_fail_reply(exc: BaseException) -> Optional[tuple[str, dict[str, Any]]]:
+    """Return ``(message, metadata)`` for a known provider failure, else None."""
+    if is_credit_error(exc):
+        return CREDIT_FAIL_MESSAGE, {"turn_final": True, "credit_exhausted": True}
+    if is_rate_limit_error(exc):
+        return RATE_LIMIT_FAIL_MESSAGE, {"turn_final": True, "rate_limited": True}
+    return None
 
 
 def parse_retry_after_seconds(exc: BaseException) -> Optional[float]:
@@ -133,7 +184,7 @@ def format_rate_limit_activity(model_id: str, delay_s: float) -> str:
         wait = f"~{int(round(delay_s))}s"
     else:
         wait = "momentarily"
-    return f"Rate-limited on {model}, retrying in {wait}…"
+    return f"Rate-limited on {model}, retrying in {wait}..."
 
 
 class NotifyingRetrying:
