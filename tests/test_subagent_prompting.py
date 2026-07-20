@@ -11,6 +11,7 @@ from ouro_agents.subagents.profiles import (
     EXECUTOR,
     PREFLIGHT,
     RESEARCH,
+    SEARCH,
     WRITER,
 )
 from ouro_agents.subagents.runner import _format_task_context
@@ -177,9 +178,11 @@ def test_preflight_profiles_only_allow_memory_recall():
     assert "soul" not in PREFLIGHT.shared_context_sections
 
 
-def test_heartbeat_framing_does_not_require_unavailable_delegate_tool():
+def test_heartbeat_framing_points_at_search_delegation():
+    assert "`search`" in HEARTBEAT_FRAMING
+    assert "`research`" in HEARTBEAT_FRAMING
     assert "writer subagent" not in HEARTBEAT_FRAMING
-    assert "Delegate to" not in HEARTBEAT_FRAMING
+    assert "Do not invent a second plan" in HEARTBEAT_FRAMING
 
 
 def test_chat_framing_treats_status_questions_as_conversation():
@@ -231,6 +234,22 @@ def test_current_datetime_is_dynamic_not_in_cacheable_static_prompt():
         assert "## CURRENT DATE AND TIME" in dynamic_context
         # The stable, cacheable content stays in the static prompt.
         assert "# Ouro Platform" in system_prompt
+
+
+def test_search_profile_is_cheap_non_publishing():
+    assert SEARCH.delegatable is True
+    assert SEARCH.allowed_servers == ["search"]
+    assert "ouro:create_post" not in SEARCH.preload_tools
+    assert SEARCH.include_asset_placement is False
+    assert SEARCH.default_return_mode == "full_text"
+    assert SEARCH.max_steps <= 4
+
+
+def test_search_profile_is_exported_from_package():
+    from ouro_agents import subagents as subagents_pkg
+
+    assert subagents_pkg.SEARCH is SEARCH
+    assert "SEARCH" in subagents_pkg.__all__
 
 
 def test_platform_subagents_receive_ouro_asset_semantics():

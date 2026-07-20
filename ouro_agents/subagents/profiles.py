@@ -26,6 +26,7 @@ from .prompts import (
     EXECUTOR_PROMPT,
     PLANNER_PROMPT,
     RESEARCH_PROMPT,
+    SEARCH_PROMPT,
     WRITER_PROMPT,
 )
 from .reflector import REFLECTOR_PROMPT
@@ -117,6 +118,28 @@ REFLECTOR = SubAgentProfile(
 
 # Delegate-able profiles
 
+SEARCH = SubAgentProfile(
+    name="search",
+    description=(
+        "Cheap cited web lookup. Runs a few focused queries and returns a short "
+        "answer with URLs. Does not publish assets."
+    ),
+    system_prompt=SEARCH_PROMPT,
+    allowed_tools=["memory_recall"],
+    allowed_servers=["search"],
+    can_load_mcp_tools=True,
+    preload_tools=["search:tavily_search"],
+    delegatable=True,
+    max_steps=4,
+    default_return_mode="full_text",
+    include_work_directive=False,
+    include_asset_placement=False,
+    shared_context_sections=[
+        "current_datetime",
+        "platform_context",
+    ],
+)
+
 RESEARCH = SubAgentProfile(
     name="research",
     description=(
@@ -129,9 +152,16 @@ RESEARCH = SubAgentProfile(
     can_load_mcp_tools=True,
     preload_tools=["search:tavily_search", "ouro:create_post"],
     delegatable=True,
-    max_steps=12,
+    max_steps=8,
     can_delegate_to=["writer"],
     skills=["ouro", "ouro_markdown", "asset_output"],
+    shared_context_sections=[
+        "current_datetime",
+        "soul",
+        "platform_context",
+        "notes",
+        "working_memory",
+    ],
 )
 
 PLANNER = SubAgentProfile(
@@ -196,6 +226,7 @@ DEVELOPER = SubAgentProfile(
 # All built-in profiles
 PROFILES = [
     PREFLIGHT,
+    SEARCH,
     RESEARCH,
     PLANNER,
     REFLECTOR,

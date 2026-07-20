@@ -1,10 +1,11 @@
 """Prompt and structured output helpers for the reflector subagent."""
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+from ..constants import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,12 @@ Writing candidates:
 - If a fact references an Ouro asset, include its UUID in asset_ids AND use \
   [asset name](asset:<uuid>) links in the text so the fact is self-contained. \
   Otherwise omit asset_ids.
+- Produced assets are mandatory: when the run created a dataset, post, file, \
+  quest, service, or similar durable asset (see create_* / update_* tool \
+  results with a new id), ALWAYS store one candidate naming what it is, why \
+  it exists, and which quest/team it belongs to — with the UUID in asset_ids \
+  and an asset: link in the text. Future heartbeats must be able to recall \
+  that ID without searching. Do not demote these to daily_log_entries only.
 - strength: "minor" for peripheral detail, "normal" for most memories, "high" \
   for explicit human guidance and hard-won lessons.
 - If entity files provide background, use them to add richer context to facts \
@@ -165,6 +172,9 @@ Candidate: {"text": "As of 2026-07-04, alice wants benchmark results published t
 Input: a run inspected a dataset and found its schema.
 Candidate: {"text": "The [alloy-corpus dataset](asset:d3adbeef-0000-0000-0000-000000000000) stores formation energy in eV/atom in the `formation_energy` column.", "subject_type": "asset", "subject_id_hint": "d3adbeef-0000-0000-0000-000000000000", "category": "fact", "basis": "observed", "stability": "evolving", "strength": "normal", "team_ids": [], "asset_ids": ["d3adbeef-0000-0000-0000-000000000000"], "verification_hint": "re-read the dataset schema", "supersedes": []}
 
+Input: a run created dataset 019f5902-b1eb-7794-b3c9-ada8acfe9d36 as the Oliynyk coverage map for quest 019f8012 in team permanent-magnets.
+Candidate: {"text": "As of 2026-07-20, the [Oliynyk candidate coverage map](asset:019f5902-b1eb-7794-b3c9-ada8acfe9d36) is the existing-route-run audit for the 24 Oliynyk RE-free PM candidates under quest 019f8012 in team permanent-magnets.", "subject_type": "asset", "subject_id_hint": "019f5902-b1eb-7794-b3c9-ada8acfe9d36", "category": "fact", "basis": "observed", "stability": "stable", "strength": "high", "team_ids": ["<permanent-magnets uuid from available teams>"], "asset_ids": ["019f5902-b1eb-7794-b3c9-ada8acfe9d36"], "verification_hint": "get_asset on the coverage map id", "supersedes": []}
+
 Input: a heartbeat run posted one comment and the result was "commented on the post"; no human guidance appeared.
 Candidates: [] — the comment itself is task plumbing that would not change future behavior. Record it as one daily_log_entries episode with the asset link instead.
 
@@ -237,6 +247,7 @@ def build_run_reflection_task(
     event_type: Optional[str] = None,
     team_name: str = "",
     available_teams: list[dict] | None = None,
+    memory_notes: list[str] | None = None,
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
@@ -261,6 +272,17 @@ def build_run_reflection_task(
         team_lines.append(f"- {team_id} · {slug} · {name}")
     available_team_text = "\n".join(team_lines) if team_lines else "- (none; leave team_ids = [])"
 
+    notes = [str(n).strip() for n in (memory_notes or []) if str(n).strip()]
+    notes_block = ""
+    if notes:
+        notes_block = (
+            "\nPreflight memory notes (store if the run succeeded; fill any "
+            "<placeholders> from the result / tool calls with real UUIDs and "
+            "put them in asset_ids):\n"
+            + "\n".join(f"- {note}" for note in notes)
+            + "\n"
+        )
+
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
         f"Run mode: {run_mode}\n"
@@ -269,7 +291,12 @@ def build_run_reflection_task(
         f"{available_team_text}\n\n"
         f"Task:\n{task[:1500]}\n\n"
         f"Result:\n{str(result)[:2000]}\n\n"
-        f"Tool calls:\n{tools_text}\n\n"
+        f"Tool calls:\n{tools_text}\n"
+        f"{notes_block}\n"
+        "If this run created a durable Ouro asset (dataset, post, file, quest, "
+        "service, etc.), store a candidate with its UUID in asset_ids and an "
+        "asset: markdown link — future heartbeats must recall that ID without "
+        "searching.\n\n"
         "If this run commented on, reviewed, or otherwise interacted with an Ouro "
         "asset, capture that interaction concretely so the next heartbeat can tell "
         "the asset was already touched recently and avoid redundant follow-up.\n\n"
@@ -285,58 +312,6 @@ def build_run_reflection_task(
 
 
 _TAG_RE = re.compile(r"^\[[\w:.-]+\]\s*")
-
-
-def _extract_json_object(text: str) -> Optional[str]:
-    """Return the first balanced top-level ``{...}`` JSON object found in ``text``.
-
-    Models sometimes wrap the required JSON in prose (e.g. "Here is my
-    reflection...\n\n{...}") or trailing commentary. Scan for the first ``{``
-    and walk forward tracking brace depth (ignoring braces inside strings) to
-    recover the object regardless of surrounding text.
-    """
-    start = text.find("{")
-    if start == -1:
-        return None
-    depth = 0
-    in_string = False
-    escaped = False
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start : i + 1]
-    return None
-
-
-def _coerce_json_object(text: str) -> Optional[dict]:
-    """Parse ``text`` into a JSON object, tolerating fences and prose wrappers."""
-    candidate = text
-    if candidate.startswith("```"):
-        candidate = candidate.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    for attempt in (candidate, _extract_json_object(candidate)):
-        if not attempt:
-            continue
-        try:
-            data = json.loads(attempt)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(data, dict):
-            return data
-    return None
 
 
 def normalize_daily_log_entry(
@@ -363,7 +338,7 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
         logger.warning("Reflector exhausted its step budget before returning JSON")
         return None
 
-    data = _coerce_json_object(text)
+    data = parse_llm_json(text, expect=dict)
     if data is None:
         preview = text[:200].replace("\n", "\\n")
         logger.warning("Failed to parse reflection result | preview=%r", preview)

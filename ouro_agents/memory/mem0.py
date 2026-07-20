@@ -406,12 +406,14 @@ class Mem0Backend:
         tracker: UsageTracker,
         *,
         gen_id_prefix: str,
+        call_kind: str = "generation",
     ) -> None:
         record_usage_from_response(
             response,
             tracker,
             gen_id_prefix=gen_id_prefix,
             record_context=False,
+            call_kind=call_kind,
         )
         if self._shared_usage_tracker is not None:
             record_usage_from_response(
@@ -419,6 +421,7 @@ class Mem0Backend:
                 self._shared_usage_tracker,
                 gen_id_prefix=gen_id_prefix,
                 record_context=False,
+                call_kind=call_kind,
             )
 
     def _wrap_embedding_client(self) -> None:
@@ -436,6 +439,7 @@ class Mem0Backend:
                 response,
                 self._embedding_tracker,
                 gen_id_prefix="mem0-embed",
+                call_kind="embedding",
             )
             return response
 
@@ -448,25 +452,22 @@ class Mem0Backend:
     def usage_ledger(self) -> list[tuple[str, RunUsage]]:
         ledger: list[tuple[str, RunUsage]] = []
         if self._extraction_tracker.num_calls:
-            ledger.append(
-                (
-                    "extraction",
-                    RunUsage.from_tracker(
-                        self._extraction_tracker,
-                        model_id=self._extraction_model,
-                    ),
-                )
+            extraction = RunUsage.from_tracker(
+                self._extraction_tracker,
+                model_id=self._extraction_model,
             )
+            extraction.num_generation_calls = extraction.num_api_calls
+            ledger.append(("extraction", extraction))
         if self._embedding_tracker.num_calls:
-            ledger.append(
-                (
-                    "embeddings",
-                    RunUsage.from_tracker(
-                        self._embedding_tracker,
-                        model_id=self._embedding_model,
-                    ),
-                )
+            embeddings = RunUsage.from_tracker(
+                self._embedding_tracker,
+                model_id=self._embedding_model,
             )
+            embeddings.num_embedding_calls = embeddings.num_api_calls
+            embeddings.num_generation_calls = 0
+            for generation in embeddings.generations:
+                generation["call_kind"] = "embedding"
+            ledger.append(("embeddings", embeddings))
         return ledger
 
     def search(
@@ -482,6 +483,7 @@ class Mem0Backend:
         subject_id: Optional[str] = None,
         asset_id: Optional[str] = None,
         since: Optional[datetime] = None,
+        reinforce: bool = True,
     ) -> List[MemoryResult]:
         effective_team_id = team_id if scope in {"personal", "team"} else None
         has_post_filters = bool(effective_team_id or asset_id)
@@ -513,7 +515,8 @@ class Mem0Backend:
                 out.append(result)
                 if len(out) >= limit:
                     break
-        self._reinforce_results(out)
+        if reinforce:
+            self._reinforce_results(out)
         return out
 
     def add(

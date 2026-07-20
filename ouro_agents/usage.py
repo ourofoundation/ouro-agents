@@ -67,12 +67,19 @@ class RunUsage:
     rejected_prediction_tokens: int = 0
     total_tokens: int = 0
     num_api_calls: int = 0
+    num_generation_calls: int = 0
+    num_embedding_calls: int = 0
     cost_usd: Optional[float] = None
     input_cost_usd: Optional[float] = None
     output_cost_usd: Optional[float] = None
     upstream_inference_cost_usd: Optional[float] = None
     is_byok: Optional[bool] = None
     cost_source: str = ""
+    generations: list = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.generations is None:
+            self.generations = []
 
     @property
     def uncached_input_tokens(self) -> int:
@@ -80,6 +87,8 @@ class RunUsage:
 
     def finalize(self) -> "RunUsage":
         self.total_tokens = self.input_tokens + self.output_tokens
+        if not self.num_generation_calls and self.num_api_calls:
+            self.num_generation_calls = self.num_api_calls
         return self
 
     @classmethod
@@ -95,6 +104,8 @@ class RunUsage:
         for attr, tracker_attr in TRACKER_FLOAT_FIELDS.items():
             setattr(usage, attr, getattr(tracker, tracker_attr))
         usage.is_byok = tracker.is_byok
+        usage.generations = list(getattr(tracker, "generations", []) or [])
+        usage.num_generation_calls = len(usage.generations) or usage.num_api_calls
         if usage.cost_usd is not None:
             usage.cost_source = "response"
         return usage.finalize()
@@ -112,6 +123,8 @@ class RunUsage:
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total_tokens,
             "num_api_calls": self.num_api_calls,
+            "num_generation_calls": self.num_generation_calls,
+            "num_embedding_calls": self.num_embedding_calls,
             "input": {
                 "tokens": self.input_tokens,
                 "current_context_tokens": self.current_context_tokens,
@@ -130,6 +143,8 @@ class RunUsage:
                 "rejected_prediction_tokens": self.rejected_prediction_tokens,
             },
         }
+        if self.generations:
+            d["generations"] = self.generations
         if self.cost_usd is not None:
             d["cost_usd"] = round(self.cost_usd, 8)
         costs = {}
@@ -173,14 +188,20 @@ class UsageTracker:
         usage: Optional[dict[str, Any]] = None,
         *,
         record_context: bool = True,
+        call_kind: str = "generation",
     ):
         """Record a generation with token and cost metadata from the response."""
-        generation = {"id": gen_id}
+        generation = {"id": gen_id, "call_kind": call_kind}
         if usage:
             generation.update(usage)
+            generation["call_kind"] = call_kind
             if record_context:
                 generation["context_input_tokens"] = usage.get("input_tokens", 0)
         self._generations.append(generation)
+
+    @property
+    def generations(self) -> list[dict]:
+        return list(self._generations)
 
     def _sum_int(self, field: str) -> int:
         return sum(int(g.get(field, 0) or 0) for g in self._generations)
@@ -313,13 +334,22 @@ class MirroredUsageTracker:
         usage: Optional[dict[str, Any]] = None,
         *,
         record_context: bool = True,
+        call_kind: str = "generation",
     ):
-        self._primary.record(gen_id, usage, record_context=record_context)
+        self._primary.record(
+            gen_id, usage, record_context=record_context, call_kind=call_kind
+        )
         for tracker in self._mirrors:
-            tracker.record(gen_id, usage, record_context=record_context)
+            tracker.record(
+                gen_id, usage, record_context=record_context, call_kind=call_kind
+            )
 
     def reset(self):
         self._primary.reset()
+
+    @property
+    def generations(self) -> list[dict]:
+        return self._primary.generations
 
     @property
     def generation_ids(self) -> list[str]:
@@ -643,10 +673,12 @@ def record_usage_from_response(
     gen_id_prefix: str = "usage",
     reasoning_callback: Optional[ReasoningCallback] = None,
     record_context: bool = True,
+    call_kind: str = "generation",
 ) -> Optional[str]:
     """Record usage from an OpenAI-compatible response object."""
     gen_id = _usage_field(response, "id")
     usage_data = _extract_usage_data(_usage_field(response, "usage"))
+    usage_data.update(_extract_response_metadata(response))
     _emit_reasoning_texts(
         _extract_visible_reasoning_from_response(response),
         reasoning_callback,
@@ -654,8 +686,40 @@ def record_usage_from_response(
     if not gen_id and _stream_usage_has_tokens(usage_data):
         gen_id = f"{gen_id_prefix}-{uuid.uuid4().hex}"
     if gen_id:
-        tracker.record(gen_id, usage_data, record_context=record_context)
+        tracker.record(
+            gen_id, usage_data, record_context=record_context, call_kind=call_kind
+        )
     return gen_id
+
+
+def _extract_response_metadata(response: Any) -> dict[str, Any]:
+    """Capture useful OpenRouter response-level fields for telemetry."""
+    meta: dict[str, Any] = {}
+    model = _usage_field(response, "model")
+    if model:
+        meta["provider_model"] = model
+    provider = _usage_field(response, "provider")
+    if provider:
+        meta["serving_provider"] = provider
+    finish_reason = None
+    choices = _usage_field(response, "choices") or []
+    if choices:
+        first = choices[0]
+        finish_reason = _usage_field(first, "finish_reason") or _usage_field(
+            first, "native_finish_reason"
+        )
+    if finish_reason:
+        meta["finish_reason"] = finish_reason
+    # OpenRouter sometimes surfaces these at the top level.
+    for key, dest in (
+        ("latency", "latency_ms"),
+        ("generation_time", "latency_ms"),
+        ("created", "created"),
+    ):
+        value = _usage_field(response, key)
+        if value is not None and dest not in meta:
+            meta[dest] = value
+    return meta
 
 
 def _stream_usage_has_tokens(data: dict[str, Any]) -> bool:
@@ -945,6 +1009,7 @@ def _extract_usage_data(raw_usage: Any) -> dict[str, Any]:
             cost_details.get("upstream_inference_cost")
         ),
         "is_byok": _usage_field(raw_usage, "is_byok"),
+        "cache_discount": _to_float(_usage_field(raw_usage, "cache_discount")),
     }
 
 

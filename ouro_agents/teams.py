@@ -8,11 +8,12 @@ single operation.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from .platform_context_prompt import load_platform_context
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +100,9 @@ class TeamRegistry:
     ) -> TeamRegistry:
         """Build a registry from the cached ``platform_context.json``."""
         registry = cls()
-        cache_path = workspace / "data" / "platform_context.json"
-        if cache_path.exists():
+        ctx = load_platform_context(workspace)
+        if ctx is not None:
             try:
-                ctx = json.loads(cache_path.read_text())
                 registry.refresh(ctx, org_id)
             except Exception as exc:
                 logger.warning("Failed to load team registry from cache: %s", exc)

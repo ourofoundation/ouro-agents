@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -183,7 +184,12 @@ def _load_playbook(agent: "OuroAgent", heartbeat_doc_store) -> str | None:
 
 
 def _load_work_direction_context(agent: "OuroAgent", team_id: str | None) -> str:
-    """Load durable work-direction guidance that should constrain heartbeats."""
+    """Load durable work-direction guidance that should constrain heartbeats.
+
+    When a team is known, recall global + that team once. When no team is
+    selected, recall only the highest-signal global guidance — never fan out
+    across every team (that path previously triggered hundreds of embeds).
+    """
     agent_cfg = getattr(getattr(agent, "config", None), "agent", None)
     agent_name = getattr(agent_cfg, "name", "")
     if not agent_name:
@@ -196,38 +202,46 @@ def _load_work_direction_context(agent: "OuroAgent", team_id: str | None) -> str
     )
     memory = getattr(agent, "memory", None)
     contexts: list[str] = []
+
+    # Always include a bounded global pass.
+    global_context = build_focus_memory_context(
+        memory,
+        agent_name,
+        heading="Current Work Direction Guidance",
+        guidance=guidance,
+        limit=6,
+        reinforce=False,
+    )
+    if global_context:
+        contexts.append(global_context)
+
     if team_id:
-        context = build_focus_memory_context(
+        team_context = build_focus_memory_context(
             memory,
             agent_name,
             team_id=team_id,
-            heading="Current Work Direction Guidance",
+            heading=f"Current Work Direction Guidance for team {team_id}",
             guidance=guidance,
+            limit=6,
+            reinforce=False,
         )
-        if context:
-            contexts.append(context)
-    else:
-        context = build_focus_memory_context(
-            memory,
-            agent_name,
-            heading="Current Work Direction Guidance",
-            guidance=guidance,
-        )
-        if context:
-            contexts.append(context)
-        for candidate_team_id in _sorted_team_ids(agent):
-            context = build_focus_memory_context(
-                memory,
-                agent_name,
-                team_id=candidate_team_id,
-                heading=f"Current Work Direction Guidance for team {candidate_team_id}",
-                guidance=guidance,
-                limit=3,
-            )
-            if context:
-                contexts.append(context)
+        if team_context:
+            contexts.append(team_context)
 
-    return "\n\n".join(contexts)
+    # Deduplicate identical bullet lines across global/team blocks.
+    if not contexts:
+        return ""
+    seen_lines: set[str] = set()
+    merged: list[str] = []
+    for block in contexts:
+        for line in block.splitlines():
+            key = line.strip()
+            if key.startswith("- ") and key in seen_lines:
+                continue
+            if key.startswith("- "):
+                seen_lines.add(key)
+            merged.append(line)
+    return "\n".join(merged)
 
 
 def _sorted_team_ids(agent: "OuroAgent") -> list[str]:
@@ -526,7 +540,7 @@ def _advance_due_recurring_items(
         item["waiting_until"] = next_iso
 
 
-def _load_assigned_quest_items(
+def load_assigned_quest_items(
     agent: "OuroAgent", limit: int = 10
 ) -> list[dict[str, Any]]:
     """Fetch actionable quest items assigned to this agent, if supported by the API."""
@@ -556,6 +570,10 @@ def _load_assigned_quest_items(
     except Exception as e:
         logger.warning("Failed to load assigned quest items: %s", e)
         return []
+
+
+# Back-compat alias for older call sites / tests.
+_load_assigned_quest_items = load_assigned_quest_items
 
 
 def _quest_asset_summary(quest: Any, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -642,7 +660,7 @@ def load_work_inbox(agent: "OuroAgent", limit: int = 10) -> list[dict[str, Any]]
     the agent's own open quests, newest quest activity first. Waiting items
     never appear; recurring checks appear only when due.
     """
-    inbox = _load_assigned_quest_items(agent, limit=limit)
+    inbox = load_assigned_quest_items(agent, limit=limit)
     seen = {(item.get("quest_id"), item.get("id")) for item in inbox}
     for item in _load_owned_open_quest_items(agent, item_limit=limit):
         key = (item.get("quest_id"), item.get("id"))
@@ -802,7 +820,8 @@ def inbox_team_id(items: list[dict[str, Any]], agent: "OuroAgent") -> str | None
     return None
 
 
-def _format_inbox_items(items: list[dict[str, Any]]) -> str:
+def format_inbox_items(items: list[dict[str, Any]]) -> str:
+    """Format inbox/assigned quest items for playbooks and CLI display."""
     lines: list[str] = []
     for idx, item in enumerate(items, start=1):
         quest = _inbox_item_quest(item)
@@ -846,6 +865,11 @@ def _format_inbox_items(items: list[dict[str, Any]]) -> str:
             f"   Item `{item_id}` [{status}]: {description}{suffix}{waiting_note}"
         )
     return "\n".join(lines)
+
+
+# Back-compat aliases.
+_format_inbox_items = format_inbox_items
+format_assigned_quest_items = format_inbox_items
 
 
 def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
@@ -892,7 +916,7 @@ def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
         "posted) just because the description still lists them.\n\n"
         f"{adaptive_guidance}"
         "## Quest Inbox\n"
-        f"{_format_inbox_items(items)}\n\n"
+        f"{format_inbox_items(items)}\n\n"
         "Use `get_asset` or `list_quest_items` if you need more quest context. "
         "Mark the item `in_progress` with `update_quest_item` before working "
         "when appropriate. "
@@ -1023,6 +1047,112 @@ def start_scheduler(agent, config: HeartbeatConfig):
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class HeartbeatTaskContext:
+    """Playbook/task payload assembled for a heartbeat run or dry-run."""
+
+    playbook: str | None
+    team_id: str | None
+    source: str
+    preload_tools: list[str] = field(default_factory=list)
+    inbox: list[dict[str, Any]] = field(default_factory=list)
+
+
+def resolve_heartbeat_model(agent: "OuroAgent"):
+    """Build the model used for heartbeat / force CLI entry points."""
+    hb_model_id = (
+        (agent._model_id_for_role("heartbeat") if hasattr(agent, "_model_id_for_role") else None)
+        or agent.config.heartbeat.model
+        or agent.config.agent.model
+    )
+    return agent._build_model(hb_model_id, heartbeat=True, role="heartbeat")
+
+
+def refresh_heartbeat_platform_context(agent: "OuroAgent") -> None:
+    """Refresh cached platform context; log and continue on failure."""
+    try:
+        agent._refresh_platform_context()
+    except Exception as e:
+        logger.warning("Failed to refresh platform context during heartbeat: %s", e)
+
+
+def heartbeat_servers(agent: "OuroAgent") -> list[str]:
+    """Default MCP servers for heartbeat / planning / review runs."""
+    return list(getattr(agent.config.heartbeat, "servers", None) or ["ouro"])
+
+
+def build_heartbeat_task_context(
+    agent: "OuroAgent",
+    *,
+    inbox: list[dict[str, Any]] | None = None,
+    advance_recurring: bool = True,
+) -> HeartbeatTaskContext:
+    """Assemble the heartbeat playbook/task (shared by tick + dry-run).
+
+    Does not run planning bookkeeping. When *inbox* is omitted, loads it.
+    Set *advance_recurring* False for read-only dry-runs.
+    """
+    items = list(inbox) if inbox is not None else load_work_inbox(agent)
+    team_id: str | None = None
+    doc_store = agent.doc_store
+    playbook = None
+    source = "none"
+    preload_tools: list[str] = []
+
+    if items:
+        if advance_recurring:
+            _advance_due_recurring_items(agent, items)
+        team_id = inbox_team_id(items, agent)
+        if team_id:
+            doc_store = agent.doc_store_for(team_id)
+        playbook = build_quest_work_playbook(items)
+        source = "quest-inbox"
+        preload_tools = list(_INBOX_PRELOAD_TOOLS)
+
+    if not playbook:
+        playbook = _load_playbook(agent, doc_store)
+        if playbook:
+            source = "playbook"
+
+    if not playbook:
+        return HeartbeatTaskContext(
+            playbook=None,
+            team_id=team_id,
+            source=source,
+            preload_tools=preload_tools,
+            inbox=items,
+        )
+
+    from ..memory.dream import dream_health_note
+
+    health_note = dream_health_note(agent.config.agent.workspace)
+    if health_note:
+        playbook = f"{playbook}\n\n## Memory Maintenance Health\n{health_note}"
+
+    direction_context = _load_work_direction_context(agent, team_id)
+    if direction_context:
+        playbook = (
+            f"{playbook}\n\n## Current Work Direction\n{direction_context}\n\n"
+            "Before choosing work for this heartbeat, apply the current work "
+            "direction above as a hard priority signal. Do not choose unrelated "
+            "research or browsing when a current direction names a concrete focus."
+        )
+
+    if not is_within_active_hours(agent.config.heartbeat):
+        playbook += (
+            "\n\n**Note: You are outside active hours. "
+            "Only check notifications unless something is urgent.**"
+        )
+
+    return HeartbeatTaskContext(
+        playbook=playbook,
+        team_id=team_id,
+        source=source,
+        preload_tools=preload_tools,
+        inbox=items,
+    )
+
+
 async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
     """Run a full heartbeat cycle, grouping its sub-runs under one tick id.
 
@@ -1049,20 +1179,9 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
     )
     from .profiles import RunMode
 
-    hb_model_id = (
-        (agent._model_id_for_role("heartbeat") if hasattr(agent, "_model_id_for_role") else None)
-        or agent.config.heartbeat.model
-        or agent.config.agent.model
-    )
-    hb_model = agent._build_model(hb_model_id, heartbeat=True, role="heartbeat")
-
-    try:
-        agent._refresh_platform_context()
-    except Exception as e:
-        logger.warning("Failed to refresh platform context during heartbeat: %s", e)
-
-    proactive_cfg = agent.config.heartbeat.proactive
-    servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+    hb_model = resolve_heartbeat_model(agent)
+    refresh_heartbeat_platform_context(agent)
+    servers = heartbeat_servers(agent)
     planning_cfg = agent.config.planning
     team_ids = _sorted_team_ids(agent)
 
@@ -1109,68 +1228,28 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
     elif planning_cfg.enabled:
         logger.info("No teams discovered — planning requires a team")
 
-    # --- Work the inbox ---
-    heartbeat_team_id: str | None = None
-    heartbeat_doc_store = agent.doc_store
-    playbook = None
-    heartbeat_source = "none"
-    preload_tools: list[str] = []
-
-    if inbox:
-        _advance_due_recurring_items(agent, inbox)
-        heartbeat_team_id = inbox_team_id(inbox, agent)
-        if heartbeat_team_id:
-            heartbeat_doc_store = agent.doc_store_for(heartbeat_team_id)
-        playbook = build_quest_work_playbook(inbox)
-        heartbeat_source = "quest-inbox"
-        preload_tools = list(_INBOX_PRELOAD_TOOLS)
-
-    # --- Fall back to the general playbook ---
-    if not playbook:
-        playbook = _load_playbook(agent, heartbeat_doc_store)
-        if playbook:
-            heartbeat_source = "playbook"
-    if not playbook:
+    ctx = build_heartbeat_task_context(agent, inbox=inbox)
+    if not ctx.playbook:
         logger.info(
             "No heartbeat playbook found and no quest inbox work "
             "(checked team doc store, global doc store, and local HEARTBEAT.md)"
         )
         return None
 
-    from ..memory.dream import dream_health_note
-
-    health_note = dream_health_note(agent.config.agent.workspace)
-    if health_note:
-        playbook = f"{playbook}\n\n## Memory Maintenance Health\n{health_note}"
-
-    direction_context = _load_work_direction_context(agent, heartbeat_team_id)
-    if direction_context:
-        playbook = (
-            f"{playbook}\n\n## Current Work Direction\n{direction_context}\n\n"
-            "Before choosing work for this heartbeat, apply the current work "
-            "direction above as a hard priority signal. Do not choose unrelated "
-            "research or browsing when a current direction names a concrete focus."
-        )
-
-    if not is_within_active_hours(agent.config.heartbeat):
-        playbook += (
-            "\n\n**Note: You are outside active hours. "
-            "Only check notifications unless something is urgent.**"
-        )
-
     logger.info(
         "Running heartbeat: source=%s, team=%s",
-        heartbeat_source,
-        heartbeat_team_id[:8] if heartbeat_team_id else "none",
+        ctx.source,
+        ctx.team_id[:8] if ctx.team_id else "none",
     )
 
     result = await agent.run(
-        playbook,
+        ctx.playbook,
         model_override=hb_model,
         mode=RunMode.HEARTBEAT,
-        preload_tools=preload_tools,
+        allowed_servers=servers,
+        preload_tools=ctx.preload_tools,
         preserve_existing_usage=True,
-        team_id=heartbeat_team_id,
+        team_id=ctx.team_id,
     )
 
     parsed = parse_json_from_llm(result)
@@ -1202,20 +1281,9 @@ async def force_planning_heartbeat(
     """
     from .planning import run_planning_run
 
-    hb_model_id = (
-        (agent._model_id_for_role("heartbeat") if hasattr(agent, "_model_id_for_role") else None)
-        or agent.config.heartbeat.model
-        or agent.config.agent.model
-    )
-    hb_model = agent._build_model(hb_model_id, heartbeat=True, role="heartbeat")
-
-    try:
-        agent._refresh_platform_context()
-    except Exception as e:
-        logger.warning("Failed to refresh platform context: %s", e)
-
-    proactive_cfg = agent.config.heartbeat.proactive
-    servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+    hb_model = resolve_heartbeat_model(agent)
+    refresh_heartbeat_platform_context(agent)
+    servers = heartbeat_servers(agent)
 
     available_team_ids = _sorted_team_ids(agent)
     selected_team_id = team_id or next(iter(available_team_ids), None)
@@ -1243,19 +1311,8 @@ async def force_review_heartbeat(
         logger.info("No reviewable quest found")
         return None
 
-    hb_model_id = (
-        (agent._model_id_for_role("heartbeat") if hasattr(agent, "_model_id_for_role") else None)
-        or agent.config.heartbeat.model
-        or agent.config.agent.model
-    )
-    hb_model = agent._build_model(hb_model_id, heartbeat=True, role="heartbeat")
-
-    try:
-        agent._refresh_platform_context()
-    except Exception as e:
-        logger.warning("Failed to refresh platform context: %s", e)
-
-    proactive_cfg = agent.config.heartbeat.proactive
-    servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+    hb_model = resolve_heartbeat_model(agent)
+    refresh_heartbeat_platform_context(agent)
+    servers = heartbeat_servers(agent)
 
     return await run_quest_feedback_run(agent, hb_model, selected, servers)

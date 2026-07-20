@@ -19,6 +19,8 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:download_asset": Capability.READ_PLATFORM,
     "ouro:get_asset_connections": Capability.READ_PLATFORM,
     "ouro:get_compatible_routes": Capability.READ_PLATFORM,
+    "ouro:list_asset_actions": Capability.READ_PLATFORM,
+    "ouro:get_impact": Capability.READ_PLATFORM,
     "ouro:delete_asset": Capability.UPDATE_ASSET,
     "ouro:share_asset": Capability.UPDATE_ASSET,
     # Users
@@ -113,6 +115,72 @@ def filter_deferred_tools(
         name: tool for name, tool in deferred_tools.items() if name in filtered_names
     }
     return filtered_tools, filtered_index
+
+
+def filter_deferred_by_servers(
+    deferred_tools: dict,
+    deferred_index: list[dict],
+    servers: Iterable[str],
+) -> tuple[dict, list[dict]]:
+    """Keep only deferred tools whose MCP server is in *servers*."""
+    allowed = set(servers)
+    filtered_index = [
+        item for item in deferred_index if item.get("server") in allowed
+    ]
+    filtered_names = {item["tool"] for item in filtered_index}
+    filtered_tools = {
+        name: tool for name, tool in deferred_tools.items() if name in filtered_names
+    }
+    return filtered_tools, filtered_index
+
+
+def filter_deferred_excluding(
+    deferred_tools: dict,
+    deferred_index: list[dict],
+    excluded: Iterable[str],
+) -> tuple[dict, list[dict]]:
+    """Drop deferred tools whose qualified names appear in *excluded*."""
+    blocked = set(excluded)
+    filtered_index = [
+        item for item in deferred_index if item.get("tool") not in blocked
+    ]
+    filtered_tools = {
+        name: tool for name, tool in deferred_tools.items() if name not in blocked
+    }
+    return filtered_tools, filtered_index
+
+
+def resolve_preload_tools(
+    qualified_names: Iterable[str],
+    *,
+    primary: dict,
+    index: list[dict],
+    fallback: dict | None = None,
+) -> tuple[list, list[str], list[str]]:
+    """Resolve eagerly preloaded deferred tools.
+
+    Returns ``(tool_objects, raw_names, found_qualified_names)``. Looks up each
+    qualified name in *primary*, then *fallback*. Raw names come from *index*
+    when present.
+    """
+    tools: list = []
+    raw_names: list[str] = []
+    found: list[str] = []
+    fallback = fallback or {}
+    for qualified_name in qualified_names:
+        tool_obj = primary.get(qualified_name) or fallback.get(qualified_name)
+        if not tool_obj:
+            continue
+        tools.append(tool_obj)
+        found.append(str(qualified_name))
+        item = next(
+            (entry for entry in index if entry.get("tool") == qualified_name),
+            None,
+        )
+        raw_names.append(
+            item["raw_name"] if item else str(qualified_name).split(":")[-1]
+        )
+    return tools, raw_names, found
 
 
 def unmapped_tools(tool_names: Iterable[str]) -> list[str]:

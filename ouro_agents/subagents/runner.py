@@ -26,7 +26,11 @@ from ..observer import emit_progress
 from ..uuid_v7 import uuid7_str
 from ..platform_context_prompt import format_platform_context_for_prompt
 from ..security.policy import Capability
-from ..security.tool_capabilities import filter_deferred_tools
+from ..security.tool_capabilities import (
+    filter_deferred_by_servers,
+    filter_deferred_tools,
+    resolve_preload_tools,
+)
 from ..skills import resolve_skills
 from ..soul import build_shared_prompt_sections
 from ..tool_prompt import build_tool_calling_system_prompt
@@ -35,6 +39,8 @@ from ..usage import format_subagent_usage_summary
 from .context import SubAgentContext, SubAgentResult, SubAgentUsage
 from .delegate_utils import (
     delegate_success_payload,
+    dispatch_delegate_tasks,
+    dumps_delegate_result,
     normalize_return_mode,
     resolve_auto_return_mode,
     summarize_delegate_text,
@@ -428,26 +434,9 @@ def _build_chain_delegate(
         if not tasks:
             return json.dumps({"status": "error", "error": "No tasks provided."})
 
-        if len(tasks) == 1:
-            return json.dumps(_run_one(tasks[0]))
-
-        outputs = []
-        for spec in tasks:
-            try:
-                outputs.append(_run_one(spec))
-            except Exception as e:
-                logger.exception(
-                    "Nested delegate '%s' failed", spec.get("subagent", "?")
-                )
-                outputs.append(
-                    {
-                        "status": "error",
-                        "subagent": spec.get("subagent", "?"),
-                        "error": str(e),
-                    }
-                )
-
-        return json.dumps(outputs)
+        # Nested delegates stay sequential — they share the parent model.
+        outputs = dispatch_delegate_tasks(tasks, _run_one, parallel=False)
+        return dumps_delegate_result(tasks, outputs)
 
     delegate.description += f"\n\nAvailable: {names_str}"
     return delegate
@@ -547,7 +536,6 @@ def _run_agent(
 
     tools: list = []
     active_deferred_index: list[dict] = []
-    preloaded_raw_names: list[str] = []
     deferred_tools = ctx.deferred_tools
     deferred_index = ctx.deferred_index
     if ctx.allowed_capabilities is not None:
@@ -589,16 +577,11 @@ def _run_agent(
         active_deferred_index = deferred_index
 
         if profile.allowed_servers:
-            allowed_servers = set(profile.allowed_servers)
-            active_deferred_index = [
-                item
-                for item in active_deferred_index
-                if item["server"] in allowed_servers
-            ]
-            allowed_names = {item["tool"] for item in active_deferred_index}
-            deferred_tools = {
-                k: v for k, v in deferred_tools.items() if k in allowed_names
-            }
+            deferred_tools, active_deferred_index = filter_deferred_by_servers(
+                deferred_tools,
+                active_deferred_index,
+                profile.allowed_servers,
+            )
 
         from ..tools.mcp_tools import make_load_tool
 
@@ -610,25 +593,20 @@ def _run_agent(
         )
         tools.append(load_tool)
 
-    # Preload MCP tools specified by the profile
-    for qualified_name in profile.preload_tools:
-        tool_obj = deferred_tools.get(qualified_name)
-        if tool_obj:
-            tools.append(tool_obj)
-            item = next(
-                (
-                    entry
-                    for entry in deferred_index
-                    if entry["tool"] == qualified_name
-                ),
-                None,
-            )
-            preloaded_raw_names.append(
-                item["raw_name"] if item else qualified_name.split(":")[-1]
-            )
-            logger.info(
-                "Preloaded tool '%s' for subagent '%s'", qualified_name, profile.name
-            )
+    # Preload MCP tools specified by the profile. Resolve from the full
+    # unfiltered deferred map so an explicitly listed tool (e.g. ouro:create_post
+    # on a search-scoped research profile) is not dropped by allowed_servers.
+    preloaded_tools, preloaded_raw_names, found_names = resolve_preload_tools(
+        profile.preload_tools,
+        primary=ctx.deferred_tools,
+        fallback=deferred_tools,
+        index=ctx.deferred_index,
+    )
+    tools.extend(preloaded_tools)
+    for qualified_name in found_names:
+        logger.info(
+            "Preloaded tool '%s' for subagent '%s'", qualified_name, profile.name
+        )
 
     closeables = []
     if profile.needs_python_tool and (

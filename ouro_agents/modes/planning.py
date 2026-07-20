@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel
 
-from ..constants import _INTERVAL_RE, parse_json_from_llm
+from ..constants import _INTERVAL_RE, clip_text, parse_json_from_llm
 from ..constants import parse_interval_seconds as parse_cadence_seconds
 from ..memory.focus import build_focus_memory_context, remember_work_direction
 from ..syncing import normalize_status, read_field
@@ -498,10 +498,6 @@ def build_recent_activity_context(
         logger.debug("Failed to build recent-activity context: %s", e)
         return ""
 
-    def _snippet(text: object, max_len: int) -> str:
-        flat = " ".join(str(text or "").split())
-        return flat[: max_len - 1] + "…" if len(flat) > max_len else flat
-
     lines: list[str] = []
     for row in rows or []:
         mode = row.get("mode") or "run"
@@ -509,8 +505,8 @@ def build_recent_activity_context(
             continue
         started = str(row.get("started_at") or "")[:16]
         status = row.get("status") or "unknown"
-        task = _snippet(row.get("task"), 140)
-        result = _snippet(row.get("result"), 200)
+        task = clip_text(row.get("task"), 140)
+        result = clip_text(row.get("result"), 200)
         line = f"- [{started}] {mode} ({status}): {task}"
         if result:
             line += f" → {result}"
@@ -523,11 +519,6 @@ def build_recent_activity_context(
         "you actually did and how it went — not as direction by themselves.\n"
         + "\n".join(lines)
     )
-
-
-def _snippet_text(text: object, max_len: int) -> str:
-    flat = " ".join(str(text or "").split())
-    return flat[: max_len - 1] + "…" if len(flat) > max_len else flat
 
 
 def build_quest_history_context(
@@ -577,7 +568,7 @@ def build_quest_history_context(
         done = sum(1 for i in items if i.get("status") in ("done", "skipped"))
         status = quest_status(quest) or "unknown"
         item_bits = [
-            _snippet_text(i.get("description"), 90) for i in items[:6]
+            clip_text(i.get("description"), 90) for i in items[:6]
         ]
         items_line = "; ".join(item_bits) if item_bits else "(no items)"
         if len(items) > 6:
@@ -754,9 +745,10 @@ Step 1. Call create_quest exactly once to publish your plan{quest_instructions}.
      Each item becomes a trackable task on the platform.
    - Call create_quest alone (not in parallel with inspection tools) so its
      result is unambiguous. Finish any read-only inspection first.
-   - If create_quest succeeds but items are missing or wrong, fix that quest
-     in place with create_quest_items / update_quest. Do NOT call create_quest
-     again — never publish a second plan quest in the same run.
+   - A create_quest result with an `id` field is success even if items look
+     incomplete — fix that quest in place with create_quest_items / update_quest.
+     Do NOT call create_quest again — never publish a second plan quest in the
+     same run.
 
 Step 2. After the plan quest is ready, end the turn with a final message that is only this JSON:
 ```json
@@ -1040,6 +1032,22 @@ def _plan_doc_store(agent: "OuroAgent", team_id: str | None):
     return agent.doc_store
 
 
+def resolve_planning_model(agent: "OuroAgent", hb_model=None):
+    """Build the planning/review model, falling back to *hb_model* if needed."""
+    planning_cfg = agent.config.planning
+    tier_model = None
+    if hasattr(agent, "_model_id_for_role"):
+        tier_model = agent._model_id_for_role("planning")
+    plan_model_id = (
+        planning_cfg.model
+        or tier_model
+        or getattr(hb_model, "model_id", None)
+    )
+    if plan_model_id:
+        return agent._build_model(plan_model_id, role="planning")
+    return hb_model
+
+
 async def run_planning_run(
     agent: "OuroAgent",
     hb_model,
@@ -1060,20 +1068,8 @@ async def run_planning_run(
     from .outcomes import build_outcome_evidence_context
     from .profiles import RunMode
 
+    plan_model = resolve_planning_model(agent, hb_model)
     planning_cfg = agent.config.planning
-    tier_model = None
-    if hasattr(agent, "_model_id_for_role"):
-        tier_model = agent._model_id_for_role("planning")
-    plan_model_id = (
-        planning_cfg.model
-        or tier_model
-        or getattr(hb_model, "model_id", None)
-    )
-    plan_model = (
-        agent._build_model(plan_model_id, role="planning")
-        if plan_model_id
-        else hb_model
-    )
     agent_cfg = agent.config.agent
     workspace = agent_cfg.workspace
     ouro = agent._get_ouro_client()
@@ -1245,20 +1241,7 @@ async def run_quest_feedback_run(
             current_status=current_status,
         )
 
-    planning_cfg = agent.config.planning
-    tier_model = None
-    if hasattr(agent, "_model_id_for_role"):
-        tier_model = agent._model_id_for_role("planning")
-    plan_model_id = (
-        planning_cfg.model
-        or tier_model
-        or getattr(hb_model, "model_id", None)
-    )
-    plan_model = (
-        agent._build_model(plan_model_id, role="planning")
-        if plan_model_id
-        else hb_model
-    )
+    plan_model = resolve_planning_model(agent, hb_model)
 
     review_preload = [
         "ouro:get_comments",

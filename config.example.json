@@ -26,13 +26,22 @@
       "id": "anthropic/claude-4.6-sonnet",
       "reasoning": {
         "effort": "medium"
-      }
+      },
+      "max_completion_tokens": 16384
+    },
+    "mid": {
+      "id": "xiaomi/mimo-v2-flash",
+      "reasoning": {
+        "effort": "none"
+      },
+      "max_completion_tokens": 8192
     },
     "light": {
       "id": "xiaomi/mimo-v2-flash",
       "reasoning": {
         "effort": "none"
-      }
+      },
+      "max_completion_tokens": 4096
     }
   },
   "security": {
@@ -76,14 +85,10 @@
         "end": "17:00",
         "timezone": "America/Chicago"
       },
-      "proactive": {
-        "enabled": true,
-        "servers": [
-          "ouro",
-          "search"
-        ]
-      },
-      "max_steps": 20
+      "servers": [
+        "ouro"
+      ],
+      "max_steps": 12
     }
   },
   "memory": {

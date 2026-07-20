@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from . import MemoryBackend, MemoryResult
 from ..config import MemoryConfig
-from ..constants import CHARS_PER_TOKEN
+from ..constants import CHARS_PER_TOKEN, parse_llm_json, strip_markdown_fence
 from .naming import period_key, period_key_offset, store_rhythm
 
 logger = logging.getLogger(__name__)
@@ -533,9 +533,7 @@ def compact_memory_md(
             ],
         )
         text = result.content if hasattr(result, "content") else str(result)
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        text = strip_markdown_fence(str(text))
 
         new_tokens = _estimate_tokens(text)
         if plan:
@@ -735,11 +733,7 @@ def promote_log_entries(
             ],
         )
         text = result.content if hasattr(result, "content") else str(result)
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-        entries = json.loads(text)
+        entries = parse_llm_json(str(text), expect=list)
         if not isinstance(entries, list) or not entries:
             if plan:
                 plan.add_skip("promotion", "model_returned_no_entries", period=previous_period)
@@ -895,10 +889,7 @@ def distill_skills(
             ],
         )
         text = result.content if hasattr(result, "content") else str(result)
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        proposals = json.loads(text)
+        proposals = parse_llm_json(str(text), expect=list)
         if not isinstance(proposals, list):
             return 0
     except Exception as e:
@@ -1227,11 +1218,7 @@ def review_stale_memories(
             ],
         )
         text = llm_result.content if hasattr(llm_result, "content") else str(llm_result)
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-
-        verdicts = json.loads(text)
+        verdicts = parse_llm_json(str(text), expect=list)
         if not isinstance(verdicts, list):
             return result
 

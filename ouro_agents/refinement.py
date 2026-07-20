@@ -15,6 +15,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .constants import parse_llm_json
+
 logger = logging.getLogger(__name__)
 
 MAX_LEARNINGS = 20  # cap to keep prompt injection bounded
@@ -126,10 +128,9 @@ def refine(
             ],
         )
         text = result.content if hasattr(result, "content") else str(result)
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        data = json.loads(text)
+        data = parse_llm_json(str(text), expect=dict)
+        if not isinstance(data, dict):
+            raise ValueError("Refinement LLM returned non-object JSON")
         return RefinementResult(
             new_learnings=data.get("new_learnings", []),
             drop_learnings=data.get("drop_learnings", []),

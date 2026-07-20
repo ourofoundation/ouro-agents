@@ -434,6 +434,27 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertIn("even when the run result is NO_ACTION", task)
         self.assertIn("comments, mentions, plan-review feedback", task)
 
+    def test_build_run_reflection_task_includes_memory_notes_and_produced_assets(self):
+        task = build_run_reflection_task(
+            task="Publish coverage map.",
+            result="Created dataset 019f5902-b1eb-7794-b3c9-ada8acfe9d36",
+            tool_summary=[
+                {
+                    "tool": "ouro:create_dataset",
+                    "result": "id=019f5902-b1eb-7794-b3c9-ada8acfe9d36",
+                }
+            ],
+            run_mode="heartbeat",
+            memory_notes=[
+                "Oliynyk coverage map is <new_dataset_id> in permanent-magnets",
+            ],
+        )
+
+        self.assertIn("Preflight memory notes", task)
+        self.assertIn("<new_dataset_id>", task)
+        self.assertIn("created a durable Ouro asset", task)
+        self.assertIn("asset_ids", task)
+
     def test_build_run_reflection_task_filters_noisy_tools_keeps_order(self):
         task = build_run_reflection_task(
             task="Review feed and respond where helpful.",

@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Optional
 
 # Team blurbs belong in the ID roster, not as full wiki pages. Long
 # descriptions (onboarding guides, competition rules, embedded asset
 # blocks) otherwise dominate every system prompt.
 _MAX_TEAM_DESCRIPTION_CHARS = 240
+
+
+def platform_context_path(workspace: Path) -> Path:
+    """Return the on-disk path for the cached platform context JSON."""
+    return Path(workspace) / "data" / "platform_context.json"
+
+
+def load_platform_context(workspace: Path) -> Optional[dict[str, Any]]:
+    """Load ``data/platform_context.json`` if present; return ``None`` on miss/error."""
+    cache_path = platform_context_path(workspace)
+    if not cache_path.exists():
+        return None
+    try:
+        data = json.loads(cache_path.read_text())
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _description_text(raw) -> str:
@@ -61,13 +79,8 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
     Matches the body text the main agent receives under ``## PLATFORM CONTEXT``
     (heading is added by the prompt builder).
     """
-    cache_path = workspace / "data" / "platform_context.json"
-    if not cache_path.exists():
-        return ""
-
-    try:
-        context = json.loads(cache_path.read_text())
-    except Exception:
+    context = load_platform_context(workspace)
+    if not context:
         return ""
 
     parts: list[str] = []

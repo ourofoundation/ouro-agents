@@ -9,21 +9,18 @@ reinforce or otherwise mutate memories.
 from __future__ import annotations
 
 import json
-import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 import typer
 from rich.console import Console
 
+from ..constants import parse_since_datetime
 from ..memory import MemoryResult, create_memory_backend
 
 console = Console()
-
-_REL_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
-_REL_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 
 
 @dataclass
@@ -62,15 +59,10 @@ def _backend_and_agent(ctx: typer.Context):
 def _parse_since(since: Optional[str]) -> Optional[datetime]:
     if not since:
         return None
-    match = _REL_RE.match(since)
-    if match:
-        amount, unit = int(match.group(1)), match.group(2).lower()
-        return datetime.now(timezone.utc) - timedelta(**{_REL_UNITS[unit]: amount})
     try:
-        parsed = datetime.fromisoformat(since)
+        return parse_since_datetime(since)
     except ValueError as exc:
         raise typer.BadParameter(f"Could not parse --since '{since}'.") from exc
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _age(created_at: str) -> str:

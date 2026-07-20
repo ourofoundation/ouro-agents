@@ -314,12 +314,8 @@ class OuroApp(App[None]):
         else:
             lines.append("[b]Active hours[/]: always on")
         lines.append(f"[b]Model[/]: {hb.model}")
-        proactive = hb.proactive
-        if getattr(proactive, "enabled", False):
-            servers = ", ".join(getattr(proactive, "servers", []) or []) or "all"
-            lines.append(f"[b]Proactive[/]: on ({servers})")
-        else:
-            lines.append("[b]Proactive[/]: off")
+        servers = ", ".join(getattr(hb, "servers", None) or ["ouro"])
+        lines.append(f"[b]Servers[/]: {servers}")
         if plan.enabled:
             lines.append(
                 f"[b]Planning[/]: cadence {plan.cadence}, "
@@ -591,14 +587,14 @@ class OuroApp(App[None]):
         agent = await self._ensure_agent()
         try:
             from ..modes.heartbeat import (
-                _format_assigned_quest_items,
-                _load_assigned_quest_items,
+                format_assigned_quest_items,
+                load_assigned_quest_items,
             )
 
-            items = await asyncio.to_thread(_load_assigned_quest_items, agent)
+            items = await asyncio.to_thread(load_assigned_quest_items, agent)
             if items:
                 log.line("Assigned quest items", style="bold")
-                log.markdown(_format_assigned_quest_items(items))
+                log.markdown(format_assigned_quest_items(items))
             else:
                 log.line("No assigned quest items found.")
         except Exception as exc:

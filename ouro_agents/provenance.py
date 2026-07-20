@@ -11,11 +11,12 @@ handler re-verifies ownership against the platform before acting.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from .platform_context_prompt import load_platform_context
 
 logger = logging.getLogger(__name__)
 
@@ -40,14 +41,10 @@ class AssetProvenance:
 
 
 def _load_agent_user_id(workspace: Path) -> Optional[str]:
-    cache_path = workspace / "data" / "platform_context.json"
-    if not cache_path.exists():
+    ctx = load_platform_context(workspace)
+    if not ctx:
         return None
-    try:
-        ctx = json.loads(cache_path.read_text())
-        return (ctx.get("profile") or {}).get("id")
-    except Exception:
-        return None
+    return (ctx.get("profile") or {}).get("id")
 
 
 def _extract_event_team_id(event_data: Dict[str, Any]) -> Optional[str]:

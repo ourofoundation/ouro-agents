@@ -50,7 +50,8 @@ away — most chat turns need zero tools), uses `tool_choice="auto"` so the
 model can reply to casual messages without a forced tool call, and skips
 preflight for lower reply latency (the trivial-message regex still
 fast-paths greetings; post-run reflection still runs in the background and
-never delays the reply). Default `max_steps=20`.
+never delays the reply). Uses the mid model tier when configured (falls
+back to strong). Default `max_steps=20`.
 
 Delivery is the observer's job, not the mode's: for webhook events the
 server's `ServerAgentObserver` posts the final assistant message back to the
@@ -66,9 +67,12 @@ preflight + post-reflection. Persists conversation turns when
 `conversation_id` is provided.
 
 ### `heartbeat`
-Lightweight scheduler-driven mode. Restricted to the `ouro` MCP server,
-preloads `get_asset`, `write_comment`, `create_post`. No preflight. Used
-inside the heartbeat loop in `modes/heartbeat.py`.
+Scheduler-driven mode. Restricted to the `ouro` MCP server (search is
+delegated to subagents). Runs one strong-model preflight that produces an
+executable brief, then a cheap mid/light executor follows that brief.
+Post-run reflection is gated by preflight `worth_remembering` (pass/no-op
+ticks skip the reflector). Used inside the heartbeat loop in
+`modes/heartbeat.py`.
 
 ### `plan`
 Generates a new plan cycle. Restricted servers, only `memory_recall` from
@@ -114,9 +118,11 @@ subagent as visible **step 0** of the run. Preflight returns:
 - `tools` — MCP tools the plan will need, merged into the run's preloads so
   the main agent can call them without a `load_tool` round-trip.
 - `worth_remembering` — gates whether the post-run reflector runs.
+  Heartbeat pass/no-op objectives always skip reflection even if this flag
+  is true.
 
 After the main loop finishes, if `skip_post_reflection=False` and the run
-is `worth_remembering`, the agent dispatches the `reflector` subagent in
+is worth remembering, the agent dispatches the `reflector` subagent in
 the background. It curates facts/preferences into vector memory, updates
 the user model, and appends a daily-log entry. Failures are logged but
 never block the user response.

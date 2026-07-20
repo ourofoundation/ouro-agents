@@ -127,15 +127,51 @@ class TestModelRoleTiers(unittest.TestCase):
         self.assertEqual(MODEL_ROLE_TIERS["writer"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["planning"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["preflight"], "light")
+        self.assertEqual(MODEL_ROLE_TIERS["heartbeat_preflight"], "strong")
+        self.assertEqual(MODEL_ROLE_TIERS["search"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["research"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["reflector"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["utility"], "light")
+        self.assertEqual(MODEL_ROLE_TIERS["chat"], "mid")
         self.assertEqual(MODEL_ROLE_TIERS["heartbeat"], "mid")
 
     def test_mid_falls_back_to_strong(self):
         config = _load(_tiered_config())
         spec = tier_spec_for_role(config.models, "heartbeat")
         self.assertEqual(spec.id, "z-ai/glm-5.2")
+        chat_spec = tier_spec_for_role(config.models, "chat")
+        self.assertEqual(chat_spec.id, "z-ai/glm-5.2")
+
+    def test_legacy_proactive_migrates_to_servers(self):
+        data = _tiered_config()
+        data["modes"]["heartbeat"]["proactive"] = {
+            "enabled": True,
+            "servers": ["ouro", "search"],
+        }
+        config = _load(data)
+        self.assertEqual(config.heartbeat.servers, ["ouro"])
+        self.assertFalse(hasattr(config.heartbeat, "proactive"))
+
+
+class TestCompletionCaps(unittest.TestCase):
+    def test_build_model_applies_role_completion_cap(self):
+        from ouro_agents.config import ROLE_MAX_COMPLETION_TOKENS
+
+        agent = OuroAgent.__new__(OuroAgent)
+        agent.config = _load(_tiered_config())
+        agent._usage_tracker = object()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("z-ai/glm-5.2", role="heartbeat")
+
+        self.assertEqual(
+            tracked_model.call_args.kwargs["max_tokens"],
+            ROLE_MAX_COMPLETION_TOKENS["heartbeat"],
+        )
 
 
 class TestAgentModelResolution(unittest.TestCase):
@@ -228,6 +264,36 @@ class TestAgentModelResolution(unittest.TestCase):
             "openai/gpt-4.1-mini",
         )
 
+    def test_chat_role_uses_mid_tier(self):
+        data = _tiered_config()
+        data["models"]["mid"] = {
+            "id": "moonshotai/kimi-k3",
+            "reasoning": {"enabled": True},
+        }
+        agent = self._agent(data)
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model(
+                agent._model_id_for_role("chat"),
+                role="chat",
+                conversational=True,
+            )
+
+        self.assertEqual(
+            tracked_model.call_args.kwargs["model_id"],
+            "moonshotai/kimi-k3",
+        )
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(reasoning, {"enabled": True})
+
+    def test_chat_role_falls_back_to_strong_without_mid(self):
+        agent = self._agent(_tiered_config())
+        self.assertEqual(agent._model_id_for_role("chat"), "z-ai/glm-5.2")
+
 
 class TestHermesConfigLoads(unittest.TestCase):
     def test_hermes_json_loads_with_tiers(self):
@@ -243,7 +309,7 @@ class TestHermesConfigLoads(unittest.TestCase):
         preflight = config.subagents.profiles["preflight"]
         self.assertIsNone(preflight.model)
         self.assertIsNone(preflight.reasoning)
-        self.assertEqual(preflight.max_steps, 4)
+        self.assertEqual(preflight.max_steps, 6)
 
 
 if __name__ == "__main__":

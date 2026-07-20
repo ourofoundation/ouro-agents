@@ -60,7 +60,7 @@ Configure two or three model bundles once; the harness picks a tier per role.
 |-------|------|---------|-------|
 | `strong` | ModelTierSpec | required | Main agent, planning, writer, executor, developer. |
 | `light` | ModelTierSpec | required | Preflight, research, reflector, extraction, utilities (compact / summarize / dream / refinement). |
-| `mid` | ModelTierSpec | none | Heartbeat when set; otherwise heartbeat uses `strong`. |
+| `mid` | ModelTierSpec | none | Chat and heartbeat when set; otherwise both use `strong`. |
 
 Each tier spec:
 
@@ -81,7 +81,7 @@ Role → tier map (code-owned, not configurable):
 | Role | Tier |
 |------|------|
 | agent, planning, writer, executor, developer, planner | strong |
-| heartbeat | mid → strong |
+| chat, heartbeat | mid → strong |
 | preflight, research, reflector | light |
 | utility, extraction, refinement | light |
 
@@ -194,12 +194,19 @@ Layered overrides:
 
 ## `prompt_caching`
 
-Anthropic prompt caching via OpenRouter.
+Prompt caching via OpenRouter for Anthropic (top-level `cache_control`) and
+commercial Qwen (per-message breakpoints). Kimi/GLM use automatic provider
+prefix caching without explicit markers — keep the system prompt static and
+the task dynamic so prefixes stay stable.
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `enabled` | bool | `false` | Set `cache_control` on requests when the model id starts with `anthropic/`. |
-| `ttl` | `5m` \| `1h` | `5m` | Cache lifetime. |
+| `enabled` | bool | `false` | Enables explicit Anthropic/Qwen cache markers. |
+| `ttl` | `5m` \| `1h` | `5m` | Cache lifetime for explicit markers. |
+
+Role-aware `max_completion_tokens` (on each `models.*` tier, with
+`ROLE_MAX_COMPLETION_TOKENS` defaults) caps OpenAI `max_tokens` so providers
+cannot reserve ~65k completion tokens and trip OpenRouter credit checks.
 
 ## `heartbeat`
 
@@ -210,11 +217,18 @@ inside `modes.heartbeat` and hoisted out at load time.
 |-------|------|---------|-------|
 | `enabled` | bool | `true` | Disable to stop scheduling heartbeats. |
 | `every` | str | `30m` | Interval (`30s`, `5m`, `1h`, `1d`) or 5-field cron. |
-| `model` | str | required | Heartbeat model id (also used by the cheap "compactor" model). |
+| `model` | str | required | Heartbeat executor model id (also used by the cheap "compactor" model). |
 | `active_hours` | `{start, end, timezone}` | none | Skip ticks outside this window. |
-| `proactive.enabled` | bool | `false` | Allow heartbeats to use additional MCP servers. |
-| `proactive.servers` | list[str] | `["ouro"]` | Extra servers when proactive. |
+| `servers` | list[str] | `["ouro"]` | MCP servers the main heartbeat may load. Search belongs to `search`/`research` subagents. |
 | `reasoning` | ReasoningConfig | none | Overlay on top of `agent.reasoning`. |
+
+Legacy `proactive.enabled` / `proactive.servers` configs are migrated to
+`servers` at load time (always `["ouro"]` for the main heartbeat when search
+was previously listed — search is delegated).
+
+Heartbeat flow: one strong-model preflight produces an executable brief; a
+cheap mid/light executor follows it. Post-preflight workers are capped to
+mid/light for that tick.
 
 ## `planning`
 

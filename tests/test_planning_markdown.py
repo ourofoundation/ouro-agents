@@ -769,7 +769,7 @@ def test_build_quest_history_context_summarizes_recent_quests():
     assert "## Your Recent Quests" in context
     assert "Cycle 22" in context
     assert "Paper deep-read" in context
-    assert "1/2 done" in context
+    assert "1/2 resolved" in context
 
 
 def test_run_planning_run_skip_advances_cursor_without_quest(tmp_path):

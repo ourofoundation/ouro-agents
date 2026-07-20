@@ -42,16 +42,25 @@
   },
   "models": {
     "strong": {
-      "id": "google/gemini-2.5-flash",
+      "id": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "high"
-      }
+      },
+      "max_completion_tokens": 16384
+    },
+    "mid": {
+      "id": "z-ai/glm-5.2",
+      "reasoning": {
+        "effort": "high"
+      },
+      "max_completion_tokens": 8192
     },
     "light": {
       "id": "xiaomi/mimo-v2.5",
       "reasoning": {
-        "effort": "none"
-      }
+        "effort": "high"
+      },
+      "max_completion_tokens": 4096
     }
   },
   "openrouter_provider": {
@@ -59,19 +68,22 @@
   },
   "subagents": {
     "preflight": {
+      "max_steps": 6
+    },
+    "search": {
       "max_steps": 4
     },
     "research": {
-      "max_steps": 10
+      "max_steps": 8
     },
     "reflector": {
-      "max_steps": 10
+      "max_steps": 5
     },
     "executor": {
-      "max_steps": 24
+      "max_steps": 10
     },
     "developer": {
-      "max_steps": 32
+      "max_steps": 20
     }
   },
   "modes": {
@@ -88,19 +100,15 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "max_steps": 40,
+      "max_steps": 12,
       "active_hours": {
         "start": "09:00",
         "end": "22:00",
         "timezone": "America/Chicago"
       },
-      "proactive": {
-        "enabled": true,
-        "servers": [
-          "ouro",
-          "search"
-        ]
-      }
+      "servers": [
+        "ouro"
+      ]
     }
   },
   "memory": {

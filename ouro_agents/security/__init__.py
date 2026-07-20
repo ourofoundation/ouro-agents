@@ -11,7 +11,10 @@ from .policy import (
 )
 from .tool_capabilities import (
     capability_for_tool,
+    filter_deferred_by_servers,
+    filter_deferred_excluding,
     filter_deferred_tools,
+    resolve_preload_tools,
     unmapped_tools,
 )
 
@@ -24,6 +27,9 @@ __all__ = [
     "capabilities_for_surface",
     "resolve_envelope",
     "capability_for_tool",
+    "filter_deferred_by_servers",
+    "filter_deferred_excluding",
     "filter_deferred_tools",
+    "resolve_preload_tools",
     "unmapped_tools",
 ]

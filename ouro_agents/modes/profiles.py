@@ -145,15 +145,23 @@ HEARTBEAT = ModeProfile(
     name="heartbeat",
     framing=HEARTBEAT_FRAMING,
     output_format=HEARTBEAT_OUTPUT,
-    max_steps=20,
+    max_steps=12,
     preload_tools=[
         "ouro:search_assets",
         "ouro:get_asset",
         "ouro:write_comment",
         "ouro:create_post",
     ],
+    # Main heartbeat may only load Ouro MCP tools; search belongs to subagents.
+    restricted_servers=True,
+    default_servers=["ouro"],
+    allow_delegation=True,
     lightweight=True,
-    skip_preflight=True,
+    # One strong preflight plans the tick; the cheap executor follows it.
+    # Reflection stays available but is gated by preflight worth_remembering
+    # (pass/no-op ticks skip the reflector).
+    skip_preflight=False,
+    skip_post_reflection=False,
     load_scheduled_tasks=False,
     append_conversation_turns=False,
 )

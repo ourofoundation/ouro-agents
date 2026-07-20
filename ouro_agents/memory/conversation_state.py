@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from ..constants import parse_llm_json
+
 logger = logging.getLogger(__name__)
 
 STATE_UPDATE_PROMPT = """\
@@ -173,10 +175,9 @@ def update_state(
             ],
         )
         text = result.content if hasattr(result, "content") else str(result)
-        text = text.strip()
-        if text.startswith("```"):
-            text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        data = json.loads(text)
+        data = parse_llm_json(str(text), expect=dict)
+        if not isinstance(data, dict):
+            raise ValueError("Conversation state LLM returned non-object JSON")
         state = ConversationState.from_dict(data)
         state.turn_count = (previous_state.turn_count if previous_state else 0) + 1
         return state

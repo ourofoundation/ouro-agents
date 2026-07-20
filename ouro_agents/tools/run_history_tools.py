@@ -17,6 +17,7 @@ from typing import Optional
 
 from smolagents import tool
 
+from ..constants import clip_text
 from ..run_log import RunLogStore
 
 # Breadth ordering: a larger rank sees more history.
@@ -25,8 +26,7 @@ _RANK_SCOPE = {v: k for k, v in _SCOPE_RANK.items()}
 
 
 def _preview(value: Optional[str], n: int = 160) -> str:
-    text = " ".join((value or "").split())
-    return text[:n] + ("…" if len(text) > n else "")
+    return clip_text(value, n)
 
 
 def make_run_history_tools(

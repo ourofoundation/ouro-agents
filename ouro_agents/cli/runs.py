@@ -7,8 +7,6 @@ commands open the database read-only and never start an agent.
 from __future__ import annotations
 
 import json
-import re
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ..constants import clip_text, parse_since_iso
 from ..run_log import RunLogStore
 
 runs_app = typer.Typer(
@@ -28,8 +27,6 @@ runs_app = typer.Typer(
 console = Console()
 
 _STATUS_STYLE = {"success": "green", "error": "red", "cancelled": "yellow"}
-_REL_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
-_REL_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 
 
 def _open_store(ctx: typer.Context) -> RunLogStore:
@@ -42,15 +39,7 @@ def _open_store(ctx: typer.Context) -> RunLogStore:
 
 def _parse_since(since: Optional[str]) -> Optional[str]:
     """Turn ``24h`` / ``7d`` / an ISO date into an absolute ISO-8601 lower bound."""
-    if not since:
-        return None
-    match = _REL_RE.match(since)
-    if match:
-        amount, unit = int(match.group(1)), match.group(2).lower()
-        delta = timedelta(**{_REL_UNITS[unit]: amount})
-        return (datetime.now(timezone.utc) - delta).isoformat()
-    # Otherwise treat it as an absolute date/datetime the user typed verbatim.
-    return since
+    return parse_since_iso(since)
 
 
 def _short(value: Optional[str], n: int = 8) -> str:
@@ -58,8 +47,7 @@ def _short(value: Optional[str], n: int = 8) -> str:
 
 
 def _preview(value: Optional[str], n: int = 60) -> str:
-    text = " ".join((value or "").split())
-    return text[:n] + ("…" if len(text) > n else "")
+    return clip_text(value, n)
 
 
 def _status_text(status: str) -> str:

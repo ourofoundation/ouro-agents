@@ -80,12 +80,15 @@ def test_heartbeat_framing_prefers_bounded_progress():
 
 def test_heartbeat_framing_allows_direction_proposal_posts():
     assert "direction" in HEARTBEAT_FRAMING
-    assert "3-5 concrete directions" in HEARTBEAT_FRAMING
-    assert "do not create a quest" in HEARTBEAT_FRAMING
+    assert "preflight" in HEARTBEAT_FRAMING
+    assert "delegate" in HEARTBEAT_FRAMING.lower() or "`search`" in HEARTBEAT_FRAMING
     assert "ouro:search_assets" in HEARTBEAT.preload_tools
     assert "ouro:create_post" in HEARTBEAT.preload_tools
-    assert HEARTBEAT.restricted_servers is False
+    assert HEARTBEAT.restricted_servers is True
     assert HEARTBEAT.allow_delegation is True
+    assert HEARTBEAT.skip_preflight is False
+    assert HEARTBEAT.skip_post_reflection is False
+    assert HEARTBEAT.max_steps == 12
 
 
 def test_quest_work_playbook_mentions_bounded_progress_and_tools():
@@ -256,7 +259,7 @@ def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):
     assert captured["kwargs"]["model_override"].model_id == "heartbeat-model"
 
 
-def test_run_heartbeat_appends_team_direction_when_unscoped(tmp_path):
+def test_run_heartbeat_appends_global_direction_when_unscoped(tmp_path):
     captured = {}
 
     class _MemoryItem:
@@ -270,7 +273,8 @@ def test_run_heartbeat_appends_team_direction_when_unscoped(tmp_path):
 
     class _Memory:
         def search(self, **kwargs):
-            if kwargs.get("team_id") == "team-outreach":
+            # Unscoped heartbeats only do a global recall (no per-team fan-out).
+            if kwargs.get("team_id") is None:
                 return [_MemoryItem()]
             return []
 
@@ -291,7 +295,7 @@ def test_run_heartbeat_appends_team_direction_when_unscoped(tmp_path):
                 heartbeat=SimpleNamespace(
                     model="heartbeat-model",
                     every="1h",
-                    proactive=SimpleNamespace(enabled=False, servers=[]),
+                    servers=["ouro"],
                     active_hours=None,
                 ),
                 planning=SimpleNamespace(enabled=False),
@@ -326,6 +330,7 @@ def test_run_heartbeat_appends_team_direction_when_unscoped(tmp_path):
     assert result is None
     assert "fully dedicated to outreach" in captured["task"]
     assert "Do not choose unrelated research" in captured["task"]
+    assert captured["kwargs"]["allowed_servers"] == ["ouro"]
 
 
 def test_run_heartbeat_selects_planning_team_from_direction_memory(tmp_path):

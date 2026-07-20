@@ -16,6 +16,7 @@ import re
 from typing import TYPE_CHECKING, Any, Optional
 
 from ..syncing import read_field
+from ..constants import clip_text
 from .planning import quest_items, quest_status, search_own_quests
 
 if TYPE_CHECKING:
@@ -31,8 +32,7 @@ _ASSET_ID_RE = re.compile(
 
 
 def _snippet(text: object, max_len: int) -> str:
-    flat = " ".join(str(text or "").split())
-    return flat[: max_len - 1] + "…" if len(flat) > max_len else flat
+    return clip_text(text, max_len)
 
 
 def _extract_asset_ids(*texts: object) -> list[str]:

@@ -25,6 +25,7 @@ from .config import (
     OuroAgentsConfig,
     ReasoningConfig,
     RunMode,
+    max_completion_tokens_for_role,
     merge_openrouter_provider,
     merge_reasoning,
     tier_spec_for_role,
@@ -59,18 +60,24 @@ from .modes import (
 from .observer import AgentObserver, ProgressEvent, emit_progress
 from .run_log import RunLogStore, RunRecord
 from .security.policy import Capability, CapabilityEnvelope
-from .security.tool_capabilities import filter_deferred_tools
+from .security.tool_capabilities import (
+    filter_deferred_by_servers,
+    filter_deferred_excluding,
+    filter_deferred_tools,
+)
 from .skills import get_skill_directory, load_startup_skills
 from .soul import build_prompt
 from .subagents.context import SubAgentUsage
 from .subagents.delegate_utils import (
     delegate_success_payload,
+    dispatch_delegate_tasks,
+    dumps_delegate_result,
     normalize_return_mode,
     resolve_auto_return_mode,
     summarize_delegate_text,
     validate_delegate_result,
 )
-from .subagents.preflight import PreflightResult, parse_preflight_result
+from .subagents.preflight import PreflightResult, format_heartbeat_execution_brief, parse_preflight_result
 from .subagents.reflector import (
     ReflectionResult,
     build_run_reflection_task,
@@ -344,7 +351,9 @@ class OuroAgent:
             except Exception as e:
                 logger.warning("Platform context: failed to fetch teams: %s", e)
 
-        cache_path = self._workspace / "data" / "platform_context.json"
+        from .platform_context_prompt import platform_context_path
+
+        cache_path = platform_context_path(self._workspace)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._own_user_id = (context.get("profile") or {}).get("id")
@@ -906,8 +915,14 @@ class OuroAgent:
         role: Optional[str] = None,
         usage_tracker: Optional[UsageTracker] = None,
         conversational: bool = False,
+        max_completion_tokens: Optional[int] = None,
     ) -> TrackedOpenAIModel:
         model_kwargs = {}
+        effective_role = (
+            role
+            or subagent_profile
+            or ("heartbeat" if heartbeat else "agent")
+        )
         resolved = (
             reasoning
             if reasoning is not None
@@ -930,6 +945,14 @@ class OuroAgent:
         )
         if tool_choice is not None:
             model_kwargs["tool_choice"] = tool_choice
+
+        completion_cap = max_completion_tokens
+        if completion_cap is None:
+            completion_cap = max_completion_tokens_for_role(
+                self.config.models, effective_role
+            )
+        if completion_cap is not None:
+            model_kwargs["max_tokens"] = completion_cap
 
         cache_cfg = self.config.prompt_caching
         explicit_cache = cache_cfg.enabled and self._supports_explicit_cache(model_id)
@@ -1310,22 +1333,14 @@ class OuroAgent:
                 if allowed_servers
                 else set(profile.default_servers)
             )
-            deferred_index = [
-                item for item in self._deferred_index if item["server"] in servers
-            ]
-            filtered_names = {item["tool"] for item in deferred_index}
-            deferred_tools = {
-                k: v for k, v in self._deferred_tools.items() if k in filtered_names
-            }
+            deferred_tools, deferred_index = filter_deferred_by_servers(
+                deferred_tools, deferred_index, servers
+            )
 
         if profile.excluded_tools:
-            excluded = set(profile.excluded_tools)
-            deferred_index = [
-                item for item in deferred_index if item["tool"] not in excluded
-            ]
-            deferred_tools = {
-                k: v for k, v in deferred_tools.items() if k not in excluded
-            }
+            deferred_tools, deferred_index = filter_deferred_excluding(
+                deferred_tools, deferred_index, profile.excluded_tools
+            )
 
         if profile.allowed_capabilities is not None:
             deferred_tools, deferred_index = filter_deferred_tools(
@@ -1530,8 +1545,6 @@ class OuroAgent:
 
             Example: [{"subagent": "research", "task": "Find papers on X"}, {"subagent": "writer", "task": "Draft intro"}]
             """
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
             if not tasks:
                 return json.dumps({"status": "error", "error": "No tasks provided."})
 
@@ -1548,36 +1561,20 @@ class OuroAgent:
                     spec.get("return_mode", ""),
                 )
 
-            if len(tasks) == 1:
-                return json.dumps(_run_one(tasks[0]))
-
-            outputs = [None] * len(tasks)
-            with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
-                future_to_idx = {
-                    pool.submit(_run_one, spec): i for i, spec in enumerate(tasks)
-                }
-                for future in as_completed(future_to_idx):
-                    idx = future_to_idx[future]
-                    try:
-                        outputs[idx] = future.result()
-                    except Exception as e:
-                        outputs[idx] = {
-                            "status": "error",
-                            "subagent": tasks[idx].get("subagent", "?"),
-                            "return_mode": normalize_return_mode(
-                                tasks[idx].get("return_mode", "")
-                            ),
-                            "error": str(e),
-                        }
-
-            return json.dumps(outputs)
+            outputs = dispatch_delegate_tasks(
+                tasks,
+                _run_one,
+                parallel=bool(agent_self.config.subagents.parallel_dispatch),
+                max_workers=4,
+            )
+            return dumps_delegate_result(tasks, outputs)
 
         delegate.description += f"\n\nAvailable subagents: {_subagent_names_str}"
 
         delegate_tools = (
             []
             if (
-                profile.restricted_servers
+                not self.config.subagents.enabled
                 or not profile.allow_delegation
                 or not profile.allows_capability(Capability.DELEGATE)
             )
@@ -1715,14 +1712,36 @@ class OuroAgent:
         plans_index_text = shared_context["plans_index"]
 
         delegatable_profiles = self.delegatable_profiles
-        if (
-            not profile.lightweight
-            and profile.allow_delegation
-            and delegatable_profiles
-        ):
+        # Heartbeat is lightweight but still needs a compact directory so the
+        # cheap executor knows when to delegate search/research. Decouple
+        # ``lightweight`` from hiding the subagent directory.
+        show_subagents = (
+            profile.allow_delegation
+            and bool(delegatable_profiles)
+            and self.config.subagents.enabled
+            and (
+                not profile.lightweight
+                or profile.name == "heartbeat"
+            )
+        )
+        if show_subagents:
+            if profile.name == "heartbeat":
+                heartbeat_names = (
+                    "search",
+                    "research",
+                    "writer",
+                    "executor",
+                    "developer",
+                )
+                listed = [
+                    p
+                    for name in heartbeat_names
+                    if (p := delegatable_profiles.get(name)) is not None
+                ]
+            else:
+                listed = list(delegatable_profiles.values())
             subagent_directory = "\n".join(
-                f"- **{p.name}**: {p.description}"
-                for p in delegatable_profiles.values()
+                f"- **{p.name}**: {p.description}" for p in listed
             )
         else:
             subagent_directory = ""
@@ -1765,10 +1784,23 @@ class OuroAgent:
             or self._model_id_for_role(profile.name)
             or self.config.agent.model
         )
+        role = profile.name
+        # During heartbeat ticks, every post-preflight worker stays at mid/light
+        # even if the profile defaults to strong in chat/autonomous modes.
+        if getattr(self, "_heartbeat_cheap_workers", False):
+            cheap_id = (
+                self._model_id_for_role("heartbeat")
+                or self._model_id_for_role("utility")
+                or self.config.heartbeat.model
+            )
+            strong_id = self._model_id_for_role("agent") or self.config.agent.model
+            if cheap_id and model_id == strong_id:
+                model_id = cheap_id
+                role = "heartbeat"
         return self._build_model(
             model_id,
             subagent_profile=profile.name,
-            role=profile.name,
+            role=role,
             usage_tracker=usage_tracker,
         )
 
@@ -1936,6 +1968,7 @@ class OuroAgent:
         cancellation_token: Optional[RunCancellationToken] = None,
         progress_observer: Optional[AgentObserver] = None,
         allowed_capabilities: Optional[frozenset[Capability]] = None,
+        model_override=None,
     ):
         """Build context and dispatch a subagent through the unified runner.
 
@@ -1948,7 +1981,7 @@ class OuroAgent:
             UsageTracker(),
             mirrors=[self._usage_tracker],
         )
-        model = self._resolve_subagent_model(
+        model = model_override or self._resolve_subagent_model(
             profile,
             usage_tracker=subagent_usage_tracker,
         )
@@ -2060,6 +2093,8 @@ class OuroAgent:
         cancellation_token: Optional[RunCancellationToken] = None,
         observer: Optional[AgentObserver] = None,
         available_tools: Optional[list[str]] = None,
+        *,
+        heartbeat: bool = False,
     ) -> PreflightResult:
         """Run the preflight subagent as a visible step 0.
 
@@ -2067,6 +2102,20 @@ class OuroAgent:
         a single subagent call that returns structured JSON.
         """
         from .subagents.profiles import PREFLIGHT
+        from .subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT
+
+        profile = PREFLIGHT
+        if heartbeat:
+            # Default step budget is higher than chat preflight: the strategist
+            # reads a large inbox/direction context, usually spends one step on
+            # a batched memory_recall, and must still end with the JSON reply.
+            # config subagents.preflight.max_steps still overrides this.
+            profile = PREFLIGHT.model_copy(
+                update={
+                    "system_prompt": HEARTBEAT_PREFLIGHT_PROMPT,
+                    "max_steps": 6,
+                }
+            )
 
         _display = display or get_display()
         _display.step("Step 0: preflight")
@@ -2102,6 +2151,13 @@ class OuroAgent:
                 'preloaded via the "tools" field of your JSON reply; use these '
                 "exact names): " + ", ".join(available_tools)
             )
+        if heartbeat:
+            constraint_parts.append(
+                "This is a heartbeat tick. Prefer one bounded objective. "
+                "Delegate search/research rather than asking the executor to load "
+                "search MCP tools. Available delegates: search, research, writer, "
+                "executor, developer."
+            )
         preflight_task = task
         if constraint_parts:
             preflight_task = (
@@ -2109,18 +2165,51 @@ class OuroAgent:
             )
 
         t0 = time.monotonic()
-        result = self._run_subagent(
-            PREFLIGHT,
-            preflight_task,
-            conversation_state=conv_state,
-            user_id=user_id,
-            run_id=run_id,
-            asset_refs=asset_refs,
-            team_id=team_id,
-            doc_store=doc_store,
-            cancellation_token=cancellation_token,
-            progress_observer=observer,
-        )
+        # Heartbeat preflight is the tick's only strong-model stage.
+        previous_ceiling = getattr(self, "_heartbeat_cheap_workers", False)
+        if heartbeat:
+            self._heartbeat_cheap_workers = False
+        try:
+            if heartbeat:
+                # Force strong-tier model for heartbeat strategy.
+                strong_id = (
+                    self._model_id_for_role("heartbeat_preflight")
+                    or self._model_id_for_role("agent")
+                    or self.config.agent.model
+                )
+                model = self._build_model(
+                    strong_id,
+                    role="heartbeat_preflight",
+                    subagent_profile="preflight",
+                )
+                result = self._run_subagent(
+                    profile,
+                    preflight_task,
+                    conversation_state=conv_state,
+                    user_id=user_id,
+                    run_id=run_id,
+                    asset_refs=asset_refs,
+                    team_id=team_id,
+                    doc_store=doc_store,
+                    cancellation_token=cancellation_token,
+                    progress_observer=observer,
+                    model_override=model,
+                )
+            else:
+                result = self._run_subagent(
+                    profile,
+                    preflight_task,
+                    conversation_state=conv_state,
+                    user_id=user_id,
+                    run_id=run_id,
+                    asset_refs=asset_refs,
+                    team_id=team_id,
+                    doc_store=doc_store,
+                    cancellation_token=cancellation_token,
+                    progress_observer=observer,
+                )
+        finally:
+            self._heartbeat_cheap_workers = previous_ceiling
         duration_s = time.monotonic() - t0
 
         if result.usage and result.usage.total_tokens:
@@ -2249,6 +2338,7 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
+        memory_notes: Optional[list[str]] = None,
     ) -> None:
         """Run reflection after an autonomous/event run via the reflector subagent.
 
@@ -2263,6 +2353,7 @@ class OuroAgent:
             run_mode=mode.value,
             event_type=event_type,
             available_teams=self._available_memory_teams(team_id),
+            memory_notes=memory_notes,
         )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
@@ -2496,10 +2587,23 @@ class OuroAgent:
         token.raise_if_cancelled()
         run_started_at = time.monotonic()
         self.connect_mcp()
-        model = model_override or self._build_model(
-            self.config.agent.model,
-            conversational=resolve_mode_profile(mode).conversational,
-        )
+        run_profile = resolve_mode_profile(mode)
+        if model_override is not None:
+            model = model_override
+        elif mode == RunMode.CHAT:
+            chat_model_id = (
+                self._model_id_for_role("chat") or self.config.agent.model
+            )
+            model = self._build_model(
+                chat_model_id,
+                role="chat",
+                conversational=run_profile.conversational,
+            )
+        else:
+            model = self._build_model(
+                self.config.agent.model,
+                conversational=run_profile.conversational,
+            )
         record.model = model.model_id if hasattr(model, "model_id") else str(model)
         record._model_obj = model
         active_doc_store = self._resolve_doc_store(team_id=team_id)
@@ -2578,6 +2682,79 @@ class OuroAgent:
             )
             profile = apply_capability_envelope(profile, capability_envelope)
 
+        is_heartbeat = mode == RunMode.HEARTBEAT
+        previous_cheap_workers = getattr(self, "_heartbeat_cheap_workers", False)
+        self._heartbeat_cheap_workers = is_heartbeat
+        try:
+            return self._continue_run_blocking_inner(
+                record=record,
+                task=task,
+                model=model,
+                profile=profile,
+                conversation_id=conversation_id,
+                mode=mode,
+                user_id=user_id,
+                skip_memory=skip_memory,
+                allowed_servers=allowed_servers,
+                mode_framing_override=mode_framing_override,
+                preload_tools=preload_tools,
+                prefetch=prefetch,
+                debug_markdown_path=debug_markdown_path,
+                extra_tools=extra_tools,
+                observer=observer,
+                preserve_existing_usage=preserve_existing_usage,
+                event_type=event_type,
+                team_id=team_id,
+                capability_envelope=capability_envelope,
+                token=token,
+                trigger_turn_id=trigger_turn_id,
+                run_started_at=run_started_at,
+                active_doc_store=active_doc_store,
+                is_heartbeat=is_heartbeat,
+                run_id=run_id,
+                _patched_reasoning_callbacks=_patched_reasoning_callbacks,
+                _original_reasoning_cb=_original_reasoning_cb,
+                _original_reasoning_stream_cb=_original_reasoning_stream_cb,
+                _patched_retry_callback=_patched_retry_callback,
+                _original_retry_callback=_original_retry_callback,
+            )
+        finally:
+            self._heartbeat_cheap_workers = previous_cheap_workers
+
+    def _continue_run_blocking_inner(
+        self,
+        *,
+        record: RunRecord,
+        task: str,
+        model,
+        profile,
+        conversation_id: Optional[str],
+        mode: RunMode,
+        user_id: Optional[str],
+        skip_memory: bool,
+        allowed_servers: Optional[list[str]],
+        mode_framing_override: str,
+        preload_tools: Optional[list[str]],
+        prefetch: Optional[PrefetchSpec],
+        debug_markdown_path: Optional[Path],
+        extra_tools: Optional[list],
+        observer: Optional[AgentObserver],
+        preserve_existing_usage: bool,
+        event_type: Optional[str],
+        team_id: Optional[str],
+        capability_envelope: Optional[CapabilityEnvelope],
+        token: RunCancellationToken,
+        trigger_turn_id: Optional[str],
+        run_started_at: float,
+        active_doc_store,
+        is_heartbeat: bool,
+        run_id: str,
+        _patched_reasoning_callbacks: bool,
+        _original_reasoning_cb,
+        _original_reasoning_stream_cb,
+        _patched_retry_callback: bool,
+        _original_retry_callback,
+    ) -> str:
         # Merge profile preload tools with any explicit preload_tools.
         # Use dict.fromkeys for stable, first-seen dedup so order is
         # deterministic across runs (explicit preloads take precedence).
@@ -2625,15 +2802,19 @@ class OuroAgent:
                 cancellation_token=token,
                 observer=observer,
                 available_tools=[item["tool"] for item in eligible_index],
+                heartbeat=is_heartbeat,
             )
             logger.info(
-                "Preflight: intent=%s complexity=%s worth_remembering=%s briefing=%d plan=%d tools=%s",
+                "Preflight: intent=%s complexity=%s worth_remembering=%s "
+                "briefing=%d plan=%d tools=%s prefetch=%d memory_notes=%d",
                 preflight.intent,
                 preflight.complexity,
                 preflight.worth_remembering,
                 len(preflight.briefing),
                 len(preflight.plan),
                 ",".join(preflight.tools) or "none",
+                len(preflight.prefetch_assets),
+                len(preflight.memory_notes),
             )
             record.preflight_intent = preflight.intent
             record.preflight_complexity = preflight.complexity
@@ -2747,7 +2928,32 @@ class OuroAgent:
                 f"{preflight.plan}"
             )
 
-        if context_parts:
+        if is_heartbeat:
+            # Cheap executor gets the compact brief, not a replay of the full
+            # planning playbook/direction dump that preflight already consumed.
+            brief = format_heartbeat_execution_brief(
+                preflight or PreflightResult()
+            )
+            effective_task = brief
+            if preflight and preflight.prefetch_assets:
+                # Strategist-selected assets are fetched up front so the mid-tier
+                # executor doesn't burn its first steps on get_asset round-trips.
+                emit_progress(
+                    observer, "prefetching_context", "loading preflight assets"
+                )
+                hb_prefetch = resolve_prefetch(
+                    self._deferred_tools,
+                    PrefetchSpec(asset_ids=list(preflight.prefetch_assets)),
+                )
+                if hb_prefetch:
+                    effective_task = f"{effective_task}\n\n{hb_prefetch}"
+                emit_progress(
+                    observer,
+                    "prefetching_context",
+                    "context loaded" if hb_prefetch else "no context loaded",
+                    state="complete",
+                )
+        elif context_parts:
             effective_task = (
                 "\n\n---\n\n".join(context_parts)
                 + f"\n\n---\n\n## Current request\n{task}"
@@ -2993,7 +3199,7 @@ class OuroAgent:
 
         def _do_post_run():
             worth_remembering = (
-                preflight.worth_remembering if preflight else not is_trivial
+                preflight.should_remember() if preflight else not is_trivial
             )
             if (
                 not profile.skip_post_reflection
@@ -3016,6 +3222,9 @@ class OuroAgent:
                     doc_store=active_doc_store,
                     conversation_state=conv_state,
                     conversation_id=conversation_id,
+                    memory_notes=(
+                        preflight.memory_notes if preflight else None
+                    ),
                 )
 
             if profile.update_conversation_state and conversation_id:
@@ -3054,6 +3263,22 @@ class OuroAgent:
 
         usage = collect_run_usage(agent, model, self._usage_tracker)
         memory_ledger = self.memory.usage_ledger() or None
+        if memory_ledger:
+            usage.num_embedding_calls = sum(
+                int(getattr(u, "num_embedding_calls", 0) or getattr(u, "num_api_calls", 0) or 0)
+                for name, u in memory_ledger
+                if name == "embeddings"
+            )
+            # Generation totals should exclude embedding calls that shared the
+            # tracker via the memory wrap.
+            generation_rows = [
+                g
+                for g in (usage.generations or [])
+                if g.get("call_kind", "generation") != "embedding"
+            ]
+            usage.num_generation_calls = len(generation_rows) or max(
+                0, usage.num_api_calls - usage.num_embedding_calls
+            )
         logger.info(
             "Run usage:\n%s",
             format_usage_breakdown(usage, self._subagent_ledger, memory_ledger),
@@ -3192,8 +3417,7 @@ class OuroAgent:
                 or self.config.agent.model
             )
             hb_model = self._build_model(hb_model_id, heartbeat=True, role="heartbeat")
-            proactive_cfg = self.config.heartbeat.proactive
-            servers = proactive_cfg.servers if proactive_cfg.enabled else ["ouro"]
+            servers = list(getattr(self.config.heartbeat, "servers", None) or ["ouro"])
 
             result = await run_quest_feedback_run(
                 self,

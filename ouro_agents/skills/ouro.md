@@ -41,12 +41,25 @@ flow for any new post, dataset, file, quest, or route output:
   (role `read` unless they need write/admin). Mentions, links, and embeds do
   **not** grant access — private assets stay invisible until shared.
 
+### Create results
+
+Create tools return a JSON object. Read it the same way you read async route
+results:
+
+- **Success** = an `id` field (often with `url` / `name`). That `id` is the
+  asset id — reuse it in follow-up calls, links, embeds, and the final answer.
+- **Failure** = an `error` field (often with `message` / `retryable`).
+- After a successful create, continue from that `id` (`update_*`, link/embed,
+  finish). Do **not** create another asset for the same deliverable.
+- The platform may uniquify colliding names (e.g. append ` 1`). That is still
+  success — trust `id`, not an exact name match.
+- Retry only when `retryable` is true or you have a concrete argument fix.
+  Do not recreate because a success payload "looked incomplete."
+
 If the user doesn't specify an org and more than one plausible org exists,
-inspect context or ask before creating. Treat new `asset_id`s as important
-outputs: reuse them in follow-up calls, link or embed them in markdown, and
-include them in the final answer when useful. Posts, comments, conversation
-replies, and final answers rendered by Ouro can use Ouro Markdown for
-`@mentions`, typed asset links, and asset embeds.
+inspect context or ask before creating. Posts, comments, conversation replies,
+and final answers rendered by Ouro can use Ouro Markdown for `@mentions`, typed
+asset links, and asset embeds.
 
 ## Working standard
 

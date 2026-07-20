@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from . import MemoryBackend
 from .relevance import is_focus_directive, memory_signal_score
@@ -37,9 +37,15 @@ FOCUS_KEYWORDS = {
     "work on",
 }
 
+_FOCUS_CATEGORIES = frozenset({"direction", "preference", "fact"})
+
 
 def looks_like_focus_memory(memory) -> bool:
-    """Return whether a memory is relevant to focus/planning decisions."""
+    """Return whether a memory is topically relevant to focus/planning decisions.
+
+    Keyword/score heuristic only — does not check authority. Prefer
+    :func:`memory_steers_focus` at call sites that gate prompt injection.
+    """
     category = getattr(memory, "category", "fact") or "fact"
     if category == "direction":
         return True
@@ -54,6 +60,20 @@ def looks_like_focus_memory(memory) -> bool:
     if category == "episode":
         return has_focus_language and getattr(memory, "score", 0.0) >= 0.35
     return has_focus_language and getattr(memory, "score", 0.0) >= 0.55
+
+
+def memory_steers_focus(memory: Any) -> bool:
+    """Single gate for memories allowed to steer planning/heartbeat focus.
+
+    Intersection of:
+    - category allowlist (direction / preference / fact)
+    - authority via :func:`is_focus_directive`
+    - topical focus language via :func:`looks_like_focus_memory`
+    """
+    category = getattr(memory, "category", "") or ""
+    if category and category not in _FOCUS_CATEGORIES:
+        return False
+    return is_focus_directive(memory) and looks_like_focus_memory(memory)
 
 
 def is_directional_feedback(feedback: str) -> bool:
@@ -144,6 +164,7 @@ def build_focus_memory_context(
         "Use these memories as strong input when choosing focus and task scope."
     ),
     queries: Iterable[str] = FOCUS_MEMORY_QUERIES,
+    reinforce: bool = True,
 ) -> str:
     """Recall durable focus guidance and render it for a prompt context block."""
     if not memory or not agent_id:
@@ -154,44 +175,32 @@ def build_focus_memory_context(
     results = []
     for query in queries:
         matches = []
-        for category in ("direction", "preference", "fact"):
+        # One search without category fan-out; filter locally. This cuts
+        # embedding calls from 4 queries × 3 categories to 4 queries.
+        try:
+            search_kwargs = dict(
+                query=query,
+                agent_id=agent_id,
+                limit=8,
+                team_id=team_id,
+                scope=scope,
+                asset_id=asset_id,
+                reinforce=reinforce,
+            )
             try:
-                matches.extend(
-                    memory.search(
-                        query=query,
-                        agent_id=agent_id,
-                        limit=6,
-                        team_id=team_id,
-                        scope=scope,
-                        category=category,
-                        asset_id=asset_id,
-                    )
-                )
+                matches.extend(memory.search(**search_kwargs))
             except TypeError:
-                try:
-                    matches.extend(
-                        memory.search(
-                            query=query,
-                            agent_id=agent_id,
-                            limit=6,
-                            team_id=team_id,
-                            scope=scope,
-                        )
-                    )
-                except Exception as e:
-                    logger.warning("Failed to recall focus memory: %s", e)
-                    break
-            except Exception as e:
-                logger.warning("Failed to recall focus memory: %s", e)
-                break
+                search_kwargs.pop("reinforce", None)
+                matches.extend(memory.search(**search_kwargs))
+        except Exception as e:
+            logger.warning("Failed to recall focus memory: %s", e)
+            continue
 
         for match in matches:
             text = (getattr(match, "text", "") or "").strip()
             if not text or text in seen:
                 continue
-            if not is_focus_directive(match):
-                continue
-            if not looks_like_focus_memory(match):
+            if not memory_steers_focus(match):
                 continue
             seen.add(text)
             results.append(match)

@@ -60,15 +60,20 @@ class ModelTierSpec(BaseModel):
     id: str
     reasoning: Optional[ReasoningConfig] = None
     openrouter_provider: Optional[Dict[str, Any]] = None
+    # Cap on completion tokens sent as OpenAI ``max_tokens``. Prevents providers
+    # (notably Kimi) from reserving huge default output budgets that trip
+    # OpenRouter credit checks (HTTP 402).
+    max_completion_tokens: Optional[int] = None
 
 
 class ModelTiersConfig(BaseModel):
     """Opinionated model roster. Configure once; roles pick a tier.
 
-    ``strong`` — main agent, planning, writer, executor, developer.
-    ``light`` — preflight, research, reflector, extraction, utilities
+    ``strong`` — main agent, planning, writer, executor, developer, and
+    the heartbeat preflight strategy stage.
+    ``light`` — search, research, reflector, extraction, utilities
     (compaction, summarize, dream, refinement).
-    ``mid`` — optional; heartbeat uses it when set, otherwise ``strong``.
+    ``mid`` — chat and heartbeat execution when set, otherwise ``strong``.
     """
 
     strong: ModelTierSpec
@@ -84,13 +89,39 @@ MODEL_ROLE_TIERS: Dict[str, ModelTierName] = {
     "executor": "strong",
     "developer": "strong",
     "planner": "strong",
+    "chat": "mid",
     "heartbeat": "mid",
+    "heartbeat_preflight": "strong",
     "preflight": "light",
+    "search": "light",
     "research": "light",
     "reflector": "light",
     "utility": "light",
     "extraction": "light",
     "refinement": "light",
+}
+
+
+# Role-aware completion caps applied when a tier does not set its own.
+# Sized to avoid OpenRouter's implicit ~65k reservation while leaving room
+# for each role's typical output.
+ROLE_MAX_COMPLETION_TOKENS: Dict[str, int] = {
+    "agent": 16384,
+    "planning": 8192,
+    "chat": 8192,
+    "heartbeat": 8192,
+    "heartbeat_preflight": 4096,
+    "preflight": 2048,
+    "search": 2048,
+    "research": 8192,
+    "writer": 16384,
+    "executor": 8192,
+    "developer": 16384,
+    "planner": 2048,
+    "reflector": 2048,
+    "utility": 4096,
+    "extraction": 2048,
+    "refinement": 4096,
 }
 
 
@@ -102,6 +133,18 @@ def tier_spec_for_role(
     if preferred == "mid" and tiers.mid is None:
         preferred = "strong"
     return getattr(tiers, preferred)
+
+
+def max_completion_tokens_for_role(
+    tiers: Optional[ModelTiersConfig],
+    role: str,
+) -> Optional[int]:
+    """Resolve a completion-token cap for a harness role."""
+    if tiers is not None:
+        tier_cap = tier_spec_for_role(tiers, role).max_completion_tokens
+        if tier_cap is not None:
+            return tier_cap
+    return ROLE_MAX_COMPLETION_TOKENS.get(role)
 
 
 def _tier_id(models_data: dict[str, Any], name: str) -> Optional[str]:
@@ -234,17 +277,14 @@ class PromptCachingConfig(BaseModel):
     ttl: Literal["5m", "1h"] = "5m"
 
 
-class ProactiveConfig(BaseModel):
-    enabled: bool = False
-    servers: List[str] = Field(default_factory=lambda: ["ouro"])
-
-
 class HeartbeatConfig(BaseModel):
     enabled: bool = True
     every: str = "30m"
     model: str
     active_hours: Optional[Dict[str, str]] = None
-    proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
+    # MCP servers the main heartbeat executor may load. Search access belongs
+    # to the ``search`` / ``research`` subagents, so the default is Ouro only.
+    servers: List[str] = Field(default_factory=lambda: ["ouro"])
     # Overlay on top of ``agent.reasoning`` for heartbeat model builds.
     reasoning: Optional[ReasoningConfig] = None
     # Overlay on top-level ``openrouter_provider`` for heartbeat builds.
@@ -598,10 +638,50 @@ _HEARTBEAT_SECTION_KEYS = {
     "every",
     "model",
     "active_hours",
-    "proactive",
+    "servers",
+    "proactive",  # legacy; migrated to ``servers`` at load time
     "reasoning",
     "openrouter_provider",
 }
+
+
+def _migrate_heartbeat_proactive(expanded_data: dict[str, Any]) -> None:
+    """Flatten legacy ``heartbeat.proactive`` into ``heartbeat.servers``.
+
+    Heartbeats are inherently proactive. The old ``enabled`` flag was ambiguous
+    and ``proactive.servers`` was often computed but not enforced. Canonical
+    shape is a single ``servers`` allowlist.
+    """
+    candidates: list[dict[str, Any]] = []
+    top = expanded_data.get("heartbeat")
+    if isinstance(top, dict):
+        candidates.append(top)
+    modes = expanded_data.get("modes")
+    if isinstance(modes, dict):
+        hb = modes.get("heartbeat")
+        if isinstance(hb, dict):
+            candidates.append(hb)
+        profiles = modes.get("profiles")
+        if isinstance(profiles, dict):
+            profile_hb = profiles.get("heartbeat")
+            if isinstance(profile_hb, dict):
+                candidates.append(profile_hb)
+
+    for section in candidates:
+        proactive = section.pop("proactive", None)
+        if not isinstance(proactive, dict):
+            continue
+        if "servers" in section and isinstance(section.get("servers"), list):
+            continue
+        if proactive.get("enabled") is False:
+            section.setdefault("servers", ["ouro"])
+            continue
+        servers = proactive.get("servers")
+        if isinstance(servers, list) and servers:
+            # Main heartbeat owns Ouro; search is delegated to subagents.
+            section["servers"] = ["ouro"] if "ouro" in servers else list(servers)
+        else:
+            section.setdefault("servers", ["ouro"])
 
 _PLANNING_SECTION_KEYS = {
     "enabled",
@@ -781,6 +861,7 @@ class OuroAgentsConfig(BaseSettings):
         # Apply model-tier defaults before other migrations so agent.model /
         # heartbeat.model / extraction_model are present for required fields.
         _hydrate_from_model_tiers(expanded_data)
+        _migrate_heartbeat_proactive(expanded_data)
 
         # Migrate legacy per-mode config fields into modes.<name>. The old
         # "chat" key now maps to the single CHAT profile (chat and chat-reply

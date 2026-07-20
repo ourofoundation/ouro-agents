@@ -34,7 +34,7 @@ Built-in modes (see [`run-modes.md`](./run-modes.md)):
 |------|------------------|-------|
 | `chat` | `ouro-agents chat` or webhook from Ouro chat | Loads conversation state, skips preflight, keeps post-reflection. Webhook replies are posted automatically. |
 | `autonomous` | `ouro-agents run "..."` | Full preflight + post-reflection. |
-| `heartbeat` | Scheduler tick | Lightweight, restricted to `ouro` server. |
+| `heartbeat` | Scheduler tick | Strong preflight + cheap executor; Ouro MCP only; search via subagents; reflection only when worth remembering. |
 | `plan` | `ouro-agents plan` or scheduler | Generates a plan cycle. |
 | `review` | `ouro-agents review` or feedback | Updates an existing plan. |
 
@@ -48,8 +48,8 @@ The main agent can delegate focused work to subagents through the
 `SubAgentProfile`s — system prompt, allowed tools/servers, max steps, model
 override, skills, etc.
 
-Built-in delegatable profiles: `research`, `planner`, `executor`, `writer`,
-`developer`. Internal profiles: `preflight`, `heartbeat_preflight`,
+Built-in delegatable profiles: `search`, `research`, `planner`, `executor`,
+`writer`, `developer`. Internal profiles: `preflight`, `heartbeat_preflight`,
 `reflector`.
 
 Custom profiles can be dropped into `workspace/subagents/*.{json,yaml}` (or

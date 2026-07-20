@@ -26,8 +26,21 @@ MCP_TOOL_RULES = (
     "context, call `memory_recall`; when it returns asset refs, use get_asset to load them if needed.\n"
     "- When a recalled memory is wrong or outdated, fix it immediately: `update_memory(id, ...)` to "
     "revise it in place, or `forget(id, ...)` to delete it. memory_recall returns the id to use.\n"
-    "- For complex multi-step workflows or batch operations, delegate to the `developer` subagent — "
-    "it has direct access to the Ouro Python SDK."
+    "- For complex multi-step workflows or batch operations, prefer the `developer` subagent when "
+    "delegation is available — it has direct access to the Ouro Python SDK."
+)
+
+HEARTBEAT_SUBAGENT_RULES = (
+    "Follow the preflight brief. Use `delegate` for exploration and heavy tool work; "
+    "keep quest lifecycle updates and one-shot comments on this heartbeat.\n\n"
+    "**MUST delegate:** routine web/current-info lookup → `search`, "
+    "multi-source research with a publishable writeup → `research`, "
+    "long-form writing → `writer`, focused MCP sub-tasks → `executor`, "
+    "SDK/batch workflows → `developer`.\n"
+    "**MUST NOT:** call search MCP tools directly, invent a second plan, "
+    "or republish an asset a subagent already created.\n"
+    "Default `return_mode` is summary_only. Prefer the returned `link` / `asset_id` "
+    "over pasting full bodies."
 )
 
 WORKSPACE_LAYOUT_RULES = (
@@ -56,11 +69,11 @@ SUBAGENT_RULES = (
     "**Delegate to accelerate real work, not to avoid it.** A delegation is only useful if you use the returned "
     "asset/action/result to complete the user's task.\n"
     "**MUST delegate:** multi-source research that warrants a written deliverable → `research`, "
+    "quick current-info lookup → `search`, "
     "long-form writing → `writer`, SDK/batch workflows → `developer`, "
     "focused self-contained sub-tasks → `executor`.\n"
-    "**Handle yourself:** simple questions, single tool calls, chat replies, quick lookups — "
-    "including a quick factual web search (call the search tool directly; don't spin up `research` "
-    "for one fact, since it publishes a post).\n\n"
+    "**Handle yourself:** simple questions, single tool calls, chat replies — "
+    "but prefer `search` over spinning up `research` for one fact, since research publishes a post.\n\n"
     "Subagents save output as Ouro assets and return JSON with `asset_id`, `name`, `description`, "
     "and a ready-to-use `link`. The asset is already created and published — **do NOT create or "
     "publish another asset for the same work, and do NOT paste the subagent's full body into your reply.** "
@@ -331,9 +344,14 @@ def build_prompt(
         )
 
     if subagent_directory:
+        rules = (
+            HEARTBEAT_SUBAGENT_RULES
+            if profile.name == "heartbeat"
+            else SUBAGENT_RULES
+        )
         sections["subagents"] = (
             f"## SUBAGENTS (use `delegate` tool to invoke)\n"
-            f"{SUBAGENT_RULES}\n\n"
+            f"{rules}\n\n"
             f"{subagent_directory}"
         )
 

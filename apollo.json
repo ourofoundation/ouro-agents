@@ -48,13 +48,22 @@
       "id": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "high"
-      }
+      },
+      "max_completion_tokens": 16384
+    },
+    "mid": {
+      "id": "xiaomi/mimo-v2.5",
+      "reasoning": {
+        "effort": "none"
+      },
+      "max_completion_tokens": 8192
     },
     "light": {
       "id": "xiaomi/mimo-v2.5",
       "reasoning": {
         "effort": "none"
-      }
+      },
+      "max_completion_tokens": 4096
     }
   },
   "openrouter_provider": {
@@ -67,14 +76,17 @@
     "preflight": {
       "max_steps": 4
     },
+    "search": {
+      "max_steps": 4
+    },
     "research": {
-      "max_steps": 10
+      "max_steps": 8
     },
     "reflector": {
-      "max_steps": 10
+      "max_steps": 5
     },
     "executor": {
-      "max_steps": 24
+      "max_steps": 10
     }
   },
   "modes": {
@@ -92,15 +104,15 @@
     "heartbeat": {
       "enabled": true,
       "every": "6h",
-      "max_steps": 20,
+      "max_steps": 12,
       "active_hours": {
         "start": "08:30",
         "end": "21:30",
         "timezone": "America/Chicago"
       },
-      "proactive": {
-        "enabled": false
-      }
+      "servers": [
+        "ouro"
+      ]
     }
   },
   "memory": {

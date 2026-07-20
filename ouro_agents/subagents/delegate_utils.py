@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Optional
 
 _DELEGATE_RETURN_MODES = {"summary_only", "full_text", "auto"}
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_return_mode(
@@ -117,3 +122,68 @@ def delegate_success_payload(
     if mode == "full_text":
         payload["text"] = result.text
     return payload
+
+
+def default_delegate_error_payload(
+    spec: dict,
+    exc: BaseException,
+) -> dict:
+    """Standard error shape when a single delegate task raises."""
+    return {
+        "status": "error",
+        "subagent": spec.get("subagent", "?"),
+        "return_mode": normalize_return_mode(spec.get("return_mode", "")),
+        "error": str(exc),
+    }
+
+
+def dispatch_delegate_tasks(
+    tasks: list[dict],
+    run_one: Callable[[dict], dict],
+    *,
+    parallel: bool = False,
+    max_workers: int = 4,
+    make_error: Callable[[dict, BaseException], dict] | None = None,
+) -> list[Any]:
+    """Run delegate task specs sequentially or in parallel.
+
+    *run_one* should return a payload dict for one spec. Exceptions are caught
+    and converted via *make_error* (defaults to :func:`default_delegate_error_payload`).
+    """
+    if not tasks:
+        return []
+
+    error_fn = make_error or default_delegate_error_payload
+
+    if len(tasks) == 1 or not parallel:
+        outputs: list[Any] = []
+        for spec in tasks:
+            try:
+                outputs.append(run_one(spec))
+            except Exception as exc:
+                logger.exception(
+                    "Delegate '%s' failed", spec.get("subagent", "?")
+                )
+                outputs.append(error_fn(spec, exc))
+        return outputs
+
+    outputs = [None] * len(tasks)
+    workers = max(1, min(max_workers, len(tasks)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_idx = {
+            pool.submit(run_one, spec): i for i, spec in enumerate(tasks)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                outputs[idx] = future.result()
+            except Exception as exc:
+                outputs[idx] = error_fn(tasks[idx], exc)
+    return outputs
+
+
+def dumps_delegate_result(tasks: list[dict], outputs: list[Any]) -> str:
+    """JSON-encode a single delegate result or a multi-task list."""
+    if len(tasks) == 1:
+        return json.dumps(outputs[0] if outputs else {"status": "error", "error": "No tasks provided."})
+    return json.dumps(outputs)

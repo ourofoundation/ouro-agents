@@ -20,24 +20,36 @@
       "id": "qwen/qwen3.7-plus",
       "reasoning": {
         "effort": "medium"
-      }
+      },
+      "max_completion_tokens": 16384
+    },
+    "mid": {
+      "id": "xiaomi/mimo-v2-flash",
+      "reasoning": {
+        "effort": "none"
+      },
+      "max_completion_tokens": 8192
     },
     "light": {
       "id": "xiaomi/mimo-v2-flash",
       "reasoning": {
         "effort": "none"
-      }
+      },
+      "max_completion_tokens": 4096
     }
   },
   "subagents": {
     "preflight": {
       "max_steps": 4
     },
+    "search": {
+      "max_steps": 4
+    },
     "research": {
-      "max_steps": 10
+      "max_steps": 8
     },
     "executor": {
-      "max_steps": 24
+      "max_steps": 10
     }
   },
   "modes": {
@@ -52,19 +64,15 @@
     "heartbeat": {
       "enabled": true,
       "every": "1h",
-      "max_steps": 20,
+      "max_steps": 12,
       "active_hours": {
         "start": "09:00",
         "end": "22:00",
         "timezone": "America/Chicago"
       },
-      "proactive": {
-        "enabled": true,
-        "servers": [
-          "ouro",
-          "search"
-        ]
-      }
+      "servers": [
+        "ouro"
+      ]
     }
   },
   "memory": {

@@ -33,6 +33,7 @@ from ..memory.frontmatter import (
     set_frontmatter_timestamp,
     strip_frontmatter,
 )
+from ..constants import parse_llm_json
 from .queue import ChangeEntry, ChangeKind, ChangeSetQueue
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -347,15 +348,9 @@ def _format_doc_user_message(view: DocView, soul_excerpt: str) -> str:
 
 def _parse_llm_response(raw: str) -> tuple[list[dict], list[str], str]:
     """Tolerantly parse the refiner's JSON envelope."""
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Refiner LLM returned non-JSON: {exc}") from exc
+    data = parse_llm_json(raw, expect=dict)
     if not isinstance(data, dict):
-        raise ValueError("Refiner LLM JSON was not an object")
+        raise ValueError("Refiner LLM returned non-JSON or non-object")
     replacements = data.get("window_replacements") or []
     memory_deletes = data.get("memory_deletes") or []
     summary = str(data.get("summary") or "").strip()

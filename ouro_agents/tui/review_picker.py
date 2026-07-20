@@ -4,6 +4,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from ..constants import clip_text
+
 
 REVIEWABLE_QUEST_STATUSES = {"draft", "open"}
 
@@ -131,7 +133,4 @@ def choose_review_plan(quests: list[dict[str, Any]]) -> str | None:
 
 
 def _truncate(text: str, max_length: int) -> str:
-    stripped = " ".join(text.split())
-    if len(stripped) <= max_length:
-        return stripped
-    return stripped[: max_length - 3].rstrip() + "..."
+    return clip_text(text, max_length, ellipsis="...")
