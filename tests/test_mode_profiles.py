@@ -36,10 +36,10 @@ def test_chat_mode_is_conversational_and_work_modes_are_not():
     assert AUTONOMOUS.conversational is False
 
 
-def test_chat_mode_skips_preflight_keeps_post_reflection():
-    # Chat skips preflight for reply latency; reflection still runs in
-    # the background after the reply is sent.
+def test_chat_and_autonomous_skip_strategist():
+    # Strategist is heartbeat-only; chat/autonomous skip it.
     assert CHAT.skip_preflight is True
+    assert AUTONOMOUS.skip_preflight is True
     assert CHAT.skip_post_reflection is False
 
 

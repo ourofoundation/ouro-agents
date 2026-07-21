@@ -80,7 +80,7 @@ def test_heartbeat_framing_prefers_bounded_progress():
 
 def test_heartbeat_framing_allows_direction_proposal_posts():
     assert "direction" in HEARTBEAT_FRAMING
-    assert "preflight" in HEARTBEAT_FRAMING
+    assert "strategist" in HEARTBEAT_FRAMING
     assert "delegate" in HEARTBEAT_FRAMING.lower() or "`search`" in HEARTBEAT_FRAMING
     assert "ouro:search_assets" in HEARTBEAT.preload_tools
     assert "ouro:create_post" in HEARTBEAT.preload_tools
@@ -112,6 +112,79 @@ def test_quest_work_playbook_mentions_bounded_progress_and_tools():
     assert "`complete_quest_item`" in playbook
     assert "`write_comment`" in playbook
     assert "waiting_check_every" in playbook
+
+
+def test_build_heartbeat_task_context_composes_inbox_with_policy(tmp_path):
+    from ouro_agents.modes.heartbeat import build_heartbeat_task_context
+
+    heartbeat_md = tmp_path / "HEARTBEAT.md"
+    heartbeat_md.write_text(
+        "Priority order\n1. Advance a live conversation.\n2. Send a due follow-up.\n"
+    )
+
+    class _Assets:
+        def search(self, **_kwargs):
+            return [
+                {
+                    "id": "quest-a",
+                    "name": "Outreach",
+                    "org_id": "org-a",
+                    "team_id": "team-a",
+                    "user_id": "agent-user",
+                }
+            ]
+
+    class _Quests:
+        def list_assigned_items(self, **_kwargs):
+            return []
+
+        def retrieve(self, quest_id):
+            return SimpleNamespace(
+                id="quest-a",
+                name="Outreach",
+                org_id="org-a",
+                team_id="team-a",
+                user_id="agent-user",
+                quest=SimpleNamespace(status="open", type="closable"),
+                items=[
+                    SimpleNamespace(
+                        id="item-a",
+                        quest_id="quest-a",
+                        status="pending",
+                        description="Contact a researcher",
+                    )
+                ],
+            )
+
+    class _FakeAgent:
+        own_user_id = "agent-user"
+
+        def __init__(self):
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(active_hours=None),
+                agent=SimpleNamespace(
+                    model="main-model",
+                    workspace=tmp_path,
+                    name="hermes",
+                    org_id="org-a",
+                ),
+            )
+            self.doc_store = SimpleNamespace(read=lambda _key: None)
+            self.memory = None
+            self.team_registry = SimpleNamespace(team_ids=lambda: {"team-a"})
+
+        def _get_ouro_client(self):
+            return SimpleNamespace(assets=_Assets(), quests=_Quests())
+
+        def doc_store_for(self, _team_id):
+            return self.doc_store
+
+    ctx = build_heartbeat_task_context(_FakeAgent(), advance_recurring=False)
+
+    assert ctx.source == "quest-inbox"
+    assert "Contact a researcher" in ctx.playbook
+    assert "## Heartbeat Policy" in ctx.playbook
+    assert "Advance a live conversation" in ctx.playbook
 
 
 def test_quest_work_playbook_adds_assigned_guidance_when_needed():
@@ -851,7 +924,7 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
         cost_usd=0.12,
     ).finalize()
     preflight = SubAgentUsage(
-        model_id="preflight-model",
+        model_id="strategist-model",
         steps=1,
         input_tokens=40,
         current_context_tokens=35,
@@ -862,12 +935,12 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
     )
 
     rows = display._usage_rows(
-        total, duration_s=1.5, subagent_ledger=[("preflight", preflight)]
+        total, duration_s=1.5, subagent_ledger=[("strategist", preflight)]
     )
 
     assert rows[0][1] == "main-model"
-    assert rows[1][0] == "sub:preflight"
-    assert rows[1][1] == "preflight-model"
+    assert rows[1][0] == "sub:strategist"
+    assert rows[1][1] == "strategist-model"
     assert rows[1][3] == "35"
     assert rows[-1][0] == "total"
     assert rows[-1][1] == "main-model"

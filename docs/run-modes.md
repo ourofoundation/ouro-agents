@@ -33,7 +33,7 @@ Each value maps to a built-in `ModeProfile`.
 | `allow_delegation` | Whether the `delegate` tool is exposed. |
 | `memory_tool_filter` | Optional whitelist of memory tool names (e.g. `["memory_recall"]`). |
 | `lightweight` | Skips most heavy context-loading branches in `_build_system_prompt`. |
-| `skip_preflight` | Don't run the `preflight` subagent before the main loop. |
+| `skip_preflight` | Don't run the `strategist` subagent before the main loop (heartbeat is the only mode that runs it). |
 | `skip_post_reflection` | Don't run the `reflector` subagent after the main loop. |
 | `load_conversation_state` | Inject conversation summary into the prompt. |
 | `load_scheduled_tasks` | Inject a scheduled-task summary block. |
@@ -48,7 +48,7 @@ CLI and by webhook chat events (`new-message`, `new-conversation`). Loads
 conversation state, preloads no tools (everything stays one `load_tool`
 away — most chat turns need zero tools), uses `tool_choice="auto"` so the
 model can reply to casual messages without a forced tool call, and skips
-preflight for lower reply latency (the trivial-message regex still
+the strategist for lower reply latency (the trivial-message regex still
 fast-paths greetings; post-run reflection still runs in the background and
 never delays the reply). Uses the mid model tier when configured (falls
 back to strong). Default `max_steps=20`.
@@ -62,21 +62,21 @@ config aliases `chat-reply` and `reply` still resolve to `chat`.
 
 ### `autonomous`
 The default for `ouro-agents run`. Preloads action-oriented Ouro tools
-(`search_assets`, `get_asset`, `execute_route`, `get_action`). Runs full
-preflight + post-reflection. Persists conversation turns when
-`conversation_id` is provided.
+(`search_assets`, `get_asset`, `execute_route`, `get_action`). Skips the
+strategist (heartbeat-only) and runs post-reflection. Persists conversation
+turns when `conversation_id` is provided.
 
 ### `heartbeat`
 Scheduler-driven mode. Restricted to the `ouro` MCP server (search is
-delegated to subagents). Runs one strong-model preflight that produces an
+delegated to subagents). Runs one strong-model strategist that produces an
 executable brief, then a cheap mid/light executor follows that brief.
-Post-run reflection is gated by preflight `worth_remembering` (pass/no-op
-ticks skip the reflector). Used inside the heartbeat loop in
-`modes/heartbeat.py`.
+Pass objectives skip the executor. Semantic memory reflection is gated by
+strategist `worth_remembering`; non-pass ticks can still write a daily-log
+episode. Used inside the heartbeat loop in `modes/heartbeat.py`.
 
 ### `plan`
 Generates a new plan cycle. Restricted servers, only `memory_recall` from
-memory tools, no preflight, no post-reflection. Drives a quest creation
+memory tools, no strategist, no post-reflection. Drives a quest creation
 flow inside `modes/planning.py`.
 
 ### `review`
@@ -113,26 +113,29 @@ active hours, etc.) — these are hoisted out into the dedicated
 `PlanningConfig` / `HeartbeatConfig` sections during config load. See the
 [Configuration reference](./configuration.md#modes).
 
-## Preflight and reflection
+## Strategist and reflection
 
-When a profile has `skip_preflight=False`, the agent runs the `preflight`
-subagent as visible **step 0** of the run. Preflight returns:
+Heartbeat is the only mode that runs the `strategist` subagent as visible
+**step 0**. Chat, autonomous, plan, and review skip it (`skip_preflight=True`).
+The strategist returns:
 
-- `intent` and `complexity` — used for logging.
-- `briefing` — extra context (memory hits, entity files) injected before
-  the user task.
-- `plan` — an advisory plan injected as `## Advisory Action Plan`.
-- `tools` — MCP tools the plan will need, merged into the run's preloads so
-  the main agent can call them without a `load_tool` round-trip.
-- `worth_remembering` — gates whether the post-run reflector runs.
-  Heartbeat pass/no-op objectives always skip reflection even if this flag
-  is true.
+- `objective` — one concrete slice (or `pass`).
+- `selected_priority` / `priority_audit` — which playbook tier was chosen and
+  fresh evidence clearing earlier tiers.
+- `briefing` — IDs and constraints the executor needs.
+- `actions` — ordered steps (normally ≤4); include `delegate …` calls here.
+- `tools` — MCP tools merged into the executor's preloads.
+- `prefetch_assets` — up to 3 asset UUIDs fetched before the executor starts.
+- `worth_remembering` — gates vector-memory candidates only.
+- `memory_notes` — optional templates for the reflector when remembering.
+
+Pass objectives skip the executor entirely. Non-pass heartbeats can still
+write a daily-log episode even when `worth_remembering` is false.
 
 After the main loop finishes, if `skip_post_reflection=False` and the run
-is worth remembering, the agent dispatches the `reflector` subagent in
-the background. It curates facts/preferences into vector memory, updates
-the user model, and appends a daily-log entry. Failures are logged but
-never block the user response.
+warrants memory and/or an episode, the agent dispatches the `reflector`
+subagent in the background. Failures are logged but never block the user
+response.
 
 ## Preemption
 

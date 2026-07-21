@@ -530,6 +530,10 @@ class OuroLogger(AgentLogger):
         self._last_tool_name: str | None = None
 
     def log(self, *args, level: int | str | LogLevel = LogLevel.INFO, **kwargs) -> None:
+        # smolagents emits some reasoning records at LogLevel.OFF. OFF means
+        # silent for our subagents, not "show records also labeled OFF".
+        if self.level == LogLevel.OFF:
+            return
         if isinstance(level, str):
             level = LogLevel[level.upper()]
         if level > self.level:

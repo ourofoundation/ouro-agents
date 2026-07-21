@@ -1108,6 +1108,18 @@ def build_heartbeat_task_context(
         playbook = build_quest_work_playbook(items)
         source = "quest-inbox"
         preload_tools = list(_INBOX_PRELOAD_TOOLS)
+        # Compose with the general agent heartbeat policy: inbox chooses the
+        # work item; policy supplies prioritization, constraints, and closeout.
+        policy = _load_playbook(agent, doc_store)
+        if policy:
+            playbook = (
+                f"{playbook}\n\n## Heartbeat Policy\n"
+                "The quest inbox above is the work in front of you. Apply the "
+                "policy below for prioritization, safety constraints, and "
+                "closeout — do not ignore an ordered priority ladder just because "
+                "a quest item is present.\n\n"
+                f"{policy}"
+            )
 
     if not playbook:
         playbook = _load_playbook(agent, doc_store)

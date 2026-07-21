@@ -31,7 +31,7 @@ MCP_TOOL_RULES = (
 )
 
 HEARTBEAT_SUBAGENT_RULES = (
-    "Follow the preflight brief. Use `delegate` for exploration and heavy tool work; "
+    "Follow the strategist brief. Use `delegate` for exploration and heavy tool work; "
     "keep quest lifecycle updates and one-shot comments on this heartbeat.\n\n"
     "**MUST delegate:** routine web/current-info lookup → `search`, "
     "multi-source research with a publishable writeup → `research`, "

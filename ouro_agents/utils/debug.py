@@ -9,7 +9,7 @@ from smolagents import ActionStep
 from smolagents.memory import TaskStep
 
 from ..config import RunMode
-from ..subagents.preflight import PreflightResult
+from ..subagents.strategist import StrategistResult
 
 
 def markdown_fence(content: str, lang: str = "text") -> str:
@@ -94,7 +94,7 @@ def write_run_debug_markdown_preamble(
     full_system_prompt: str,
     run_id: str,
     mode: RunMode,
-    preflight: Optional[PreflightResult],
+    preflight: Optional[StrategistResult],
 ) -> None:
     """Write header, system prompt, and task; run trace is appended after the agent finishes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,9 +114,9 @@ def write_run_debug_markdown_preamble(
     if preflight is not None:
         lines.extend(
             [
-                "\n## Preflight (step 0)\n\n",
-                f"- **intent:** `{preflight.intent}`\n",
-                f"- **complexity:** `{preflight.complexity}`\n",
+                "\n## Strategist (step 0)\n\n",
+                f"- **objective:** `{preflight.objective}`\n",
+                f"- **selected_priority:** `{preflight.selected_priority}`\n",
                 f"- **worth_remembering:** `{preflight.worth_remembering}`\n\n",
             ]
         )
@@ -124,10 +124,15 @@ def write_run_debug_markdown_preamble(
             lines.extend(
                 ["### Briefing\n\n", markdown_fence(preflight.briefing), "\n"]
             )
-        if preflight.plan:
+        if preflight.actions:
+            actions_text = "\n".join(
+                f"{i}. {step}" for i, step in enumerate(preflight.actions, 1)
+            )
+            lines.extend(["### Actions\n\n", markdown_fence(actions_text), "\n"])
+        elif preflight.plan:
             lines.extend(["### Plan\n\n", markdown_fence(preflight.plan), "\n"])
     else:
-        lines.append("\n## Preflight (step 0)\n\n*(skipped or not applicable)*\n\n")
+        lines.append("\n## Strategist (step 0)\n\n*(skipped or not applicable)*\n\n")
 
     lines.append("\n---\n\n## Agent steps (memory trace)\n\n")
     with open(path, "w", encoding="utf-8") as f:

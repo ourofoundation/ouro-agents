@@ -42,7 +42,7 @@ AUTONOMOUS_FRAMING = (
 )
 
 HEARTBEAT_FRAMING = (
-    "You are running an autonomous heartbeat. A strong preflight has already "
+    "You are running an autonomous heartbeat. A strong strategist has already "
     "chosen the objective and ordered actions for this tick — follow that brief. "
     "Do not invent a second plan or escalate back to a stronger model. "
     "Favor concrete platform work over self-reflection: execute a route, create "

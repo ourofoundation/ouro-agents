@@ -3,8 +3,11 @@ from types import SimpleNamespace
 
 from ouro_agents.memory.context_loader import (
     _find_entity_files,
+    build_cross_team_task_index,
     build_memory_index,
     load_entity_files,
+    read_context_paths,
+    resolve_readable_context_path,
 )
 
 
@@ -78,3 +81,42 @@ def test_build_memory_index_team_scoped(tmp_path: Path):
 
     assert "alloy.md` — Alloy dataset notes" in index
     assert build_memory_index(tmp_path) == ""
+
+
+def test_build_cross_team_task_index_lists_active_tasks(tmp_path: Path):
+    team = "01954d5f-fcea-7970-b8d8-b68879df9d7f"
+    _write(
+        tmp_path / "teams" / team / "memory" / "tasks" / "outreach.md",
+        "---\ndescription: Sponsor pipeline\n---\n\n# Outreach\n\nStatus: in progress\n\n## Next steps\n- send email\n",
+    )
+    _write(
+        tmp_path / "teams" / team / "memory" / "tasks" / "done.md",
+        "# Done\n\nStatus: complete\n",
+    )
+
+    index = build_cross_team_task_index(
+        tmp_path, team_labels={team: "permanent-magnets"}
+    )
+
+    assert "Cross-team active task files" in index
+    assert "outreach.md" in index
+    assert "permanent-magnets" in index
+    assert "done.md" not in index
+
+
+def test_resolve_readable_context_path_rejects_traversal(tmp_path: Path):
+    _write(tmp_path / "memory" / "tasks" / "ok.md", "# ok\n")
+    assert resolve_readable_context_path(tmp_path, "memory/tasks/ok.md") is not None
+    assert resolve_readable_context_path(tmp_path, "../etc/passwd") is None
+    assert resolve_readable_context_path(tmp_path, "secrets/key.txt") is None
+
+
+def test_read_context_paths_reads_allowed_files(tmp_path: Path):
+    team = "team-a"
+    rel = f"teams/{team}/memory/tasks/hook.md"
+    _write(tmp_path / rel, "# Hook\n\nNext: follow up Khosla.\n")
+
+    text = read_context_paths(tmp_path, [rel, "memory/../../etc/passwd"])
+
+    assert "Next: follow up Khosla." in text
+    assert "not readable" in text

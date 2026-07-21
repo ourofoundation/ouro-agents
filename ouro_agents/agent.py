@@ -77,7 +77,14 @@ from .subagents.delegate_utils import (
     summarize_delegate_text,
     validate_delegate_result,
 )
-from .subagents.preflight import PreflightResult, format_heartbeat_execution_brief, parse_preflight_result
+from .subagents.strategist import (
+    StrategistResult,
+    format_heartbeat_execution_brief,
+    parse_strategist_result,
+)
+# Backward-compatible aliases.
+PreflightResult = StrategistResult
+parse_preflight_result = parse_strategist_result
 from .subagents.reflector import (
     ReflectionResult,
     build_run_reflection_task,
@@ -1808,6 +1815,9 @@ class OuroAgent:
     def _apply_profile_overrides(self, profile):
         """Apply config overrides (max_steps, etc.) to a profile."""
         override = self.config.subagents.profiles.get(profile.name)
+        # Legacy: configs that still name the strategist "preflight".
+        if override is None and profile.name == "strategist":
+            override = self.config.subagents.profiles.get("preflight")
         if override and override.max_steps is not None:
             return profile.model_copy(update={"max_steps": override.max_steps})
         return profile
@@ -2078,7 +2088,7 @@ class OuroAgent:
             progress_callback=progress_callback,
         )
 
-    def _run_preflight(
+    def _run_strategist(
         self,
         task: str,
         allowed_capabilities: Optional[frozenset[Capability]] = None,
@@ -2094,41 +2104,28 @@ class OuroAgent:
         cancellation_token: Optional[RunCancellationToken] = None,
         observer: Optional[AgentObserver] = None,
         available_tools: Optional[list[str]] = None,
-        *,
-        heartbeat: bool = False,
-    ) -> PreflightResult:
-        """Run the preflight subagent as a visible step 0.
+    ) -> StrategistResult:
+        """Run the heartbeat strategist as visible step 0.
 
-        Consolidates classification, memory retrieval, and planning into
-        a single subagent call that returns structured JSON.
+        Heartbeat-only. Selects one bounded objective and returns a structured
+        brief for the cheap executor. Read-only tools only.
         """
-        from .subagents.profiles import PREFLIGHT
-        from .subagents.preflight import HEARTBEAT_PREFLIGHT_PROMPT
+        from .memory.context_loader import build_cross_team_task_index
+        from .subagents.profiles import STRATEGIST
 
-        profile = PREFLIGHT
-        if heartbeat:
-            # Default step budget is higher than chat preflight: the strategist
-            # reads a large inbox/direction context, usually spends one step on
-            # a batched memory_recall, and must still end with the JSON reply.
-            # config subagents.preflight.max_steps still overrides this.
-            profile = PREFLIGHT.model_copy(
-                update={
-                    "system_prompt": HEARTBEAT_PREFLIGHT_PROMPT,
-                    "max_steps": 6,
-                }
-            )
+        profile = STRATEGIST
+        # config subagents.strategist.max_steps (or legacy preflight) overrides.
+        profile = self._apply_profile_overrides(profile)
 
         _display = display or get_display()
-        _display.step("Step 0: preflight")
-        emit_progress(observer, "preflight", "analyzing request")
+        _display.step("Step 0: strategist")
+        emit_progress(observer, "strategist", "choosing heartbeat objective")
         if status_callback:
             try:
-                status_callback("thinking", "Analyzing the task...", True)
+                status_callback("thinking", "Choosing the heartbeat objective...", True)
             except Exception:
-                logger.exception("Failed to emit preflight status")
+                logger.exception("Failed to emit strategist status")
 
-        # Tell preflight what the main run can actually do, so its plan only
-        # names tools and actions that are executable as written.
         constraint_parts: list[str] = []
         if allowed_capabilities is not None:
             from .security.policy import describe_capabilities
@@ -2136,7 +2133,7 @@ class OuroAgent:
             note = describe_capabilities(allowed_capabilities)
             if note:
                 constraint_parts.append(
-                    "The main agent's run is capability-restricted. Plan only "
+                    "The executor's run is capability-restricted. Plan only "
                     "actions within these bounds; if the request needs more, the "
                     "plan should say so rather than include the blocked step.\n"
                     + note
@@ -2144,71 +2141,79 @@ class OuroAgent:
         if preload_tools:
             call_names = [n.split(":", 1)[-1] for n in preload_tools]
             constraint_parts.append(
-                "Tools preloaded for the main agent: " + ", ".join(call_names) + "."
+                "Tools preloaded for the executor: " + ", ".join(call_names) + "."
             )
         if available_tools:
             constraint_parts.append(
-                "Available MCP Tools (pick the ones the main agent should have "
+                "Available MCP Tools (pick the ones the executor should have "
                 'preloaded via the "tools" field of your JSON reply; use these '
                 "exact names): " + ", ".join(available_tools)
             )
-        if heartbeat:
-            constraint_parts.append(
-                "This is a heartbeat tick. Prefer one bounded objective. "
-                "Delegate search/research rather than asking the executor to load "
-                "search MCP tools. Available delegates: search, research, writer, "
-                "executor, developer."
+        constraint_parts.append(
+            "This is a heartbeat tick. Prefer one bounded objective that fits "
+            "the executor's 12-step budget (normally ≤4 ordered actions). "
+            "Delegate search/research rather than asking the executor to load "
+            "search MCP tools. Available delegates: search, research, writer, "
+            "executor, developer."
+        )
+
+        strategist_task = task
+        # Unscoped ticks: inject a bounded cross-team task index so the
+        # strategist can read_context specific paths without guessing.
+        if not team_id:
+            labels: dict[str, str] = {}
+            registry = getattr(self, "team_registry", None)
+            if registry is not None:
+                for tid in sorted(registry.team_ids()):
+                    team = registry.get_team(tid)
+                    labels[tid] = (
+                        getattr(team, "slug", None)
+                        or getattr(team, "name", None)
+                        or tid[:8]
+                    )
+            cross_index = build_cross_team_task_index(
+                self.config.agent.workspace, team_labels=labels
             )
-        preflight_task = task
+            if cross_index:
+                strategist_task = f"{strategist_task}\n\n## Shared Context Snapshot\n{cross_index}"
+
         if constraint_parts:
-            preflight_task = (
-                task + "\n\n## Main Run Constraints\n" + "\n\n".join(constraint_parts)
+            strategist_task = (
+                strategist_task
+                + "\n\n## Main Run Constraints\n"
+                + "\n\n".join(constraint_parts)
             )
 
         t0 = time.monotonic()
-        # Heartbeat preflight is the tick's only strong-model stage.
+        # Strategist is the tick's only strong-model stage.
         previous_ceiling = getattr(self, "_heartbeat_cheap_workers", False)
-        if heartbeat:
-            self._heartbeat_cheap_workers = False
+        self._heartbeat_cheap_workers = False
         try:
-            if heartbeat:
-                # Force strong-tier model for heartbeat strategy.
-                strong_id = (
-                    self._model_id_for_role("heartbeat_preflight")
-                    or self._model_id_for_role("agent")
-                    or self.config.agent.model
-                )
-                model = self._build_model(
-                    strong_id,
-                    role="heartbeat_preflight",
-                    subagent_profile="preflight",
-                )
-                result = self._run_subagent(
-                    profile,
-                    preflight_task,
-                    conversation_state=conv_state,
-                    user_id=user_id,
-                    run_id=run_id,
-                    asset_refs=asset_refs,
-                    team_id=team_id,
-                    doc_store=doc_store,
-                    cancellation_token=cancellation_token,
-                    progress_observer=observer,
-                    model_override=model,
-                )
-            else:
-                result = self._run_subagent(
-                    profile,
-                    preflight_task,
-                    conversation_state=conv_state,
-                    user_id=user_id,
-                    run_id=run_id,
-                    asset_refs=asset_refs,
-                    team_id=team_id,
-                    doc_store=doc_store,
-                    cancellation_token=cancellation_token,
-                    progress_observer=observer,
-                )
+            strong_id = (
+                self._model_id_for_role("strategist")
+                or self._model_id_for_role("heartbeat_preflight")
+                or self._model_id_for_role("agent")
+                or self.config.agent.model
+            )
+            model = self._build_model(
+                strong_id,
+                role="strategist",
+                subagent_profile="strategist",
+            )
+            result = self._run_subagent(
+                profile,
+                strategist_task,
+                conversation_state=conv_state,
+                user_id=user_id,
+                run_id=run_id,
+                asset_refs=asset_refs,
+                team_id=team_id,
+                doc_store=doc_store,
+                cancellation_token=cancellation_token,
+                progress_observer=observer,
+                model_override=model,
+                allowed_capabilities=allowed_capabilities,
+            )
         finally:
             self._heartbeat_cheap_workers = previous_ceiling
         duration_s = time.monotonic() - t0
@@ -2224,14 +2229,23 @@ class OuroAgent:
             )
 
         if not result.success:
-            logger.warning("Preflight subagent failed: %s", result.error)
+            logger.warning("Strategist subagent failed: %s", result.error)
             emit_progress(
-                observer, "preflight", result.error or "failed", state="failed"
+                observer, "strategist", result.error or "failed", state="failed"
             )
-            return PreflightResult()
+            return StrategistResult()
 
-        emit_progress(observer, "preflight", "analysis complete", state="complete")
-        return parse_preflight_result(result.text)
+        emit_progress(observer, "strategist", "brief ready", state="complete")
+        return parse_strategist_result(result.text)
+
+    # Backward-compatible name used by dry-run scripts / older call sites.
+    def _run_preflight(self, *args, heartbeat: bool = False, **kwargs) -> StrategistResult:
+        if not heartbeat:
+            logger.warning(
+                "_run_preflight called outside heartbeat; strategist is heartbeat-only"
+            )
+            return StrategistResult(objective="pass", worth_remembering=False)
+        return self._run_strategist(*args, **kwargs)
 
     def _run_reflection(
         self,
@@ -2340,12 +2354,18 @@ class OuroAgent:
         conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         memory_notes: Optional[list[str]] = None,
+        *,
+        store_semantic: bool = True,
     ) -> None:
         """Run reflection after an autonomous/event run via the reflector subagent.
 
         Extracts curated facts (with memory semantics and asset refs) and
         writes a daily log entry. Runs as a proper subagent so usage is tracked
         and the step is visible in the display.
+
+        When *store_semantic* is False (heartbeat ticks with
+        ``worth_remembering=false``), still write daily-log episodes but skip
+        vector-memory candidates.
         """
         reflection_task = build_run_reflection_task(
             task=task,
@@ -2354,7 +2374,8 @@ class OuroAgent:
             run_mode=mode.value,
             event_type=event_type,
             available_teams=self._available_memory_teams(team_id),
-            memory_notes=memory_notes,
+            memory_notes=memory_notes if store_semantic else None,
+            episode_only=not store_semantic,
         )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
@@ -2371,34 +2392,35 @@ class OuroAgent:
             if not reflection:
                 return
 
-            store_reflection_memories(
-                reflection,
-                self.memory,
-                agent_id=self.config.agent.name,
-                user_id=user_id,
-                run_id=run_id,
-                conversation_id="",
-                team_id=team_id,
-                available_team_ids=self._available_memory_team_ids(team_id),
-                org_id=self.config.agent.org_id or "",
-                mode=mode.value,
-                event_type=event_type or "",
-                source=f"run-reflection:{run_id}",
-            )
+            if store_semantic:
+                store_reflection_memories(
+                    reflection,
+                    self.memory,
+                    agent_id=self.config.agent.name,
+                    user_id=user_id,
+                    run_id=run_id,
+                    conversation_id="",
+                    team_id=team_id,
+                    available_team_ids=self._available_memory_team_ids(team_id),
+                    org_id=self.config.agent.org_id or "",
+                    mode=mode.value,
+                    event_type=event_type or "",
+                    source=f"run-reflection:{run_id}",
+                )
 
-            if reflection.user_preferences and user_id:
-                from .memory.user_model import append_to_user_model
+                if reflection.user_preferences and user_id:
+                    from .memory.user_model import append_to_user_model
 
-                try:
-                    append_to_user_model(
-                        self.config.agent.workspace,
-                        user_id,
-                        "Preferences",
-                        reflection.user_preferences,
-                        doc_store=active_doc_store,
-                    )
-                except Exception as e:
-                    logger.warning("Failed to update user model: %s", e)
+                    try:
+                        append_to_user_model(
+                            self.config.agent.workspace,
+                            user_id,
+                            "Preferences",
+                            reflection.user_preferences,
+                            doc_store=active_doc_store,
+                        )
+                    except Exception as e:
+                        logger.warning("Failed to update user model: %s", e)
 
             daily_writes = 0
             seen_daily_entries: set[tuple[str, str]] = set()
@@ -2425,8 +2447,9 @@ class OuroAgent:
                 daily_writes += 1
 
             logger.info(
-                "Post-run reflection: %d facts, daily=%s",
-                len(reflection.facts_to_store),
+                "Post-run reflection: semantic=%s facts=%d daily=%s",
+                store_semantic,
+                len(reflection.facts_to_store) if store_semantic else 0,
                 bool(daily_writes),
             )
         except Exception as e:
@@ -2772,9 +2795,11 @@ class OuroAgent:
         # --- Trivial message fast path (regex only, no LLM) ---
         is_trivial = is_trivial_message(task)
 
-        # --- Step 0: Preflight subagent (visible) ---
+        # --- Step 0: Heartbeat strategist (visible) ---
         display = get_display()
-        preflight: Optional[PreflightResult] = None
+        strategist: Optional[StrategistResult] = None
+        # Alias kept for the rest of this function / debug helpers.
+        preflight: Optional[StrategistResult] = None
 
         def _status_cb(status: str, message: Optional[str], active: bool):
             if observer:
@@ -2784,11 +2809,16 @@ class OuroAgent:
             if observer:
                 observer.on_progress(event)
 
-        if not is_trivial and not skip_memory and not profile.skip_preflight:
+        if (
+            is_heartbeat
+            and not is_trivial
+            and not skip_memory
+            and not profile.skip_preflight
+        ):
             _, eligible_index = self._filter_deferred_for_profile(
                 profile, allowed_servers
             )
-            preflight = self._run_preflight(
+            strategist = self._run_strategist(
                 task,
                 allowed_capabilities=profile.allowed_capabilities,
                 preload_tools=preload_tools,
@@ -2803,34 +2833,77 @@ class OuroAgent:
                 cancellation_token=token,
                 observer=observer,
                 available_tools=[item["tool"] for item in eligible_index],
-                heartbeat=is_heartbeat,
             )
+            preflight = strategist
             logger.info(
-                "Preflight: intent=%s complexity=%s worth_remembering=%s "
-                "briefing=%d plan=%d tools=%s prefetch=%d memory_notes=%d",
-                preflight.intent,
-                preflight.complexity,
-                preflight.worth_remembering,
-                len(preflight.briefing),
-                len(preflight.plan),
-                ",".join(preflight.tools) or "none",
-                len(preflight.prefetch_assets),
-                len(preflight.memory_notes),
+                "Strategist: objective=%s priority=%s worth_remembering=%s "
+                "briefing=%d actions=%d tools=%s prefetch=%d memory_notes=%d",
+                (strategist.objective or "")[:80],
+                strategist.selected_priority,
+                strategist.worth_remembering,
+                len(strategist.briefing),
+                len(strategist.actions),
+                ",".join(strategist.tools) or "none",
+                len(strategist.prefetch_assets),
+                len(strategist.memory_notes),
             )
-            record.preflight_intent = preflight.intent
-            record.preflight_complexity = preflight.complexity
-            record.worth_remembering = preflight.worth_remembering
-            if preflight.tools:
-                # Task-aware preloading: tools preflight expects the plan to
+            # Preserve run-log columns: encode decision in legacy fields.
+            if strategist.is_pass_objective:
+                record.preflight_intent = "pass"
+                record.preflight_complexity = "pass"
+            else:
+                record.preflight_intent = "act"
+                record.preflight_complexity = (
+                    f"priority:{strategist.selected_priority}"
+                    if strategist.selected_priority is not None
+                    else (strategist.complexity or "moderate")
+                )
+            record.worth_remembering = strategist.worth_remembering
+            if strategist.tools:
+                # Task-aware preloading: tools the strategist expects the plan to
                 # need skip the load_tool round-trip. Unknown or disallowed
                 # names are dropped later by _build_agent_tools.
                 preload_tools = list(
-                    dict.fromkeys((preload_tools or []) + preflight.tools)
+                    dict.fromkeys((preload_tools or []) + strategist.tools)
                 )
 
+            # Pass ticks: skip the executor entirely.
+            if strategist.is_pass_objective:
+                pass_result = (
+                    '{"action": "none", "details": '
+                    + json.dumps(
+                        "; ".join(strategist.priority_audit)
+                        or "strategist chose pass"
+                    )
+                    + "}"
+                )
+                record.mark_success(pass_result)
+                emit_progress(
+                    observer,
+                    "running_agent",
+                    "strategist passed — skipping executor",
+                    state="complete",
+                )
+                usage = RunUsage.from_tracker(
+                    self._usage_tracker,
+                    model_id=getattr(model, "model_id", "") or "",
+                ).finalize()
+                memory_ledger = self.memory.usage_ledger() or None
+                record.set_usage(usage)
+                record.set_subagent_ledger(self._subagent_ledger or None)
+                record.set_memory_ledger(memory_ledger)
+                _display = display or get_display()
+                _display.queue_run_summary(
+                    usage=usage,
+                    duration_s=max(0.0, time.monotonic() - run_started_at),
+                    subagent_ledger=self._subagent_ledger or None,
+                    memory_ledger=memory_ledger,
+                )
+                return pass_result
+
         # --- Build tools ---
-        # Do this after preflight so parent-run preloads do not appear to be
-        # part of the preflight step in logs or side effects.
+        # Do this after strategist so parent-run preloads do not appear to be
+        # part of the strategist step in logs or side effects.
         emit_progress(observer, "building_tools", "loading available tools")
         (
             all_tools,
@@ -2895,7 +2968,7 @@ class OuroAgent:
         )
         emit_progress(observer, "building_prompt", "prompt ready", state="complete")
 
-        # Assemble the effective task: dynamic context + prefetched data + preflight + request
+        # Assemble the effective task: dynamic context + prefetched data + request
         context_parts: list[str] = []
         if dynamic_context:
             context_parts.append(dynamic_context)
@@ -2916,44 +2989,39 @@ class OuroAgent:
                 "context loaded" if prefetch_context else "no context loaded",
                 state="complete",
             )
-        if preflight and preflight.briefing:
-            context_parts.append(f"## Context Briefing\n{preflight.briefing}")
-        if preflight and preflight.plan:
-            context_parts.append(
-                "## Advisory Action Plan\n"
-                "This preflight plan is not the deliverable. Use it to choose concrete "
-                "MCP calls and platform actions, then report the results of the work. "
-                "Reorder it if needed: create any durable artifact the request explicitly "
-                "names (quest, post, plan) before long research or execution steps, so the "
-                "requested deliverable exists even if later steps stall.\n\n"
-                f"{preflight.plan}"
-            )
 
         if is_heartbeat:
-            # Cheap executor gets the compact brief, not a replay of the full
-            # planning playbook/direction dump that preflight already consumed.
+            # Cheap executor gets the compact brief plus supporting dynamic
+            # context (working memory / logs / active tasks) — not a replay
+            # of the full playbook/direction dump the strategist already saw.
             brief = format_heartbeat_execution_brief(
-                preflight or PreflightResult()
+                strategist or StrategistResult()
             )
-            effective_task = brief
-            if preflight and preflight.prefetch_assets:
-                # Strategist-selected assets are fetched up front so the mid-tier
-                # executor doesn't burn its first steps on get_asset round-trips.
+            support_parts: list[str] = []
+            if dynamic_context:
+                support_parts.append(dynamic_context)
+            if strategist and strategist.prefetch_assets:
                 emit_progress(
-                    observer, "prefetching_context", "loading preflight assets"
+                    observer, "prefetching_context", "loading strategist assets"
                 )
                 hb_prefetch = resolve_prefetch(
                     self._deferred_tools,
-                    PrefetchSpec(asset_ids=list(preflight.prefetch_assets)),
+                    PrefetchSpec(asset_ids=list(strategist.prefetch_assets)),
                 )
                 if hb_prefetch:
-                    effective_task = f"{effective_task}\n\n{hb_prefetch}"
+                    support_parts.append(hb_prefetch)
                 emit_progress(
                     observer,
                     "prefetching_context",
                     "context loaded" if hb_prefetch else "no context loaded",
                     state="complete",
                 )
+            if support_parts:
+                effective_task = (
+                    brief + "\n\n---\n\n" + "\n\n---\n\n".join(support_parts)
+                )
+            else:
+                effective_task = brief
         elif context_parts:
             effective_task = (
                 "\n\n---\n\n".join(context_parts)
@@ -3199,13 +3267,18 @@ class OuroAgent:
                 logger.warning("Failed to append conversation turn: %s", e)
 
         def _do_post_run():
-            worth_remembering = (
+            store_semantic = (
                 preflight.should_remember() if preflight else not is_trivial
+            )
+            # Heartbeat non-pass ticks still get an episodic daily-log even when
+            # nothing durable belongs in vector memory.
+            want_episode = bool(
+                is_heartbeat and preflight and preflight.should_log_episode()
             )
             if (
                 not profile.skip_post_reflection
                 and not skip_memory
-                and worth_remembering
+                and (store_semantic or want_episode)
                 and (
                     capability_envelope is None
                     or capability_envelope.allows(Capability.MEMORY_WRITE)
@@ -3224,8 +3297,11 @@ class OuroAgent:
                     conversation_state=conv_state,
                     conversation_id=conversation_id,
                     memory_notes=(
-                        preflight.memory_notes if preflight else None
+                        preflight.memory_notes
+                        if preflight and store_semantic
+                        else None
                     ),
+                    store_semantic=store_semantic,
                 )
 
             if profile.update_conversation_state and conversation_id:

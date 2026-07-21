@@ -565,6 +565,17 @@ def _run_agent(
         allowed = set(profile.allowed_tools)
         tools.extend(t for t in mem_tools if t.name in allowed)
 
+    if "read_context" in set(profile.allowed_tools):
+        from ..memory.context_loader import make_read_context_tool
+
+        tools.append(
+            make_read_context_tool(
+                ctx.workspace,
+                doc_store=ctx.doc_store,
+                agent_name=ctx.agent_id,
+            )
+        )
+
     agent_ref: dict = {}
     if (
         profile.can_load_mcp_tools

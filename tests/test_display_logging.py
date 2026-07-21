@@ -50,6 +50,13 @@ def test_logger_completes_tool_after_observation():
     assert "✓ get_asset" in output.replace("[/]", "")
 
 
+def test_off_logger_hides_records_labeled_off():
+    display, buffer = _display_with_console()
+    logger = OuroLogger(level=LogLevel.OFF, display=display)
+    logger.log("private reasoning", level=LogLevel.OFF)
+    assert buffer.getvalue() == ""
+
+
 def test_subagent_step_is_spinner_only():
     from ouro_agents.cli_progress import TerminalRunProgress
     from ouro_agents.events import EventRunContext

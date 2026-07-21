@@ -68,6 +68,8 @@ class ModeProfile(BaseModel):
     # ways on casual messages.
     conversational: bool = False
     lightweight: bool = False
+    # Heartbeat is the only mode that runs the strategist before the main loop.
+    # Field name remains skip_preflight for config/API compatibility.
     skip_preflight: bool = False
     skip_post_reflection: bool = False
     load_conversation_state: bool = False
@@ -112,7 +114,7 @@ CHAT_EXCLUDED_TOOLS = [
 ]
 
 
-# Chat skips preflight for lower reply latency. No tools are preloaded:
+# Chat skips the strategist for lower reply latency. No tools are preloaded:
 # most chat turns are conversational and need zero tools, so preloads only
 # added directory noise and prompt tokens. Everything stays one load_tool
 # away. Post-run reflection still curates memory in a background thread so
@@ -139,6 +141,8 @@ AUTONOMOUS = ModeProfile(
     output_format=AUTONOMOUS_OUTPUT,
     max_steps=40,
     preload_tools=AUTONOMOUS_ACTION_PRELOADS,
+    # Strategist is heartbeat-only; autonomous plans and executes itself.
+    skip_preflight=True,
 )
 
 HEARTBEAT = ModeProfile(
@@ -157,9 +161,9 @@ HEARTBEAT = ModeProfile(
     default_servers=["ouro"],
     allow_delegation=True,
     lightweight=True,
-    # One strong preflight plans the tick; the cheap executor follows it.
-    # Reflection stays available but is gated by preflight worth_remembering
-    # (pass/no-op ticks skip the reflector).
+    # One strong strategist plans the tick; the cheap executor follows it.
+    # Semantic memory reflection is gated by worth_remembering; pass ticks
+    # skip it. Episodic daily-log writing is gated separately.
     skip_preflight=False,
     skip_post_reflection=False,
     load_scheduled_tasks=False,

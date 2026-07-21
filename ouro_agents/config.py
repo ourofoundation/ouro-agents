@@ -70,7 +70,7 @@ class ModelTiersConfig(BaseModel):
     """Opinionated model roster. Configure once; roles pick a tier.
 
     ``strong`` — main agent, planning, writer, executor, developer, and
-    the heartbeat preflight strategy stage.
+    the heartbeat strategist stage.
     ``light`` — search, research, reflector, extraction, utilities
     (compaction, summarize, dream, refinement).
     ``mid`` — chat and heartbeat execution when set, otherwise ``strong``.
@@ -91,8 +91,10 @@ MODEL_ROLE_TIERS: Dict[str, ModelTierName] = {
     "planner": "strong",
     "chat": "mid",
     "heartbeat": "mid",
+    "strategist": "strong",
+    # Legacy role names still resolve during the preflight → strategist rename.
     "heartbeat_preflight": "strong",
-    "preflight": "light",
+    "preflight": "strong",
     "search": "light",
     "research": "light",
     "reflector": "light",
@@ -110,8 +112,9 @@ ROLE_MAX_COMPLETION_TOKENS: Dict[str, int] = {
     "planning": 8192,
     "chat": 8192,
     "heartbeat": 8192,
+    "strategist": 4096,
     "heartbeat_preflight": 4096,
-    "preflight": 2048,
+    "preflight": 4096,
     "search": 2048,
     "research": 8192,
     "writer": 16384,
@@ -139,12 +142,21 @@ def max_completion_tokens_for_role(
     tiers: Optional[ModelTiersConfig],
     role: str,
 ) -> Optional[int]:
-    """Resolve a completion-token cap for a harness role."""
+    """Resolve a completion-token cap for a harness role.
+
+    When both the tier and the role define a cap, take the tighter (min) so
+    role-specific budgets (e.g. strategist=4096) still constrain a strong
+    tier that allows a larger default.
+    """
+    role_cap = ROLE_MAX_COMPLETION_TOKENS.get(role)
+    tier_cap = None
     if tiers is not None:
         tier_cap = tier_spec_for_role(tiers, role).max_completion_tokens
-        if tier_cap is not None:
-            return tier_cap
-    return ROLE_MAX_COMPLETION_TOKENS.get(role)
+    if tier_cap is not None and role_cap is not None:
+        return min(int(tier_cap), int(role_cap))
+    if tier_cap is not None:
+        return int(tier_cap)
+    return role_cap
 
 
 def _tier_id(models_data: dict[str, Any], name: str) -> Optional[str]:

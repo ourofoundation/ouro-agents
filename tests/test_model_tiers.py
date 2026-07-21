@@ -55,7 +55,7 @@ def _tiered_config() -> dict:
             "planning": {"enabled": True},
         },
         "subagents": {
-            "preflight": {"max_steps": 4},
+            "strategist": {"max_steps": 6},
             "research": {"max_steps": 10},
             "writer": {"max_steps": 8},
         },
@@ -126,7 +126,8 @@ class TestModelRoleTiers(unittest.TestCase):
         self.assertEqual(MODEL_ROLE_TIERS["agent"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["writer"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["planning"], "strong")
-        self.assertEqual(MODEL_ROLE_TIERS["preflight"], "light")
+        self.assertEqual(MODEL_ROLE_TIERS["strategist"], "strong")
+        self.assertEqual(MODEL_ROLE_TIERS["preflight"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["heartbeat_preflight"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["search"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["research"], "light")
@@ -306,10 +307,10 @@ class TestHermesConfigLoads(unittest.TestCase):
         self.assertEqual(
             config.memory.extraction_model, config.models.light.id
         )
-        preflight = config.subagents.profiles["preflight"]
-        self.assertIsNone(preflight.model)
-        self.assertIsNone(preflight.reasoning)
-        self.assertEqual(preflight.max_steps, 6)
+        strategist = config.subagents.profiles["strategist"]
+        self.assertIsNone(strategist.model)
+        self.assertIsNone(strategist.reasoning)
+        self.assertEqual(strategist.max_steps, 6)
 
 
 if __name__ == "__main__":

@@ -39,8 +39,8 @@
     }
   },
   "subagents": {
-    "preflight": {
-      "max_steps": 4
+    "strategist": {
+      "max_steps": 5
     },
     "search": {
       "max_steps": 4

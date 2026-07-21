@@ -248,6 +248,8 @@ def build_run_reflection_task(
     team_name: str = "",
     available_teams: list[dict] | None = None,
     memory_notes: list[str] | None = None,
+    *,
+    episode_only: bool = False,
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
@@ -283,6 +285,16 @@ def build_run_reflection_task(
             + "\n"
         )
 
+    episode_block = ""
+    if episode_only:
+        episode_block = (
+            "\nEPISODE-ONLY MODE: Do not store vector-memory candidates "
+            "(return candidates: []). Write one concrete daily_log_entries "
+            "episode describing what this heartbeat did (or attempted), with "
+            "asset links when available. Empty daily_log_entries is only OK "
+            "when literally nothing happened.\n"
+        )
+
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
         f"Run mode: {run_mode}\n"
@@ -292,7 +304,8 @@ def build_run_reflection_task(
         f"Task:\n{task[:1500]}\n\n"
         f"Result:\n{str(result)[:2000]}\n\n"
         f"Tool calls:\n{tools_text}\n"
-        f"{notes_block}\n"
+        f"{notes_block}"
+        f"{episode_block}\n"
         "If this run created a durable Ouro asset (dataset, post, file, quest, "
         "service, etc.), store a candidate with its UUID in asset_ids and an "
         "asset: markdown link — future heartbeats must recall that ID without "

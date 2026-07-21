@@ -80,9 +80,9 @@ Role → tier map (code-owned, not configurable):
 
 | Role | Tier |
 |------|------|
-| agent, planning, writer, executor, developer, planner | strong |
+| agent, planning, writer, executor, developer, planner, strategist | strong |
 | chat, heartbeat | mid → strong |
-| preflight, research, reflector | light |
+| research, reflector | light |
 | utility, extraction, refinement | light |
 
 Legacy configs without `models` keep working: set `agent.model`,
@@ -226,8 +226,8 @@ Legacy `proactive.enabled` / `proactive.servers` configs are migrated to
 `servers` at load time (always `["ouro"]` for the main heartbeat when search
 was previously listed — search is delegated).
 
-Heartbeat flow: one strong-model preflight produces an executable brief; a
-cheap mid/light executor follows it. Post-preflight workers are capped to
+Heartbeat flow: one strong-model strategist produces an executable brief; a
+cheap mid/light executor follows it. Post-strategist workers are capped to
 mid/light for that tick.
 
 ## `planning`

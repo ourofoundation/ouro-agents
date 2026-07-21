@@ -32,8 +32,7 @@ Defined in `ouro_agents/subagents/profiles.py`. Key fields:
 
 | Name | Delegatable | What it does |
 |------|-------------|--------------|
-| `preflight` | no | Step 0 of a normal run: classify intent, fetch memory, optionally sketch a plan. |
-| `heartbeat_preflight` | no | Decides what the agent should focus on this heartbeat tick. |
+| `strategist` | no | Heartbeat-only step 0: choose one bounded objective and emit an executable brief. |
 | `reflector` | no | Curates long-term memory after a run or every N turns in chat. |
 | `research` | yes | Investigates a topic via `tavily_search`, posts the writeup to Ouro. |
 | `planner` | yes | Returns a short numbered execution plan. |
@@ -76,13 +75,13 @@ The `subagents` block in `config.json` carries non-prompt overrides:
 "subagents": {
   "writer": { "model": "anthropic/claude-sonnet-4" },
   "research": { "max_steps": 30 },
-  "preflight": {
+  "strategist": {
     "max_steps": 4
   }
 }
 ```
 
-With a top-level `models` block, preflight/research/reflector default to
+With a top-level `models` block, strategist defaults to strong; research/reflector default to
 `light` and writer/executor/developer to `strong`, so most profiles only
 need `max_steps`. An explicit `model` (as on `writer` above) still wins.
 

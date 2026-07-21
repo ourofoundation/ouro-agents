@@ -4,14 +4,14 @@ from ouro_agents.modes.framing import CHAT_FRAMING, HEARTBEAT_FRAMING
 from ouro_agents.modes.profiles import CHAT, HEARTBEAT, PLAN, REVIEW
 from ouro_agents.skills import load_startup_skills, resolve_skill, resolve_skills
 from ouro_agents.subagents.context import SubAgentContext
-from ouro_agents.subagents.preflight import PREFLIGHT_PROMPT
+from ouro_agents.subagents.strategist import STRATEGIST_PROMPT
 from ouro_agents.subagents.prompts import DEVELOPER_PROMPT, EXECUTOR_PROMPT
 from ouro_agents.subagents.profiles import (
     DEVELOPER,
     EXECUTOR,
-    PREFLIGHT,
     RESEARCH,
     SEARCH,
+    STRATEGIST,
     WRITER,
 )
 from ouro_agents.subagents.runner import _format_task_context
@@ -89,7 +89,7 @@ def test_subagent_task_context_includes_shared_core_sections(tmp_path):
     assert "## Ouro asset placement" in prompt
 
 
-def test_preflight_task_context_is_slim_and_non_action_oriented(tmp_path):
+def test_strategist_task_context_includes_working_memory(tmp_path):
     ctx = SubAgentContext(
         workspace=tmp_path,
         backend=None,
@@ -105,51 +105,48 @@ def test_preflight_task_context_is_slim_and_non_action_oriented(tmp_path):
     )
 
     prompt = _format_task_context(
-        "Write a short poem as a post.",
+        "Choose one heartbeat objective.",
         ctx,
-        shared_context_sections=PREFLIGHT.shared_context_sections,
-        include_asset_placement=PREFLIGHT.include_asset_placement,
+        shared_context_sections=STRATEGIST.shared_context_sections,
+        include_asset_placement=STRATEGIST.include_asset_placement,
     )
 
     assert "## CURRENT DATE AND TIME" in prompt
     assert "## PLATFORM CONTEXT\nYou are @athena." in prompt
-    assert "## Task\nWrite a short poem as a post." in prompt
+    assert "## WORKING MEMORY\nRecent anchor post: Day 9." in prompt
+    assert "## PLAN QUEST INDEX\n- PLAN:athena:2026-04-06" in prompt
+    assert "## Task\nChoose one heartbeat objective." in prompt
     assert "## IDENTITY AND RULES (SOUL)" not in prompt
     assert "## USER CONTEXT" not in prompt
     assert "## DEPLOYMENT CONTEXT" not in prompt
-    assert "## PLAN QUEST INDEX" not in prompt
-    assert "## WORKING MEMORY" not in prompt
     assert "## Ouro asset placement" not in prompt
 
 
-def test_preflight_prompts_require_plain_json_final_message():
-    assert "Finish by ending the turn with a final message" in PREFLIGHT_PROMPT
-    assert "JSON object alone" in PREFLIGHT_PROMPT
-    assert "final_answer" not in PREFLIGHT_PROMPT
+def test_strategist_prompts_require_plain_json_final_message():
+    assert "ONLY valid JSON" in STRATEGIST_PROMPT
+    assert "JSON object alone" in STRATEGIST_PROMPT
+    assert "final_answer" not in STRATEGIST_PROMPT
 
 
-def test_preflight_system_prompt_starts_with_preflight_role():
+def test_strategist_system_prompt_starts_with_strategist_role():
     prompt = build_tool_calling_system_prompt(
-        PREFLIGHT.system_prompt,
-        include_work_directive=PREFLIGHT.include_work_directive,
-        include_mechanics=PREFLIGHT.include_tool_mechanics,
+        STRATEGIST.system_prompt,
+        include_work_directive=STRATEGIST.include_work_directive,
+        include_mechanics=STRATEGIST.include_tool_mechanics,
     )
 
-    assert prompt.startswith("You are a preflight analyst for an AI agent.")
+    assert prompt.startswith("You are the heartbeat strategist.")
     assert "You are a capable work agent" not in prompt
     assert "Prime directive: do the work" not in prompt
 
 
-def test_preflight_prompts_limit_tool_use_and_recover():
-    assert "memory cannot change the outcome, do not call tools" in PREFLIGHT_PROMPT
-    assert "call memory_recall exactly once" in PREFLIGHT_PROMPT
-    assert "memory_recall returns no useful context" in PREFLIGHT_PROMPT
-    assert "previous response failed or was not accepted" in PREFLIGHT_PROMPT
-    assert "Your job is analysis only" in PREFLIGHT_PROMPT
-    assert "Never call side-effecting platform MCP tools" in PREFLIGHT_PROMPT
-    assert "write_comment" in PREFLIGHT_PROMPT
-    assert "Include a memory only if it would change what the main agent" in PREFLIGHT_PROMPT
-    assert "End moderate/complex plans with a verification step" in PREFLIGHT_PROMPT
+def test_strategist_prompts_limit_tool_use():
+    assert "read_context" in STRATEGIST_PROMPT
+    assert "memory_recall" in STRATEGIST_PROMPT
+    assert "selected_priority" in STRATEGIST_PROMPT
+    assert "priority_audit" in STRATEGIST_PROMPT
+    assert "Do not call side-effecting tools" in STRATEGIST_PROMPT
+    assert "normally at most 4 ordered" in STRATEGIST_PROMPT.lower() or "Normally emit at most 4" in STRATEGIST_PROMPT
 
 
 def test_ouro_skill_describes_quest_lifecycle_semantics():
@@ -169,13 +166,15 @@ def test_executor_and_developer_prompts_require_concrete_work():
     assert "return a plan in place of execution" in DEVELOPER_PROMPT
 
 
-def test_preflight_profiles_only_allow_memory_recall():
-    assert PREFLIGHT.allowed_tools == ["memory_recall"]
-    assert PREFLIGHT.preload_tools == []
-    assert PREFLIGHT.include_work_directive is False
-    assert PREFLIGHT.include_tool_mechanics is False
-    assert PREFLIGHT.include_asset_placement is False
-    assert "soul" not in PREFLIGHT.shared_context_sections
+def test_strategist_profile_is_read_only():
+    assert "memory_recall" in STRATEGIST.allowed_tools
+    assert "read_context" in STRATEGIST.allowed_tools
+    assert "ouro:query_dataset" in STRATEGIST.preload_tools
+    assert STRATEGIST.include_work_directive is False
+    assert STRATEGIST.include_tool_mechanics is False
+    assert STRATEGIST.include_asset_placement is False
+    assert "soul" not in STRATEGIST.shared_context_sections
+    assert "working_memory" in STRATEGIST.shared_context_sections
 
 
 def test_heartbeat_framing_points_at_search_delegation():

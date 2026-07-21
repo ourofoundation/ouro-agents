@@ -32,9 +32,9 @@ Built-in modes (see [`run-modes.md`](./run-modes.md)):
 
 | Mode | What triggers it | Notes |
 |------|------------------|-------|
-| `chat` | `ouro-agents chat` or webhook from Ouro chat | Loads conversation state, skips preflight, keeps post-reflection. Webhook replies are posted automatically. |
-| `autonomous` | `ouro-agents run "..."` | Full preflight + post-reflection. |
-| `heartbeat` | Scheduler tick | Strong preflight + cheap executor; Ouro MCP only; search via subagents; reflection only when worth remembering. |
+| `chat` | `ouro-agents chat` or webhook from Ouro chat | Loads conversation state, skips strategist, keeps post-reflection. Webhook replies are posted automatically. |
+| `autonomous` | `ouro-agents run "..."` | Skips strategist; runs post-reflection. |
+| `heartbeat` | Scheduler tick | Strong strategist + cheap executor; Ouro MCP only; search via subagents; semantic memory only when worth remembering. |
 | `plan` | `ouro-agents plan` or scheduler | Generates a plan cycle. |
 | `review` | `ouro-agents review` or feedback | Updates an existing plan. |
 
@@ -49,7 +49,7 @@ The main agent can delegate focused work to subagents through the
 override, skills, etc.
 
 Built-in delegatable profiles: `search`, `research`, `planner`, `executor`,
-`writer`, `developer`. Internal profiles: `preflight`, `heartbeat_preflight`,
+`writer`, `developer`. Internal profiles: `strategist`,
 `reflector`.
 
 Custom profiles can be dropped into `workspace/subagents/*.{json,yaml}` (or
@@ -151,7 +151,7 @@ event → server                                 # FastAPI handle_event
     → asset.deleted?                           # cleanup branch
     → OuroAgent.run(task, mode=CHAT, ...)
       → resolve mode profile + overrides
-      → preflight subagent (if not skipped)
+      → strategist subagent (heartbeat only)
       → build tools, system prompt, dynamic context
       → smolagents ToolCallingAgent loop
         ├─ memory_recall, load_skill, load_tool, run_python, delegate, …

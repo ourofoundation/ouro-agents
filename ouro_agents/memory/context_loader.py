@@ -292,3 +292,187 @@ def load_entity_context(
     result = "\n\n".join(sections)
     logger.info("Loaded entity context: ~%d tokens from %d sections", total_tokens, len(sections))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat strategist helpers: cross-team index + path-confined reads
+# ---------------------------------------------------------------------------
+
+MAX_CROSS_TEAM_INDEX_LINES = 40
+MAX_READ_CONTEXT_PATHS = 4
+MAX_READ_CONTEXT_TOKENS_PER_FILE = 800
+
+
+def build_cross_team_task_index(
+    workspace: Path,
+    *,
+    team_labels: dict[str, str] | None = None,
+    limit: int = MAX_CROSS_TEAM_INDEX_LINES,
+) -> str:
+    """One-line index of active task files across ``teams/*/memory/tasks``.
+
+    Used by the heartbeat strategist when the tick is unscoped so it can pick
+    a path to ``read_context`` instead of guessing team IDs.
+    """
+    teams_root = workspace / "teams"
+    if not teams_root.is_dir():
+        return ""
+
+    labels = team_labels or {}
+    lines: list[str] = []
+    for team_dir in sorted(teams_root.iterdir()):
+        if not team_dir.is_dir():
+            continue
+        team_id = team_dir.name
+        tasks_dir = team_dir / "memory" / "tasks"
+        if not tasks_dir.is_dir():
+            continue
+        label = labels.get(team_id, team_id[:8])
+        for path in sorted(tasks_dir.glob("*.md")):
+            try:
+                head = path.read_text(errors="replace")[:500].lower()
+            except OSError:
+                continue
+            if not (
+                "in progress" in head
+                or "in-progress" in head
+                or "## next steps" in head
+            ):
+                continue
+            meta = _file_frontmatter(path)
+            desc = _file_description(path, meta)
+            rel = path.relative_to(workspace)
+            lines.append(
+                f"- `{rel}` · team={label}" + (f" — {desc}" if desc else "")
+            )
+            if len(lines) >= limit:
+                break
+        if len(lines) >= limit:
+            break
+
+    if not lines:
+        return ""
+    return (
+        "### Cross-team active task files (read with `read_context`)\n"
+        + "\n".join(lines)
+    )
+
+
+def _allowed_context_roots(workspace: Path) -> list[Path]:
+    """Roots the strategist may read: memory/, teams/*/memory/."""
+    roots = [workspace / "memory"]
+    teams_root = workspace / "teams"
+    if teams_root.is_dir():
+        for team_dir in teams_root.iterdir():
+            if team_dir.is_dir():
+                roots.append(team_dir / "memory")
+    return roots
+
+
+def resolve_readable_context_path(
+    workspace: Path, relative_path: str
+) -> Path | None:
+    """Return an absolute path if *relative_path* is under an allowed memory root."""
+    text = (relative_path or "").strip().lstrip("./")
+    if not text or ".." in Path(text).parts:
+        return None
+    candidate = (workspace / text).resolve()
+    workspace_resolved = workspace.resolve()
+    try:
+        candidate.relative_to(workspace_resolved)
+    except ValueError:
+        return None
+    for root in _allowed_context_roots(workspace):
+        try:
+            candidate.relative_to(root.resolve())
+            return candidate
+        except ValueError:
+            continue
+    return None
+
+
+def read_context_paths(
+    workspace: Path,
+    paths: list[str],
+    *,
+    doc_store=None,
+    agent_name: str = "",
+    max_paths: int = MAX_READ_CONTEXT_PATHS,
+    max_tokens_per_file: int = MAX_READ_CONTEXT_TOKENS_PER_FILE,
+) -> str:
+    """Batch-read allowed memory/task files (and optional current team logs).
+
+    Paths must be workspace-relative under ``memory/`` or
+    ``teams/<id>/memory/``. Log names like ``LOG:hermes:2026-07-20`` are
+    resolved via *doc_store* when provided.
+    """
+    parts: list[str] = []
+    seen: set[str] = set()
+    for raw in paths[:max_paths]:
+        key = str(raw or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+
+        # Doc-store log shorthand: LOG:<agent>:<period> or just a store key.
+        if doc_store is not None and (
+            key.startswith("LOG:") or key.startswith("log:")
+        ):
+            store_key = key.split(":", 1)[1]
+            content = doc_store.read(store_key) or ""
+            if not content and agent_name:
+                # Accept LOG:2026-07-20 → agent-qualified log name.
+                content = doc_store.read(
+                    doc_store.log_name(agent_name, store_key)
+                ) or ""
+            if content:
+                truncated = content
+                max_chars = max_tokens_per_file * CHARS_PER_TOKEN
+                if len(truncated) > max_chars:
+                    truncated = truncated[:max_chars] + "\n[...truncated]"
+                parts.append(f"### {key}\n{truncated}")
+            else:
+                parts.append(f"### {key}\n(not found)")
+            continue
+
+        resolved = resolve_readable_context_path(workspace, key)
+        if resolved is None or not resolved.is_file():
+            parts.append(f"### {key}\n(not readable or outside allowed memory roots)")
+            continue
+        content = _load_file_truncated(resolved, max_tokens_per_file)
+        parts.append(f"### {key}\n{content or '(empty)'}")
+
+    if not parts:
+        return "No context paths read."
+    return "\n\n".join(parts)
+
+
+def make_read_context_tool(
+    workspace: Path,
+    *,
+    doc_store=None,
+    agent_name: str = "",
+):
+    """Build the path-confined ``read_context`` tool for the strategist."""
+    from smolagents import tool
+
+    @tool
+    def read_context(paths: list[str]) -> str:
+        """Read indexed memory/task files or current team logs (batch, path-confined).
+
+        Args:
+            paths: Workspace-relative paths under memory/ or teams/<id>/memory/,
+                or LOG:<name> keys for the current doc-store log. Max 4 paths.
+        """
+        if isinstance(paths, str):
+            paths = [paths]
+        if not isinstance(paths, list):
+            return "paths must be a list of strings"
+        return read_context_paths(
+            workspace,
+            [str(p) for p in paths],
+            doc_store=doc_store,
+            agent_name=agent_name,
+        )
+
+    return read_context

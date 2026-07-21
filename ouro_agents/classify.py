@@ -1,14 +1,17 @@
 """Lightweight task classification utilities.
 
-The LLM-based classifier has been replaced by the preflight subagent.
+The LLM-based classifier has been replaced by the heartbeat strategist.
 This module now retains only regex-based trivial-message detection plus
-compatibility re-exports for preflight parsing types.
+compatibility re-exports for strategist parsing types.
 """
 
 import re
 from typing import Optional
 
-from .subagents.preflight import PreflightResult, parse_preflight_result
+from .subagents.strategist import (
+    StrategistResult as PreflightResult,
+    parse_strategist_result as parse_preflight_result,
+)
 
 _TRIVIAL_PATTERNS = re.compile(
     r"^("

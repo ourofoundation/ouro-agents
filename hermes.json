@@ -2,7 +2,8 @@
   "env_file": ".env.hermes",
   "security": {
     "controllers": [
-      "mmoderwell"
+      "mmoderwell",
+      "will"
     ],
     "trusted": [
       "athena",
@@ -67,8 +68,8 @@
     "allow_fallbacks": true
   },
   "subagents": {
-    "preflight": {
-      "max_steps": 6
+    "strategist": {
+      "max_steps": 5
     },
     "search": {
       "max_steps": 4
