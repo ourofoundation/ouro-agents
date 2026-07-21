@@ -465,7 +465,11 @@ def _format_task_context(
             ctx.conversation_state.format_for_prompt() if ctx.conversation_state else ""
         ),
         plans_index=ctx.plans_index,
-        workspace_root=str(ctx.workspace.resolve()),
+        workspace_root=(
+            ctx.sandbox_config.agent_facing_root(ctx.workspace)
+            if ctx.sandbox_config is not None
+            else str(ctx.workspace.resolve())
+        ),
     )
     default_shared_keys = (
         "current_datetime",

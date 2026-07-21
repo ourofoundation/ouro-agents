@@ -1229,6 +1229,13 @@ class OuroAgent:
 
                 env = dict(server.env or {})
                 env.setdefault("WORKSPACE_ROOT", str(self._workspace.resolve()))
+                # In Docker mode, agents see workspace_mount (e.g. /workspace).
+                # Tell MCP so absolute container paths remap onto the host root.
+                if self.config.agent.sandbox.mode == "docker":
+                    env.setdefault(
+                        "WORKSPACE_MOUNT",
+                        self.config.agent.sandbox.workspace_mount,
+                    )
                 if server.name == "ouro":
                     agent_tz = (
                         (self.config.heartbeat.active_hours or {}).get("timezone")
@@ -1774,7 +1781,9 @@ class OuroAgent:
             ),
             preloaded_tool_names=preloaded_tool_names,
             plans_index=plans_index_text,
-            workspace_root=str(self._workspace.resolve()),
+            workspace_root=self.config.agent.sandbox.agent_facing_root(
+                self._workspace
+            ),
         )
 
     def _resolve_subagent_model(

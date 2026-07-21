@@ -43,6 +43,26 @@ def test_subagent_task_context_includes_current_datetime(tmp_path):
     assert "## Task\nDraft the next briefing." in prompt
 
 
+def test_subagent_task_context_docker_uses_mount_not_host_path(tmp_path):
+    from ouro_agents.config import SandboxConfig
+
+    host_workspace = tmp_path / "agents" / "hermes"
+    host_workspace.mkdir(parents=True)
+    ctx = SubAgentContext(
+        workspace=host_workspace,
+        backend=None,
+        agent_id="hermes",
+        memory_config=None,
+        model=None,
+        sandbox_config=SandboxConfig(mode="docker", workspace_mount="/workspace"),
+    )
+
+    prompt = _format_task_context("Inspect the workspace.", ctx)
+
+    assert "Workspace root: /workspace" in prompt
+    assert str(host_workspace.resolve()) not in prompt
+
+
 def test_build_shared_prompt_sections_formats_core_sections():
     sections = build_shared_prompt_sections(
         soul="Be precise.",

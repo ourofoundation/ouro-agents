@@ -73,7 +73,14 @@ copies, and reuse one canonical filename per recurring artifact.
 
 ## Upload Pattern
 
-`ouro-agents` sets **`WORKSPACE_ROOT`** on the Ouro MCP process to the **same resolved directory** as the `run_python` workspace. Relative `file_path` values in `ouro:create_file` are joined to that root (`resolve_local_path` in ouro-mcp), so a file written at `Path('data/out.cif')` is uploaded with **`file_path='data/out.cif'`** (or the absolute path under that workspace).
+`ouro-agents` sets **`WORKSPACE_ROOT`** on the Ouro MCP process to the host
+workspace directory (the same tree bind-mounted into Docker). Relative
+`file_path` values in `ouro:create_file` are joined to that root
+(`resolve_local_path` in ouro-mcp). In Docker mode, absolute paths under the
+container mount (normally `/workspace/...`) are also remapped onto that root,
+so a file written at `Path('data/out.cif')` or `/workspace/data/out.cif` can be
+uploaded with **`file_path='data/out.cif'`** (prefer relative) or the matching
+container absolute path.
 
 Steps:
 

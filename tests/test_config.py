@@ -309,6 +309,29 @@ class TestConfigModeOverrides(unittest.TestCase):
             ["OURO_API_KEY", "OURO_BASE_URL"],
         )
 
+    def test_agent_facing_root_local_uses_host_path(self):
+        config = self._load_config(_base_config())
+        workspace = Path("/tmp/agent-workspace").resolve()
+
+        self.assertEqual(
+            config.agent.sandbox.agent_facing_root(workspace),
+            str(workspace),
+        )
+
+    def test_agent_facing_root_docker_uses_mount(self):
+        data = _base_config()
+        data["agent"]["sandbox"] = {
+            "mode": "docker",
+            "workspace_mount": "/workspace",
+        }
+        config = self._load_config(data)
+        workspace = Path("/home/matt/ouro/ouro-agents/agents/hermes")
+
+        self.assertEqual(
+            config.agent.sandbox.agent_facing_root(workspace),
+            "/workspace",
+        )
+
     def test_agent_sandbox_docker_overrides_load(self):
         data = _base_config()
         data["agent"]["sandbox"] = {

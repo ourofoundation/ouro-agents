@@ -282,6 +282,16 @@ class SandboxConfig(BaseModel):
     no_new_privileges: bool = True
     drop_capabilities: bool = True
 
+    def agent_facing_root(self, workspace: Path) -> str:
+        """Path string to show the agent as its workspace root.
+
+        In Docker mode this is the container mount (e.g. ``/workspace``), not
+        the host absolute path, so prompts match what ``run_python`` sees.
+        """
+        if self.mode == "docker":
+            return self.workspace_mount
+        return str(Path(workspace).resolve())
+
 
 class PromptCachingConfig(BaseModel):
     enabled: bool = False

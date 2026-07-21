@@ -350,8 +350,10 @@ A list of `MCPServerConfig`. Each entry connects on startup.
 | `env` | Env dict; supports `${VAR}` expansion. |
 | `url` | Reserved for `streamable-http`. |
 
-`${WORKSPACE_ROOT}` is auto-injected for child processes. For the `ouro`
-server, `OURO_MCP_TIMEZONE` is also injected based on
+`${WORKSPACE_ROOT}` is auto-injected for child processes (host workspace path).
+In Docker sandbox mode, `${WORKSPACE_MOUNT}` is also injected (e.g.
+`/workspace`) so MCP remaps container absolute paths onto the host root. For
+the `ouro` server, `OURO_MCP_TIMEZONE` is also injected based on
 `heartbeat.active_hours.timezone` so platform timestamps render in the
 agent's local time.
 
