@@ -209,6 +209,11 @@ def test_run_dream_dry_run_plans_without_backend_mutation_and_writes_audit(tmp_p
     audit = json.loads(audit_path.read_text())
     assert audit["dry_run"] is True
     assert {op["status"] for op in audit["operations"]} == {"planned"}
+    assert any(call["phase"] == "dream_review" for call in audit["llm_calls"])
+    review_call = next(c for c in audit["llm_calls"] if c["phase"] == "dream_review")
+    assert review_call["response_chars"] > 0
+    assert "system" in review_call and "user" in review_call
+    assert summary["llm_calls"] >= 1
 
 
 def test_run_dream_reviews_evolving_memory_in_same_cycle(tmp_path: Path):
@@ -236,10 +241,15 @@ def test_run_dream_reviews_evolving_memory_in_same_cycle(tmp_path: Path):
         _ReviewModel([{"id": "mem-1", "status": "confirmed", "reason": "test"}]),
         doc_store=store,
         team_id="team-42",
+        run_id="run-test-review-1",
     )
 
     assert summary["strength_decayed"] == 1
     assert summary["dream_review"]["confirmed"] == 1
+    assert summary["run_id"] == "run-test-review-1"
+    audit = json.loads(Path(summary["audit_log"]).read_text())
+    assert audit["run_id"] == "run-test-review-1"
+    assert any(c["phase"] == "dream_review" for c in audit["llm_calls"])
     assert backend.updated[-1] == (
         "mem-1",
         {
@@ -651,3 +661,184 @@ def test_run_dream_summary_includes_failures(tmp_path: Path):
     )
 
     assert any("402" in f for f in summary.get("failures", []))
+
+
+def test_run_dream_scope_writes_run_log_with_usage(tmp_path: Path, monkeypatch):
+    """Dream scopes must land in runs.db like other modes (tokens/cost included)."""
+    from ouro_agents.agent import OuroAgent
+    from ouro_agents.config import MemoryConfig, RunLogConfig
+    from ouro_agents.run_log import RunLogStore
+    from ouro_agents.usage import UsageTracker
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = RunLogStore(workspace / "runs.db")
+    trackers: list[UsageTracker] = []
+
+    def fake_run_dream(**kwargs):
+        assert kwargs.get("run_id"), "dream ledgering must pass run_id into run_dream"
+        tracker = trackers[-1]
+        tracker.record(
+            "dream-gen-1",
+            {
+                "input_tokens": 120,
+                "output_tokens": 40,
+                "cost_usd": 0.0025,
+            },
+        )
+        return {
+            "compacted": False,
+            "promoted": 1,
+            "outcome_lessons": 0,
+            "skills_distilled": 0,
+            "strength_decayed": 0,
+            "memories_deleted": 0,
+            "refinement": {
+                "pending": 0,
+                "edits": 0,
+                "memory_deletes": 0,
+                "queue_applied": 0,
+            },
+            "dream_review": {
+                "reviewed": 0,
+                "confirmed": 0,
+                "contradicted": 0,
+                "uncertain": 0,
+            },
+            "comments_merged": 0,
+            "run_id": kwargs["run_id"],
+            "llm_calls": 0,
+        }
+
+    monkeypatch.setattr("ouro_agents.memory.dream.run_dream", fake_run_dream)
+
+    agent = SimpleNamespace(
+        config=SimpleNamespace(
+            agent=SimpleNamespace(name="hermes", workspace=workspace),
+            memory=MemoryConfig(
+                extraction_model="test-model",
+                embedder="test-embedder",
+            ),
+            run_log=RunLogConfig(enabled=True, path=workspace / "runs.db"),
+        ),
+        _current_run_id=None,
+        _current_tick_id=None,
+        _run_log=store,
+        memory=SimpleNamespace(usage_ledger=lambda: None),
+        doc_store=None,
+    )
+
+    def _build_model(model_id, **kwargs):
+        tracker = kwargs.get("usage_tracker") or UsageTracker()
+        trackers.append(tracker)
+        return SimpleNamespace(model_id=model_id)
+
+    agent._build_model = _build_model
+    agent._utility_model_id = lambda: "test/utility"
+    agent._finalize_run_record = lambda record: store.write(record)
+
+    summary = OuroAgent._run_dream_scope(
+        agent,
+        team_id="team-42",
+        mode="manual",
+        tick_id="tick-dream-1",
+        doc_store=SimpleNamespace(),
+    )
+
+    assert summary["promoted"] == 1
+    rows = store.query_runs(mode="dream", tick_id="tick-dream-1")
+    assert len(rows) == 1
+    row = rows[0]
+    assert summary["run_id"] == row["run_id"]
+    assert row["mode"] == "dream"
+    assert row["status"] == "success"
+    assert row["team_id"] == "team-42"
+    assert row["tick_id"] == "tick-dream-1"
+    assert row["model"] == "test/utility"
+    assert row["input_tokens"] == 120
+    assert row["output_tokens"] == 40
+    assert row["total_tokens"] == 160
+    assert abs(float(row["cost_usd"]) - 0.0025) < 1e-9
+    assert "dream [manual] scope=team-42" in row["task"]
+    store.close()
+
+
+def test_promote_log_entries_records_llm_call_and_entry_detail(tmp_path: Path):
+    from ouro_agents.memory.dream import DreamPlan
+
+    store = LocalDocStore(tmp_path, agent_name="hermes", team_id="team-42", rhythm="daily")
+    memory_name = store.memory_name("hermes")
+    log_name = store.log_name("hermes", period_key_offset("daily", -1))
+    store.write(memory_name, "# Memory\n\n## Facts\n- Existing fact.\n\n## Learnings\n")
+    store.write(log_name, "# Daily Log\n\n- Useful durable lesson from the prior period.\n")
+
+    plan = DreamPlan(
+        scope="team-42",
+        agent_id="hermes",
+        team_id="team-42",
+        rhythm="daily",
+        period=period_key("daily"),
+        mode="manual",
+    )
+    promoted = promote_log_entries(
+        tmp_path,
+        _PromotionModel(),
+        doc_store=store,
+        agent_name="hermes",
+        plan=plan,
+    )
+
+    assert promoted == 1
+    assert len(plan.llm_calls) == 1
+    assert plan.llm_calls[0]["phase"] == "promotion"
+    assert plan.llm_calls[0]["response_chars"] > 0
+    promo_ops = [op for op in plan.operations if op.kind == "promotion"]
+    assert len(promo_ops) == 1
+    assert promo_ops[0].detail["entries"]
+    assert promo_ops[0].detail["entries"][0]["section"] == "Learnings"
+
+
+def test_outcome_lessons_records_operation(tmp_path: Path, monkeypatch):
+    from ouro_agents.memory.dream import DreamPlan, _store_outcome_lessons
+
+    stored = []
+
+    def fake_remember(backend, agent_id, text, **kwargs):
+        stored.append(text)
+        return True
+
+    monkeypatch.setattr(
+        "ouro_agents.memory.focus.remember_work_direction",
+        fake_remember,
+    )
+    monkeypatch.setattr(
+        "ouro_agents.modes.outcomes.build_outcome_evidence_context",
+        lambda agent, limit=8: (
+            "Quest A: 0 external comments, 0 quality views\n"
+            "Quest B: 0 external comments, 0 quality views"
+        ),
+    )
+
+    plan = DreamPlan(
+        scope="team-42",
+        agent_id="hermes",
+        team_id="team-42",
+        rhythm="daily",
+        period=period_key("daily"),
+    )
+    count = _store_outcome_lessons(
+        SimpleNamespace(config=SimpleNamespace()),
+        agent_id="hermes",
+        backend=_UpdateBackend([]),
+        team_id="team-42",
+        dry_run=False,
+        plan=plan,
+    )
+
+    assert count == 1
+    assert stored
+    ops = [op for op in plan.operations if op.kind == "outcome_lessons"]
+    assert len(ops) == 1
+    assert ops[0].reason == "low_engagement_constraint"
+    assert ops[0].detail["zeroish_signals"] >= 2
+    assert "external engagement" in ops[0].excerpt.lower()

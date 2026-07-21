@@ -246,6 +246,9 @@ def test_run_refinement_applies_anchored_edit_and_marks_queue(tmp_path: Path):
     assert summary.memory_deletes == 1
     assert summary.queue_marked_applied == 1
     assert agent.memory.deleted == ["mem-123"]
+    assert len(summary.llm_calls) == 1
+    assert summary.llm_calls[0]["phase"] == "refinement"
+    assert summary.llm_calls[0]["response_chars"] > 0
 
     rewritten = doc.read_text()
     assert _SUBJECT not in rewritten

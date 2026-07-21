@@ -56,6 +56,13 @@ def _summary_template() -> dict[str, Any]:
     }
 
 
+# Truncation budgets for audit payloads. Full docs/prompts stay out of the
+# audit; these keep enough context to reconstruct "what happened" without
+# writing megabyte JSON blobs.
+_AUDIT_EXCERPT_LIMIT = 800
+_LLM_EXCERPT_LIMIT = 1500
+
+
 @dataclass
 class DreamOperation:
     """A planned or applied dream mutation, safe to persist in audit logs."""
@@ -68,6 +75,8 @@ class DreamOperation:
     old_metadata: dict[str, Any] = field(default_factory=dict)
     new_metadata: dict[str, Any] = field(default_factory=dict)
     excerpt: str = ""
+    # Structured extras (promoted entries, files rewritten, …) — keep small.
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,7 +88,9 @@ class DreamPlan:
     period: str
     dry_run: bool = False
     mode: str = "manual"
+    run_id: str = ""
     operations: list[DreamOperation] = field(default_factory=list)
+    llm_calls: list[dict[str, Any]] = field(default_factory=list)
     skipped: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     health: dict[str, Any] = field(default_factory=dict)
@@ -87,6 +98,26 @@ class DreamPlan:
 
     def add_operation(self, operation: DreamOperation) -> None:
         self.operations.append(operation)
+
+    def add_llm_call(
+        self,
+        phase: str,
+        *,
+        system: str = "",
+        user: str = "",
+        response: str = "",
+        **extra: Any,
+    ) -> None:
+        """Record a truncated LLM prompt/response for this dream scope."""
+        self.llm_calls.append(
+            _llm_audit(
+                phase=phase,
+                system=system,
+                user=user,
+                response=response,
+                **extra,
+            )
+        )
 
     def add_warning(self, message: str) -> None:
         if message not in self.warnings:
@@ -115,6 +146,9 @@ class DreamResult:
         out["applied_operations"] = len(
             [op for op in self.plan.operations if op.status == "applied"]
         )
+        out["llm_calls"] = len(self.plan.llm_calls)
+        if self.plan.run_id:
+            out["run_id"] = self.plan.run_id
         if self.audit_path:
             out["audit_log"] = self.audit_path
         failures = [
@@ -130,6 +164,7 @@ class DreamResult:
         return {
             "mode": self.plan.mode,
             "dry_run": self.plan.dry_run,
+            "run_id": self.plan.run_id or None,
             "scope": self.plan.scope,
             "agent_id": self.plan.agent_id,
             "team_id": self.plan.team_id,
@@ -140,6 +175,7 @@ class DreamResult:
             "health": self.plan.health,
             "source_logs": self.plan.source_logs,
             "operations": [asdict(op) for op in self.plan.operations],
+            "llm_calls": self.plan.llm_calls,
             "skipped": self.plan.skipped,
             "warnings": self.plan.warnings,
             "errors": self.errors,
@@ -187,6 +223,40 @@ def _short_excerpt(text: str, limit: int = 160) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def _llm_audit(
+    *,
+    phase: str,
+    system: str = "",
+    user: str = "",
+    response: str = "",
+    limit: int = _LLM_EXCERPT_LIMIT,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Build a size-capped LLM I/O record for the dream audit."""
+    system_text = system or ""
+    user_text = user or ""
+    response_text = response or ""
+    out: dict[str, Any] = {
+        "phase": phase,
+        "system": _short_excerpt(system_text, limit),
+        "user": _short_excerpt(user_text, limit),
+        "response": _short_excerpt(response_text, limit),
+        "system_chars": len(system_text),
+        "user_chars": len(user_text),
+        "response_chars": len(response_text),
+    }
+    out.update(extra)
+    return out
+
+
+def _model_text(result: Any) -> str:
+    if result is None:
+        return ""
+    if hasattr(result, "content"):
+        return str(result.content or "")
+    return str(result)
 
 
 def _memory_id(mem: MemoryResult) -> str:
@@ -519,24 +589,27 @@ def compact_memory_md(
     logger.info("Working memory is %d tokens, compacting to %d", tokens, config.memory_md_max_tokens)
     max_chars = config.memory_md_max_tokens * CHARS_PER_TOKEN
 
+    system_prompt = COMPACTION_PROMPT.format(
+        max_tokens=config.memory_md_max_tokens,
+        max_chars=max_chars,
+    )
     try:
         result = model(
             [
-                {
-                    "role": "system",
-                    "content": COMPACTION_PROMPT.format(
-                        max_tokens=config.memory_md_max_tokens,
-                        max_chars=max_chars,
-                    ),
-                },
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content},
             ],
         )
-        text = result.content if hasattr(result, "content") else str(result)
-        text = strip_markdown_fence(str(text))
+        text = strip_markdown_fence(_model_text(result))
 
         new_tokens = _estimate_tokens(text)
         if plan:
+            plan.add_llm_call(
+                "compaction",
+                system=system_prompt,
+                user=content,
+                response=text,
+            )
             plan.add_operation(
                 DreamOperation(
                     kind="compaction",
@@ -544,7 +617,11 @@ def compact_memory_md(
                     target=post_name,
                     old_metadata={"tokens": tokens},
                     new_metadata={"tokens": new_tokens},
-                    excerpt=_short_excerpt(text),
+                    excerpt=_short_excerpt(text, _AUDIT_EXCERPT_LIMIT),
+                    detail={
+                        "before_excerpt": _short_excerpt(content, _AUDIT_EXCERPT_LIMIT),
+                        "after_excerpt": _short_excerpt(text, _AUDIT_EXCERPT_LIMIT),
+                    },
                 )
             )
         if dry_run:
@@ -720,19 +797,25 @@ def promote_log_entries(
         return 0
 
     try:
+        user_prompt = (
+            f"Previous period's log:\n{log_content}\n\n"
+            f"Current working memory:\n{memory_content}"
+        )
         result = model(
             [
                 {"role": "system", "content": PROMOTION_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Previous period's log:\n{log_content}\n\n"
-                        f"Current working memory:\n{memory_content}"
-                    ),
-                },
+                {"role": "user", "content": user_prompt},
             ],
         )
-        text = result.content if hasattr(result, "content") else str(result)
+        text = _model_text(result)
+        if plan:
+            plan.add_llm_call(
+                "promotion",
+                system=PROMOTION_PROMPT,
+                user=user_prompt,
+                response=text,
+                period=previous_period,
+            )
         entries = parse_llm_json(str(text), expect=list)
         if not isinstance(entries, list) or not entries:
             if plan:
@@ -776,7 +859,14 @@ def promote_log_entries(
                     reason=f"promote_from_period:{previous_period}",
                     old_metadata={"entries": 0},
                     new_metadata={"entries": len(promoted_entries)},
-                    excerpt=_short_excerpt("; ".join(e["entry"] for e in promoted_entries)),
+                    excerpt=_short_excerpt(
+                        "; ".join(e["entry"] for e in promoted_entries),
+                        _AUDIT_EXCERPT_LIMIT,
+                    ),
+                    detail={
+                        "period": previous_period,
+                        "entries": promoted_entries,
+                    },
                 )
             )
         if dry_run:
@@ -876,19 +966,25 @@ def distill_skills(
     )
 
     try:
+        user_prompt = (
+            f"Existing lesson topics:\n{topic_lines}\n\n"
+            f"Candidate memories:\n{memory_lines}"
+        )
         result = model(
             [
                 {"role": "system", "content": SKILL_DISTILLATION_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Existing lesson topics:\n{topic_lines}\n\n"
-                        f"Candidate memories:\n{memory_lines}"
-                    ),
-                },
+                {"role": "user", "content": user_prompt},
             ],
         )
-        text = result.content if hasattr(result, "content") else str(result)
+        text = _model_text(result)
+        if plan:
+            plan.add_llm_call(
+                "skill_distillation",
+                system=SKILL_DISTILLATION_PROMPT,
+                user=user_prompt,
+                response=text,
+                candidates=len(candidates),
+            )
         proposals = parse_llm_json(str(text), expect=list)
         if not isinstance(proposals, list):
             return 0
@@ -926,7 +1022,7 @@ def distill_skills(
                     target=skill_name,
                     memory_id=",".join(str(mid) for mid in memory_ids),
                     reason="promote_direction_to_skill",
-                    excerpt=_short_excerpt(lesson),
+                    excerpt=_short_excerpt(lesson, _AUDIT_EXCERPT_LIMIT),
                 )
             )
         written += 1
@@ -1203,21 +1299,25 @@ def review_stale_memories(
         )
 
     memories_block = "\n".join(memory_lines)
+    system_prompt = DREAM_REVIEW_PROMPT.format(memories_block=memories_block)
+    user_prompt = "Review the memories above and return your verdicts as JSON."
 
     try:
         llm_result = model(
             [
-                {
-                    "role": "system",
-                    "content": DREAM_REVIEW_PROMPT.format(memories_block=memories_block),
-                },
-                {
-                    "role": "user",
-                    "content": "Review the memories above and return your verdicts as JSON.",
-                },
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
             ],
         )
-        text = llm_result.content if hasattr(llm_result, "content") else str(llm_result)
+        text = _model_text(llm_result)
+        if plan:
+            plan.add_llm_call(
+                "dream_review",
+                system=system_prompt,
+                user=user_prompt,
+                response=text,
+                candidates=len(candidates),
+            )
         verdicts = parse_llm_json(str(text), expect=list)
         if not isinstance(verdicts, list):
             return result
@@ -1545,6 +1645,24 @@ def _store_outcome_lessons(
             strength=0.85,
             text_prefix="Outcome lesson",
         )
+        if stored and plan:
+            plan.add_operation(
+                DreamOperation(
+                    kind="outcome_lessons",
+                    status="applied",
+                    reason=(
+                        "low_engagement_constraint"
+                        if zeroish >= 2
+                        else "outcome_evidence_digest"
+                    ),
+                    excerpt=_short_excerpt(lesson, _AUDIT_EXCERPT_LIMIT),
+                    detail={
+                        "zeroish_signals": zeroish,
+                        "digest_chars": len(digest),
+                        "team_id": team_id,
+                    },
+                )
+            )
         return 1 if stored else 0
     except Exception as e:
         logger.warning("Failed to store outcome lessons: %s", e)
@@ -1590,14 +1708,41 @@ def run_refinement_phase(
             "queue_applied": result.queue_marked_applied,
         }
         if plan:
+            for call in result.llm_calls:
+                plan.llm_calls.append(call)
             plan.add_operation(
                 DreamOperation(
                     kind="refinement",
                     status="applied",
-                    new_metadata=summary,
                     reason="drain_change_queue",
+                    new_metadata=summary,
+                    detail={
+                        "docs_inspected": result.docs_inspected,
+                        "files_rewritten": list(result.files_rewritten),
+                        "per_doc_summaries": list(result.per_doc_summaries),
+                        "errors": list(result.errors),
+                    },
+                    excerpt=_short_excerpt(
+                        "; ".join(result.per_doc_summaries)
+                        or (
+                            f"{result.windows_applied} edits / "
+                            f"{result.pending_seen} pending"
+                        ),
+                        _AUDIT_EXCERPT_LIMIT,
+                    ),
                 )
             )
+            for path in result.files_rewritten:
+                plan.add_operation(
+                    DreamOperation(
+                        kind="refinement_file",
+                        status="applied",
+                        target=path,
+                        reason="window_rewrite",
+                    )
+                )
+            for err in result.errors:
+                plan.add_warning(f"refinement: {err}")
         return summary
     except Exception as e:
         if plan:
@@ -1689,6 +1834,7 @@ def run_dream(
     dry_run: bool = False,
     mode: str = "manual",
     agent: Any | None = None,
+    run_id: str = "",
 ) -> dict:
     """Run the full dream cycle: maintenance, decay, review. Returns a summary dict."""
     results = _summary_template()
@@ -1703,6 +1849,7 @@ def run_dream(
         period=current_period,
         dry_run=dry_run,
         mode=mode,
+        run_id=run_id or "",
     )
     dream_result = DreamResult(plan=plan, summary=results)
     started = perf_counter()

@@ -65,6 +65,8 @@ class RefinementSummary:
     queue_marked_applied: int = 0
     per_doc_summaries: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    # Truncated prompt/response traces for dream audits (and CLI debugging).
+    llm_calls: list[dict] = field(default_factory=list)
 
     @property
     def did_anything(self) -> bool:
@@ -359,7 +361,8 @@ def _parse_llm_response(raw: str) -> tuple[list[dict], list[str], str]:
     return replacements, [str(m) for m in memory_deletes if m], summary
 
 
-def call_refiner_llm(model, view: DocView, soul_excerpt: str = "") -> tuple[list[dict], list[str], str]:
+def call_refiner_llm(model, view: DocView, soul_excerpt: str = "") -> tuple[list[dict], list[str], str, str, str]:
+    """Return (replacements, mem_deletes, doc_summary, user_msg, raw_response)."""
     user_msg = _format_doc_user_message(view, soul_excerpt)
     result = model(
         [
@@ -368,7 +371,8 @@ def call_refiner_llm(model, view: DocView, soul_excerpt: str = "") -> tuple[list
         ],
     )
     raw = result.content if hasattr(result, "content") else str(result)
-    return _parse_llm_response(str(raw))
+    replacements, mem_deletes, doc_summary = _parse_llm_response(str(raw))
+    return replacements, mem_deletes, doc_summary, user_msg, str(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -460,13 +464,26 @@ def run_refinement(
         if not view or not view.windows:
             continue
         try:
-            replacements, mem_deletes, doc_summary = call_refiner_llm(
+            replacements, mem_deletes, doc_summary, user_msg, raw = call_refiner_llm(
                 model, view, soul
             )
         except Exception as exc:
             logger.warning("Refiner LLM failed on %s: %s", path, exc)
             summary.errors.append(f"{path}: {exc}")
             continue
+
+        summary.llm_calls.append(
+            {
+                "phase": "refinement",
+                "target": str(path),
+                "system": REFINER_SYSTEM_PROMPT[:1500],
+                "user": user_msg[:1500],
+                "response": raw[:1500],
+                "system_chars": len(REFINER_SYSTEM_PROMPT),
+                "user_chars": len(user_msg),
+                "response_chars": len(raw),
+            }
+        )
 
         new_content, applied = _apply_window_replacements(view, replacements)
         if applied:

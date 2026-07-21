@@ -1,7 +1,7 @@
 """SQLite-backed run logging.
 
 Every agent run — in every mode (chat, autonomous, heartbeat,
-plan, review) — writes one rich, structured record to a single SQLite database
+plan, review, dream) — writes one rich, structured record to a single SQLite database
 (`<workspace>/runs.db`) so past runs can be revisited in full. Writes happen on
 success, error, and cancellation alike.
 

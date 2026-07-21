@@ -415,12 +415,12 @@ class AgentScheduler:
             from .memory.dream import (
                 has_recent_dream_activity,
                 read_dream_marker,
-                run_dream,
                 scope_has_dream_work,
                 write_dream_marker,
                 write_dream_status,
             )
             from .memory.naming import period_key, period_key_offset
+            from .uuid_v7 import uuid7_str
 
             agent = self._agent
             workspace = agent.config.agent.workspace
@@ -438,20 +438,12 @@ class AgentScheduler:
                 return
 
             logger.info("Running dream cycle for period %s (rhythm=%s)...", current_period, rhythm)
-            hb_model = agent._build_model(
-                agent._utility_model_id(),
-                role="utility",
-            )
+            tick_id = uuid7_str()
             results_by_scope: dict[str, dict] = {}
-            results_by_scope["shared"] = run_dream(
-                workspace=workspace,
-                backend=agent.memory,
-                agent_id=agent.config.agent.name,
-                config=agent.config.memory,
-                model=hb_model,
-                doc_store=agent.doc_store,
+            results_by_scope["shared"] = agent._run_dream_scope(
                 mode="scheduled",
-                agent=agent,
+                tick_id=tick_id,
+                doc_store=agent.doc_store,
             )
 
             previous_period = period_key_offset(rhythm, -1)
@@ -484,16 +476,11 @@ class AgentScheduler:
                     logger.info("Dream: skipping empty scope %s", team_id[:8])
                     continue
 
-                results_by_scope[team_id] = run_dream(
-                    workspace=workspace,
-                    backend=agent.memory,
-                    agent_id=agent.config.agent.name,
-                    config=agent.config.memory,
-                    model=hb_model,
-                    doc_store=doc_store,
+                results_by_scope[team_id] = agent._run_dream_scope(
                     team_id=team_id,
                     mode="scheduled",
-                    agent=agent,
+                    tick_id=tick_id,
+                    doc_store=doc_store,
                 )
 
             write_dream_marker(workspace, current_period)

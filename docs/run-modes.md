@@ -82,6 +82,13 @@ flow inside `modes/planning.py`.
 ### `review`
 Updates an existing plan based on feedback. Same restrictions as `plan`.
 
+### `dream` (run-log mode, not a ModeProfile)
+Memory maintenance cycle (compaction, promotion, decay, review). Not in the
+`RunMode` enum — it has no smolagents framing/tools/max_steps — but each scope
+still writes a `mode=dream` row to `runs.db` with tokens/cost via
+`OuroAgent._run_dream_scope`. Mutation detail and truncated LLM I/O live in
+`workspace/data/dream_runs/*.json` (linked via `run_id` / `audit_log`).
+
 ## Overriding a profile from config
 
 Both `max_steps` and `preload_tools` accept user overrides under

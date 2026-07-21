@@ -76,6 +76,11 @@ once per `memory.rhythm` period, at `memory.dream_time` — that:
 - Reviews stale `stability="evolving"` memories.
 - Caps `MEMORY.md` size at `memory.memory_md_max_tokens`.
 
+Each scope writes a JSON audit under `workspace/data/dream_runs/` with
+mutations (`operations`), truncated LLM I/O (`llm_calls`), skips/warnings,
+phase timings, and a `run_id` that links to the `mode=dream` row in
+`runs.db`. See [Run logging](./run-logging.md).
+
 ### Team scoping
 
 Vector memories are stored under the writing agent's `agent_id`, not under

@@ -1,14 +1,15 @@
 # Run logging
 
 Every agent run — in **every mode** (chat, autonomous, heartbeat,
-plan, review) — writes one rich, structured record to a SQLite database at
-`<workspace>/runs.db`, plus the full step trace. Records are written on
+plan, review, dream) — writes one rich, structured record to a SQLite database at
+`<workspace>/runs.db`, plus the full step trace (when applicable). Records are written on
 success, error, **and** cancellation, so failed and interrupted runs are just
 as visible as successful ones.
 
 The implementation lives in [`ouro_agents/run_log.py`](../ouro_agents/run_log.py).
-A single recorder wraps the run body in `OuroAgent._run_blocking`, so no mode
-needs its own logging code.
+Normal smolagents modes are wrapped by `OuroAgent._run_blocking`. Dream is not a
+smolagents loop, so `OuroAgent._run_dream_scope` writes the same schema (one row
+per memory scope, grouped by `tick_id` within a cycle).
 
 ## Why SQLite
 
@@ -26,7 +27,7 @@ write.
 | `parent_run_id` | Set for nested runs and subagent child runs. |
 | `tick_id` | Shared by all runs in one heartbeat tick (planning + review + action). |
 | `agent_name` | The agent that produced the run. |
-| `mode` | `chat`, `autonomous`, `heartbeat`, `plan`, `review`, … or `subagent:<name>`. |
+| `mode` | `chat`, `autonomous`, `heartbeat`, `plan`, `review`, `dream`, … or `subagent:<name>`. |
 | `event_type` | Webhook event that triggered the run, if any. |
 | `status` | `success` \| `error` \| `cancelled`. |
 | `started_at`, `ended_at`, `duration_s` | Lifecycle timing (UTC ISO-8601). |

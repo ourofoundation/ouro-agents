@@ -97,6 +97,7 @@ from .provider_errors import (
 )
 from .usage import (
     MirroredUsageTracker,
+    RunUsage,
     TrackedOpenAIModel,
     UsageTracker,
     collect_run_usage,
@@ -3324,28 +3325,59 @@ class OuroAgent:
 
         return await force_review_heartbeat(self, quest_id=quest_id)
 
-    def dream(
+    def _run_dream_scope(
         self,
-        team_id: str | None = None,
         *,
+        team_id: str | None = None,
         dry_run: bool = False,
-    ) -> dict[str, dict]:
-        """Run the dream cycle (memory maintenance) immediately.
+        mode: str = "manual",
+        tick_id: str | None = None,
+        doc_store=None,
+    ) -> dict:
+        """Run dream for one memory scope and ledger it like other modes.
 
-        If *team_id* is provided, only that team is processed. Otherwise runs
-        across shared scope and all configured teams.
+        Writes a ``runs.db`` row with ``mode="dream"``, isolated LLM usage, and
+        optional memory ledger — matching chat/autonomous/heartbeat cost
+        accounting. Existing ``data/dream_runs/*.json`` audits are unchanged.
         """
         from .memory.dream import run_dream
 
+        scope = team_id or "shared"
+        if doc_store is None:
+            doc_store = (
+                self.doc_store_for(team_id) if team_id else self.doc_store
+            )
+
+        run_uid = uuid7_str()
+        parent_run_id = self._current_run_id
+        self._current_run_id = run_uid
+        record = RunRecord(
+            run_id=run_uid,
+            agent_name=self.config.agent.name,
+            mode="dream",
+            parent_run_id=parent_run_id,
+            tick_id=tick_id or self._current_tick_id,
+            team_id=team_id,
+            task=(
+                f"dream [{mode}] scope={scope}"
+                + (" (dry-run)" if dry_run else "")
+            ),
+        )
+
+        # Dedicated tracker so dream LLM cost never pollutes / is lost in the
+        # shared run tracker (dream is not a smolagents loop).
+        dream_tracker = UsageTracker()
         model = self._build_model(
             self._utility_model_id(),
             role="utility",
+            usage_tracker=dream_tracker,
         )
-        results: dict[str, dict] = {}
+        record.model = getattr(model, "model_id", "") or ""
+        record._model_obj = model
 
-        if team_id:
-            doc_store = self.doc_store_for(team_id)
-            results[team_id] = run_dream(
+        started = time.monotonic()
+        try:
+            summary = run_dream(
                 workspace=self.config.agent.workspace,
                 backend=self.memory,
                 agent_id=self.config.agent.name,
@@ -3354,33 +3386,86 @@ class OuroAgent:
                 doc_store=doc_store,
                 team_id=team_id,
                 dry_run=dry_run,
-                mode="manual",
+                mode=mode,
                 agent=self,
+                run_id=run_uid,
+            )
+            record.mark_success(json.dumps(summary, default=str))
+            return summary
+        except Exception as e:
+            record.mark_error(e)
+            raise
+        finally:
+            record.finalize_timing(time.monotonic() - started)
+            try:
+                usage = RunUsage.from_tracker(
+                    dream_tracker,
+                    model_id=getattr(model, "model_id", "") or "",
+                )
+                memory_ledger = None
+                try:
+                    memory_ledger = self.memory.usage_ledger() or None
+                except Exception:
+                    pass
+                if memory_ledger:
+                    usage.num_embedding_calls = sum(
+                        int(
+                            getattr(u, "num_embedding_calls", 0)
+                            or getattr(u, "num_api_calls", 0)
+                            or 0
+                        )
+                        for name, u in memory_ledger
+                        if name == "embeddings"
+                    )
+                record.set_usage(usage)
+                record.set_memory_ledger(memory_ledger)
+                logger.info(
+                    "Dream usage (%s):\n%s",
+                    scope,
+                    format_usage_breakdown(usage, None, memory_ledger),
+                )
+            except Exception:
+                logger.debug("Failed to collect dream usage", exc_info=True)
+            self._finalize_run_record(record)
+            self._current_run_id = parent_run_id
+
+    def dream(
+        self,
+        team_id: str | None = None,
+        *,
+        dry_run: bool = False,
+        mode: str = "manual",
+    ) -> dict[str, dict]:
+        """Run the dream cycle (memory maintenance) immediately.
+
+        If *team_id* is provided, only that team is processed. Otherwise runs
+        across shared scope and all configured teams. Each scope writes a
+        ``mode=dream`` run-log row; a shared ``tick_id`` groups the cycle.
+        """
+        tick_id = uuid7_str()
+        results: dict[str, dict] = {}
+
+        if team_id:
+            results[team_id] = self._run_dream_scope(
+                team_id=team_id,
+                dry_run=dry_run,
+                mode=mode,
+                tick_id=tick_id,
             )
         else:
-            results["shared"] = run_dream(
-                workspace=self.config.agent.workspace,
-                backend=self.memory,
-                agent_id=self.config.agent.name,
-                config=self.config.memory,
-                model=model,
-                doc_store=self.doc_store,
+            results["shared"] = self._run_dream_scope(
                 dry_run=dry_run,
-                mode="manual",
-                agent=self,
+                mode=mode,
+                tick_id=tick_id,
+                doc_store=self.doc_store,
             )
-            for tid, doc_store in sorted(self._team_doc_stores.items()):
-                results[tid] = run_dream(
-                    workspace=self.config.agent.workspace,
-                    backend=self.memory,
-                    agent_id=self.config.agent.name,
-                    config=self.config.memory,
-                    model=model,
-                    doc_store=doc_store,
+            for tid, store in sorted(self._team_doc_stores.items()):
+                results[tid] = self._run_dream_scope(
                     team_id=tid,
                     dry_run=dry_run,
-                    mode="manual",
-                agent=self,
+                    mode=mode,
+                    tick_id=tick_id,
+                    doc_store=store,
                 )
         return results
 
