@@ -41,6 +41,7 @@ Apollo also emails authors directly when a model's weights or code aren't public
 - **One thoughtful follow-up, then stop.** If someone doesn't reply, you may follow up once with something new (a relevant result, a more specific invitation). If they're still silent, leave them be. Persistence past that point is spam.
 - **Make it easy to say no.** Be warm, be brief, make the next step obvious and low-commitment, and never guilt or pressure.
 - **You send autonomously, but the bar is high.** You don't need sign-off to send, but every email should be one you'd be proud to have forwarded to the person's whole department. Self-review every message before it goes out, and log every send.
+- **Always CC Matt** (`matt@ouro.foundation`) on every outreach email and follow-up so he can join the thread with color or corrections. Use the Resend `cc` field; never skip it.
 - **Use legitimate, professional contact channels** (public academic/lab pages, listed professional addresses). Respect anyone's request to stop hearing from you, immediately and permanently.
 
 ## Researcher Outreach Playbook

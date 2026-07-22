@@ -206,12 +206,15 @@ def read_dream_marker(workspace: Path) -> str:
 
 def write_dream_marker(workspace: Path, period: str) -> None:
     """Record the period key the dream cycle just completed."""
-    path = _dream_marker_path(workspace)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(period)
-    except OSError as e:
-        logger.warning("Failed to write dream marker: %s", e)
+    from ..memory_lock import memory_write_lock
+
+    with memory_write_lock():
+        path = _dream_marker_path(workspace)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(period)
+        except OSError as e:
+            logger.warning("Failed to write dream marker: %s", e)
 
 
 def _safe_scope(scope: str) -> str:
@@ -345,17 +348,20 @@ def _review_metadata(
 
 
 def _write_dream_audit(workspace: Path, result: DreamResult) -> str:
-    audit_dir = workspace / "data" / "dream_runs"
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = audit_dir / f"{timestamp}_{_safe_scope(result.plan.scope)}.json"
-    try:
-        audit_dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(result.to_audit_dict(), indent=2, sort_keys=True))
-        return str(path)
-    except OSError as e:
-        logger.warning("Failed to write dream audit log: %s", e)
-        result.errors.append(f"audit_write_failed: {e}")
-        return ""
+    from ..memory_lock import memory_write_lock
+
+    with memory_write_lock():
+        audit_dir = workspace / "data" / "dream_runs"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = audit_dir / f"{timestamp}_{_safe_scope(result.plan.scope)}.json"
+        try:
+            audit_dir.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(result.to_audit_dict(), indent=2, sort_keys=True))
+            return str(path)
+        except OSError as e:
+            logger.warning("Failed to write dream audit log: %s", e)
+            result.errors.append(f"audit_write_failed: {e}")
+            return ""
 
 
 def _nearest_existing_parent(path: Path) -> Path:
@@ -1782,12 +1788,15 @@ def write_dream_status(
         "scopes_with_failures": len(scope_failures),
         "failures": scope_failures,
     }
-    path = _dream_status_path(workspace)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(status, indent=2, sort_keys=True))
-    except OSError as e:
-        logger.warning("Failed to write dream status: %s", e)
+    from ..memory_lock import memory_write_lock
+
+    with memory_write_lock():
+        path = _dream_status_path(workspace)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(status, indent=2, sort_keys=True))
+        except OSError as e:
+            logger.warning("Failed to write dream status: %s", e)
     return status
 
 

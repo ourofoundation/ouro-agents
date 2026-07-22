@@ -164,5 +164,5 @@ the agent.
 
 `ouro-agents run --debug-md` writes a self-contained markdown trace of a
 run under `debug-runs/`. Each file contains the full system prompt, the
-effective task (with preflight context), and every step of the agent
+effective task, and every step of the agent
 loop. Useful for diffing prompts across config changes.

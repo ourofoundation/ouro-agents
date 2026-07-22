@@ -59,7 +59,7 @@ in the usage tracker.
   framing, deferred tool directory, subagent directory, output format.
 - A **dynamic context** prepended to the user task: current datetime, the
   per-run conversation id (chat modes), working memory, conversation
-  context, plans index, entity files, prefetch results, preflight
+  context, plans index, entity files, prefetch results, tick summary
   briefing.
 
 Cache hits depend on byte-identical static prompts, so changes to soul /
@@ -108,12 +108,11 @@ Example:
 "agent": { "reasoning": { "effort": "medium" } },
 "modes": { "heartbeat": { "reasoning": { "effort": "low" } } },
 "subagents": {
-  "preflight": { "reasoning": { "effort": "none" } },
   "research":  { "reasoning": { "effort": "low" } }
 }
 ```
 
-The preflight subagent runs at `effort=none`, the research subagent at
+The research subagent runs at
 `effort=low`, the heartbeat at `effort=low`, and everything else at
 `effort=medium`.
 

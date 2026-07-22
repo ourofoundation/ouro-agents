@@ -295,7 +295,7 @@ def load_entity_context(
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat strategist helpers: cross-team index + path-confined reads
+# Heartbeat helpers: cross-team index + path-confined reads
 # ---------------------------------------------------------------------------
 
 MAX_CROSS_TEAM_INDEX_LINES = 40
@@ -311,8 +311,8 @@ def build_cross_team_task_index(
 ) -> str:
     """One-line index of active task files across ``teams/*/memory/tasks``.
 
-    Used by the heartbeat strategist when the tick is unscoped so it can pick
-    a path to ``read_context`` instead of guessing team IDs.
+    Used by open-ended heartbeat ticks so the agent can pick a path to
+    ``read_context`` instead of guessing team IDs.
     """
     teams_root = workspace / "teams"
     if not teams_root.is_dir():
@@ -359,7 +359,7 @@ def build_cross_team_task_index(
 
 
 def _allowed_context_roots(workspace: Path) -> list[Path]:
-    """Roots the strategist may read: memory/, teams/*/memory/."""
+    """Roots the heartbeat may read: memory/, teams/*/memory/."""
     roots = [workspace / "memory"]
     teams_root = workspace / "teams"
     if teams_root.is_dir():
@@ -453,7 +453,7 @@ def make_read_context_tool(
     doc_store=None,
     agent_name: str = "",
 ):
-    """Build the path-confined ``read_context`` tool for the strategist."""
+    """Build the path-confined ``read_context`` tool for heartbeat ticks."""
     from smolagents import tool
 
     @tool

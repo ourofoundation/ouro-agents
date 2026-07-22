@@ -68,9 +68,6 @@ class ModeProfile(BaseModel):
     # ways on casual messages.
     conversational: bool = False
     lightweight: bool = False
-    # Heartbeat is the only mode that runs the strategist before the main loop.
-    # Field name remains skip_preflight for config/API compatibility.
-    skip_preflight: bool = False
     skip_post_reflection: bool = False
     load_conversation_state: bool = False
     load_scheduled_tasks: bool = False
@@ -114,12 +111,10 @@ CHAT_EXCLUDED_TOOLS = [
 ]
 
 
-# Chat skips the strategist for lower reply latency. No tools are preloaded:
-# most chat turns are conversational and need zero tools, so preloads only
-# added directory noise and prompt tokens. Everything stays one load_tool
-# away. Post-run reflection still curates memory in a background thread so
-# it adds no reply latency. The trivial-message regex still fast-paths
-# greetings.
+# Chat: no tools preloaded — most turns are conversational and need zero
+# tools. Everything stays one load_tool away. Post-run reflection still
+# curates memory in a background thread so it adds no reply latency. The
+# trivial-message regex still fast-paths greetings.
 CHAT = ModeProfile(
     name="chat",
     framing=CHAT_FRAMING,
@@ -127,7 +122,6 @@ CHAT = ModeProfile(
     max_steps=20,
     excluded_tools=CHAT_EXCLUDED_TOOLS,
     conversational=True,
-    skip_preflight=True,
     load_conversation_state=True,
     include_chat_conversation_id=True,
     append_conversation_turns=False,
@@ -141,15 +135,14 @@ AUTONOMOUS = ModeProfile(
     output_format=AUTONOMOUS_OUTPUT,
     max_steps=40,
     preload_tools=AUTONOMOUS_ACTION_PRELOADS,
-    # Strategist is heartbeat-only; autonomous plans and executes itself.
-    skip_preflight=True,
 )
 
 HEARTBEAT = ModeProfile(
     name="heartbeat",
     framing=HEARTBEAT_FRAMING,
     output_format=HEARTBEAT_OUTPUT,
-    max_steps=12,
+    # Heavy work goes to cheap delegates; keep room for decide + execute.
+    max_steps=40,
     preload_tools=[
         "ouro:search_assets",
         "ouro:get_asset",
@@ -161,10 +154,9 @@ HEARTBEAT = ModeProfile(
     default_servers=["ouro"],
     allow_delegation=True,
     lightweight=True,
-    # One strong strategist plans the tick; the cheap executor follows it.
-    # Semantic memory reflection is gated by worth_remembering; pass ticks
-    # skip it. Episodic daily-log writing is gated separately.
-    skip_preflight=False,
+    # Semantic memory reflection is gated by the tick-summary
+    # worth_remembering flag; pass ticks skip it. Episodic daily-log writing
+    # is gated separately from action != "none".
     skip_post_reflection=False,
     load_scheduled_tasks=False,
     append_conversation_turns=False,
@@ -178,7 +170,6 @@ PLAN = ModeProfile(
     restricted_servers=True,
     memory_tool_filter=["memory_recall"],
     lightweight=True,
-    skip_preflight=True,
     skip_post_reflection=True,
     append_conversation_turns=False,
 )
@@ -191,7 +182,6 @@ REVIEW = ModeProfile(
     restricted_servers=True,
     memory_tool_filter=["memory_recall"],
     lightweight=True,
-    skip_preflight=True,
     skip_post_reflection=True,
     append_conversation_turns=False,
 )

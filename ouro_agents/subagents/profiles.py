@@ -29,7 +29,6 @@ from .prompts import (
     WRITER_PROMPT,
 )
 from .reflector import REFLECTOR_PROMPT
-from .strategist import STRATEGIST_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -87,42 +86,6 @@ class SubAgentProfile(BaseModel):
 # ---------------------------------------------------------------------------
 # Built-in profiles
 # ---------------------------------------------------------------------------
-
-# Heartbeat-only: chooses one executable objective for the cheap executor.
-# Chat / autonomous / plan / review skip this profile entirely.
-STRATEGIST = SubAgentProfile(
-    name="strategist",
-    description=(
-        "Heartbeat strategist: pick one bounded objective for this tick from "
-        "playbook, direction, and fresh read-only context."
-    ),
-    system_prompt=STRATEGIST_PROMPT,
-    allowed_tools=["memory_recall", "read_context"],
-    allowed_servers=["ouro"],
-    can_load_mcp_tools=False,
-    preload_tools=[
-        "ouro:query_dataset",
-        "ouro:get_asset",
-        "ouro:list_quest_items",
-        "ouro:get_comments",
-        "ouro:get_team_feed",
-    ],
-    # Four bounded read turns plus the final structured brief.
-    max_steps=5,
-    memory_scopes=[],
-    # Step 0 remains visible through progress events; keep the model's private
-    # reasoning/tool transcript out of normal heartbeat and dry-run output.
-    subagent_log_level="off",
-    include_work_directive=False,
-    include_tool_mechanics=False,
-    shared_context_sections=[
-        "current_datetime",
-        "platform_context",
-        "working_memory",
-        "plans_index",
-    ],
-    include_asset_placement=False,
-)
 
 REFLECTOR = SubAgentProfile(
     name="reflector",
@@ -243,7 +206,6 @@ DEVELOPER = SubAgentProfile(
 
 # All built-in profiles
 PROFILES = [
-    STRATEGIST,
     SEARCH,
     RESEARCH,
     PLANNER,

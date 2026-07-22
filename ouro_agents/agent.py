@@ -58,6 +58,14 @@ from .modes import (
     resolve_mode_profile,
 )
 from .observer import AgentObserver, ProgressEvent, emit_progress
+from .mcp_http import ManagedMcpProcess, spawn_managed_mcp_http
+from .mcp_locking import McpServerLocks, wrap_mcp_tool_with_lock
+from .run_context import (
+    ActiveRunRegistry,
+    RunContext,
+    bind_run_context,
+    get_run_context,
+)
 from .run_log import RunLogStore, RunRecord
 from .security.policy import Capability, CapabilityEnvelope
 from .security.tool_capabilities import (
@@ -77,14 +85,6 @@ from .subagents.delegate_utils import (
     summarize_delegate_text,
     validate_delegate_result,
 )
-from .subagents.strategist import (
-    StrategistResult,
-    format_heartbeat_execution_brief,
-    parse_strategist_result,
-)
-# Backward-compatible aliases.
-PreflightResult = StrategistResult
-parse_preflight_result = parse_strategist_result
 from .subagents.reflector import (
     ReflectionResult,
     build_run_reflection_task,
@@ -169,6 +169,9 @@ class OuroAgent:
         self.notes = notes_path.read_text() if notes_path.exists() else ""
         self.skills = load_startup_skills(config)
         self.skill_directory = get_skill_directory(config)
+        # Fallback tracker/ledger used when no RunContext is bound (startup
+        # model build, memory backend, heartbeat pre-reset). Live runs bind a
+        # fresh RunContext so overlapping modes do not share these.
         self._usage_tracker = UsageTracker()
         self.memory = create_memory_backend(
             config.memory,
@@ -178,27 +181,24 @@ class OuroAgent:
         self._subagent_ledger: list[tuple[str, SubAgentUsage]] = []
         self.model = self._build_model(config.agent.model)
 
-        # Durable run logging (SQLite). Holds the current run/tick ids so nested
-        # runs and heartbeat sub-cycles can be linked. See run_log.py.
+        # Durable run logging (SQLite). Per-run ids live on RunContext; tick_id
+        # is still set on the agent for the duration of a heartbeat cycle.
         run_log_path = config.run_log.path or (self._workspace / "runs.db")
         self._run_log = RunLogStore(run_log_path, enabled=config.run_log.enabled)
-        self._current_run_id: Optional[str] = None
         self._current_tick_id: Optional[str] = None
 
         self._mcp_contexts: list = []
+        self._managed_mcp: list[ManagedMcpProcess] = []
+        self._mcp_locks = McpServerLocks()
         self._deferred_tools: dict = {}
         self._deferred_tools_by_raw_name: dict = {}
         self._deferred_index: list[dict] = []
         self._server_descriptions: dict[str, str] = {}
         self._mcp_connected = False
         self._own_user_id: Optional[str] = None
-        self._run_lock = threading.RLock()
         self._active_runs_lock = threading.RLock()
         self._active_run_tokens: set[RunCancellationToken] = set()
-        # (token, preemptible) for the run currently holding _run_lock, so an
-        # interactive run can cancel a background run instead of queueing
-        # behind it. Guarded by _active_runs_lock.
-        self._run_lock_holder: Optional[tuple[RunCancellationToken, bool]] = None
+        self._active_runs = ActiveRunRegistry()
 
         self.team_registry: TeamRegistry = TeamRegistry.from_platform_context(
             self._workspace,
@@ -229,10 +229,41 @@ class OuroAgent:
         self._python_package_versions = self._validate_python_packages()
 
     def reset_usage_tracking(self) -> None:
-        """Reset per-run usage accumulators owned by this agent instance."""
-        self._usage_tracker.reset()
+        """Reset usage accumulators for the active run (or agent fallback)."""
+        self._active_usage_tracker().reset()
         self.memory.reset_usage()
-        self._subagent_ledger.clear()
+        self._active_subagent_ledger().clear()
+
+    def _active_usage_tracker(self) -> UsageTracker:
+        ctx = get_run_context()
+        if ctx is not None and ctx.usage_tracker is not None:
+            return ctx.usage_tracker
+        return self._usage_tracker
+
+    def _active_subagent_ledger(self) -> list[tuple[str, SubAgentUsage]]:
+        ctx = get_run_context()
+        if ctx is not None:
+            return ctx.subagent_ledger
+        return self._subagent_ledger
+
+    def _active_run_id(self) -> Optional[str]:
+        ctx = get_run_context()
+        return ctx.run_id if ctx is not None else None
+
+    # Backward-compatible alias for call sites / tests that still read the
+    # old instance field name.
+    @property
+    def _current_run_id(self) -> Optional[str]:
+        return self._active_run_id()
+
+    def _get_heartbeat_cheap_workers(self) -> bool:
+        ctx = get_run_context()
+        return bool(ctx.heartbeat_cheap_workers) if ctx is not None else False
+
+    def _set_heartbeat_cheap_workers(self, value: bool) -> None:
+        ctx = get_run_context()
+        if ctx is not None:
+            ctx.heartbeat_cheap_workers = value
 
     def _validate_python_packages(self) -> dict[str, str | None]:
         """Validate configured python_packages at startup and return version map."""
@@ -969,7 +1000,7 @@ class OuroAgent:
             model_id=model_id,
             api_base="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
-            tracker=usage_tracker or self._usage_tracker,
+            tracker=usage_tracker or self._active_usage_tracker(),
             reasoning_callback=get_display().reasoning,
             cache_breakpoints=explicit_cache,
             cache_ttl=cache_cfg.ttl,
@@ -1227,23 +1258,7 @@ class OuroAgent:
             try:
                 from mcp import StdioServerParameters
 
-                env = dict(server.env or {})
-                env.setdefault("WORKSPACE_ROOT", str(self._workspace.resolve()))
-                # In Docker mode, agents see workspace_mount (e.g. /workspace).
-                # Tell MCP so absolute container paths remap onto the host root.
-                if self.config.agent.sandbox.mode == "docker":
-                    env.setdefault(
-                        "WORKSPACE_MOUNT",
-                        self.config.agent.sandbox.workspace_mount,
-                    )
-                if server.name == "ouro":
-                    agent_tz = (
-                        (self.config.heartbeat.active_hours or {}).get("timezone")
-                        if self.config.heartbeat.active_hours
-                        else None
-                    )
-                    if agent_tz:
-                        env.setdefault("OURO_MCP_TIMEZONE", agent_tz)
+                env = self._mcp_server_env(server)
                 server_params = StdioServerParameters(
                     command=server.command, args=server.args or [], env=env
                 )
@@ -1254,34 +1269,94 @@ class OuroAgent:
                 )
                 collection = ctx.__enter__()
                 self._mcp_contexts.append(ctx)
-                if server.description:
-                    self._server_descriptions[server.name] = server.description
-                for mcp_tool in collection.tools:
-                    self._patch_tool_inputs(mcp_tool)
-                    qualified_name = f"{server.name}:{mcp_tool.name}"
-                    self._deferred_tools[qualified_name] = mcp_tool
-                    self._deferred_index.append(
-                        {
-                            "tool": qualified_name,
-                            "server": server.name,
-                            "raw_name": mcp_tool.name,
-                            "description": " ".join(
-                                (mcp_tool.description or "").strip().split()
-                            ),
-                            "inputs": getattr(mcp_tool, "inputs", {}),
-                            "output_type": getattr(mcp_tool, "output_type", "string"),
-                        }
-                    )
-                    self._deferred_tools_by_raw_name.setdefault(
-                        mcp_tool.name, []
-                    ).append(qualified_name)
-                logger.info("Connected to MCP server: %s", server.name)
+                self._mcp_locks.register_stdio(server.name)
+                self._register_mcp_tools(server, collection.tools, lock_stdio=True)
+                logger.info("Connected to MCP server: %s (stdio)", server.name)
             except Exception as e:
                 logger.error("Failed to connect to MCP server %s: %s", server.name, e)
         elif server.transport == "streamable-http":
-            raise NotImplementedError(
-                f"MCP transport 'streamable-http' is not yet implemented "
-                f"(server: {server.name}). Use 'stdio' transport instead."
+            if not server.url:
+                logger.error(
+                    "MCP server %s: streamable-http requires url", server.name
+                )
+                return
+            try:
+                if server.command:
+                    managed = spawn_managed_mcp_http(
+                        name=server.name,
+                        command=server.command,
+                        args=server.args,
+                        env=self._mcp_server_env(server),
+                        url=server.url,
+                    )
+                    self._managed_mcp.append(managed)
+                params = {"url": server.url, "transport": "streamable-http"}
+                ctx = ToolCollection.from_mcp(
+                    server_parameters=params,
+                    trust_remote_code=True,
+                    structured_output=False,
+                )
+                collection = ctx.__enter__()
+                self._mcp_contexts.append(ctx)
+                self._mcp_locks.register_http(server.name)
+                self._register_mcp_tools(server, collection.tools, lock_stdio=False)
+                logger.info(
+                    "Connected to MCP server: %s (streamable-http %s)",
+                    server.name,
+                    server.url,
+                )
+            except Exception as e:
+                logger.error("Failed to connect to MCP server %s: %s", server.name, e)
+
+    def _mcp_server_env(self, server: MCPServerConfig) -> dict[str, str]:
+        env = dict(server.env or {})
+        env.setdefault("WORKSPACE_ROOT", str(self._workspace.resolve()))
+        if self.config.agent.sandbox.mode == "docker":
+            env.setdefault(
+                "WORKSPACE_MOUNT",
+                self.config.agent.sandbox.workspace_mount,
+            )
+        if server.name == "ouro":
+            agent_tz = (
+                (self.config.heartbeat.active_hours or {}).get("timezone")
+                if self.config.heartbeat.active_hours
+                else None
+            )
+            if agent_tz:
+                env.setdefault("OURO_MCP_TIMEZONE", agent_tz)
+        return env
+
+    def _register_mcp_tools(
+        self,
+        server: MCPServerConfig,
+        tools,
+        *,
+        lock_stdio: bool,
+    ) -> None:
+        if server.description:
+            self._server_descriptions[server.name] = server.description
+        for mcp_tool in tools:
+            self._patch_tool_inputs(mcp_tool)
+            if lock_stdio:
+                wrap_mcp_tool_with_lock(
+                    mcp_tool, server_name=server.name, locks=self._mcp_locks
+                )
+            qualified_name = f"{server.name}:{mcp_tool.name}"
+            self._deferred_tools[qualified_name] = mcp_tool
+            self._deferred_index.append(
+                {
+                    "tool": qualified_name,
+                    "server": server.name,
+                    "raw_name": mcp_tool.name,
+                    "description": " ".join(
+                        (mcp_tool.description or "").strip().split()
+                    ),
+                    "inputs": getattr(mcp_tool, "inputs", {}),
+                    "output_type": getattr(mcp_tool, "output_type", "string"),
+                }
+            )
+            self._deferred_tools_by_raw_name.setdefault(mcp_tool.name, []).append(
+                qualified_name
             )
 
     def cancel_active_runs(self, reason: str = "shutdown") -> None:
@@ -1290,16 +1365,25 @@ class OuroAgent:
             tokens = list(self._active_run_tokens)
         for token in tokens:
             token.cancel(reason)
+        for token in self._active_runs.all_tokens():
+            token.cancel(reason)
 
     def close(self) -> None:
         """Shut down all MCP server connections."""
         self.cancel_active_runs("agent closing")
+        for managed in self._managed_mcp:
+            try:
+                managed.stop()
+            except Exception:
+                pass
+        self._managed_mcp.clear()
         for ctx in self._mcp_contexts:
             try:
                 ctx.__exit__(None, None, None)
             except Exception:
                 pass
         self._mcp_contexts.clear()
+        self._mcp_locks.clear()
         self._deferred_tools.clear()
         self._deferred_tools_by_raw_name.clear()
         self._deferred_index.clear()
@@ -1441,6 +1525,19 @@ class OuroAgent:
         elif not profile.allows_capability(Capability.MEMORY_WRITE):
             memory_tools = [t for t in memory_tools if t.name != "remember"]
 
+        # Heartbeat ticks get path-confined read_context so the shared
+        # context snapshot (task/memory index) is actionable.
+        if profile.name == "heartbeat":
+            from .memory.context_loader import make_read_context_tool
+
+            memory_tools = list(memory_tools) + [
+                make_read_context_tool(
+                    self.config.agent.workspace,
+                    doc_store=active_doc_store,
+                    agent_name=self.config.agent.name,
+                )
+            ]
+
         code_tools, python_executor = make_code_tools(
             workspace=self.config.agent.workspace,
             ouro_client=self._get_ouro_client(),
@@ -1472,7 +1569,7 @@ class OuroAgent:
         run_history_tools = (
             make_run_history_tools(
                 self._run_log,
-                current_run_id=self._current_run_id,
+                current_run_id=self._active_run_id(),
                 team_id=team_id,
                 conversation_id=conversation_id,
                 default_scope=self.config.run_log.agent_default_scope,
@@ -1668,6 +1765,7 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         trigger_turn_id: Optional[str] = None,
         history_covers_conversation: bool = True,
+        include_plans_index: bool = True,
     ) -> tuple[str, str]:
         """Build the system prompt and dynamic context.
 
@@ -1677,6 +1775,9 @@ class OuroAgent:
         ``history_covers_conversation`` is False when the verbatim history
         window injected into agent memory omits older turns; only then does
         the conversation-state summary add information the model can't see.
+
+        ``include_plans_index`` is False for quest_work heartbeats (the inbox
+        already is the actionable plan surface).
         """
         conversation_context = ""
         conversation_state_text = ""
@@ -1724,12 +1825,14 @@ class OuroAgent:
             agent_name=self.config.agent.name,
             team_id=team_id,
         )
-        plans_index_text = shared_context["plans_index"]
+        plans_index_text = (
+            shared_context["plans_index"] if include_plans_index else ""
+        )
 
         delegatable_profiles = self.delegatable_profiles
-        # Heartbeat is lightweight but still needs a compact directory so the
-        # cheap executor knows when to delegate search/research. Decouple
-        # ``lightweight`` from hiding the subagent directory.
+        # Heartbeat is lightweight but still needs a compact directory so it
+        # knows when to delegate search/research. Decouple ``lightweight``
+        # from hiding the subagent directory.
         show_subagents = (
             profile.allow_delegation
             and bool(delegatable_profiles)
@@ -1802,18 +1905,25 @@ class OuroAgent:
             or self.config.agent.model
         )
         role = profile.name
-        # During heartbeat ticks, every post-preflight worker stays at mid/light
-        # even if the profile defaults to strong in chat/autonomous modes.
-        if getattr(self, "_heartbeat_cheap_workers", False):
-            cheap_id = (
-                self._model_id_for_role("heartbeat")
-                or self._model_id_for_role("utility")
-                or self.config.heartbeat.model
-            )
+        # During heartbeat ticks, delegated workers stay at mid/light even if
+        # the profile defaults to strong in chat/autonomous modes. The main
+        # heartbeat itself is strong; this clamp only applies to subagents.
+        if self._get_heartbeat_cheap_workers():
+            cheap_id = None
+            tiers = self.config.models
+            if tiers is not None:
+                mid_spec = tiers.mid or tiers.light
+                if mid_spec is not None:
+                    cheap_id = mid_spec.id
+            if not cheap_id:
+                cheap_id = (
+                    self._model_id_for_role("utility")
+                    or self.config.heartbeat.model
+                )
             strong_id = self._model_id_for_role("agent") or self.config.agent.model
             if cheap_id and model_id == strong_id:
                 model_id = cheap_id
-                role = "heartbeat"
+                role = "utility" if not (tiers and tiers.mid) else "chat"
         return self._build_model(
             model_id,
             subagent_profile=profile.name,
@@ -1824,9 +1934,6 @@ class OuroAgent:
     def _apply_profile_overrides(self, profile):
         """Apply config overrides (max_steps, etc.) to a profile."""
         override = self.config.subagents.profiles.get(profile.name)
-        # Legacy: configs that still name the strategist "preflight".
-        if override is None and profile.name == "strategist":
-            override = self.config.subagents.profiles.get("preflight")
         if override and override.max_steps is not None:
             return profile.model_copy(update={"max_steps": override.max_steps})
         return profile
@@ -1914,7 +2021,7 @@ class OuroAgent:
         )
 
     def _record_subagent_usage(self, name: str, usage: SubAgentUsage) -> None:
-        self._subagent_ledger.append((name, usage))
+        self._active_subagent_ledger().append((name, usage))
 
     def _record_subagent_run(
         self,
@@ -1937,8 +2044,11 @@ class OuroAgent:
                 agent_name=self.config.agent.name,
                 mode=f"subagent:{name}",
                 status=status,
-                parent_run_id=self._current_run_id,
-                tick_id=self._current_tick_id,
+                parent_run_id=self._active_run_id(),
+                tick_id=(
+                    (get_run_context().tick_id if get_run_context() else None)
+                    or self._current_tick_id
+                ),
                 started_at=started_at,
                 task=task or "",
                 model=getattr(usage, "model_id", "") or "",
@@ -1999,7 +2109,7 @@ class OuroAgent:
         effective_profile = self._apply_profile_overrides(profile)
         subagent_usage_tracker = MirroredUsageTracker(
             UsageTracker(),
-            mirrors=[self._usage_tracker],
+            mirrors=[self._active_usage_tracker()],
         )
         model = model_override or self._resolve_subagent_model(
             profile,
@@ -2057,7 +2167,7 @@ class OuroAgent:
             effective_profile = self._apply_profile_overrides(profile)
             subagent_usage_tracker = MirroredUsageTracker(
                 UsageTracker(),
-                mirrors=[self._usage_tracker],
+                mirrors=[self._active_usage_tracker()],
             )
             model = self._resolve_subagent_model(
                 profile,
@@ -2091,170 +2201,11 @@ class OuroAgent:
         progress_callback: Optional[Callable[[ProgressEvent], None]] = None,
     ) -> Callable[[ActionStep], None]:
         return build_step_callback(
-            self._usage_tracker,
+            self._active_usage_tracker(),
             status_callback=status_callback,
             display=display,
             progress_callback=progress_callback,
         )
-
-    def _run_strategist(
-        self,
-        task: str,
-        allowed_capabilities: Optional[frozenset[Capability]] = None,
-        preload_tools: Optional[list[str]] = None,
-        conv_state: Optional[ConversationState] = None,
-        user_id: Optional[str] = None,
-        run_id: str = "",
-        asset_refs: Optional[list[str]] = None,
-        display: Optional[OuroDisplay] = None,
-        status_callback: Optional[RunStatusCallback] = None,
-        team_id: Optional[str] = None,
-        doc_store: Optional[DocStore] = None,
-        cancellation_token: Optional[RunCancellationToken] = None,
-        observer: Optional[AgentObserver] = None,
-        available_tools: Optional[list[str]] = None,
-    ) -> StrategistResult:
-        """Run the heartbeat strategist as visible step 0.
-
-        Heartbeat-only. Selects one bounded objective and returns a structured
-        brief for the cheap executor. Read-only tools only.
-        """
-        from .memory.context_loader import build_cross_team_task_index
-        from .subagents.profiles import STRATEGIST
-
-        profile = STRATEGIST
-        # config subagents.strategist.max_steps (or legacy preflight) overrides.
-        profile = self._apply_profile_overrides(profile)
-
-        _display = display or get_display()
-        _display.step("Step 0: strategist")
-        emit_progress(observer, "strategist", "choosing heartbeat objective")
-        if status_callback:
-            try:
-                status_callback("thinking", "Choosing the heartbeat objective...", True)
-            except Exception:
-                logger.exception("Failed to emit strategist status")
-
-        constraint_parts: list[str] = []
-        if allowed_capabilities is not None:
-            from .security.policy import describe_capabilities
-
-            note = describe_capabilities(allowed_capabilities)
-            if note:
-                constraint_parts.append(
-                    "The executor's run is capability-restricted. Plan only "
-                    "actions within these bounds; if the request needs more, the "
-                    "plan should say so rather than include the blocked step.\n"
-                    + note
-                )
-        if preload_tools:
-            call_names = [n.split(":", 1)[-1] for n in preload_tools]
-            constraint_parts.append(
-                "Tools preloaded for the executor: " + ", ".join(call_names) + "."
-            )
-        if available_tools:
-            constraint_parts.append(
-                "Available MCP Tools (pick the ones the executor should have "
-                'preloaded via the "tools" field of your JSON reply; use these '
-                "exact names): " + ", ".join(available_tools)
-            )
-        constraint_parts.append(
-            "This is a heartbeat tick. Prefer one bounded objective that fits "
-            "the executor's 12-step budget (normally ≤4 ordered actions). "
-            "Delegate search/research rather than asking the executor to load "
-            "search MCP tools. Available delegates: search, research, writer, "
-            "executor, developer."
-        )
-
-        strategist_task = task
-        # Unscoped ticks: inject a bounded cross-team task index so the
-        # strategist can read_context specific paths without guessing.
-        if not team_id:
-            labels: dict[str, str] = {}
-            registry = getattr(self, "team_registry", None)
-            if registry is not None:
-                for tid in sorted(registry.team_ids()):
-                    team = registry.get_team(tid)
-                    labels[tid] = (
-                        getattr(team, "slug", None)
-                        or getattr(team, "name", None)
-                        or tid[:8]
-                    )
-            cross_index = build_cross_team_task_index(
-                self.config.agent.workspace, team_labels=labels
-            )
-            if cross_index:
-                strategist_task = f"{strategist_task}\n\n## Shared Context Snapshot\n{cross_index}"
-
-        if constraint_parts:
-            strategist_task = (
-                strategist_task
-                + "\n\n## Main Run Constraints\n"
-                + "\n\n".join(constraint_parts)
-            )
-
-        t0 = time.monotonic()
-        # Strategist is the tick's only strong-model stage.
-        previous_ceiling = getattr(self, "_heartbeat_cheap_workers", False)
-        self._heartbeat_cheap_workers = False
-        try:
-            strong_id = (
-                self._model_id_for_role("strategist")
-                or self._model_id_for_role("heartbeat_preflight")
-                or self._model_id_for_role("agent")
-                or self.config.agent.model
-            )
-            model = self._build_model(
-                strong_id,
-                role="strategist",
-                subagent_profile="strategist",
-            )
-            result = self._run_subagent(
-                profile,
-                strategist_task,
-                conversation_state=conv_state,
-                user_id=user_id,
-                run_id=run_id,
-                asset_refs=asset_refs,
-                team_id=team_id,
-                doc_store=doc_store,
-                cancellation_token=cancellation_token,
-                progress_observer=observer,
-                model_override=model,
-                allowed_capabilities=allowed_capabilities,
-            )
-        finally:
-            self._heartbeat_cheap_workers = previous_ceiling
-        duration_s = time.monotonic() - t0
-
-        if result.usage and result.usage.total_tokens:
-            _display.token_summary(
-                input_tokens=result.usage.input_tokens,
-                output_tokens=result.usage.output_tokens,
-                current_context_tokens=result.usage.current_context_tokens,
-                step_number=0,
-                duration_s=duration_s,
-                cost_usd=result.usage.cost_usd,
-            )
-
-        if not result.success:
-            logger.warning("Strategist subagent failed: %s", result.error)
-            emit_progress(
-                observer, "strategist", result.error or "failed", state="failed"
-            )
-            return StrategistResult()
-
-        emit_progress(observer, "strategist", "brief ready", state="complete")
-        return parse_strategist_result(result.text)
-
-    # Backward-compatible name used by dry-run scripts / older call sites.
-    def _run_preflight(self, *args, heartbeat: bool = False, **kwargs) -> StrategistResult:
-        if not heartbeat:
-            logger.warning(
-                "_run_preflight called outside heartbeat; strategist is heartbeat-only"
-            )
-            return StrategistResult(objective="pass", worth_remembering=False)
-        return self._run_strategist(*args, **kwargs)
 
     def _run_reflection(
         self,
@@ -2271,9 +2222,8 @@ class OuroAgent:
     ) -> Optional[ReflectionResult]:
         """Run the reflector subagent as a visible step.
 
-        Mirrors ``_run_preflight``: shows a display step, tracks usage via the
-        subagent ledger, and returns a parsed ``ReflectionResult`` (or None on
-        failure).
+        Shows a display step, tracks usage via the subagent ledger, and
+        returns a parsed ``ReflectionResult`` (or None on failure).
         """
         from .subagents.profiles import REFLECTOR
 
@@ -2486,25 +2436,19 @@ class OuroAgent:
         cancellation_token: Optional[RunCancellationToken] = None,
         trigger_turn_id: Optional[str] = None,
         preemptible: Optional[bool] = None,
+        heartbeat_tick_kind: Optional[str] = None,
+        include_plans_index: bool = True,
     ) -> str:
+        # ``preemptible`` is retained for API compatibility but ignored —
+        # modes overlap; only conversation-scoped interrupt cancels a run.
+        del preemptible
         token = cancellation_token or RunCancellationToken()
-        # Background modes have no user waiting on them; an interactive run
-        # (chat, direct request) cancels an in-flight background run instead
-        # of queueing behind it. The background work re-runs on its next tick.
-        if preemptible is None:
-            preemptible = mode in (RunMode.HEARTBEAT, RunMode.PLAN, RunMode.REVIEW)
-        if not preemptible:
-            with self._active_runs_lock:
-                holder = self._run_lock_holder
-            if holder is not None and holder[1]:
-                holder[0].cancel("preempted by interactive run")
-                logger.info("Preempting background run to start %s run", mode.value)
         with self._active_runs_lock:
             self._active_run_tokens.add(token)
         try:
             try:
                 return await asyncio.to_thread(
-                    self._run_blocking_locked,
+                    self._run_blocking_entry,
                     task=task,
                     model_override=model_override,
                     conversation_id=conversation_id,
@@ -2524,7 +2468,8 @@ class OuroAgent:
                     capability_envelope=capability_envelope,
                     cancellation_token=token,
                     trigger_turn_id=trigger_turn_id,
-                    preemptible=preemptible,
+                    heartbeat_tick_kind=heartbeat_tick_kind,
+                    include_plans_index=include_plans_index,
                 )
             except asyncio.CancelledError:
                 token.cancel("async task cancelled")
@@ -2533,65 +2478,98 @@ class OuroAgent:
             with self._active_runs_lock:
                 self._active_run_tokens.discard(token)
 
-    def _run_blocking_locked(self, **kwargs) -> str:
+    def _run_blocking_entry(self, **kwargs) -> str:
+        """Thread entry: bind RunContext, then run the blocking body.
+
+        Modes overlap — there is no global run lock. Stdio MCP calls are
+        serialized per server; workspace writes use ``memory_write_lock``.
+        """
         token = kwargs.get("cancellation_token")
-        preemptible = bool(kwargs.pop("preemptible", False))
-        with self._run_lock:
-            if token is not None:
-                token.raise_if_cancelled()
-            if token is not None:
-                with self._active_runs_lock:
-                    self._run_lock_holder = (token, preemptible)
-            try:
-                return self._run_blocking(**kwargs)
-            finally:
-                with self._active_runs_lock:
-                    self._run_lock_holder = None
+        if token is not None:
+            token.raise_if_cancelled()
+        return self._run_blocking(**kwargs)
+
+    # Backward-compatible alias used by older tests.
+    def _run_blocking_locked(self, **kwargs) -> str:
+        kwargs.pop("preemptible", None)
+        return self._run_blocking_entry(**kwargs)
 
     def _run_blocking(self, **kwargs) -> str:
         """Wrap the run body with durable run-log recording on every exit path.
 
-        A fresh time-ordered ``run_id`` identifies this run in the run log;
-        ``_current_run_id`` is set for the duration so nested runs and subagents
-        can link back via ``parent_run_id``. The record is written on success,
-        error, and cancellation alike.
+        A fresh time-ordered ``run_id`` identifies this run in the run log.
+        Run-scoped state (usage, ledger, cheap-workers flag) lives on a
+        ``RunContext`` bound for this thread so overlapping modes stay isolated.
         """
         mode = kwargs.get("mode", RunMode.AUTONOMOUS)
         run_uid = uuid7_str()
-        parent_run_id = self._current_run_id
-        self._current_run_id = run_uid
+        parent_ctx = get_run_context()
+        parent_run_id = parent_ctx.run_id if parent_ctx else None
+        preserve = bool(kwargs.get("preserve_existing_usage", False))
+
+        if preserve and parent_ctx is not None and parent_ctx.usage_tracker is not None:
+            usage_tracker = parent_ctx.usage_tracker
+            subagent_ledger = parent_ctx.subagent_ledger
+        elif preserve:
+            # Heartbeat resets agent fallbacks then calls with preserve=True.
+            usage_tracker = self._usage_tracker
+            subagent_ledger = self._subagent_ledger
+        else:
+            usage_tracker = UsageTracker()
+            subagent_ledger = []
+
+        mode_value = getattr(mode, "value", str(mode))
+        task_text = kwargs.get("task", "") or ""
+        run_ctx = RunContext(
+            run_id=run_uid,
+            mode=mode_value,
+            event_type=kwargs.get("event_type"),
+            conversation_id=kwargs.get("conversation_id"),
+            team_id=kwargs.get("team_id"),
+            tick_id=self._current_tick_id,
+            parent_run_id=parent_run_id,
+            usage_tracker=usage_tracker,
+            subagent_ledger=subagent_ledger,
+            heartbeat_cheap_workers=(mode == RunMode.HEARTBEAT),
+            cancellation_token=kwargs.get("cancellation_token"),
+            task_preview=task_text[:200],
+        )
+
         record = RunRecord(
             run_id=run_uid,
             agent_name=self.config.agent.name,
-            mode=getattr(mode, "value", str(mode)),
+            mode=mode_value,
             parent_run_id=parent_run_id,
-            tick_id=self._current_tick_id,
+            tick_id=run_ctx.tick_id,
             event_type=kwargs.get("event_type"),
             conversation_id=kwargs.get("conversation_id"),
             team_id=kwargs.get("team_id"),
             user_id=kwargs.get("user_id"),
             trigger_turn_id=kwargs.get("trigger_turn_id"),
-            task=kwargs.get("task", "") or "",
+            task=task_text,
         )
         cap = kwargs.get("capability_envelope")
         if cap is not None:
             record.capability_role = getattr(cap.role, "value", None)
             record.capability_surface = getattr(cap.surface, "value", None)
         started = time.monotonic()
-        try:
-            result = self._run_blocking_inner(record, **kwargs)
-            record.mark_success(result)
-            return result
-        except (RunCancelled, asyncio.CancelledError) as e:
-            record.mark_cancelled(str(e) or "cancelled")
-            raise
-        except Exception as e:
-            record.mark_error(e)
-            raise
-        finally:
-            record.finalize_timing(time.monotonic() - started)
-            self._finalize_run_record(record)
-            self._current_run_id = parent_run_id
+        token = kwargs.get("cancellation_token")
+        with bind_run_context(run_ctx):
+            self._active_runs.register(run_ctx, token or RunCancellationToken())
+            try:
+                result = self._run_blocking_inner(record, **kwargs)
+                record.mark_success(result)
+                return result
+            except (RunCancelled, asyncio.CancelledError) as e:
+                record.mark_cancelled(str(e) or "cancelled")
+                raise
+            except Exception as e:
+                record.mark_error(e)
+                raise
+            finally:
+                record.finalize_timing(time.monotonic() - started)
+                self._finalize_run_record(record)
+                self._active_runs.unregister(run_uid)
 
     def _run_blocking_inner(
         self,
@@ -2615,6 +2593,8 @@ class OuroAgent:
         capability_envelope: Optional[CapabilityEnvelope] = None,
         cancellation_token: Optional[RunCancellationToken] = None,
         trigger_turn_id: Optional[str] = None,
+        heartbeat_tick_kind: Optional[str] = None,
+        include_plans_index: bool = True,
     ) -> str:
         token = cancellation_token or RunCancellationToken()
         token.raise_if_cancelled()
@@ -2716,8 +2696,10 @@ class OuroAgent:
             profile = apply_capability_envelope(profile, capability_envelope)
 
         is_heartbeat = mode == RunMode.HEARTBEAT
-        previous_cheap_workers = getattr(self, "_heartbeat_cheap_workers", False)
-        self._heartbeat_cheap_workers = is_heartbeat
+        # heartbeat_cheap_workers is set on RunContext at bind time. Re-assert
+        # here for nested preserve paths so delegated workers stay cheap.
+        previous_cheap_workers = self._get_heartbeat_cheap_workers()
+        self._set_heartbeat_cheap_workers(is_heartbeat)
         try:
             return self._continue_run_blocking_inner(
                 record=record,
@@ -2745,6 +2727,8 @@ class OuroAgent:
                 active_doc_store=active_doc_store,
                 is_heartbeat=is_heartbeat,
                 run_id=run_id,
+                include_plans_index=include_plans_index,
+                heartbeat_tick_kind=heartbeat_tick_kind,
                 _patched_reasoning_callbacks=_patched_reasoning_callbacks,
                 _original_reasoning_cb=_original_reasoning_cb,
                 _original_reasoning_stream_cb=_original_reasoning_stream_cb,
@@ -2752,7 +2736,7 @@ class OuroAgent:
                 _original_retry_callback=_original_retry_callback,
             )
         finally:
-            self._heartbeat_cheap_workers = previous_cheap_workers
+            self._set_heartbeat_cheap_workers(previous_cheap_workers)
 
     def _continue_run_blocking_inner(
         self,
@@ -2782,6 +2766,8 @@ class OuroAgent:
         active_doc_store,
         is_heartbeat: bool,
         run_id: str,
+        include_plans_index: bool = True,
+        heartbeat_tick_kind: Optional[str] = None,
         _patched_reasoning_callbacks: bool,
         _original_reasoning_cb,
         _original_reasoning_stream_cb,
@@ -2804,11 +2790,7 @@ class OuroAgent:
         # --- Trivial message fast path (regex only, no LLM) ---
         is_trivial = is_trivial_message(task)
 
-        # --- Step 0: Heartbeat strategist (visible) ---
         display = get_display()
-        strategist: Optional[StrategistResult] = None
-        # Alias kept for the rest of this function / debug helpers.
-        preflight: Optional[StrategistResult] = None
 
         def _status_cb(status: str, message: Optional[str], active: bool):
             if observer:
@@ -2818,101 +2800,8 @@ class OuroAgent:
             if observer:
                 observer.on_progress(event)
 
-        if (
-            is_heartbeat
-            and not is_trivial
-            and not skip_memory
-            and not profile.skip_preflight
-        ):
-            _, eligible_index = self._filter_deferred_for_profile(
-                profile, allowed_servers
-            )
-            strategist = self._run_strategist(
-                task,
-                allowed_capabilities=profile.allowed_capabilities,
-                preload_tools=preload_tools,
-                conv_state=conv_state,
-                user_id=user_id,
-                run_id=run_id,
-                asset_refs=prefetch.asset_ids if prefetch else None,
-                display=display,
-                status_callback=_status_cb,
-                team_id=team_id,
-                doc_store=active_doc_store,
-                cancellation_token=token,
-                observer=observer,
-                available_tools=[item["tool"] for item in eligible_index],
-            )
-            preflight = strategist
-            logger.info(
-                "Strategist: objective=%s priority=%s worth_remembering=%s "
-                "briefing=%d actions=%d tools=%s prefetch=%d memory_notes=%d",
-                (strategist.objective or "")[:80],
-                strategist.selected_priority,
-                strategist.worth_remembering,
-                len(strategist.briefing),
-                len(strategist.actions),
-                ",".join(strategist.tools) or "none",
-                len(strategist.prefetch_assets),
-                len(strategist.memory_notes),
-            )
-            # Preserve run-log columns: encode decision in legacy fields.
-            if strategist.is_pass_objective:
-                record.preflight_intent = "pass"
-                record.preflight_complexity = "pass"
-            else:
-                record.preflight_intent = "act"
-                record.preflight_complexity = (
-                    f"priority:{strategist.selected_priority}"
-                    if strategist.selected_priority is not None
-                    else (strategist.complexity or "moderate")
-                )
-            record.worth_remembering = strategist.worth_remembering
-            if strategist.tools:
-                # Task-aware preloading: tools the strategist expects the plan to
-                # need skip the load_tool round-trip. Unknown or disallowed
-                # names are dropped later by _build_agent_tools.
-                preload_tools = list(
-                    dict.fromkeys((preload_tools or []) + strategist.tools)
-                )
-
-            # Pass ticks: skip the executor entirely.
-            if strategist.is_pass_objective:
-                pass_result = (
-                    '{"action": "none", "details": '
-                    + json.dumps(
-                        "; ".join(strategist.priority_audit)
-                        or "strategist chose pass"
-                    )
-                    + "}"
-                )
-                record.mark_success(pass_result)
-                emit_progress(
-                    observer,
-                    "running_agent",
-                    "strategist passed — skipping executor",
-                    state="complete",
-                )
-                usage = RunUsage.from_tracker(
-                    self._usage_tracker,
-                    model_id=getattr(model, "model_id", "") or "",
-                ).finalize()
-                memory_ledger = self.memory.usage_ledger() or None
-                record.set_usage(usage)
-                record.set_subagent_ledger(self._subagent_ledger or None)
-                record.set_memory_ledger(memory_ledger)
-                _display = display or get_display()
-                _display.queue_run_summary(
-                    usage=usage,
-                    duration_s=max(0.0, time.monotonic() - run_started_at),
-                    subagent_ledger=self._subagent_ledger or None,
-                    memory_ledger=memory_ledger,
-                )
-                return pass_result
-
         # --- Build tools ---
-        # Do this after strategist so parent-run preloads do not appear to be
-        # part of the strategist step in logs or side effects.
+
         emit_progress(observer, "building_tools", "loading available tools")
         (
             all_tools,
@@ -2961,6 +2850,10 @@ class OuroAgent:
 
         # Build system prompt (static, cacheable) + dynamic context (per-turn).
         emit_progress(observer, "building_prompt", "assembling context")
+        # Quest-work heartbeats omit the plans index (inbox is the plan surface).
+        effective_include_plans = (
+            include_plans_index if is_heartbeat else True
+        )
         system_prompt, dynamic_context = self._build_system_prompt(
             task=task,
             profile=profile,
@@ -2974,6 +2867,7 @@ class OuroAgent:
             doc_store=active_doc_store,
             trigger_turn_id=trigger_turn_id,
             history_covers_conversation=history_covers_conversation,
+            include_plans_index=effective_include_plans,
         )
         emit_progress(observer, "building_prompt", "prompt ready", state="complete")
 
@@ -2999,39 +2893,7 @@ class OuroAgent:
                 state="complete",
             )
 
-        if is_heartbeat:
-            # Cheap executor gets the compact brief plus supporting dynamic
-            # context (working memory / logs / active tasks) — not a replay
-            # of the full playbook/direction dump the strategist already saw.
-            brief = format_heartbeat_execution_brief(
-                strategist or StrategistResult()
-            )
-            support_parts: list[str] = []
-            if dynamic_context:
-                support_parts.append(dynamic_context)
-            if strategist and strategist.prefetch_assets:
-                emit_progress(
-                    observer, "prefetching_context", "loading strategist assets"
-                )
-                hb_prefetch = resolve_prefetch(
-                    self._deferred_tools,
-                    PrefetchSpec(asset_ids=list(strategist.prefetch_assets)),
-                )
-                if hb_prefetch:
-                    support_parts.append(hb_prefetch)
-                emit_progress(
-                    observer,
-                    "prefetching_context",
-                    "context loaded" if hb_prefetch else "no context loaded",
-                    state="complete",
-                )
-            if support_parts:
-                effective_task = (
-                    brief + "\n\n---\n\n" + "\n\n---\n\n".join(support_parts)
-                )
-            else:
-                effective_task = brief
-        elif context_parts:
+        if context_parts:
             effective_task = (
                 "\n\n---\n\n".join(context_parts)
                 + f"\n\n---\n\n## Current request\n{task}"
@@ -3088,7 +2950,7 @@ class OuroAgent:
                     full_system_prompt=agent.prompt_templates["system_prompt"],
                     run_id=run_id,
                     mode=mode,
-                    preflight=preflight,
+                    heartbeat_tick_kind=heartbeat_tick_kind,
                 )
             except OSError as e:
                 logger.warning("Failed to write debug markdown preamble: %s", e)
@@ -3275,15 +3137,35 @@ class OuroAgent:
             except Exception as e:
                 logger.warning("Failed to append conversation turn: %s", e)
 
+        # Heartbeat tick-summary drives run-log columns + memory gating.
+        tick_summary = None
+        if is_heartbeat:
+            from .modes.heartbeat import parse_heartbeat_tick_summary
+
+            tick_summary = parse_heartbeat_tick_summary(str(result))
+            if tick_summary["is_pass"]:
+                record.preflight_intent = "pass"
+                record.preflight_complexity = "pass"
+            else:
+                record.preflight_intent = "act"
+                record.preflight_complexity = (
+                    f"priority:{tick_summary['selected_priority']}"
+                    if tick_summary["selected_priority"] is not None
+                    else "moderate"
+                )
+            record.worth_remembering = tick_summary["worth_remembering"]
+
         def _do_post_run():
-            store_semantic = (
-                preflight.should_remember() if preflight else not is_trivial
-            )
-            # Heartbeat non-pass ticks still get an episodic daily-log even when
-            # nothing durable belongs in vector memory.
-            want_episode = bool(
-                is_heartbeat and preflight and preflight.should_log_episode()
-            )
+            if tick_summary is not None:
+                store_semantic = bool(tick_summary["worth_remembering"])
+                want_episode = not tick_summary["is_pass"]
+                memory_notes = (
+                    tick_summary["memory_notes"] if store_semantic else None
+                )
+            else:
+                store_semantic = not is_trivial
+                want_episode = False
+                memory_notes = None
             if (
                 not profile.skip_post_reflection
                 and not skip_memory
@@ -3305,11 +3187,7 @@ class OuroAgent:
                     doc_store=active_doc_store,
                     conversation_state=conv_state,
                     conversation_id=conversation_id,
-                    memory_notes=(
-                        preflight.memory_notes
-                        if preflight and store_semantic
-                        else None
-                    ),
+                    memory_notes=memory_notes,
                     store_semantic=store_semantic,
                 )
 
@@ -3347,7 +3225,7 @@ class OuroAgent:
             daemon=True,
         ).start()
 
-        usage = collect_run_usage(agent, model, self._usage_tracker)
+        usage = collect_run_usage(agent, model, self._active_usage_tracker())
         memory_ledger = self.memory.usage_ledger() or None
         if memory_ledger:
             usage.num_embedding_calls = sum(
@@ -3367,10 +3245,10 @@ class OuroAgent:
             )
         logger.info(
             "Run usage:\n%s",
-            format_usage_breakdown(usage, self._subagent_ledger, memory_ledger),
+            format_usage_breakdown(usage, self._active_subagent_ledger(), memory_ledger),
         )
         _display = display or get_display()
-        ledger = self._subagent_ledger or None
+        ledger = self._active_subagent_ledger() or None
         _display.queue_run_summary(
             usage=usage,
             duration_s=max(0.0, time.monotonic() - run_started_at),
@@ -3381,7 +3259,7 @@ class OuroAgent:
         # Populate the run record's usage now that it's computed for display;
         # the wrapper's finally block snapshots steps and writes the record.
         record.set_usage(usage)
-        record.set_subagent_ledger(self._subagent_ledger or None)
+        record.set_subagent_ledger(self._active_subagent_ledger() or None)
         record.set_memory_ledger(memory_ledger)
 
         if _patched_reasoning_callbacks:
@@ -3425,8 +3303,6 @@ class OuroAgent:
         optional memory ledger — matching chat/autonomous/heartbeat cost
         accounting. Existing ``data/dream_runs/*.json`` audits are unchanged.
         """
-        from .memory.dream import run_dream
-
         scope = team_id or "shared"
         if doc_store is None:
             doc_store = (
@@ -3434,14 +3310,24 @@ class OuroAgent:
             )
 
         run_uid = uuid7_str()
-        parent_run_id = self._current_run_id
-        self._current_run_id = run_uid
+        parent_ctx = get_run_context()
+        parent_run_id = parent_ctx.run_id if parent_ctx else None
+        dream_tracker = UsageTracker()
+        run_ctx = RunContext(
+            run_id=run_uid,
+            mode="dream",
+            team_id=team_id,
+            tick_id=tick_id or getattr(self, "_current_tick_id", None),
+            parent_run_id=parent_run_id,
+            usage_tracker=dream_tracker,
+            task_preview=f"dream [{mode}] scope={scope}",
+        )
         record = RunRecord(
             run_id=run_uid,
             agent_name=self.config.agent.name,
             mode="dream",
             parent_run_id=parent_run_id,
-            tick_id=tick_id or self._current_tick_id,
+            tick_id=run_ctx.tick_id,
             team_id=team_id,
             task=(
                 f"dream [{mode}] scope={scope}"
@@ -3451,7 +3337,40 @@ class OuroAgent:
 
         # Dedicated tracker so dream LLM cost never pollutes / is lost in the
         # shared run tracker (dream is not a smolagents loop).
-        dream_tracker = UsageTracker()
+        active_runs = getattr(self, "_active_runs", None)
+        with bind_run_context(run_ctx):
+            if active_runs is not None:
+                active_runs.register(run_ctx, RunCancellationToken())
+            try:
+                return OuroAgent._run_dream_scope_inner(
+                    self,
+                    record=record,
+                    dream_tracker=dream_tracker,
+                    team_id=team_id,
+                    dry_run=dry_run,
+                    mode=mode,
+                    doc_store=doc_store,
+                    scope=scope,
+                    run_uid=run_uid,
+                )
+            finally:
+                if active_runs is not None:
+                    active_runs.unregister(run_uid)
+
+    def _run_dream_scope_inner(
+        self,
+        *,
+        record: RunRecord,
+        dream_tracker: UsageTracker,
+        team_id: str | None,
+        dry_run: bool,
+        mode: str,
+        doc_store,
+        scope: str,
+        run_uid: str,
+    ) -> dict:
+        from .memory.dream import run_dream
+
         model = self._build_model(
             self._utility_model_id(),
             role="utility",
@@ -3512,7 +3431,6 @@ class OuroAgent:
             except Exception:
                 logger.debug("Failed to collect dream usage", exc_info=True)
             self._finalize_run_record(record)
-            self._current_run_id = parent_run_id
 
     def dream(
         self,
@@ -3646,12 +3564,12 @@ class OuroAgent:
             if record.usage_json is None and agent is not None and record._model_obj:
                 try:
                     record.set_usage(
-                        collect_run_usage(agent, record._model_obj, self._usage_tracker)
+                        collect_run_usage(agent, record._model_obj, self._active_usage_tracker())
                     )
                 except Exception:
                     logger.debug("Failed to collect usage for run record", exc_info=True)
                 if record.subagent_ledger_json is None:
-                    record.set_subagent_ledger(self._subagent_ledger or None)
+                    record.set_subagent_ledger(self._active_subagent_ledger() or None)
                 if record.memory_ledger_json is None:
                     try:
                         record.set_memory_ledger(self.memory.usage_ledger() or None)

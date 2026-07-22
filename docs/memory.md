@@ -39,7 +39,8 @@ class MemoryResult(BaseModel):
 
 Memories are written by the `reflector` subagent after each run
 using structured handoffs that include category,
-semantic basis, stability, strength, and asset references. They are searched at preflight time by
+semantic basis, stability, strength, and asset references. They are searched at
+run time by
 the `memory_recall` tool (subagents include this tool in their
 `allowed_tools` list).
 
@@ -185,10 +186,10 @@ One memory at a time, weakest-first. Keys:
 ## Reflection
 
 Every run mode that writes memory (chat, autonomous, event-driven) shares one
-post-run reflection path: after a run that preflight marked
-`worth_remembering`, the `reflector` subagent stores curated facts, updates
-the user model from observed preferences, and optionally writes a daily-log
-entry.
+post-run reflection path: after a run marked `worth_remembering` (chat/autonomous
+non-trivial turns, or heartbeat tick-summary), the `reflector` subagent stores
+curated facts, updates the user model from observed preferences, and optionally
+writes a daily-log entry.
 
 Reflection runs in a background thread so the user response is never blocked
 by it.

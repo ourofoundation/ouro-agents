@@ -55,7 +55,6 @@ def _tiered_config() -> dict:
             "planning": {"enabled": True},
         },
         "subagents": {
-            "strategist": {"max_steps": 6},
             "research": {"max_steps": 10},
             "writer": {"max_steps": 8},
         },
@@ -103,7 +102,7 @@ class TestModelTierHydration(unittest.TestCase):
             "anthropic/claude-sonnet-4",
         )
 
-    def test_mid_tier_is_used_for_heartbeat_when_present(self):
+    def test_heartbeat_hydrates_from_strong_not_mid(self):
         data = _tiered_config()
         data["models"]["mid"] = {
             "id": "moonshotai/kimi-k3",
@@ -112,8 +111,9 @@ class TestModelTierHydration(unittest.TestCase):
 
         config = _load(data)
 
-        self.assertEqual(config.heartbeat.model, "moonshotai/kimi-k3")
-        self.assertTrue(config.heartbeat.reasoning.enabled)
+        # Heartbeat is the strong orchestrator; mid is only the cheap-worker ceiling.
+        self.assertEqual(config.heartbeat.model, "z-ai/glm-5.2")
+        self.assertEqual(config.heartbeat.reasoning.effort, "medium")
 
     def test_legacy_config_without_models_still_loads(self):
         config = _load(_legacy_config())
@@ -126,15 +126,15 @@ class TestModelRoleTiers(unittest.TestCase):
         self.assertEqual(MODEL_ROLE_TIERS["agent"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["writer"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["planning"], "strong")
-        self.assertEqual(MODEL_ROLE_TIERS["strategist"], "strong")
-        self.assertEqual(MODEL_ROLE_TIERS["preflight"], "strong")
-        self.assertEqual(MODEL_ROLE_TIERS["heartbeat_preflight"], "strong")
+        self.assertNotIn("strategist", MODEL_ROLE_TIERS)
+        self.assertNotIn("preflight", MODEL_ROLE_TIERS)
+        self.assertNotIn("heartbeat_preflight", MODEL_ROLE_TIERS)
         self.assertEqual(MODEL_ROLE_TIERS["search"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["research"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["reflector"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["utility"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["chat"], "mid")
-        self.assertEqual(MODEL_ROLE_TIERS["heartbeat"], "mid")
+        self.assertEqual(MODEL_ROLE_TIERS["heartbeat"], "strong")
 
     def test_mid_falls_back_to_strong(self):
         config = _load(_tiered_config())
@@ -142,6 +142,13 @@ class TestModelRoleTiers(unittest.TestCase):
         self.assertEqual(spec.id, "z-ai/glm-5.2")
         chat_spec = tier_spec_for_role(config.models, "chat")
         self.assertEqual(chat_spec.id, "z-ai/glm-5.2")
+
+    def test_heartbeat_uses_strong_even_when_mid_set(self):
+        data = _tiered_config()
+        data["models"]["mid"] = {"id": "moonshotai/kimi-k3"}
+        config = _load(data)
+        spec = tier_spec_for_role(config.models, "heartbeat")
+        self.assertEqual(spec.id, "z-ai/glm-5.2")
 
     def test_legacy_proactive_migrates_to_servers(self):
         data = _tiered_config()
@@ -155,9 +162,7 @@ class TestModelRoleTiers(unittest.TestCase):
 
 
 class TestCompletionCaps(unittest.TestCase):
-    def test_build_model_applies_role_completion_cap(self):
-        from ouro_agents.config import ROLE_MAX_COMPLETION_TOKENS
-
+    def test_build_model_omits_max_tokens_without_tier_cap(self):
         agent = OuroAgent.__new__(OuroAgent)
         agent.config = _load(_tiered_config())
         agent._usage_tracker = object()
@@ -169,11 +174,37 @@ class TestCompletionCaps(unittest.TestCase):
             get_display.return_value = SimpleNamespace(reasoning=None)
             agent._build_model("z-ai/glm-5.2", role="heartbeat")
 
-        self.assertEqual(
-            tracked_model.call_args.kwargs["max_tokens"],
-            ROLE_MAX_COMPLETION_TOKENS["heartbeat"],
-        )
+        self.assertNotIn("max_tokens", tracked_model.call_args.kwargs)
 
+    def test_build_model_uses_explicit_tier_completion_cap(self):
+        data = _tiered_config()
+        data["models"]["strong"]["max_completion_tokens"] = 32768
+        agent = OuroAgent.__new__(OuroAgent)
+        agent.config = _load(data)
+        agent._usage_tracker = object()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("z-ai/glm-5.2", role="heartbeat")
+
+        self.assertEqual(tracked_model.call_args.kwargs["max_tokens"], 32768)
+
+    def test_no_role_level_completion_caps(self):
+        import ouro_agents.config as config_mod
+
+        self.assertFalse(hasattr(config_mod, "ROLE_MAX_COMPLETION_TOKENS"))
+        from ouro_agents.config import max_completion_tokens_for_role
+
+        config = _load(_tiered_config())
+        self.assertIsNone(
+            max_completion_tokens_for_role(config.models, "heartbeat")
+        )
+        self.assertIsNone(
+            max_completion_tokens_for_role(config.models, "agent")
+        )
 
 class TestAgentModelResolution(unittest.TestCase):
     def _agent(self, data: dict) -> OuroAgent:
@@ -307,11 +338,12 @@ class TestHermesConfigLoads(unittest.TestCase):
         self.assertEqual(
             config.memory.extraction_model, config.models.light.id
         )
-        strategist = config.subagents.profiles["strategist"]
-        self.assertIsNone(strategist.model)
-        self.assertIsNone(strategist.reasoning)
-        self.assertEqual(strategist.max_steps, 6)
-
+        self.assertNotIn("strategist", config.subagents.profiles)
+        self.assertEqual(config.heartbeat.model, config.models.strong.id)
+        self.assertEqual(config.modes.profiles["heartbeat"].max_steps, 40)
+        self.assertIsNone(config.models.strong.max_completion_tokens)
+        self.assertIsNone(config.models.mid.max_completion_tokens)
+        self.assertIsNone(config.models.light.max_completion_tokens)
 
 if __name__ == "__main__":
     unittest.main()

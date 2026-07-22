@@ -292,8 +292,6 @@ class TerminalRunProgress(AgentObserver):
             "received_event": "received event",
             "marking_notifications": "notifications",
             "prefetching_context": "context",
-            "preflight": "strategist",
-            "strategist": "strategist",
             "building_tools": "tools",
             "building_prompt": "prompt",
             "running_agent": "agent",

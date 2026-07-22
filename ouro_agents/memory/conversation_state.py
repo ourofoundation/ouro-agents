@@ -141,9 +141,12 @@ def save_state(
     conversations_dir: Path, conversation_id: str, state: ConversationState
 ) -> None:
     """Persist conversation state to disk."""
-    path = _state_path(conversations_dir, conversation_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state.to_dict(), indent=2))
+    from ..memory_lock import memory_write_lock
+
+    with memory_write_lock():
+        path = _state_path(conversations_dir, conversation_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state.to_dict(), indent=2))
 
 
 def update_state(

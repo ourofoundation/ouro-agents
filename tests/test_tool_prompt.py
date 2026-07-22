@@ -36,7 +36,7 @@ class TestToolPrompt(unittest.TestCase):
         chat = build_tool_calling_system_prompt(conversational=True)
         analysis = build_tool_calling_system_prompt(include_work_directive=False)
         scoped = build_tool_calling_system_prompt(
-            "You are the heartbeat strategist.",
+            "You own the whole tick.",
             include_work_directive=False,
             include_mechanics=False,
         )
@@ -49,7 +49,7 @@ class TestToolPrompt(unittest.TestCase):
         # Mechanics are shared by both.
         self.assertIn("Turn mechanics", chat)
         self.assertIn("Turn mechanics", analysis)
-        self.assertEqual(scoped, "You are the heartbeat strategist.")
+        self.assertEqual(scoped, "You own the whole tick.")
 
 
 if __name__ == "__main__":

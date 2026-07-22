@@ -2,7 +2,7 @@
 
 Every agent run executes inside a **mode profile** (defined in
 `ouro_agents/modes/profiles.py`). The profile controls prompt assembly,
-allowed tools, step budget, and lifecycle hooks (preflight, reflection,
+allowed tools, step budget, and lifecycle hooks (reflection,
 conversation persistence).
 
 ## The `RunMode` enum
@@ -33,7 +33,6 @@ Each value maps to a built-in `ModeProfile`.
 | `allow_delegation` | Whether the `delegate` tool is exposed. |
 | `memory_tool_filter` | Optional whitelist of memory tool names (e.g. `["memory_recall"]`). |
 | `lightweight` | Skips most heavy context-loading branches in `_build_system_prompt`. |
-| `skip_preflight` | Don't run the `strategist` subagent before the main loop (heartbeat is the only mode that runs it). |
 | `skip_post_reflection` | Don't run the `reflector` subagent after the main loop. |
 | `load_conversation_state` | Inject conversation summary into the prompt. |
 | `load_scheduled_tasks` | Inject a scheduled-task summary block. |
@@ -47,11 +46,10 @@ Interactive, conversation-aware. Used both by the local `ouro-agents chat`
 CLI and by webhook chat events (`new-message`, `new-conversation`). Loads
 conversation state, preloads no tools (everything stays one `load_tool`
 away — most chat turns need zero tools), uses `tool_choice="auto"` so the
-model can reply to casual messages without a forced tool call, and skips
-the strategist for lower reply latency (the trivial-message regex still
-fast-paths greetings; post-run reflection still runs in the background and
-never delays the reply). Uses the mid model tier when configured (falls
-back to strong). Default `max_steps=20`.
+model can reply to casual messages without a forced tool call. The
+trivial-message regex still fast-paths greetings; post-run reflection still
+runs in the background and never delays the reply. Uses the mid model tier
+when configured (falls back to strong). Default `max_steps=20`.
 
 Delivery is the observer's job, not the mode's: for webhook events the
 server's `ServerAgentObserver` posts the final assistant message back to the
@@ -62,22 +60,24 @@ config aliases `chat-reply` and `reply` still resolve to `chat`.
 
 ### `autonomous`
 The default for `ouro-agents run`. Preloads action-oriented Ouro tools
-(`search_assets`, `get_asset`, `execute_route`, `get_action`). Skips the
-strategist (heartbeat-only) and runs post-reflection. Persists conversation
-turns when `conversation_id` is provided.
+(`search_assets`, `get_asset`, `execute_route`, `get_action`). Runs
+post-reflection. Persists conversation turns when `conversation_id` is
+provided.
 
 ### `heartbeat`
 Scheduler-driven mode. Restricted to the `ouro` MCP server (search is
-delegated to subagents). Runs one strong-model strategist that produces an
-executable brief, then a cheap mid/light executor follows that brief.
-Pass objectives skip the executor. Semantic memory reflection is gated by
-strategist `worth_remembering`; non-pass ticks can still write a daily-log
-episode. Used inside the heartbeat loop in `modes/heartbeat.py`.
+delegated to subagents). One strong-model run owns the whole tick: it
+decides and executes one bounded slice, delegating heavy work to cheap
+subagents. Tick kind (`quest_work` vs `open_ended`) is chosen
+deterministically before the LLM call and gates context/framing. The final
+tick-summary JSON carries `action` / `worth_remembering` / `memory_notes`
+for run-log columns and memory gating. Default `max_steps=40`. Used inside
+the heartbeat loop in `modes/heartbeat.py`.
 
 ### `plan`
 Generates a new plan cycle. Restricted servers, only `memory_recall` from
-memory tools, no strategist, no post-reflection. Drives a quest creation
-flow inside `modes/planning.py`.
+memory tools, no post-reflection. Drives a quest creation flow inside
+`modes/planning.py`.
 
 ### `review`
 Updates an existing plan based on feedback. Same restrictions as `plan`.
@@ -113,37 +113,48 @@ active hours, etc.) — these are hoisted out into the dedicated
 `PlanningConfig` / `HeartbeatConfig` sections during config load. See the
 [Configuration reference](./configuration.md#modes).
 
-## Strategist and reflection
+## Heartbeat tick summary and reflection
 
-Heartbeat is the only mode that runs the `strategist` subagent as visible
-**step 0**. Chat, autonomous, plan, and review skip it (`skip_preflight=True`).
-The strategist returns:
+Heartbeat ends with a structured tick-summary JSON:
 
-- `objective` — one concrete slice (or `pass`).
-- `selected_priority` / `priority_audit` — which playbook tier was chosen and
-  fresh evidence clearing earlier tiers.
-- `briefing` — IDs and constraints the executor needs.
-- `actions` — ordered steps (normally ≤4); include `delegate …` calls here.
-- `tools` — MCP tools merged into the executor's preloads.
-- `prefetch_assets` — up to 3 asset UUIDs fetched before the executor starts.
-- `worth_remembering` — gates vector-memory candidates only.
+- `action` — short label, or `none` when passing.
+- `details` — what changed / why the tick passed.
+- `selected_priority` — playbook tier acted on, or null.
+- `worth_remembering` — gates vector-memory candidates.
 - `memory_notes` — optional templates for the reflector when remembering.
 
-Pass objectives skip the executor entirely. Non-pass heartbeats can still
-write a daily-log episode even when `worth_remembering` is false.
+Pass ticks (`action: none`) skip semantic memory and daily-log episodes.
+Non-pass ticks can still write a daily-log episode even when
+`worth_remembering` is false. Run-log columns `preflight_intent` /
+`preflight_complexity` / `worth_remembering` are populated from this
+summary (schema retained for compatibility).
 
 After the main loop finishes, if `skip_post_reflection=False` and the run
 warrants memory and/or an episode, the agent dispatches the `reflector`
 subagent in the background. Failures are logged but never block the user
 response.
 
-## Preemption
+## Concurrency
 
-Background modes (`heartbeat`, `plan`, `review`, and scheduled tasks) are
-*preemptible*: when an interactive run (chat, direct request) arrives while
-a background run holds the run lock, the background run is cancelled at its
-next step boundary and the interactive run proceeds. Background work simply
-resumes on its next tick.
+Top-level modes (`chat`, `autonomous` / comments, `heartbeat`, `plan`,
+`review`, and dream) **overlap** on one agent process. There is no global run
+lock and no cross-mode preemption.
+
+Shared-state hardening:
+
+- Each run binds a `RunContext` (usage tracker, subagent ledger, run id).
+- Stdio MCP invocations take a per-server call lock; streamable-http MCP does not.
+- Durable workspace / doc writes take a process-wide memory write lock.
+
+Chat **interrupt** still cancels only the in-flight run(s) for that
+conversation.
+
+### Future: cross-mode awareness
+
+An in-process `ActiveRunRegistry` already tracks live runs (mode, event type,
+started_at, conversation/team ids). A future `list_active_runs` tool can expose
+that to agents so a heartbeat can discover sibling activity via a tool call
+rather than static prompt context. Not implemented yet.
 
 ## How a mode is resolved at runtime
 

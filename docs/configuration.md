@@ -80,7 +80,7 @@ Role → tier map (code-owned, not configurable):
 
 | Role | Tier |
 |------|------|
-| agent, planning, writer, executor, developer, planner, strategist | strong |
+| agent, planning, heartbeat, writer, executor, developer, planner | strong |
 | chat, heartbeat | mid → strong |
 | research, reflector | light |
 | utility, extraction, refinement | light |
@@ -204,9 +204,10 @@ the task dynamic so prefixes stay stable.
 | `enabled` | bool | `false` | Enables explicit Anthropic/Qwen cache markers. |
 | `ttl` | `5m` \| `1h` | `5m` | Cache lifetime for explicit markers. |
 
-Role-aware `max_completion_tokens` (on each `models.*` tier, with
-`ROLE_MAX_COMPLETION_TOKENS` defaults) caps OpenAI `max_tokens` so providers
-cannot reserve ~65k completion tokens and trip OpenRouter credit checks.
+Optional per-tier `max_completion_tokens` sets OpenAI `max_tokens` when you
+need an explicit ceiling (for example to avoid a provider reserving a huge
+default). There are no role-level defaults — leave the field unset to let the
+model finish normally.
 
 ## `heartbeat`
 
@@ -226,8 +227,8 @@ Legacy `proactive.enabled` / `proactive.servers` configs are migrated to
 `servers` at load time (always `["ouro"]` for the main heartbeat when search
 was previously listed — search is delegated).
 
-Heartbeat flow: one strong-model strategist produces an executable brief; a
-cheap mid/light executor follows it. Post-strategist workers are capped to
+Heartbeat flow: one strong-model run decides and executes. Delegated workers
+are capped to
 mid/light for that tick.
 
 ## `planning`
@@ -344,11 +345,15 @@ A list of `MCPServerConfig`. Each entry connects on startup.
 | Field | Notes |
 |-------|-------|
 | `name` | Logical name, used as the server prefix in qualified tool names (e.g. `ouro:create_post`). |
-| `transport` | `stdio` (only one currently implemented) or `streamable-http` (raises NotImplementedError). |
-| `command` | Executable path for `stdio`. |
+| `transport` | `stdio` or `streamable-http`. |
+| `command` | Required for `stdio`. Optional for `streamable-http` — when set with `url`, the agent spawns and manages the HTTP server process. |
 | `args` | Argv list. |
 | `env` | Env dict; supports `${VAR}` expansion. |
-| `url` | Reserved for `streamable-http`. |
+| `url` | Required for `streamable-http` (e.g. `http://127.0.0.1:8011/mcp`). |
+
+Stdio MCP tool calls are serialized per server so overlapping runs cannot
+interleave JSON-RPC on one pipe. Streamable-HTTP servers skip that lock —
+concurrent tool calls are safe on the wire.
 
 `${WORKSPACE_ROOT}` is auto-injected for child processes (host workspace path).
 In Docker sandbox mode, `${WORKSPACE_MOUNT}` is also injected (e.g.

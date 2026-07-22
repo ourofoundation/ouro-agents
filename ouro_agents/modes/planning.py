@@ -73,17 +73,20 @@ def load_cursor(workspace: Path, team_id: str) -> PlanningCursor:
 
 
 def save_cursor(workspace: Path, team_id: str, cursor: PlanningCursor) -> None:
-    path = _cursor_path(workspace, team_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(cursor.model_dump(), f, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    from ..memory_lock import memory_write_lock
+
+    with memory_write_lock():
+        path = _cursor_path(workspace, team_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(cursor.model_dump(), f, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
 
 
 def planning_due(
@@ -419,12 +422,16 @@ def remember_plan_feedback_direction(
     agent_name = getattr(agent_cfg, "name", "")
     if not agent_name:
         return
+    from ..run_context import get_run_context
+
+    active = get_run_context()
+    run_id = (active.run_id if active else None) or quest_id
     remember_work_direction(
         getattr(agent, "memory", None),
         agent_name,
         feedback,
         source=f"plan-feedback:{quest_id}",
-        run_id=getattr(agent, "_current_run_id", "") or quest_id,
+        run_id=run_id,
         team_id=team_id,
         asset_id=quest_id,
         strength=0.8,

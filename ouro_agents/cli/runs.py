@@ -177,7 +177,7 @@ def show_run(
             meta.append(f"[bold]{label}[/bold] {run.get(label)}")
     if run.get("preflight_intent"):
         meta.append(
-            f"[bold]preflight[/bold] {run.get('preflight_intent')} "
+            f"[bold]tick[/bold] {run.get('preflight_intent')} "
             f"/ {run.get('preflight_complexity')}"
         )
     if run.get("error_message"):

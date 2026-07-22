@@ -48,22 +48,19 @@
       "id": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "high"
-      },
-      "max_completion_tokens": 16384
+      }
     },
     "mid": {
       "id": "xiaomi/mimo-v2.5",
       "reasoning": {
         "effort": "none"
-      },
-      "max_completion_tokens": 8192
+      }
     },
     "light": {
       "id": "xiaomi/mimo-v2.5",
       "reasoning": {
         "effort": "none"
-      },
-      "max_completion_tokens": 4096
+      }
     }
   },
   "openrouter_provider": {
@@ -73,9 +70,6 @@
     "allow_fallbacks": true
   },
   "subagents": {
-    "strategist": {
-      "max_steps": 5
-    },
     "search": {
       "max_steps": 4
     },
@@ -104,7 +98,7 @@
     "heartbeat": {
       "enabled": true,
       "every": "6h",
-      "max_steps": 12,
+      "max_steps": 40,
       "active_hours": {
         "start": "08:30",
         "end": "21:30",

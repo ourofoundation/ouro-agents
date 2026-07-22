@@ -36,11 +36,9 @@ def test_chat_mode_is_conversational_and_work_modes_are_not():
     assert AUTONOMOUS.conversational is False
 
 
-def test_chat_and_autonomous_skip_strategist():
-    # Strategist is heartbeat-only; chat/autonomous skip it.
-    assert CHAT.skip_preflight is True
-    assert AUTONOMOUS.skip_preflight is True
+def test_chat_keeps_post_reflection_and_skip_preflight_removed():
     assert CHAT.skip_post_reflection is False
+    assert "skip_preflight" not in type(CHAT).model_fields
 
 
 def test_public_comment_envelope_filters_autonomous_preloads():

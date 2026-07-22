@@ -37,6 +37,8 @@ def append_conversation_turn(
     content: str,
     tool_summary: Optional[list[dict]] = None,
 ) -> None:
+    from ..memory_lock import memory_write_lock
+
     path = conversation_file(workspace, conversation_id)
     entry: dict = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -45,8 +47,9 @@ def append_conversation_turn(
     }
     if tool_summary:
         entry["tool_summary"] = tool_summary
-    with open(path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    with memory_write_lock():
+        with open(path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
 
 
 def extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dict]:

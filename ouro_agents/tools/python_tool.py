@@ -310,7 +310,11 @@ def make_python_tool(
             results = ouro.assets.search("topic")
             post = ouro.posts.create(name="My Post", content_markdown="...", org_id="...", team_id="...")
             ds = ouro.datasets.retrieve("<uuid>")
-            rows = ouro.datasets.query("<uuid>")
+            # datasets.query always returns a pandas.DataFrame (not list[dict])
+            df = ouro.datasets.query("<uuid>")
+            df = ouro.datasets.query("<uuid>", "SELECT * FROM {{table}} WHERE status = 'sent'")
+            for _, row in df.iterrows():
+                print(row["name"], row["status"])
         - To publish a workspace file: use MCP `ouro:create_file` with `file_path` equal to the same
           relative path you wrote under WORKSPACE_ROOT (the run_python workspace)."""
 

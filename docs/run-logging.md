@@ -36,7 +36,7 @@ write.
 | `model` | Resolved model id. |
 | `task`, `result` | Full request and final answer (not truncated). |
 | `error_type`, `error_message`, `error_traceback` | Populated on failure. |
-| `preflight_intent`, `preflight_complexity`, `worth_remembering` | From the strategist step (`act`/`pass` and `priority:N`). |
+| `preflight_intent`, `preflight_complexity`, `worth_remembering` | From the heartbeat tick-summary JSON (`act`/`pass` and `priority:N`). |
 | `num_steps`, `num_tool_calls` | Rollups. |
 | `input_tokens`, `output_tokens`, `cached_input_tokens`, `reasoning_tokens`, `total_tokens`, `num_api_calls`, `cost_usd` | Flattened usage for cheap queries. |
 | `usage_json`, `subagent_ledger_json`, `memory_ledger_json` | Full usage detail as JSON. |

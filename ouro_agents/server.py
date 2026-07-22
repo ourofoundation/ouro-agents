@@ -1052,6 +1052,14 @@ async def _handle_interrupt_event(event_run: EventRunContext) -> None:
     if token:
         token.cancel("interrupted by user")
 
+    # Also cancel any overlapping registry entries for this conversation
+    # (covers races where active_chat_tokens was already cleared).
+    if agent_instance is not None:
+        for reg_token in agent_instance._active_runs.tokens_for_conversation(
+            conversation_id
+        ):
+            reg_token.cancel("interrupted by user")
+
     logger.info(
         "Interrupt for conversation %s: cancelled_run=%s discarded_pooled=%d",
         conversation_id,

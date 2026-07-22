@@ -1,17 +1,10 @@
 """Lightweight task classification utilities.
 
-The LLM-based classifier has been replaced by the heartbeat strategist.
-This module now retains only regex-based trivial-message detection plus
-compatibility re-exports for strategist parsing types.
+Retains only regex-based trivial-message detection for the chat fast path.
 """
 
 import re
 from typing import Optional
-
-from .subagents.strategist import (
-    StrategistResult as PreflightResult,
-    parse_strategist_result as parse_preflight_result,
-)
 
 _TRIVIAL_PATTERNS = re.compile(
     r"^("
@@ -40,7 +33,7 @@ _TRIVIAL_PATTERNS = re.compile(
     r"|goodbye\.?"
     r"|see ya\.?"
     r"|lgtm\.?"
-    r"|np\.?"
+    r"|np\b"
     r"|no worries\.?"
     r"|nvm\.?"
     r"|never\s*mind\.?"

@@ -71,6 +71,31 @@ One row per contact. Columns:
 
 Start of every outreach tick: query the dataset, do not work from assumptions.
 
+In `run_python`, `ouro.datasets.query(...)` returns a **pandas DataFrame**, not
+a list of dicts. Prefer SQL mode for triage:
+
+```python
+from datetime import date
+
+ouro = get_ouro_client()
+df = ouro.datasets.query(
+    DATASET_ID,
+    """
+    SELECT name, email, date_sent, focus, next_action, type, id
+    FROM {{table}}
+    WHERE status = 'sent'
+      AND reply_received = 'false'
+      AND follow_up_sent = 'false'
+    ORDER BY date_sent ASC
+    """,
+)
+today = date.today()
+for _, r in df.iterrows():
+    sent = date.fromisoformat(str(r["date_sent"]))  # ISO dates, not datetime.fromisoformat
+    days = (today - sent).days
+    ...
+```
+
 Who replied and is waiting on you:
 
 ```sql
@@ -128,6 +153,9 @@ email separately: message him your angle and let him carry it.
 3. **Self-review.** Would you be proud to have it forwarded to their whole
    department? If not, fix it before sending.
 4. **Send** via your Resend tool and capture the returned message id.
+   **Always CC `matt@ouro.foundation`** on every outreach email (first send and
+   follow-up). Pass it in the Resend `cc` field. Matt is on the thread so he
+   can add color or corrections — do not omit this, and do not BCC instead.
 5. **Log immediately** by upserting a row (see below). An unlogged send is a
    future double-send.
 

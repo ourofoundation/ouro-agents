@@ -18,6 +18,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -25,11 +26,22 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from ..config import HeartbeatConfig
 from ..constants import parse_interval_seconds, parse_json_from_llm
 from ..memory.focus import FOCUS_MEMORY_QUERIES, build_focus_memory_context
+from .framing import heartbeat_framing_for_kind
 
 if TYPE_CHECKING:
     from ..agent import OuroAgent
 
 logger = logging.getLogger(__name__)
+
+
+class TickKind(str, Enum):
+    """Deterministic heartbeat flavor chosen before any LLM call.
+
+    Planning routes to a separate PLAN-mode run and never becomes a tick kind.
+    """
+
+    QUEST_WORK = "quest_work"
+    OPEN_ENDED = "open_ended"
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +254,79 @@ def _load_work_direction_context(agent: "OuroAgent", team_id: str | None) -> str
                 seen_lines.add(key)
             merged.append(line)
     return "\n".join(merged)
+
+
+def build_recent_tick_digest(
+    agent: "OuroAgent",
+    *,
+    team_id: str | None = None,
+    limit: int = 5,
+) -> str:
+    """Compact digest of recent heartbeat outcomes for the tick.
+
+    Lets the heartbeat see what recent ticks already did — so it avoids
+    repeating a slice and can audit priority tiers against fresh evidence
+    instead of re-deriving it from live reads. Best-effort: any failure (no
+    run log, query error) yields an empty string.
+    """
+    run_log = getattr(agent, "_run_log", None)
+    query_runs = getattr(run_log, "query_runs", None)
+    if not callable(query_runs):
+        return ""
+
+    kwargs: dict[str, Any] = {"mode": "heartbeat", "limit": limit}
+    if team_id:
+        kwargs["team_id"] = team_id
+    try:
+        rows = query_runs(**kwargs)
+    except Exception as e:
+        logger.debug("Failed to query recent heartbeat outcomes: %s", e)
+        return ""
+    if not rows:
+        return ""
+
+    lines: list[str] = []
+    for row in rows:
+        started = str(row.get("started_at") or "")[:16].replace("T", " ")
+        status = str(row.get("status") or "")
+        intent = str(row.get("preflight_intent") or "")
+        complexity = str(row.get("preflight_complexity") or "")
+        tier = intent if intent in ("pass", "act") else "?"
+        if complexity.startswith("priority:"):
+            tier = f"{tier} {complexity}"
+        summary = _summarize_tick_result(row.get("result"))
+        parts = [p for p in (started, status, tier) if p]
+        line = "- " + " · ".join(parts)
+        if summary:
+            line += f" — {summary}"
+        lines.append(line)
+
+    if not lines:
+        return ""
+    return (
+        "## Recent Heartbeat Outcomes\n"
+        "What the last few ticks already did (most recent first). Do not repeat "
+        "a slice that is clearly finished; use this as fresh evidence when "
+        "auditing priority tiers.\n" + "\n".join(lines)
+    )
+
+
+def _summarize_tick_result(result: Any, *, max_len: int = 120) -> str:
+    """One-line summary of a heartbeat run's stored result JSON/text."""
+    text = str(result or "").strip()
+    if not text:
+        return ""
+    parsed = parse_json_from_llm(text)
+    if isinstance(parsed, dict):
+        action = str(parsed.get("action") or "").strip()
+        details = str(parsed.get("details") or parsed.get("summary") or "").strip()
+        combined = " ".join(p for p in (action, details) if p) or text
+    else:
+        combined = text
+    combined = " ".join(combined.split())
+    if len(combined) > max_len:
+        combined = combined[: max_len - 1].rstrip() + "…"
+    return combined
 
 
 def _sorted_team_ids(agent: "OuroAgent") -> list[str]:
@@ -873,68 +958,50 @@ format_assigned_quest_items = format_inbox_items
 
 
 def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
-    """Instruction block for one heartbeat of quest work from the inbox."""
+    """Data-shaped quest inbox for a quest_work heartbeat tick.
+
+    Surfaces the actionable items and the signals needed to pick one (ranking,
+    resurfaced handoffs, adaptive/assigned nature). Quest tool mechanics live
+    in the (kind-specific) system framing, so this playbook stays out of
+    tool recipes.
+    """
     has_assigned = any(i.get("inbox_source") == "assigned" for i in items)
     has_owned = any(i.get("inbox_source") == "owned" for i in items)
-    completion_guidance = (
-        "When a slice is complete on a quest you own, use `complete_quest_item` "
-        "with a substantive completion note and any produced asset id. "
-    )
-    if has_assigned:
-        completion_guidance += (
-            "For items assigned to you on a quest owned by someone else, prefer "
-            "`submit_quest_entry` with a substantive description and any produced "
-            "asset IDs; use `complete_quest_item` only when you are clearly "
-            "allowed to self-complete. Do not create a new quest or rewrite "
-            "someone else's plan unless the owner explicitly asks for that. "
-        )
+
     adaptive_guidance = ""
     if has_owned:
         adaptive_guidance = (
-            "Adaptive quests: on quests you own, if completed work invalidates "
-            "or improves a later pending item, update or replace that item with "
-            "`update_quest_item` / `create_quest_items` (and delete stale ones "
-            "with `delete_quest_item` when allowed) and leave a `write_comment` "
-            "on the quest explaining the pivot. Never execute an item you know "
-            "is stale. Checkpoint items whose deliverable is revising the quest "
-            "are done when the remaining items reflect the new direction and "
-            "the rationale comment exists.\n\n"
+            "On quests you own, if finished work has made a later pending item "
+            "stale or improvable, prefer revising that item over executing it "
+            "as-is, and note the pivot on the quest.\n\n"
+        )
+    assigned_guidance = ""
+    if has_assigned:
+        assigned_guidance = (
+            "Some items are assigned to you on quests owned by others; plan an "
+            "entry submission rather than rewriting the owner's plan.\n\n"
         )
     return (
-        "You are working your quest inbox this heartbeat.\n\n"
+        "You are choosing and executing this heartbeat's quest work.\n\n"
         "These are the actionable items across quests assigned to you and open "
         "quests you own, in priority order. Choose ONE item — normally the "
-        "first, unless a later item is clearly more urgent — make one "
+        "first, unless a later item is clearly more urgent — that yields one "
         "meaningful slice of progress that changes platform state or produces "
-        "a useful artifact, and leave clear evidence. Do not try to clear the "
-        "whole inbox in a single tick.\n\n"
+        "a useful artifact. Do not try to clear the whole inbox in a single "
+        "tick.\n\n"
         "If an item says it resurfaced from a waiting state, treat the parked "
-        "note as the handoff from the prior tick: verify the awaited event, "
-        "do only what is still unfinished, and `complete_quest_item` when the "
-        "item's Done criteria are already met. Do not redo finished slices "
+        "note as the handoff from the prior tick: verify the awaited event and "
+        "act only on what is still unfinished. Do not redo finished slices "
         "(sends already logged, prospects already seeded, drafts already "
         "posted) just because the description still lists them.\n\n"
         f"{adaptive_guidance}"
+        f"{assigned_guidance}"
         "## Quest Inbox\n"
         f"{format_inbox_items(items)}\n\n"
-        "Use `get_asset` or `list_quest_items` if you need more quest context. "
-        "Mark the item `in_progress` with `update_quest_item` before working "
-        "when appropriate. "
-        f"{completion_guidance}"
-        "If an item cannot progress right now because it is blocked on an "
-        "external event (a reply, a review) or a future date, do NOT leave it "
-        "as plain `in_progress`: call `update_quest_item` with `waiting_on` "
-        "(why) and, when known, `waiting_until` (ISO timestamp). Parked items "
-        "leave this inbox until they come due; clear the waiting fields (pass "
-        "empty strings) when the item becomes workable again. For work that "
-        "needs a light recurring check (e.g. scan for a reply once a day until "
-        "it arrives), also set `waiting_check_every` (an interval like '1d' or "
-        "'6h') — the item resurfaces on that cadence and re-parks itself after "
-        "each due tick; `complete_quest_item` stops the recurrence.\n"
-        "IMPORTANT: If you complete the final open item on a quest you own, "
-        "close the loop: use `write_comment` on that quest summarizing the work "
-        "accomplished (with links to produced assets), and set the quest's "
-        'status to "closed" with `update_quest`.'
+        "Quest mechanics (marking an item in progress, completing vs. "
+        "submitting entries, parking blocked items with waiting fields, and "
+        "closing out a finished quest) are in your MODE framing. Use the exact "
+        "quest/item/asset IDs and done-conditions from the inbox."
     )
 
 
@@ -1054,6 +1121,9 @@ class HeartbeatTaskContext:
     playbook: str | None
     team_id: str | None
     source: str
+    tick_kind: TickKind = TickKind.OPEN_ENDED
+    framing_override: str = ""
+    include_plans_index: bool = True
     preload_tools: list[str] = field(default_factory=list)
     inbox: list[dict[str, Any]] = field(default_factory=list)
 
@@ -1081,6 +1151,47 @@ def heartbeat_servers(agent: "OuroAgent") -> list[str]:
     return list(getattr(agent.config.heartbeat, "servers", None) or ["ouro"])
 
 
+def _append_shared_context_snapshot(
+    agent: "OuroAgent",
+    playbook: str,
+    *,
+    tick_kind: TickKind,
+    team_id: str | None,
+) -> str:
+    """Append the per-kind memory/task index the heartbeat can read_context."""
+    from ..memory.context_loader import (
+        build_cross_team_task_index,
+        build_memory_index,
+    )
+
+    if tick_kind == TickKind.QUEST_WORK and team_id:
+        task_index = build_memory_index(
+            agent.config.agent.workspace, team_id=team_id
+        )
+    elif tick_kind == TickKind.OPEN_ENDED:
+        labels: dict[str, str] = {}
+        registry = getattr(agent, "team_registry", None)
+        if registry is not None:
+            get_team = getattr(registry, "get_team", None)
+            for tid in sorted(registry.team_ids()):
+                team = get_team(tid) if callable(get_team) else None
+                labels[tid] = (
+                    getattr(team, "slug", None)
+                    or getattr(team, "name", None)
+                    or tid[:8]
+                )
+        task_index = build_cross_team_task_index(
+            agent.config.agent.workspace, team_labels=labels
+        )
+    else:
+        # Quest work without a known team: skip the cross-team fan-out.
+        task_index = ""
+
+    if task_index:
+        playbook = f"{playbook}\n\n## Shared Context Snapshot\n{task_index}"
+    return playbook
+
+
 def build_heartbeat_task_context(
     agent: "OuroAgent",
     *,
@@ -1091,6 +1202,9 @@ def build_heartbeat_task_context(
 
     Does not run planning bookkeeping. When *inbox* is omitted, loads it.
     Set *advance_recurring* False for read-only dry-runs.
+
+    Tick kind is deterministic: a non-empty inbox → quest_work; otherwise
+    open_ended. Planning never reaches this function (it routes earlier).
     """
     items = list(inbox) if inbox is not None else load_work_inbox(agent)
     team_id: str | None = None
@@ -1098,8 +1212,10 @@ def build_heartbeat_task_context(
     playbook = None
     source = "none"
     preload_tools: list[str] = []
+    tick_kind = TickKind.OPEN_ENDED
 
     if items:
+        tick_kind = TickKind.QUEST_WORK
         if advance_recurring:
             _advance_due_recurring_items(agent, items)
         team_id = inbox_team_id(items, agent)
@@ -1125,12 +1241,16 @@ def build_heartbeat_task_context(
         playbook = _load_playbook(agent, doc_store)
         if playbook:
             source = "playbook"
+            tick_kind = TickKind.OPEN_ENDED
 
     if not playbook:
         return HeartbeatTaskContext(
             playbook=None,
             team_id=team_id,
             source=source,
+            tick_kind=tick_kind,
+            framing_override=heartbeat_framing_for_kind(tick_kind.value),
+            include_plans_index=tick_kind == TickKind.OPEN_ENDED,
             preload_tools=preload_tools,
             inbox=items,
         )
@@ -1150,6 +1270,17 @@ def build_heartbeat_task_context(
             "research or browsing when a current direction names a concrete focus."
         )
 
+    playbook = _append_shared_context_snapshot(
+        agent, playbook, tick_kind=tick_kind, team_id=team_id
+    )
+
+    # Recent outcomes: team-filtered for quest ticks; global for open-ended.
+    recent_digest = build_recent_tick_digest(
+        agent, team_id=team_id if tick_kind == TickKind.QUEST_WORK else None
+    )
+    if recent_digest:
+        playbook = f"{playbook}\n\n{recent_digest}"
+
     if not is_within_active_hours(agent.config.heartbeat):
         playbook += (
             "\n\n**Note: You are outside active hours. "
@@ -1160,9 +1291,72 @@ def build_heartbeat_task_context(
         playbook=playbook,
         team_id=team_id,
         source=source,
+        tick_kind=tick_kind,
+        framing_override=heartbeat_framing_for_kind(tick_kind.value),
+        include_plans_index=tick_kind == TickKind.OPEN_ENDED,
         preload_tools=preload_tools,
         inbox=items,
     )
+
+
+def parse_heartbeat_tick_summary(result: str | None) -> dict[str, Any]:
+    """Parse the heartbeat tick-summary JSON from the final assistant message.
+
+    Returns a normalized dict with keys: action, details, selected_priority,
+    worth_remembering, memory_notes, is_pass.
+    """
+    parsed = parse_json_from_llm(result) if result else None
+    if not isinstance(parsed, dict):
+        return {
+            "action": "unknown",
+            "details": "",
+            "selected_priority": None,
+            "worth_remembering": True,
+            "memory_notes": [],
+            "is_pass": False,
+        }
+
+    action = str(parsed.get("action") or "").strip()
+    is_pass = action.lower() in {"none", "pass", "noop", "no-op", "n/a", "skip"}
+    details = str(parsed.get("details") or "").strip()
+
+    selected_priority = parsed.get("selected_priority")
+    try:
+        selected_priority = (
+            int(selected_priority) if selected_priority is not None else None
+        )
+        if selected_priority is not None and not (1 <= selected_priority <= 6):
+            selected_priority = None
+    except (TypeError, ValueError):
+        selected_priority = None
+    if is_pass:
+        selected_priority = None
+
+    raw_worth = parsed.get("worth_remembering", not is_pass)
+    if isinstance(raw_worth, bool):
+        worth = raw_worth
+    elif isinstance(raw_worth, str):
+        worth = raw_worth.strip().lower() in {"true", "1", "yes"}
+    else:
+        worth = bool(raw_worth)
+    if is_pass:
+        worth = False
+
+    notes_raw = parsed.get("memory_notes")
+    memory_notes: list[str] = []
+    if isinstance(notes_raw, list) and worth:
+        memory_notes = [
+            str(n).strip() for n in notes_raw if str(n).strip()
+        ][:4]
+
+    return {
+        "action": "none" if is_pass else (action or "unknown"),
+        "details": details,
+        "selected_priority": selected_priority,
+        "worth_remembering": worth,
+        "memory_notes": memory_notes,
+        "is_pass": is_pass,
+    }
 
 
 async def run_heartbeat(agent: OuroAgent) -> Optional[str]:
@@ -1249,7 +1443,8 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         return None
 
     logger.info(
-        "Running heartbeat: source=%s, team=%s",
+        "Running heartbeat: kind=%s source=%s team=%s",
+        ctx.tick_kind.value,
         ctx.source,
         ctx.team_id[:8] if ctx.team_id else "none",
     )
@@ -1262,15 +1457,17 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
         preload_tools=ctx.preload_tools,
         preserve_existing_usage=True,
         team_id=ctx.team_id,
+        mode_framing_override=ctx.framing_override,
+        heartbeat_tick_kind=ctx.tick_kind.value,
+        include_plans_index=ctx.include_plans_index,
     )
 
-    parsed = parse_json_from_llm(result)
-    if parsed:
-        action_taken = parsed.get("action", "unknown")
-        if action_taken == "none":
-            logger.info("Heartbeat completed: no action taken")
-            return None
-        logger.info("Heartbeat completed: action=%s", action_taken)
+    summary = parse_heartbeat_tick_summary(result)
+    if summary["is_pass"]:
+        logger.info("Heartbeat completed: no action taken")
+        return None
+    if summary["action"] != "unknown":
+        logger.info("Heartbeat completed: action=%s", summary["action"])
     else:
         logger.info("Heartbeat completed (no structured result)")
 

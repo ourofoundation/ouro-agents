@@ -69,11 +69,11 @@ class ModelTierSpec(BaseModel):
 class ModelTiersConfig(BaseModel):
     """Opinionated model roster. Configure once; roles pick a tier.
 
-    ``strong`` — main agent, planning, writer, executor, developer, and
-    the heartbeat strategist stage.
+    ``strong`` — main agent, planning, heartbeat, writer, executor, developer.
     ``light`` — search, research, reflector, extraction, utilities
     (compaction, summarize, dream, refinement).
-    ``mid`` — chat and heartbeat execution when set, otherwise ``strong``.
+    ``mid`` — chat and heartbeat cheap-worker ceiling when set, otherwise
+    ``strong``.
     """
 
     strong: ModelTierSpec
@@ -90,41 +90,13 @@ MODEL_ROLE_TIERS: Dict[str, ModelTierName] = {
     "developer": "strong",
     "planner": "strong",
     "chat": "mid",
-    "heartbeat": "mid",
-    "strategist": "strong",
-    # Legacy role names still resolve during the preflight → strategist rename.
-    "heartbeat_preflight": "strong",
-    "preflight": "strong",
+    "heartbeat": "strong",
     "search": "light",
     "research": "light",
     "reflector": "light",
     "utility": "light",
     "extraction": "light",
     "refinement": "light",
-}
-
-
-# Role-aware completion caps applied when a tier does not set its own.
-# Sized to avoid OpenRouter's implicit ~65k reservation while leaving room
-# for each role's typical output.
-ROLE_MAX_COMPLETION_TOKENS: Dict[str, int] = {
-    "agent": 16384,
-    "planning": 8192,
-    "chat": 8192,
-    "heartbeat": 8192,
-    "strategist": 4096,
-    "heartbeat_preflight": 4096,
-    "preflight": 4096,
-    "search": 2048,
-    "research": 8192,
-    "writer": 16384,
-    "executor": 8192,
-    "developer": 16384,
-    "planner": 2048,
-    "reflector": 2048,
-    "utility": 4096,
-    "extraction": 2048,
-    "refinement": 4096,
 }
 
 
@@ -142,22 +114,16 @@ def max_completion_tokens_for_role(
     tiers: Optional[ModelTiersConfig],
     role: str,
 ) -> Optional[int]:
-    """Resolve a completion-token cap for a harness role.
+    """Resolve an optional completion-token cap for a harness role.
 
-    When both the tier and the role define a cap, take the tighter (min) so
-    role-specific budgets (e.g. strategist=4096) still constrain a strong
-    tier that allows a larger default.
+    Only an explicit ``models.<tier>.max_completion_tokens`` applies. There
+    are no role-level defaults — those truncated high-reasoning outputs more
+    often than they helped.
     """
-    role_cap = ROLE_MAX_COMPLETION_TOKENS.get(role)
-    tier_cap = None
-    if tiers is not None:
-        tier_cap = tier_spec_for_role(tiers, role).max_completion_tokens
-    if tier_cap is not None and role_cap is not None:
-        return min(int(tier_cap), int(role_cap))
-    if tier_cap is not None:
-        return int(tier_cap)
-    return role_cap
-
+    if tiers is None:
+        return None
+    tier_cap = tier_spec_for_role(tiers, role).max_completion_tokens
+    return int(tier_cap) if tier_cap is not None else None
 
 def _tier_id(models_data: dict[str, Any], name: str) -> Optional[str]:
     spec = models_data.get(name)
@@ -195,14 +161,10 @@ def _hydrate_from_model_tiers(expanded_data: dict[str, Any]) -> None:
 
     strong_id = _tier_id(models_data, "strong")
     light_id = _tier_id(models_data, "light")
-    mid_id = _tier_id(models_data, "mid")
-    heartbeat_id = mid_id or strong_id
+    # Heartbeat is the strong orchestrator; mid is only the cheap-worker ceiling.
+    heartbeat_id = strong_id
     strong_reasoning = _tier_reasoning_payload(models_data, "strong")
-    heartbeat_reasoning = (
-        _tier_reasoning_payload(models_data, "mid")
-        if mid_id
-        else strong_reasoning
-    )
+    heartbeat_reasoning = strong_reasoning
 
     if not strong_id or not light_id:
         return
@@ -304,8 +266,8 @@ class HeartbeatConfig(BaseModel):
     every: str = "30m"
     model: str
     active_hours: Optional[Dict[str, str]] = None
-    # MCP servers the main heartbeat executor may load. Search access belongs
-    # to the ``search`` / ``research`` subagents, so the default is Ouro only.
+    # MCP servers the main heartbeat may load. Search access belongs to the
+    # ``search`` / ``research`` subagents, so the default is Ouro only.
     servers: List[str] = Field(default_factory=lambda: ["ouro"])
     # Overlay on top of ``agent.reasoning`` for heartbeat model builds.
     reasoning: Optional[ReasoningConfig] = None
@@ -323,6 +285,28 @@ class MCPServerConfig(BaseModel):
     # One-line summary shown in the tool directory when this server is collapsed
     # to a single entry. Keep it to the capabilities an agent would scan for.
     description: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_transport_fields(self) -> "MCPServerConfig":
+        transport = (self.transport or "").strip().lower()
+        if transport not in {"stdio", "streamable-http"}:
+            raise ValueError(
+                f"MCP server {self.name!r}: transport must be 'stdio' or "
+                f"'streamable-http', got {self.transport!r}"
+            )
+        self.transport = transport
+        if transport == "stdio":
+            if not self.command:
+                raise ValueError(
+                    f"MCP server {self.name!r}: 'command' is required for stdio transport"
+                )
+        elif transport == "streamable-http":
+            if not self.url:
+                raise ValueError(
+                    f"MCP server {self.name!r}: 'url' is required for "
+                    "streamable-http transport"
+                )
+        return self
 
 
 class GraphMemoryConfig(BaseModel):

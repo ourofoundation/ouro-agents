@@ -8,14 +8,16 @@ from zoneinfo import ZoneInfo
 from ouro_agents.agent import OuroAgent
 from ouro_agents.config import HeartbeatConfig
 from ouro_agents.display import OuroDisplay
-from ouro_agents.modes.framing import HEARTBEAT_FRAMING
+from ouro_agents.modes.framing import HEARTBEAT_FRAMING, HEARTBEAT_QUEST_MECHANICS, heartbeat_framing_for_kind
 from ouro_agents.modes.heartbeat import (
+    TickKind,
     _advance_due_recurring_items,
     _load_owned_open_quest_items,
     build_quest_work_playbook,
     force_planning_heartbeat,
     has_future_heartbeat_in_active_window,
     load_work_inbox,
+    parse_heartbeat_tick_summary,
     run_heartbeat,
 )
 from ouro_agents.modes.profiles import HEARTBEAT
@@ -73,22 +75,22 @@ def test_advance_due_recurring_items_reschedules_only_due_recurring():
 
 
 def test_heartbeat_framing_prefers_bounded_progress():
-    assert "bounded work session" in HEARTBEAT_FRAMING
-    assert "one meaningful slice of progress" in HEARTBEAT_FRAMING
+    assert "one meaningful slice" in HEARTBEAT_FRAMING
     assert "concrete platform work" in HEARTBEAT_FRAMING
+    assert "You own the whole tick" in HEARTBEAT_FRAMING
 
 
 def test_heartbeat_framing_allows_direction_proposal_posts():
     assert "direction" in HEARTBEAT_FRAMING
-    assert "strategist" in HEARTBEAT_FRAMING
+    assert "strategist" not in HEARTBEAT_FRAMING
     assert "delegate" in HEARTBEAT_FRAMING.lower() or "`search`" in HEARTBEAT_FRAMING
     assert "ouro:search_assets" in HEARTBEAT.preload_tools
     assert "ouro:create_post" in HEARTBEAT.preload_tools
     assert HEARTBEAT.restricted_servers is True
     assert HEARTBEAT.allow_delegation is True
-    assert HEARTBEAT.skip_preflight is False
     assert HEARTBEAT.skip_post_reflection is False
-    assert HEARTBEAT.max_steps == 12
+    assert HEARTBEAT.max_steps == 40
+    assert "skip_preflight" not in type(HEARTBEAT).model_fields
 
 
 def test_quest_work_playbook_mentions_bounded_progress_and_tools():
@@ -108,10 +110,43 @@ def test_quest_work_playbook_mentions_bounded_progress_and_tools():
     assert "one meaningful slice of progress" in playbook
     assert "changes platform state or produces a useful artifact" in playbook
     assert "Contact a researcher" in playbook
-    assert "`update_quest_item`" in playbook
-    assert "`complete_quest_item`" in playbook
-    assert "`write_comment`" in playbook
-    assert "waiting_check_every" in playbook
+    # Tool mechanics live in quest_work framing, not the data-shaped playbook.
+    assert "`update_quest_item`" not in playbook
+    assert "MODE framing" in playbook
+
+
+def test_heartbeat_framing_carries_quest_execution_mechanics():
+    # Quest mechanics are appended only for quest_work ticks.
+    quest = heartbeat_framing_for_kind("quest_work")
+    assert "`update_quest_item`" in quest
+    assert "`complete_quest_item`" in quest
+    assert "`write_comment`" in quest
+    assert "waiting_check_every" in quest
+    assert "`submit_quest_entry`" in quest
+    assert "`create_quest_items`" in quest
+    assert "Never execute an item you know is stale" in quest
+    assert "`update_quest_item`" in HEARTBEAT_QUEST_MECHANICS
+    assert "`update_quest_item`" not in HEARTBEAT_FRAMING
+
+
+def test_parse_heartbeat_tick_summary_pass_and_act():
+    pass_summary = parse_heartbeat_tick_summary(
+        '{"action": "none", "details": "inbox clear", "selected_priority": null, '
+        '"worth_remembering": false, "memory_notes": []}'
+    )
+    assert pass_summary["is_pass"] is True
+    assert pass_summary["worth_remembering"] is False
+    assert pass_summary["selected_priority"] is None
+
+    act = parse_heartbeat_tick_summary(
+        '{"action": "sent follow-up", "details": "emailed Alice", '
+        '"selected_priority": 2, "worth_remembering": true, '
+        '"memory_notes": ["Alice replied last week"]}'
+    )
+    assert act["is_pass"] is False
+    assert act["selected_priority"] == 2
+    assert act["worth_remembering"] is True
+    assert act["memory_notes"] == ["Alice replied last week"]
 
 
 def test_build_heartbeat_task_context_composes_inbox_with_policy(tmp_path):
@@ -182,6 +217,9 @@ def test_build_heartbeat_task_context_composes_inbox_with_policy(tmp_path):
     ctx = build_heartbeat_task_context(_FakeAgent(), advance_recurring=False)
 
     assert ctx.source == "quest-inbox"
+    assert ctx.tick_kind == TickKind.QUEST_WORK
+    assert ctx.include_plans_index is False
+    assert "`update_quest_item`" in ctx.framing_override
     assert "Contact a researcher" in ctx.playbook
     assert "## Heartbeat Policy" in ctx.playbook
     assert "Advance a live conversation" in ctx.playbook
@@ -198,8 +236,10 @@ def test_quest_work_playbook_adds_assigned_guidance_when_needed():
         ]
     )
 
-    assert "submit_quest_entry" not in owned_only
-    assert "submit_quest_entry" in mixed
+    # Assigned/owned nature is a selection signal; entry-vs-complete tool
+    # mechanics live in quest_work MODE framing.
+    assert "entry submission" not in owned_only
+    assert "entry submission" in mixed
     assert "assigned to you" in mixed
 
 
@@ -743,7 +783,7 @@ def test_run_heartbeat_works_inbox_before_planning(tmp_path):
         result = asyncio.run(run_heartbeat(_FakeAgent()))
 
     assert result is None
-    assert "working your quest inbox" in captured["task"]
+    assert "choosing and executing this heartbeat's quest work" in captured["task"]
     assert "Contact a researcher" in captured["task"]
     assert captured["kwargs"]["team_id"] == "team-a"
     assert captured["kwargs"]["preload_tools"] == [
@@ -923,8 +963,8 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
         output_tokens=30,
         cost_usd=0.12,
     ).finalize()
-    preflight = SubAgentUsage(
-        model_id="strategist-model",
+    reflector = SubAgentUsage(
+        model_id="reflector-model",
         steps=1,
         input_tokens=40,
         current_context_tokens=35,
@@ -935,12 +975,12 @@ def test_usage_rows_include_model_ids_for_run_and_subagent_rows():
     )
 
     rows = display._usage_rows(
-        total, duration_s=1.5, subagent_ledger=[("strategist", preflight)]
+        total, duration_s=1.5, subagent_ledger=[("reflector", reflector)]
     )
 
     assert rows[0][1] == "main-model"
-    assert rows[1][0] == "sub:strategist"
-    assert rows[1][1] == "strategist-model"
+    assert rows[1][0] == "sub:reflector"
+    assert rows[1][1] == "reflector-model"
     assert rows[1][3] == "35"
     assert rows[-1][0] == "total"
     assert rows[-1][1] == "main-model"
@@ -988,9 +1028,11 @@ def test_quest_work_playbook_allows_mid_quest_revision_on_owned_quests():
         ]
     )
 
-    assert "Adaptive quests" in playbook
-    assert "Never execute an item you know is stale" in playbook
-    assert "`create_quest_items`" in playbook
+    # Adaptive-selection signal stays in the playbook; revision tool mechanics
+    # live in quest_work MODE framing.
+    assert "stale or improvable" in playbook
+    assert "prefer revising that item" in playbook
+    assert "`create_quest_items`" not in playbook
 
 
 def test_planning_budget_blocks_on_max_plans_per_day(tmp_path):

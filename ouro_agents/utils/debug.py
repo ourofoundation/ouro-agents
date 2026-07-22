@@ -9,8 +9,6 @@ from smolagents import ActionStep
 from smolagents.memory import TaskStep
 
 from ..config import RunMode
-from ..subagents.strategist import StrategistResult
-
 
 def markdown_fence(content: str, lang: str = "text") -> str:
     """Fence ``content`` for embedding in markdown (handles nested ``` sequences)."""
@@ -94,7 +92,7 @@ def write_run_debug_markdown_preamble(
     full_system_prompt: str,
     run_id: str,
     mode: RunMode,
-    preflight: Optional[StrategistResult],
+    heartbeat_tick_kind: Optional[str] = None,
 ) -> None:
     """Write header, system prompt, and task; run trace is appended after the agent finishes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,39 +100,23 @@ def write_run_debug_markdown_preamble(
         "# Ouro Agents run debug\n\n",
         f"- **Timestamp (UTC):** {datetime.now(timezone.utc).isoformat()}\n",
         f"- **Run id:** `{run_id}`\n",
-        f"- **Mode:** `{mode.value}`\n\n",
-        "## Original task\n\n",
-        markdown_fence(task),
-        "\n## Effective task (what the agent sees)\n\n",
-        markdown_fence(effective_task),
-        "\n## Full system prompt\n\n",
-        "This is the smolagents base template plus the Ouro-built soul prompt.\n\n",
-        markdown_fence(full_system_prompt),
+        f"- **Mode:** `{mode.value}`\n",
     ]
-    if preflight is not None:
-        lines.extend(
-            [
-                "\n## Strategist (step 0)\n\n",
-                f"- **objective:** `{preflight.objective}`\n",
-                f"- **selected_priority:** `{preflight.selected_priority}`\n",
-                f"- **worth_remembering:** `{preflight.worth_remembering}`\n\n",
-            ]
-        )
-        if preflight.briefing:
-            lines.extend(
-                ["### Briefing\n\n", markdown_fence(preflight.briefing), "\n"]
-            )
-        if preflight.actions:
-            actions_text = "\n".join(
-                f"{i}. {step}" for i, step in enumerate(preflight.actions, 1)
-            )
-            lines.extend(["### Actions\n\n", markdown_fence(actions_text), "\n"])
-        elif preflight.plan:
-            lines.extend(["### Plan\n\n", markdown_fence(preflight.plan), "\n"])
-    else:
-        lines.append("\n## Strategist (step 0)\n\n*(skipped or not applicable)*\n\n")
-
-    lines.append("\n---\n\n## Agent steps (memory trace)\n\n")
+    if heartbeat_tick_kind:
+        lines.append(f"- **Heartbeat tick kind:** `{heartbeat_tick_kind}`\n")
+    lines.extend(
+        [
+            "\n",
+            "## Original task\n\n",
+            markdown_fence(task),
+            "\n## Effective task (what the agent sees)\n\n",
+            markdown_fence(effective_task),
+            "\n## Full system prompt\n\n",
+            "This is the smolagents base template plus the Ouro-built soul prompt.\n\n",
+            markdown_fence(full_system_prompt),
+            "\n---\n\n## Agent steps (memory trace)\n\n",
+        ]
+    )
     with open(path, "w", encoding="utf-8") as f:
         f.write("".join(lines))
 

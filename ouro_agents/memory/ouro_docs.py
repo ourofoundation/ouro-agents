@@ -862,25 +862,31 @@ class LocalDocStore:
             return ReadResult(content="")
 
     def write(self, name: str, content_md: str) -> bool:
-        path = self._name_to_path(name)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content_md)
-            return True
-        except Exception as e:
-            logger.warning("LocalDocStore.write failed for %s: %s", name, e)
-            return False
+        from ..memory_lock import memory_write_lock
+
+        with memory_write_lock():
+            path = self._name_to_path(name)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content_md)
+                return True
+            except Exception as e:
+                logger.warning("LocalDocStore.write failed for %s: %s", name, e)
+                return False
 
     def append(self, name: str, markdown: str) -> bool:
-        path = self._name_to_path(name)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "a") as f:
-                f.write(markdown)
-            return True
-        except Exception as e:
-            logger.warning("LocalDocStore.append failed for %s: %s", name, e)
-            return False
+        from ..memory_lock import memory_write_lock
+
+        with memory_write_lock():
+            path = self._name_to_path(name)
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "a") as f:
+                    f.write(markdown)
+                return True
+            except Exception as e:
+                logger.warning("LocalDocStore.append failed for %s: %s", name, e)
+                return False
 
     def append_list_item(
         self,
@@ -895,12 +901,16 @@ class LocalDocStore:
         *initial_md* as the seed content. Otherwise merge *markdown_item*
         into the trailing list of the current file body.
         """
-        if not self.exists(name):
-            return self.write(
-                name, initial_md if initial_md is not None else markdown_item
-            )
-        current = self.read(name)
-        return self.write(name, _append_markdown_list_item(current, markdown_item))
+        from ..memory_lock import memory_write_lock
+
+        with memory_write_lock():
+            if not self.exists(name):
+                # write() takes the same lock (RLock) — safe to nest.
+                return self.write(
+                    name, initial_md if initial_md is not None else markdown_item
+                )
+            current = self.read(name)
+            return self.write(name, _append_markdown_list_item(current, markdown_item))
 
     def exists(self, name: str) -> bool:
         return self._name_to_path(name).exists()

@@ -97,32 +97,41 @@ class TaskStore:
         return None
 
     def add(self, task: ScheduledTask) -> None:
-        tasks = self.load()
-        tasks.append(task)
-        self.save(tasks)
+        from .memory_lock import memory_write_lock
+
+        with memory_write_lock():
+            tasks = self.load()
+            tasks.append(task)
+            self.save(tasks)
 
     def update(self, task_id: str, **kwargs: Any) -> Optional[ScheduledTask]:
-        tasks = self.load()
-        for i, t in enumerate(tasks):
-            if t.id == task_id:
-                updated = t.model_copy(
-                    update={
-                        **kwargs,
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                )
-                tasks[i] = updated
-                self.save(tasks)
-                return updated
-        return None
+        from .memory_lock import memory_write_lock
+
+        with memory_write_lock():
+            tasks = self.load()
+            for i, t in enumerate(tasks):
+                if t.id == task_id:
+                    updated = t.model_copy(
+                        update={
+                            **kwargs,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    )
+                    tasks[i] = updated
+                    self.save(tasks)
+                    return updated
+            return None
 
     def delete(self, task_id: str) -> bool:
-        tasks = self.load()
-        filtered = [t for t in tasks if t.id != task_id]
-        if len(filtered) == len(tasks):
-            return False
-        self.save(filtered)
-        return True
+        from .memory_lock import memory_write_lock
+
+        with memory_write_lock():
+            tasks = self.load()
+            filtered = [t for t in tasks if t.id != task_id]
+            if len(filtered) == len(tasks):
+                return False
+            self.save(filtered)
+            return True
 
 
 # ---------------------------------------------------------------------------
