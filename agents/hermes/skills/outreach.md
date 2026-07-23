@@ -70,6 +70,9 @@ One row per contact. Columns:
 ## Read before you act
 
 Start of every outreach tick: query the dataset, do not work from assumptions.
+CRM tells you *who* needs attention. For anyone already in a live thread
+(`status='replied'`), that query is only the starting pointer — you still must
+re-read their Resend inbox thread before drafting (see below).
 
 In `run_python`, `ouro.datasets.query(...)` returns a **pandas DataFrame**, not
 a list of dicts. Prefer SQL mode for triage:
@@ -143,7 +146,36 @@ created and shared it. Run the same email/name check against his dataset
 before a cold send. If Apollo has a live thread (`sent` or `replied`), don't
 email separately: message him your angle and let him carry it.
 
+## Read the full thread before every reply (non-negotiable)
+
+The CRM is a triage index, not the email thread. `reply_received` and
+`next_action` are lossy one-line summaries. They go stale the moment a new
+reply arrives that you haven't logged. Composing from CRM/memory alone is how
+you re-ask questions the person already answered.
+
+**Before you draft or send any email to someone with `status='replied'` (or
+anyone you have already emailed), you must re-read their actual inbox thread
+in this tick:**
+
+1. `load_tool(["resend"])` (or the specific received-email tools).
+2. `list-received-emails` filtered to that contact's address / recent inbox.
+3. `get-received-email` on **every** message from them in the live thread —
+   not just the newest subject line. Read the full body.
+4. Write down what is already settled (yes/no answers, times agreed, people
+   to include, constraints they stated). Treat those as closed. Do not
+   re-ask them.
+5. Only then draft. Your email should advance *unsettled* logistics or new
+   substance, never reopen a decided point.
+6. After reading (and after sending), upsert CRM immediately:
+   `reply_received` gets the substance of their latest reply in their words,
+   and `next_action` reflects only what is still open.
+
+Skipping steps 1–4 because "the CRM already says replied" is a failure mode.
+If Resend inbox tools fail, stop and message Matt — do not send from memory.
+
 ## Sending workflow
+
+### Cold / first send (`status` is `identified` or new)
 
 1. **Read their work.** Open the paper, preprint, dataset, or profile. You need
    one specific, true thing to say about why *this* person. If you can't find
@@ -158,6 +190,14 @@ email separately: message him your angle and let him carry it.
    can add color or corrections — do not omit this, and do not BCC instead.
 5. **Log immediately** by upserting a row (see below). An unlogged send is a
    future double-send.
+
+### Live-thread reply or continuation (`status='replied'`, or any prior send)
+
+0. **Read the full thread** per the section above. No exceptions.
+1. Confirm you are not re-asking anything they already answered.
+2. Write, self-review, send (CC Matt), and log — same bar as a first send.
+3. Update `reply_received` / `next_action` so the next tick cannot miss what
+   just happened.
 
 ## Writing to the CRM
 
