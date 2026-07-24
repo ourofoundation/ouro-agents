@@ -55,6 +55,11 @@ One row per contact. Columns:
 | `follow_up_sent` | `false` or `true`. You get exactly one. |
 | `next_action` | The concrete hook for future-you: what to do and roughly when. |
 
+`follow_up_sent` must be exactly the lowercase string `true` or `false` —
+every triage query matches on those literals, and a stray `False`/`no` drops
+the row out of every queue. `reply_received` starts as `false` and becomes a
+short note once they reply (any value other than `false` reads as "replied").
+
 ### Status lifecycle
 
 `identified` -> `drafted` -> `sent` -> `replied` (terminal-ish) or `blocked`.
@@ -89,6 +94,7 @@ df = ouro.datasets.query(
     WHERE status = 'sent'
       AND reply_received = 'false'
       AND follow_up_sent = 'false'
+      AND date_sent != 'n-a'
     ORDER BY date_sent ASC
     """,
 )
@@ -118,9 +124,18 @@ WHERE status = 'sent'
 ORDER BY date_sent ASC
 ```
 
-Apply the timing rule in your head: only follow up once at least ~7 days
-(researchers) to ~14 days (sponsors) have passed since `date_sent`. Earlier than
-that, leave it.
+**Follow-up timing (the one canonical rule):** a contact is *due* when today is
+inside the window 7-12 days (researchers) / 14-21 days (sponsors) after
+`date_sent`. Before the window, leave them alone; past it, quietly let it go
+unless you have something genuinely strong.
+
+**Spread the wave.** "Due" means eligible, not urgent. Contacts sent on the
+same day all come due on the same day; do not drain that queue tick after tick.
+Follow-ups are also subject to the daily caps in HEARTBEAT.md (Constraints) —
+pick the best-fit contact from the due window rather than mechanically taking
+the oldest row. If the queue is long, that's a sign the original cold sends
+were too batched — fix that upstream (see the daily cold-send cap in
+HEARTBEAT.md), don't compensate with volume.
 
 ## Never email the same person twice by accident
 
@@ -144,7 +159,9 @@ Apollo runs his own author outreach (weights/code requests) out of a separate
 CRM dataset with the same schema; its id is in your MEMORY.md once he's
 created and shared it. Run the same email/name check against his dataset
 before a cold send. If Apollo has a live thread (`sent` or `replied`), don't
-email separately: message him your angle and let him carry it.
+email separately: message him your angle and let him carry it. If his dataset
+id isn't in MEMORY.md yet, proceed with your own dedup check and note in the
+daily log that the Apollo check was skipped.
 
 ## Read the full thread before every reply (non-negotiable)
 
@@ -172,6 +189,14 @@ in this tick:**
 
 Skipping steps 1–4 because "the CRM already says replied" is a failure mode.
 If Resend inbox tools fail, stop and message Matt — do not send from memory.
+
+**If Matt has replied on the thread, stand down.** Matt is CC'd on every
+outreach email, and sometimes he takes the conversation over directly. If the
+thread shows a message *from* Matt to the contact that you have not been
+explicitly asked to follow up on, do not chime in — no "adding to what Matt
+said," no parallel replies. Set `next_action` to "Matt is driving this thread;
+do not reply unless asked" and move on. You re-enter only when Matt explicitly
+asks you to (in the thread or in a message to you).
 
 ## Sending workflow
 
@@ -248,6 +273,19 @@ One thoughtful follow-up per person, then stop. The follow-up must carry
 something new (a fresh result, a more specific invitation, a quest that fits
 them), never "just checking in." After it, if they're still silent, set
 `next_action` to leave them be and never contact again. Silence is an answer.
+
+**Daily follow-up caps (the one canonical statement):**
+
+- At most **2 follow-ups per day**, total.
+- Within that, the **same artifact** (a dataset, a benchmark, a post) may be
+  the "something new" in at most 2 follow-ups per day — which, combined with
+  the cap above, means a given artifact never headlines more than one day's
+  worth of follow-ups. If everyone in the due queue would get the same
+  attachment with a re-personalized wrapper, that's a mail-merge, not outreach
+  — several recipients know each other and compare notes. Find substance
+  specific to the next person (their problem, their data, a result that only
+  matters to them) or stop following up and go build something new worth
+  sharing.
 
 ## Two tracks, one dataset
 
