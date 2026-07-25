@@ -21,7 +21,7 @@ Use a fenced code block with the `assetComponent` language tag:
 - `viewMode: "card"` renders a compact link card
 - `displayConfig` is optional and asset-specific:
   - Dataset → `visualizationId` picks a saved chart
-  - Route → `actionId` pins a specific action; the preview then shows its status, logs, and any side-effect asset (the output created by the route)
+  - Route → `actionId` pins a specific action; the preview then shows a compact receipt (status, timing, output) with a link to full history
 
 ### Referencing route executions
 
