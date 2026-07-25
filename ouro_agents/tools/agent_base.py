@@ -6,6 +6,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 from smolagents import ActionStep, ToolCallingAgent
 from smolagents.memory import TaskStep
@@ -21,6 +22,7 @@ from .. import smolagents_patches as _smolagents_patches  # noqa: F401
 from ..cancellation import RunCancellationToken
 from ..display import get_display
 from ..provider_reasoning import copy_reasoning_fields
+from ..security.action_gates import observed_action_category
 
 logger = logging.getLogger(__name__)
 
@@ -1061,6 +1063,10 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
     ):
         self._compactor_model = compactor_model
         self._cancellation_token = cancellation_token
+        self._action_gate_mode = kwargs.pop("action_gate_mode", "off")
+        self._action_gate_observer: Optional[Callable[[str, str], None]] = kwargs.pop(
+            "action_gate_observer", None
+        )
         self._reasoning_only_streak = 0
         self._reasoning_only_warned = False
         configured_max_steps = kwargs.get("max_steps")
@@ -1344,6 +1350,23 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                         continue
                     cleaned[key] = value
                 arguments = cleaned
+        if self._action_gate_mode == "observe":
+            category = observed_action_category(str(tool_name))
+            if category is not None:
+                logger.info(
+                    "Ask-controller observe hit: tool=%s category=%s",
+                    tool_name,
+                    category,
+                )
+                if self._action_gate_observer is not None:
+                    try:
+                        self._action_gate_observer(str(tool_name), category)
+                    except Exception:
+                        logger.warning(
+                            "Action-gate observer failed for %s",
+                            tool_name,
+                            exc_info=True,
+                        )
         result = super().execute_tool_call(tool_name, arguments)
         self._raise_if_cancelled()
         if isinstance(result, str) and len(result) > _MAX_TOOL_OUTPUT_CHARS:

@@ -8,6 +8,17 @@ and an output format section that tells the LLM how to return results.
 # Framing text (one per mode)
 # ---------------------------------------------------------------------------
 
+ASK_CONTROLLER_GUIDANCE = (
+    "Controller questions: you have an `ask_controller` tool for decisions that "
+    "should not be guessed. Use it when material facts conflict, required evidence "
+    "is unavailable, or a consequential action would make an external commitment "
+    "the configured controller should choose. Ask one concise question with concrete "
+    "options, your recommendation, the essential context, and the exact proposed "
+    "action. Do not use it for routine reversible work or questions you can resolve "
+    "from available evidence. If it returns `waiting`, do not take the uncertain "
+    "action; end cleanly so the later answer can resume the work."
+)
+
 CHAT_FRAMING = (
     "You are in a conversation. Your primary goal is to help the person you're talking to. "
     "Be conversational, clear, and concise. Ask clarifying questions when a request is ambiguous. "

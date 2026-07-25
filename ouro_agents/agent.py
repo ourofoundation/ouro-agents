@@ -31,6 +31,7 @@ from .config import (
     tier_spec_for_role,
 )
 from .constants import openrouter_attribution_headers
+from .controller_questions import ControllerQuestionManager, ControllerReplyResolution
 from .provider_reasoning import first_party_provider_slug
 from .display import OuroDisplay, create_logger, get_display
 from .memory import create_memory_backend
@@ -57,6 +58,7 @@ from .modes import (
     apply_mode_override,
     resolve_mode_profile,
 )
+from .modes.framing import ASK_CONTROLLER_GUIDANCE
 from .observer import AgentObserver, ProgressEvent, emit_progress
 from .mcp_http import ManagedMcpProcess, spawn_managed_mcp_http
 from .mcp_locking import McpServerLocks, wrap_mcp_tool_with_lock
@@ -197,6 +199,17 @@ class OuroAgent:
         # is still set on the agent for the duration of a heartbeat cycle.
         run_log_path = config.run_log.path or protected_runs_db(self._workspace)
         self._run_log = RunLogStore(run_log_path, enabled=config.run_log.enabled)
+        self._controller_questions = ControllerQuestionManager(
+            agent_name=config.agent.name,
+            org_id=config.agent.org_id or "",
+            controller_ids=lambda: list(
+                self.config.security.resolved_controller_ids or []
+            ),
+            own_user_id=lambda: self.own_user_id,
+            ouro_client=self._get_ouro_client,
+            store=self._run_log,
+            fast_wait_seconds=config.ask_controller.fast_wait_seconds,
+        )
         self._current_tick_id: Optional[str] = None
 
         self._mcp_contexts: list = []
@@ -1593,6 +1606,19 @@ class OuroAgent:
             if self.config.run_log.enabled and self.config.run_log.expose_to_agent
             else []
         )
+        controller_tools = (
+            [
+                self._controller_questions.make_tool(
+                    cancellation_token=cancellation_token,
+                    current_conversation_id=conversation_id,
+                    current_user_id=user_id,
+                )
+            ]
+            if self.config.ask_controller.enabled
+            and self.config.security.resolved_controller_ids
+            and profile.allows_capability(Capability.SEND_MESSAGE)
+            else []
+        )
 
         # Build the delegate tool for subagent dispatch
         delegatable_profiles = agent_self.delegatable_profiles
@@ -1712,12 +1738,13 @@ class OuroAgent:
             # Filtered modes (plan / review) keep a narrow memory surface, but
             # self-recall is read-only and valuable for planning over past
             # cycles, so it's exposed here too.
-            all_tools = list(memory_tools) + run_history_tools
+            all_tools = list(memory_tools) + run_history_tools + controller_tools
         else:
             all_tools = (
                 list(memory_tools)
                 + scheduler_tools
                 + run_history_tools
+                + controller_tools
                 + delegate_tools
                 + [tool for tool in (load_tool, load_skill) if tool is not None]
                 + code_tools
@@ -1878,6 +1905,14 @@ class OuroAgent:
         else:
             subagent_directory = ""
 
+        framing = mode_framing_override or profile.framing
+        if (
+            self.config.ask_controller.enabled
+            and self.config.security.resolved_controller_ids
+            and profile.allows_capability(Capability.SEND_MESSAGE)
+        ):
+            framing = f"{framing}\n\n{ASK_CONTROLLER_GUIDANCE}"
+
         return build_prompt(
             soul=shared_context["soul"],
             notes=shared_context["notes"],
@@ -1891,7 +1926,7 @@ class OuroAgent:
             entity_context=entity_context_text,
             deferred_tool_directory=deferred_tool_directory,
             subagent_directory=subagent_directory,
-            mode_framing_override=mode_framing_override,
+            mode_framing_override=framing,
             platform_context=shared_context["platform_context"],
             chat_conversation_id=(
                 conversation_id if profile.include_chat_conversation_id else None
@@ -1901,6 +1936,22 @@ class OuroAgent:
             workspace_root=self.config.agent.sandbox.agent_facing_root(
                 self._workspace
             ),
+        )
+
+    def resolve_controller_reply(
+        self,
+        *,
+        conversation_id: str,
+        controller_user_id: str,
+        text: str,
+        message_id: Optional[str] = None,
+    ) -> ControllerReplyResolution:
+        """Resolve a controller DM before it starts a competing chat run."""
+        return self._controller_questions.resolve_reply(
+            conversation_id=conversation_id,
+            controller_user_id=controller_user_id,
+            text=text,
+            message_id=message_id,
         )
 
     def _resolve_subagent_model(
@@ -2946,6 +2997,14 @@ class OuroAgent:
             compactor_model=compactor_model,
             cancellation_token=token,
             plain_task_messages=profile.conversational,
+            action_gate_mode=self.config.ask_controller.gate_mode,
+            action_gate_observer=lambda tool_name, category: (
+                self._run_log.record_action_gate_observation(
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    category=category,
+                )
+            ),
         )
         agent_ref["agent"] = agent
         record._agent = agent

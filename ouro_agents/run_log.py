@@ -5,13 +5,15 @@ plan, review, dream) — writes one rich, structured record to a single SQLite d
 (`<workspace>/runs.db`) so past runs can be revisited in full. Writes happen on
 success, error, and cancellation alike.
 
-The schema has two tables:
+The schema has two core run tables plus small controller-workflow tables:
 
 - ``runs`` — one row per run: identity, routing/context, lifecycle/status,
   full task + result, preflight, flattened usage rollups for cheap querying,
   plus full JSON blobs (usage / subagent ledger / memory ledger).
 - ``run_steps`` — one row per smolagents memory step: the full replay trace
   (model output, reasoning, tool calls, observations, errors, timing).
+- ``controller_questions`` — cross-run controller decisions and resume state.
+- ``action_gate_observations`` — argument-free observe-mode gate hits.
 
 Writes are best-effort: a logging failure must never break a run.
 """
@@ -170,6 +172,33 @@ class RunRecord:
             self.duration_s = max(0.0, duration_s)
 
 
+@dataclass
+class ControllerQuestionRecord:
+    """A controller question that may outlive the run which asked it."""
+
+    question_id: str
+    agent_name: str
+    origin_run_id: str
+    origin_mode: str
+    controller_user_id: str
+    conversation_id: str
+    question: str
+    context: str = ""
+    options: list[str] = field(default_factory=list)
+    recommendation: str = ""
+    proposed_action: str = ""
+    team_id: Optional[str] = None
+    status: str = "waiting"
+    answer: Optional[str] = None
+    answer_message_id: Optional[str] = None
+    resume_run_id: Optional[str] = None
+    result: Optional[str] = None
+    error: Optional[str] = None
+    created_at: str = field(default_factory=_utc_now_iso)
+    answered_at: Optional[str] = None
+    updated_at: str = field(default_factory=_utc_now_iso)
+
+
 def _serialize_ledger(ledger: Any) -> Optional[str]:
     """Serialize a ``list[tuple[str, usage]]`` ledger to JSON, or None."""
     if not ledger:
@@ -285,6 +314,38 @@ CREATE TABLE IF NOT EXISTS run_steps (
     duration_s REAL
 );
 
+CREATE TABLE IF NOT EXISTS controller_questions (
+    question_id TEXT PRIMARY KEY,
+    agent_name TEXT NOT NULL,
+    origin_run_id TEXT NOT NULL,
+    origin_mode TEXT,
+    team_id TEXT,
+    controller_user_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    context TEXT,
+    options_json TEXT,
+    recommendation TEXT,
+    proposed_action TEXT,
+    status TEXT NOT NULL,
+    answer TEXT,
+    answer_message_id TEXT,
+    resume_run_id TEXT,
+    result TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    answered_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS action_gate_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    category TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_mode ON runs(mode);
 CREATE INDEX IF NOT EXISTS idx_runs_conversation_id ON runs(conversation_id);
@@ -292,6 +353,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_team_id ON runs(team_id);
 CREATE INDEX IF NOT EXISTS idx_runs_parent_run_id ON runs(parent_run_id);
 CREATE INDEX IF NOT EXISTS idx_runs_tick_id ON runs(tick_id);
 CREATE INDEX IF NOT EXISTS idx_run_steps_run_id ON run_steps(run_id);
+CREATE INDEX IF NOT EXISTS idx_controller_questions_conversation
+    ON controller_questions(conversation_id, status);
+CREATE INDEX IF NOT EXISTS idx_controller_questions_origin_run
+    ON controller_questions(origin_run_id);
+CREATE INDEX IF NOT EXISTS idx_action_gate_observations_run
+    ON action_gate_observations(run_id);
 """
 
 
@@ -428,6 +495,238 @@ class RunLogStore:
                 ),
             )
         self._conn.commit()
+
+    # ---- controller questions --------------------------------------------
+
+    def create_controller_question(self, record: ControllerQuestionRecord) -> bool:
+        """Persist a waiting controller question before its notification is sent."""
+        if not self.enabled or self._conn is None or self.readonly:
+            return False
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    INSERT INTO controller_questions (
+                        question_id, agent_name, origin_run_id, origin_mode, team_id,
+                        controller_user_id, conversation_id, question, context,
+                        options_json, recommendation, proposed_action, status,
+                        answer, answer_message_id, resume_run_id, result, error,
+                        created_at, answered_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.question_id,
+                        record.agent_name,
+                        record.origin_run_id,
+                        record.origin_mode,
+                        record.team_id,
+                        record.controller_user_id,
+                        record.conversation_id,
+                        record.question,
+                        record.context,
+                        json.dumps(record.options, default=str),
+                        record.recommendation,
+                        record.proposed_action,
+                        record.status,
+                        record.answer,
+                        record.answer_message_id,
+                        record.resume_run_id,
+                        record.result,
+                        record.error,
+                        record.created_at,
+                        record.answered_at,
+                        record.updated_at,
+                    ),
+                )
+                self._conn.commit()
+            return True
+        except Exception:
+            logger.warning("Failed to persist controller question", exc_info=True)
+            return False
+
+    def record_action_gate_observation(
+        self, *, run_id: str, tool_name: str, category: str
+    ) -> None:
+        """Record an observe-mode gate hit without storing tool arguments."""
+        if not self.enabled or self._conn is None or self.readonly:
+            return
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    INSERT INTO action_gate_observations
+                        (run_id, tool_name, category, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (run_id, tool_name, category, _utc_now_iso()),
+                )
+                self._conn.commit()
+        except Exception:
+            logger.warning("Failed to record action-gate observation", exc_info=True)
+
+    def get_controller_question(self, question_id: str) -> Optional[dict]:
+        if not self.enabled or self._conn is None:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM controller_questions WHERE question_id = ?",
+                (question_id,),
+            ).fetchone()
+        return self._decode_controller_question(row)
+
+    def pending_controller_questions(
+        self,
+        *,
+        conversation_id: str,
+        controller_user_id: Optional[str] = None,
+    ) -> list[dict]:
+        if not self.enabled or self._conn is None:
+            return []
+        sql = (
+            "SELECT * FROM controller_questions "
+            "WHERE conversation_id = ? AND status = 'waiting'"
+        )
+        params: list[Any] = [conversation_id]
+        if controller_user_id:
+            sql += " AND controller_user_id = ?"
+            params.append(controller_user_id)
+        sql += " ORDER BY created_at"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._decode_controller_question(row) for row in rows if row]
+
+    def controller_question_by_answer_message(
+        self, answer_message_id: str
+    ) -> Optional[dict]:
+        if not self.enabled or self._conn is None or not answer_message_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT * FROM controller_questions
+                WHERE answer_message_id = ?
+                ORDER BY answered_at DESC LIMIT 1
+                """,
+                (answer_message_id,),
+            ).fetchone()
+        return self._decode_controller_question(row)
+
+    def controller_question_by_reference(
+        self,
+        reference: str,
+        *,
+        conversation_id: str,
+        controller_user_id: str,
+    ) -> Optional[dict]:
+        if not self.enabled or self._conn is None or not reference:
+            return None
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM controller_questions
+                WHERE conversation_id = ? AND controller_user_id = ?
+                    AND lower(question_id) LIKE ?
+                ORDER BY created_at DESC LIMIT 2
+                """,
+                (
+                    conversation_id,
+                    controller_user_id,
+                    f"{reference.lower()}%",
+                ),
+            ).fetchall()
+        return self._decode_controller_question(rows[0]) if len(rows) == 1 else None
+
+    def answer_controller_question(
+        self,
+        question_id: str,
+        *,
+        answer: str,
+        answer_message_id: Optional[str] = None,
+    ) -> bool:
+        """Atomically answer a waiting question; duplicate webhooks return False."""
+        if not self.enabled or self._conn is None or self.readonly:
+            return False
+        now = _utc_now_iso()
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE controller_questions
+                SET status = 'answered', answer = ?, answer_message_id = ?,
+                    answered_at = ?, updated_at = ?
+                WHERE question_id = ? AND status = 'waiting'
+                """,
+                (answer, answer_message_id, now, now, question_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    def update_controller_question(
+        self,
+        question_id: str,
+        *,
+        status: Optional[str] = None,
+        resume_run_id: Optional[str] = None,
+        result: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> bool:
+        if not self.enabled or self._conn is None or self.readonly:
+            return False
+        updates: list[str] = ["updated_at = ?"]
+        params: list[Any] = [_utc_now_iso()]
+        for column, value in (
+            ("status", status),
+            ("resume_run_id", resume_run_id),
+            ("result", result),
+            ("error", error),
+        ):
+            if value is not None:
+                updates.append(f"{column} = ?")
+                params.append(value)
+        params.append(question_id)
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE controller_questions SET {', '.join(updates)} "
+                "WHERE question_id = ?",
+                params,
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
+
+    def claim_controller_question_for_resume(
+        self, question_id: str
+    ) -> Optional[dict]:
+        """Atomically claim one answered question for a single resume run."""
+        if not self.enabled or self._conn is None or self.readonly:
+            return None
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE controller_questions
+                SET status = 'resuming', updated_at = ?
+                WHERE question_id = ? AND status = 'answered'
+                """,
+                (_utc_now_iso(), question_id),
+            )
+            self._conn.commit()
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM controller_questions WHERE question_id = ?",
+                (question_id,),
+            ).fetchone()
+        return self._decode_controller_question(row)
+
+    @staticmethod
+    def _decode_controller_question(row: sqlite3.Row | None) -> Optional[dict]:
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["options"] = json.loads(result.pop("options_json") or "[]")
+        except (TypeError, ValueError):
+            result["options"] = []
+            result.pop("options_json", None)
+        return result
 
     # ---- read / query API -------------------------------------------------
 

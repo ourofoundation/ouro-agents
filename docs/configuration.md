@@ -25,6 +25,7 @@ point.
   "server":        { ... },
   "event_pooling": { ... },
   "security":      { ... },
+  "ask_controller":{ ... },
   "display":       { ... },
   "refinement":    { ... },
   "run_log":       { ... },
@@ -418,6 +419,22 @@ Legacy keys are still accepted and migrated automatically: the old
 `controller.username` block folds into `controllers`, and
 `security.controller_user_ids` / `security.trusted_user_ids` /
 `security.run_shared_secret` map to `controllers` / `trusted` / `run_secret`.
+
+## `ask_controller`
+
+Adds an internal `ask_controller` tool when at least one controller is configured
+and the current capability envelope allows messaging. The question is sent to a
+private Ouro conversation containing the agent and controller.
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `enabled` | bool | `true` | Expose the controller-question workflow. |
+| `fast_wait_seconds` | float | `90` | Keep the current run alive this long for a quick answer (maximum 240 seconds). A later answer resumes in a new run. |
+| `gate_mode` | `off` \| `observe` | `observe` | Record money, destructive, scheduling, and externally visible tool calls in `runs.db` without blocking them. |
+
+Questions and answers are persisted in the `controller_questions` table beside
+run history. Quick answers bypass normal message pooling so the same agent loop
+continues while its model context and prompt-cache prefix are still warm.
 
 ## `display`
 

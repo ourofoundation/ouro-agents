@@ -786,6 +786,14 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         )
         return
 
+    if event_run.event_type == "new-message":
+        resolution = _resolve_controller_decision_event(event_run)
+        if resolution is not None and resolution.handled:
+            await _mark_event_notifications_read(event_run)
+            if not resolution.continued_live_run and resolution.question:
+                await _resume_controller_question(resolution.question)
+            return
+
     # Cleanup events: deterministic, no LLM. Handle synchronously and return
     # before any of the LLM run-path setup.
     if event_run.event_type == "asset.deleted":
@@ -1068,6 +1076,53 @@ async def _handle_interrupt_event(event_run: EventRunContext) -> None:
     )
 
 
+def _resolve_controller_decision_event(event_run: EventRunContext):
+    """Return a controller-question resolution, or None for ordinary messages."""
+    if (
+        agent_instance is None
+        or event_run.event_type != "new-message"
+        or not event_run.conversation_id
+        or not event_run.actor_user_id
+        or not event_run.event_text
+    ):
+        return None
+    return agent_instance.resolve_controller_reply(
+        conversation_id=event_run.conversation_id,
+        controller_user_id=event_run.actor_user_id,
+        text=event_run.event_text,
+        message_id=event_run.source_id or event_run.trigger_turn_id,
+    )
+
+
+async def _resume_controller_question(question: dict) -> None:
+    """Resume a timed-out controller question exactly once."""
+    if agent_instance is None:
+        return
+    manager = agent_instance._controller_questions
+    claimed = manager.claim_for_resume(str(question["question_id"]))
+    if claimed is None:
+        return
+    try:
+        result = await agent_instance.run(
+            task=manager.resume_task(claimed),
+            conversation_id=claimed.get("conversation_id"),
+            mode=RunMode.AUTONOMOUS,
+            user_id=claimed.get("controller_user_id"),
+            team_id=claimed.get("team_id"),
+            event_type="controller-decision",
+        )
+        manager.mark_resume_result(claimed["question_id"], result=result)
+        try:
+            manager.send_resume_result(claimed, result)
+        except Exception:
+            logger.warning("Failed to send controller resume result", exc_info=True)
+    except Exception as exc:
+        manager.mark_resume_result(claimed["question_id"], error=str(exc))
+        logger.exception(
+            "Failed to resume controller question %s", claimed["question_id"]
+        )
+
+
 async def _mark_event_notifications_read(event_run: EventRunContext) -> None:
     """Mark any correlated in-app notifications as read.
 
@@ -1192,6 +1247,24 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
     if event_run.event_type == "interrupt":
         await _handle_interrupt_event(event_run)
         return {"status": "accepted", "event_type": "interrupt"}
+
+    # Controller decision replies bypass event pooling so a live run can continue
+    # within the short prompt-cache window.
+    if event_run.event_type == "new-message":
+        resolution = _resolve_controller_decision_event(event_run)
+        if resolution is not None and resolution.handled:
+            if event_run.notification_ids:
+                background_tasks.add_task(_mark_event_notifications_read, event_run)
+            if not resolution.continued_live_run and resolution.question:
+                background_tasks.add_task(
+                    _resume_controller_question, resolution.question
+                )
+            return {
+                "status": "accepted",
+                "event_type": event_run.event_type,
+                "controller_decision": True,
+                "continued_live_run": resolution.continued_live_run,
+            }
 
     if event_pool and event_pool.is_poolable(event_run):
         if event_run.notification_ids:

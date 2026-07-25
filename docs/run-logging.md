@@ -61,6 +61,15 @@ write.
 Indexes: `runs(started_at, mode, conversation_id, team_id, parent_run_id,
 tick_id)` and `run_steps(run_id)`.
 
+### Controller decisions and observe-mode gates
+
+`controller_questions` stores durable `ask_controller` questions, controller
+answers, origin/resume linkage, and completion state. It is separate from
+`runs` because a question can outlive the run that asked it.
+
+`action_gate_observations` records the run id, tool name, and coarse risk
+category for observe-mode gates. Tool arguments are intentionally not stored.
+
 ## Configuration
 
 Under `run_log` in `config.json` (all optional — defaults shown):

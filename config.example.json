@@ -48,6 +48,11 @@
     "trusted": [],
     "run_secret": null
   },
+  "ask_controller": {
+    "enabled": true,
+    "fast_wait_seconds": 90,
+    "gate_mode": "observe"
+  },
   "subagents": {
     "research": {
       "max_steps": 10

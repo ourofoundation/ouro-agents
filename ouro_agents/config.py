@@ -460,6 +460,14 @@ class SecurityConfig(BaseModel):
     controller_username: Optional[str] = Field(default=None, exclude=True)
 
 
+class AskControllerConfig(BaseModel):
+    """Controller-question workflow for uncertain or consequential actions."""
+
+    enabled: bool = True
+    fast_wait_seconds: float = Field(default=90.0, ge=0.0, le=240.0)
+    gate_mode: Literal["off", "observe"] = "observe"
+
+
 def _dedupe_preserve_order(values: Any) -> List[str]:
     seen: set[str] = set()
     result: List[str] = []
@@ -819,6 +827,7 @@ class OuroAgentsConfig(BaseSettings):
     subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    ask_controller: AskControllerConfig = Field(default_factory=AskControllerConfig)
     modes: ModeConfig = Field(default_factory=ModeConfig)
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)

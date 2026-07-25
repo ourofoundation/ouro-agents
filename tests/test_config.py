@@ -35,6 +35,12 @@ class TestConfigModeOverrides(unittest.TestCase):
             path.write_text(json.dumps(data))
             return OuroAgentsConfig.load_from_file(path)
 
+    def test_ask_controller_defaults_to_observe_mode(self):
+        config = self._load_config(_base_config())
+        self.assertTrue(config.ask_controller.enabled)
+        self.assertEqual(config.ask_controller.fast_wait_seconds, 90.0)
+        self.assertEqual(config.ask_controller.gate_mode, "observe")
+
     def test_normalizes_friendly_mode_aliases(self):
         data = _base_config()
         data["modes"].update(
