@@ -57,7 +57,7 @@ same entry; only one will be applied per pass.
 1. **Drain** up to `refinement.max_changes_per_pass` pending entries.
 2. **Find affected docs**: ripgrep (or a Python fallback) over the
    workspace for files that contain any of the entries' `subject_id`s,
-   excluding directories like `data/`, `chroma/`, `memory/`, `cifs/`,
+   excluding directories like `protected/`, `chroma/`, `memory/`, `cifs/`,
    `debug-runs/`, `conversations/`, etc. Caps at `max_docs_per_pass`.
 3. **Build a scoped DocView** for each affected doc:
    - Verbatim YAML frontmatter.

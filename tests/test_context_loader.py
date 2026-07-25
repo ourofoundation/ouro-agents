@@ -18,7 +18,7 @@ def _write(path: Path, content: str) -> None:
 
 def test_find_entity_files_matches_frontmatter_alias(tmp_path: Path):
     _write(
-        tmp_path / "memory" / "entities" / "acme.md",
+        tmp_path / "protected" / "memory" / "entities" / "acme.md",
         "---\ndescription: Acme Corp background\naliases: [acme-corporation]\n---\n\n# Acme\n\nDetails.\n",
     )
 
@@ -30,7 +30,7 @@ def test_find_entity_files_matches_frontmatter_alias(tmp_path: Path):
 
 
 def test_find_entity_files_still_matches_by_stem(tmp_path: Path):
-    _write(tmp_path / "memory" / "entities" / "modal-app.md", "# Modal app\n")
+    _write(tmp_path / "protected" / "memory" / "entities" / "modal-app.md", "# Modal app\n")
 
     matched = _find_entity_files(tmp_path, ["Modal App"])
 
@@ -39,7 +39,7 @@ def test_find_entity_files_still_matches_by_stem(tmp_path: Path):
 
 def test_load_entity_files_uses_alias_match(tmp_path: Path):
     _write(
-        tmp_path / "memory" / "entities" / "acme.md",
+        tmp_path / "protected" / "memory" / "entities" / "acme.md",
         "---\naliases: [acme-corp]\n---\n\n# Acme\n\nKey account.\n",
     )
     state = SimpleNamespace(key_entities=["Acme Corp"])
@@ -51,20 +51,20 @@ def test_load_entity_files_uses_alias_match(tmp_path: Path):
 
 def test_build_memory_index_lists_entities_and_tasks(tmp_path: Path):
     _write(
-        tmp_path / "memory" / "entities" / "acme.md",
+        tmp_path / "protected" / "memory" / "entities" / "acme.md",
         "---\ndescription: Acme Corp background\n---\n\n# Acme\n",
     )
     _write(
-        tmp_path / "memory" / "tasks" / "site-redesign.md",
+        tmp_path / "protected" / "memory" / "tasks" / "site-redesign.md",
         "# Site redesign\n\nStatus: in progress\n",
     )
 
     index = build_memory_index(tmp_path)
 
     assert "Memory files" in index
-    assert "`memory/entities/acme.md` — Acme Corp background" in index
+    assert "`protected/memory/entities/acme.md` — Acme Corp background" in index
     # No frontmatter description: falls back to the first heading line.
-    assert "`memory/tasks/site-redesign.md` — Site redesign" in index
+    assert "`protected/memory/tasks/site-redesign.md` — Site redesign" in index
 
 
 def test_build_memory_index_empty_workspace(tmp_path: Path):
@@ -105,7 +105,11 @@ def test_build_cross_team_task_index_lists_active_tasks(tmp_path: Path):
 
 
 def test_resolve_readable_context_path_rejects_traversal(tmp_path: Path):
-    _write(tmp_path / "memory" / "tasks" / "ok.md", "# ok\n")
+    _write(tmp_path / "protected" / "memory" / "tasks" / "ok.md", "# ok\n")
+    assert (
+        resolve_readable_context_path(tmp_path, "protected/memory/tasks/ok.md")
+        is not None
+    )
     assert resolve_readable_context_path(tmp_path, "memory/tasks/ok.md") is not None
     assert resolve_readable_context_path(tmp_path, "../etc/passwd") is None
     assert resolve_readable_context_path(tmp_path, "secrets/key.txt") is None
@@ -116,7 +120,9 @@ def test_read_context_paths_reads_allowed_files(tmp_path: Path):
     rel = f"teams/{team}/memory/tasks/hook.md"
     _write(tmp_path / rel, "# Hook\n\nNext: follow up Khosla.\n")
 
-    text = read_context_paths(tmp_path, [rel, "memory/../../etc/passwd"])
+    text = read_context_paths(
+        tmp_path, [rel, "protected/memory/../../etc/passwd"]
+    )
 
     assert "Next: follow up Khosla." in text
     assert "not readable" in text

@@ -75,7 +75,7 @@ def collect_uuids_from_workspace(workspace: Path) -> set[str]:
             continue
         # Skip discovery in clearly noisy/cached dirs.
         skip_parts = {
-            "data",
+            "protected",
             "chroma",
             "memory",
             "memory-old",

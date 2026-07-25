@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Manual one-shot trigger of the refinement runner.
 
-Drains the agent's change-set queue (``workspace/data/change_queue.jsonl``)
+Drains the agent's change-set queue (``workspace/protected/data/change_queue.jsonl``)
 through ``ouro_agents.refinement.run_refinement``. Useful for testing the
 runner end-to-end even when no producers are wired in to enqueue entries.
 
@@ -58,7 +58,9 @@ def main(argv: list[str] | None = None) -> int:
 
     config = OuroAgentsConfig.load_from_file(args.config)
     workspace = Path(args.workspace) if args.workspace else config.agent.workspace
-    queue_path = workspace / "data" / "change_queue.jsonl"
+    from ouro_agents.tools.workspace_paths import protected_data
+
+    queue_path = protected_data(workspace) / "change_queue.jsonl"
     queue = ChangeSetQueue(queue_path)
 
     pending = queue.pending(limit=args.max)

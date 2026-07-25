@@ -109,7 +109,7 @@
   },
   "memory": {
     "provider": "mem0",
-    "path": "./agents/hermes/memory",
+    "path": "./agents/hermes/protected/memory",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "max_retrieval_tokens": 1500,

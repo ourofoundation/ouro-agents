@@ -71,7 +71,7 @@
   },
   "memory": {
     "provider": "mem0",
-    "path": "./agents/athena/memory",
+    "path": "./agents/athena/protected/memory",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "max_retrieval_tokens": 1500,

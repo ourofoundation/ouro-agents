@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ..config import SandboxConfig
+from .workspace_layout import DOCKER_WORKER_LAYOUT_GUARD
+from .workspace_paths import ensure_protected_dir
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +40,8 @@ class ShellExecutionResult:
     timed_out: bool = False
 
 
-_WORKER_CODE = r"""
+_WORKER_CODE = (
+    r"""
 import ast
 import contextlib
 import io
@@ -50,6 +53,10 @@ import traceback
 
 WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", "/workspace")
 os.chdir(WORKSPACE_ROOT)
+
+"""
+    + DOCKER_WORKER_LAYOUT_GUARD
+    + r"""
 
 _globals = {
     "__name__": "__main__",
@@ -190,7 +197,7 @@ for line in sys.stdin:
             flush=True,
         )
 """
-
+)
 
 def _docker_name(value: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value).strip("-").lower()
@@ -413,6 +420,7 @@ class DockerSandboxSession:
 
     def _docker_run_args(self) -> list[str]:
         mount = self.config.workspace_mount
+        protected = ensure_protected_dir(self.workspace)
         args = [
             "docker",
             "run",
@@ -424,6 +432,8 @@ class DockerSandboxSession:
             mount,
             "--mount",
             f"type=bind,source={self.workspace},target={mount}",
+            "--mount",
+            f"type=bind,source={protected},target={mount}/protected,readonly",
             "--label",
             "ouro.sandbox=true",
             "--label",

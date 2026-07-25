@@ -27,7 +27,7 @@ def _write_config(tmp_path):
 
 
 def _seed(workspace):
-    store = RunLogStore(workspace / "runs.db")
+    store = RunLogStore(workspace / "protected" / "runs.db")
     rec = RunRecord(
         run_id="run-abc123",
         mode="chat",

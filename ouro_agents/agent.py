@@ -173,17 +173,29 @@ class OuroAgent:
         # model build, memory backend, heartbeat pre-reset). Live runs bind a
         # fresh RunContext so overlapping modes do not share these.
         self._usage_tracker = UsageTracker()
+        self._workspace = config.agent.workspace
+
+        # Migrate harness paths into protected/ BEFORE opening Chroma / runs.db,
+        # otherwise create_memory_backend mkdir's an empty protected/memory and
+        # the migrate step skips the real store.
+        from .tools.workspace_paths import (
+            migrate_protected_workspace,
+            protected_data,
+            protected_runs_db,
+        )
+
+        migrate_protected_workspace(self._workspace)
+
         self.memory = create_memory_backend(
             config.memory,
             usage_tracker=self._usage_tracker,
         )
-        self._workspace = config.agent.workspace
         self._subagent_ledger: list[tuple[str, SubAgentUsage]] = []
         self.model = self._build_model(config.agent.model)
 
         # Durable run logging (SQLite). Per-run ids live on RunContext; tick_id
         # is still set on the agent for the duration of a heartbeat cycle.
-        run_log_path = config.run_log.path or (self._workspace / "runs.db")
+        run_log_path = config.run_log.path or protected_runs_db(self._workspace)
         self._run_log = RunLogStore(run_log_path, enabled=config.run_log.enabled)
         self._current_tick_id: Optional[str] = None
 
@@ -222,7 +234,7 @@ class OuroAgent:
         from .scheduler import AgentScheduler
 
         self.scheduler = AgentScheduler(
-            config.agent.workspace / "data" / "scheduled_tasks.json"
+            protected_data(config.agent.workspace) / "scheduled_tasks.json"
         )
 
         self._load_custom_profiles()
@@ -557,7 +569,9 @@ class OuroAgent:
         return None
 
     def _security_cache_path(self) -> Path:
-        return self._workspace / "data" / "security_resolved.json"
+        from .tools.workspace_paths import protected_data
+
+        return protected_data(self._workspace) / "security_resolved.json"
 
     def _load_security_id_cache(self) -> dict[str, str]:
         path = self._security_cache_path()
@@ -3301,7 +3315,7 @@ class OuroAgent:
 
         Writes a ``runs.db`` row with ``mode="dream"``, isolated LLM usage, and
         optional memory ledger — matching chat/autonomous/heartbeat cost
-        accounting. Existing ``data/dream_runs/*.json`` audits are unchanged.
+        accounting. Existing ``protected/data/dream_runs/*.json`` audits are unchanged.
         """
         scope = team_id or "shared"
         if doc_store is None:

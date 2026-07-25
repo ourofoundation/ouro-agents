@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Optional
 from smolagents import tool
 from smolagents.local_python_executor import LocalPythonExecutor
 
+from .workspace_layout import check_workspace_write
+
 if TYPE_CHECKING:
     from ..config import SandboxConfig
     from ouro.client import Ouro
@@ -107,16 +109,19 @@ def _make_workspace_fs(workspace: Path) -> dict:
 
     def write_file(path: str, content: str) -> str:
         """Write content to a file in the workspace. Creates parent dirs as needed."""
-        target = _safe_path(path)
+        target = check_workspace_write(_safe_path(path), root, is_dir=False)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        # Bypass layout guard on Path.write_text when helpers run in-process with
+        # the Docker-style monkeypatch installed (tests); helpers already checked.
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(content)
         return f"Wrote {len(content)} chars to {target}"
 
     def append_file(path: str, content: str) -> str:
         """Append content to a file in the workspace. Creates the file and parent dirs if needed."""
-        target = _safe_path(path)
+        target = check_workspace_write(_safe_path(path), root, is_dir=False)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a") as f:
+        with open(target, "a", encoding="utf-8") as f:
             f.write(content)
         return f"Appended {len(content)} chars to {target}"
 
@@ -144,14 +149,25 @@ def _make_workspace_fs(workspace: Path) -> dict:
 
     def create_directory(path: str) -> str:
         """Create a directory (and parents) in the workspace."""
-        target = _safe_path(path)
+        target = check_workspace_write(_safe_path(path), root, is_dir=True)
         target.mkdir(parents=True, exist_ok=True)
         return f"Created directory {target}"
 
     def move_file(src: str, dst: str) -> str:
         """Move or rename a file within the workspace."""
         src_path = _safe_path(src)
-        dst_path = _safe_path(dst)
+        dst_is_dir = dst.endswith(("/", "\\")) or (
+            _safe_path(dst).exists() and _safe_path(dst).is_dir()
+        )
+        if dst_is_dir and not dst.endswith(("/", "\\")):
+            # Moving into an existing directory keeps the source basename.
+            dst_path = check_workspace_write(
+                _safe_path(dst) / src_path.name, root, is_dir=False
+            )
+        else:
+            dst_path = check_workspace_write(
+                _safe_path(dst), root, is_dir=dst.endswith(("/", "\\"))
+            )
         dst_path.parent.mkdir(parents=True, exist_ok=True)
         src_path.rename(dst_path)
         return f"Moved {src} -> {dst}"
@@ -181,6 +197,7 @@ def _make_workspace_fs(workspace: Path) -> dict:
         """Extract a zip file inside the workspace and return basic metadata."""
         zip_file = _safe_path(zip_path)
         destination = _safe_path(output_dir) if output_dir else zip_file.with_suffix("")
+        check_workspace_write(destination, root, is_dir=True)
         destination.mkdir(parents=True, exist_ok=True)
 
         extracted_files = []
@@ -195,6 +212,8 @@ def _make_workspace_fs(workspace: Path) -> dict:
                     raise PermissionError(
                         f"Unsafe zip entry would escape destination: {member.filename}"
                     ) from exc
+                if not member.is_dir():
+                    check_workspace_write(target, root, is_dir=False)
 
             archive.extractall(destination_root)
             extracted_files = [
@@ -366,9 +385,12 @@ def make_python_tool(
         - In-memory state is also discarded when the run ends, but workspace files persist.
 
         Common patterns:
-        - Read JSON: `data = json.loads(Path("data.json").read_text())`
-        - Write text: `Path("out/report.csv").write_text(csv_text)`
+        - Read JSON: `data = json.loads(Path("scratch/state.json").read_text())`
+        - Write text: `Path("scratch/report.csv").write_text(csv_text)`
         - Shell command: `subprocess.run(["python", "--version"], capture_output=True, text=True)`
+        - Layout: never write at the workspace root or under `protected/`
+          (also refuses legacy `data/` / `memory/`; enforced — you will get
+          PermissionError). Use `projects/`, `drafts/`, or `scratch/`.
         """
     else:
         run_python.description += """
@@ -396,9 +418,12 @@ def make_python_tool(
         - extract_zip(zip_path, output_dir=None) -> dict: Extract a zip archive safely inside the workspace.
 
         Common patterns:
-        - Read JSON: data = json.loads(read_file('data.json'))
-        - Write CSV/text: write_file('out/report.csv', csv_text)
+        - Read JSON: data = json.loads(read_file('scratch/state.json'))
+        - Write CSV/text: write_file('scratch/report.csv', csv_text)
         - Check files: list_dir('.'), file_exists('foo.txt'), get_file_info('foo.txt')
+        - Layout: never write at the workspace root or under `protected/`
+          (also refuses legacy `data/` / `memory/`; enforced — you will get
+          PermissionError). Use `projects/`, `drafts/`, or `scratch/`.
         """
 
     if ouro_docs:
@@ -466,6 +491,9 @@ def make_shell_tool(executor, sandbox_config: "SandboxConfig"):
         - The configured timeout is {sandbox_config.timeout_seconds} seconds and
           output is truncated at {sandbox_config.max_output_chars} characters.
         - Keep reads and writes under `{sandbox_config.workspace_mount}`.
+        - Prefer `projects/`, `drafts/`, or `scratch/` for new files; do not write
+          at the workspace root or under `protected/` (RO mount + layout guard;
+          also refuses legacy `data/` / `memory/`).
         - Avoid interactive commands, long-running daemons, and commands requiring TTY input.
         """
     return run_shell

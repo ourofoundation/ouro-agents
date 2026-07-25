@@ -838,7 +838,9 @@ class LocalDocStore:
             return self._workspace / "shared" / "users" / f"{parts[1]}.md"
 
         safe = name.replace(":", "_").replace("/", "_")
-        return self._workspace / "data" / "docs" / f"{safe}.md"
+        from ..tools.workspace_paths import protected_data
+
+        return protected_data(self._workspace) / "docs" / f"{safe}.md"
 
     def read(self, name: str) -> str:
         path = self._name_to_path(name)

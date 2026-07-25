@@ -17,7 +17,7 @@ def _minimal_config(workspace: str) -> dict:
         "modes": {"heartbeat": {"model": "openai/gpt-4.1-mini"}},
         "mcp_servers": [],
         "memory": {
-            "path": f"{workspace}/memory",
+            "path": f"{workspace}/protected/memory",
             "extraction_model": "openai/gpt-4.1-mini",
             "embedder": "openai/text-embedding-3-small",
         },
@@ -40,4 +40,7 @@ class TestDevReloadSettings(unittest.TestCase):
             package_root = Path(__file__).resolve().parents[1] / "ouro_agents"
             self.assertEqual(reload_dirs, [str(package_root.resolve())])
             self.assertIn(str(workspace.resolve()), reload_excludes)
-            self.assertIn(str((workspace / "memory" / "chroma").resolve()), reload_excludes)
+            self.assertIn(
+                str((workspace / "protected" / "memory" / "chroma").resolve()),
+                reload_excludes,
+            )

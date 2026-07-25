@@ -33,7 +33,9 @@ def _slugify(name: str) -> str:
 def _team_memory_dir(workspace: Path, team_id: str | None, leaf: str) -> Path:
     if team_id:
         return workspace / "teams" / team_id / "memory" / leaf
-    return workspace / "memory" / leaf
+    from ..tools.workspace_paths import protected_memory
+
+    return protected_memory(workspace) / leaf
 
 
 def _file_frontmatter(path: Path) -> dict:
@@ -359,8 +361,10 @@ def build_cross_team_task_index(
 
 
 def _allowed_context_roots(workspace: Path) -> list[Path]:
-    """Roots the heartbeat may read: memory/, teams/*/memory/."""
-    roots = [workspace / "memory"]
+    """Roots the heartbeat may read: protected/memory/, teams/*/memory/."""
+    from ..tools.workspace_paths import protected_memory
+
+    roots = [protected_memory(workspace)]
     teams_root = workspace / "teams"
     if teams_root.is_dir():
         for team_dir in teams_root.iterdir():
@@ -372,10 +376,16 @@ def _allowed_context_roots(workspace: Path) -> list[Path]:
 def resolve_readable_context_path(
     workspace: Path, relative_path: str
 ) -> Path | None:
-    """Return an absolute path if *relative_path* is under an allowed memory root."""
+    """Return an absolute path if *relative_path* is under an allowed memory root.
+
+    Accepts legacy ``memory/...`` paths as aliases for ``protected/memory/...``.
+    """
     text = (relative_path or "").strip().lstrip("./")
     if not text or ".." in Path(text).parts:
         return None
+    parts = Path(text).parts
+    if parts and parts[0] == "memory":
+        text = str(Path("protected") / text)
     candidate = (workspace / text).resolve()
     workspace_resolved = workspace.resolve()
     try:
@@ -402,9 +412,9 @@ def read_context_paths(
 ) -> str:
     """Batch-read allowed memory/task files (and optional current team logs).
 
-    Paths must be workspace-relative under ``memory/`` or
-    ``teams/<id>/memory/``. Log names like ``LOG:hermes:2026-07-20`` are
-    resolved via *doc_store* when provided.
+    Paths must be workspace-relative under ``protected/memory/`` (or legacy
+    ``memory/``), or ``teams/<id>/memory/``. Log names like
+    ``LOG:hermes:2026-07-20`` are resolved via *doc_store* when provided.
     """
     parts: list[str] = []
     seen: set[str] = set()
@@ -461,8 +471,9 @@ def make_read_context_tool(
         """Read indexed memory/task files or current team logs (batch, path-confined).
 
         Args:
-            paths: Workspace-relative paths under memory/ or teams/<id>/memory/,
-                or LOG:<name> keys for the current doc-store log. Max 4 paths.
+            paths: Workspace-relative paths under protected/memory/ (or legacy
+                memory/) or teams/<id>/memory/, or LOG:<name> keys for the
+                current doc-store log. Max 4 paths.
         """
         if isinstance(paths, str):
             paths = [paths]

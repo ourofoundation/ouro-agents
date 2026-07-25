@@ -62,11 +62,11 @@ print(f"Mean: {mean(values):.2f}, StdDev: {stdev(values):.2f}")
 import csv, json
 from pathlib import Path
 
-with Path("data/measurements.csv").open() as f:
+with Path("scratch/measurements.csv").open() as f:
     reader = csv.DictReader(f)
     rows = [r for r in reader if float(r["value"]) > 100]
 
-Path("data/filtered.json").write_text(json.dumps(rows, indent=2))
+Path("scratch/filtered.json").write_text(json.dumps(rows, indent=2))
 print(f"Filtered {len(rows)} rows")
 ```
 

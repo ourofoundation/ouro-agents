@@ -16,5 +16,7 @@ follow it for all new files (see the WORKSPACE FILE ORGANIZATION prompt section)
   structures), plus existing subdirs.
 - `scratch/` — disposable; `scratch/legacy/` holds the old DAILY/daily_logs dirs.
 
-Do not write new files at the workspace root. Overwrite working files in place
-instead of creating `_v2`/`_fixed` copies.
+Do not write new files at the workspace root, or under `protected/`
+(framework-only; the sandbox will refuse, and Docker mounts it read-only).
+Overwrite working files in place instead of creating `_v2`/`_fixed` copies.
+Period logs belong in `teams/<team_id>/logs/`, not under `memory/`.

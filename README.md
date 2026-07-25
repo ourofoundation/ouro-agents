@@ -178,7 +178,7 @@ Minimal `config.json` shape (full reference in
   },
   "memory": {
     "provider": "mem0",
-    "path": "./workspace/memory",
+    "path": "./workspace/protected/memory",
     "embedder": "openai/text-embedding-3-small"
   },
   "mcp_servers": [

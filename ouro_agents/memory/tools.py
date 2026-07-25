@@ -450,7 +450,9 @@ def make_memory_tools(
             lines.append(f"Storage: {storage}")
 
         if workspace:
-            entities_dir = workspace / "memory" / "entities"
+            from ..tools.workspace_paths import protected_memory
+
+            entities_dir = protected_memory(workspace) / "entities"
             if entities_dir.exists():
                 entity_files = list(entities_dir.glob("*.md"))
                 if entity_files:

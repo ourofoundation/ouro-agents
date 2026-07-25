@@ -79,7 +79,7 @@ class RefinementSummary:
 
 
 _SWEEP_EXCLUDE_DIRS = {
-    "data",
+    "protected",
     "chroma",
     "memory",
     "memory-old",
@@ -529,7 +529,9 @@ def run_refinement(
 
 
 def _default_queue(agent: "OuroAgent") -> ChangeSetQueue:
-    path = agent.config.agent.workspace / "data" / "change_queue.jsonl"
+    from ..tools.workspace_paths import protected_data
+
+    path = protected_data(agent.config.agent.workspace) / "change_queue.jsonl"
     return ChangeSetQueue(path)
 
 

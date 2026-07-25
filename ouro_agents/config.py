@@ -317,7 +317,7 @@ class GraphMemoryConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     provider: str = "mem0"
-    path: Path = Path("./workspace/memory")
+    path: Path = Path("./workspace/protected/memory")
     extraction_model: str
     embedder: str
     # Default top-K per memory_recall query (per-query ``limit`` overrides).

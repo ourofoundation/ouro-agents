@@ -13,7 +13,7 @@ agent belongs to. It's rebuilt:
 - On every heartbeat (so newly-joined teams become visible without a
   restart).
 
-The platform context is cached at `workspace/data/platform_context.json`
+The platform context is cached at `workspace/protected/data/platform_context.json`
 so other code paths can read it cheaply without re-hitting Ouro.
 
 `TeamInfo` records the fields used downstream:

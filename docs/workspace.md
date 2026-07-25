@@ -13,17 +13,19 @@ workspace/
 ├── SOUL.md                      # identity, values, operating rules (required)
 ├── NOTES.md                     # optional ambient notes
 ├── MEMORY.md                    # shared cross-team memory (curated)
-├── runs.db                      # SQLite run log (every run + full step trace)
-├── data/
-│   ├── platform_context.json    # cached profile/orgs/teams from Ouro
-│   ├── scheduled_tasks.json     # persisted ScheduledTask list
-│   ├── last_dream_period        # dream-cycle rollover marker (rhythm)
-│   └── .log_prefix_v1           # migration marker (DAILY→LOG rename)
+├── HEARTBEAT.md                 # heartbeat checklist (optional)
+├── protected/                   # harness-owned; RO in Docker sandbox
+│   ├── runs.db                  # SQLite run log (every run + full step trace)
+│   ├── data/
+│   │   ├── platform_context.json    # cached profile/orgs/teams from Ouro
+│   │   ├── scheduled_tasks.json     # persisted ScheduledTask list
+│   │   ├── last_dream_period        # dream-cycle rollover marker (rhythm)
+│   │   └── .log_prefix_v1           # migration marker (DAILY→LOG rename)
+│   └── memory/                  # mem0 + Chroma store (do not edit)
 ├── conversations/<id>/
 │   ├── state.json               # ConversationState
 │   └── turns.jsonl              # raw user/assistant turns
 ├── debug-runs/                  # ouro-agents run --debug-md output
-├── memory/                      # mem0 + Chroma store (do not edit)
 ├── skills/                      # workspace skill overrides
 ├── subagents/                   # custom SubAgentProfile files (json/yaml)
 ├── projects/<slug>/             # agent-authored artifacts, one dir per effort
@@ -40,17 +42,25 @@ workspace/
     └── state.json               # doc-name → Ouro post UUID registry
 ```
 
-Legacy workspaces may still have `shared/daily/` or `teams/<id>/daily/` until
-the startup migration moves them to `logs/`. The doc store reads both during
-the transition.
+Legacy workspaces may still have top-level `data/`, `memory/`, or `runs.db`
+until startup migration moves them under `protected/`. Legacy `shared/daily/`
+or `teams/<id>/daily/` dirs are migrated to `logs/` separately. The doc store
+reads both during the transition.
 
 ## Agent-authored files
 
 Agents are instructed (via the `WORKSPACE FILE ORGANIZATION` prompt section
-and the `filesystem` skill) to never write new files at the workspace root.
-Their own artifacts go under `projects/<slug>/` (one directory per ongoing
-effort), `drafts/` (outgoing drafts), or `scratch/` (disposable). The root is
+and the `filesystem` skill) to never write new files at the workspace root,
+and never under `protected/` (framework-only). Their own artifacts go
+under `projects/<slug>/` (one directory per ongoing effort), `drafts/`
+(outgoing drafts), `scratch/` (disposable), or optionally `cifs/`. The root is
 reserved for framework files and directories listed above.
+
+The Docker `run_python` worker and local workspace helpers **enforce** these
+write rules: forbidden paths raise `PermissionError` with a corrective
+message. In Docker mode, `protected/` is also bind-mounted read-only so
+shell and any Python bypass hit `EROFS`. Prefer fixing the path over
+bypassing via shell.
 
 ## SOUL.md (required)
 
@@ -129,13 +139,13 @@ doc store can format friendly post titles.
 
 ## Scheduled tasks
 
-`data/scheduled_tasks.json` is a list of `ScheduledTask` entries (see
+`protected/data/scheduled_tasks.json` is a list of `ScheduledTask` entries (see
 [Scheduler](./scheduler.md)). The file is rewritten atomically (tmp +
 rename) on every change so a crash mid-write can't corrupt it.
 
 ## Memory store
 
-`memory/` holds mem0's working files and a Chroma database. Treat it as
+`protected/memory/` holds mem0's working files and a Chroma database. Treat it as
 opaque — never hand-edit. To reset memory, stop the agent, remove the
 directory, and restart.
 

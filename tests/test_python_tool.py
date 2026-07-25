@@ -41,16 +41,16 @@ class TestPythonToolWorkspaceFs(unittest.TestCase):
     def test_extract_zip_unpacks_into_workspace(self):
         with TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            zip_path = workspace / "data" / "bundle.zip"
+            zip_path = workspace / "scratch" / "bundle.zip"
             zip_path.parent.mkdir(parents=True, exist_ok=True)
 
             with zipfile.ZipFile(zip_path, "w") as archive:
                 archive.writestr("nested/file.txt", "hello world")
 
             helpers = _make_workspace_fs(workspace)
-            result = helpers["extract_zip"]("data/bundle.zip")
+            result = helpers["extract_zip"]("scratch/bundle.zip")
 
-            extracted_path = workspace / "data" / "bundle" / "nested" / "file.txt"
+            extracted_path = workspace / "scratch" / "bundle" / "nested" / "file.txt"
             self.assertTrue(extracted_path.exists())
             self.assertEqual(extracted_path.read_text(), "hello world")
             self.assertEqual(result["file_count"], 1)
@@ -59,7 +59,8 @@ class TestPythonToolWorkspaceFs(unittest.TestCase):
     def test_extract_zip_rejects_zip_slip_entries(self):
         with TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            zip_path = workspace / "bundle.zip"
+            zip_path = workspace / "scratch" / "bundle.zip"
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
 
             with zipfile.ZipFile(zip_path, "w") as archive:
                 archive.writestr("../escape.txt", "nope")
@@ -67,7 +68,7 @@ class TestPythonToolWorkspaceFs(unittest.TestCase):
             helpers = _make_workspace_fs(workspace)
 
             with self.assertRaises(PermissionError):
-                helpers["extract_zip"]("bundle.zip")
+                helpers["extract_zip"]("scratch/bundle.zip")
 
             self.assertFalse((workspace / "escape.txt").exists())
 

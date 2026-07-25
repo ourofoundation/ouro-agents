@@ -49,7 +49,7 @@ _ASSET_LINK_TYPES = ("post", "dataset", "file", "service", "route", "quest", "as
 
 # Files we never touch even if they contain the UUID.
 _SWEEP_EXCLUDE_DIRS = {
-    "data",
+    "protected",
     "chroma",
     "memory",
     "memory-old",

@@ -33,7 +33,9 @@ def _open_store(ctx: typer.Context) -> RunLogStore:
     from . import _state
 
     config = _state(ctx).config
-    path = config.run_log.path or (config.agent.workspace / "runs.db")
+    from ouro_agents.tools.workspace_paths import protected_runs_db
+
+    path = config.run_log.path or protected_runs_db(config.agent.workspace)
     return RunLogStore(Path(path), readonly=True)
 
 

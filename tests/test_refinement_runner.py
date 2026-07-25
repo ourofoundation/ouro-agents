@@ -207,7 +207,7 @@ def test_run_refinement_applies_anchored_edit_and_marks_queue(tmp_path: Path):
         f"{post}\n"
     )
 
-    queue = ChangeSetQueue(workspace / "data" / "change_queue.jsonl")
+    queue = ChangeSetQueue(workspace / "protected" / "data" / "change_queue.jsonl")
     entry = ChangeEntry(
         kind=ChangeKind.CORRECTION,
         subject_id=_SUBJECT,
@@ -266,7 +266,7 @@ def test_run_refinement_applies_anchored_edit_and_marks_queue(tmp_path: Path):
 
 def test_run_refinement_marks_queue_when_no_docs_match(tmp_path: Path):
     workspace = tmp_path
-    queue = ChangeSetQueue(workspace / "data" / "change_queue.jsonl")
+    queue = ChangeSetQueue(workspace / "protected" / "data" / "change_queue.jsonl")
     queue.enqueue(
         ChangeEntry(
             kind=ChangeKind.CORRECTION,

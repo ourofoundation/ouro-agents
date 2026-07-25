@@ -123,7 +123,7 @@ ouro-agents runs show <run_id> [--full] [--json]
 ouro-agents runs stats --since 24h
 ```
 
-Read-only views over the SQLite run log (`<workspace>/runs.db`). These open the
+Read-only views over the SQLite run log (`<workspace>/protected/runs.db`). These open the
 database directly and never start an agent. `--since` takes a relative window
 (`30m`, `24h`, `7d`, `2w`) or an ISO date; `runs show` accepts a unique id
 prefix. See [Run logging](./run-logging.md).

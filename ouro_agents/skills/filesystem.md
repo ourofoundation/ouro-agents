@@ -58,8 +58,12 @@ state_path.write_text(json.dumps(state, indent=2))
 ## File Organization
 
 **Never write new files at the workspace root** — it is reserved for framework
-files (SOUL.md, NOTES.md, MEMORY.md, runs.db) and framework-managed directories
-(memory/, teams/, conversations/, data/, skills/). Put your own files here:
+files (SOUL.md, NOTES.md, MEMORY.md, HEARTBEAT.md). **Never write under
+`protected/`** — that tree is framework-managed (platform cache, scheduled
+tasks, run log, mem0/Chroma) and is mounted read-only in Docker. Legacy
+top-level `data/` and `memory/` are also refused.
+
+Put your own files here:
 
 - `projects/<slug>/` — all artifacts for a project or ongoing work cycle
   (analyses, results, generated files, post drafts). One directory per effort,
@@ -67,6 +71,9 @@ files (SOUL.md, NOTES.md, MEMORY.md, runs.db) and framework-managed directories
   use a subdirectory of the project (e.g. `projects/novomag/cycle24/`).
 - `drafts/` — outgoing drafts not tied to a project (emails, follow-ups, posts).
 - `scratch/` — disposable intermediates and cross-run state. Safe to delete.
+- `cifs/` — optional structure library; otherwise keep CIFs under the project.
+
+Period logs: `teams/<team_id>/logs/<period>.md` (not under `memory/`).
 
 Overwrite working files in place instead of creating `_v2`/`_fixed`/`_final`
 copies, and reuse one canonical filename per recurring artifact.
@@ -78,9 +85,9 @@ workspace directory (the same tree bind-mounted into Docker). Relative
 `file_path` values in `ouro:create_file` are joined to that root
 (`resolve_local_path` in ouro-mcp). In Docker mode, absolute paths under the
 container mount (normally `/workspace/...`) are also remapped onto that root,
-so a file written at `Path('data/out.cif')` or `/workspace/data/out.cif` can be
-uploaded with **`file_path='data/out.cif'`** (prefer relative) or the matching
-container absolute path.
+so a file written at `Path('scratch/out.cif')` or `/workspace/scratch/out.cif`
+can be uploaded with **`file_path='scratch/out.cif'`** (prefer relative) or the
+matching container absolute path.
 
 Steps:
 

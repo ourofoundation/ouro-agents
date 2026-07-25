@@ -323,7 +323,7 @@ Vector memory backend + dream (consolidation) policy.
 | Field | Default | Notes |
 |-------|---------|-------|
 | `provider` | `mem0` | Only `mem0` is shipped. |
-| `path` | `./workspace/memory` | Local store directory. |
+| `path` | `./workspace/protected/memory` | Local store directory. |
 | `extraction_model` | required\* | Cheap model used by mem0 to extract facts. \*Filled from `models.light` when omitted. |
 | `embedder` | required | Embedding model id (e.g. `openai/text-embedding-3-small`). |
 | `search_limit` | 10 | Default top-K per `memory_recall` query (per-query `limit` overrides). |
@@ -411,7 +411,7 @@ that guards the `/run` endpoint.
 
 `controllers` and `trusted` are static input — the agent never rewrites them.
 At startup any usernames are resolved to user ids and cached under
-`workspace/data/security_resolved.json`, so later restarts skip the lookup. The
+`workspace/protected/data/security_resolved.json`, so later restarts skip the lookup. The
 resolved ids are what the runtime authorization checks read.
 
 Legacy keys are still accepted and migrated automatically: the old
@@ -438,12 +438,12 @@ See [Refinement](./refinement.md).
 
 ## `run_log`
 
-Durable SQLite logging of every run to `<workspace>/runs.db`.
+Durable SQLite logging of every run to `<workspace>/protected/runs.db`.
 
 | Field | Default | Notes |
 |-------|---------|-------|
 | `enabled` | `true` | When false, a no-op store (no DB file created). |
-| `path` | none | Defaults to `<workspace>/runs.db`. |
+| `path` | none | Defaults to `<workspace>/protected/runs.db`. |
 | `capture_steps` | `true` | Persist the per-step trace to `run_steps`. |
 | `capture_reasoning` | `true` | Include provider reasoning on steps. |
 | `capture_observations` | `true` | Persist tool results (observations). |

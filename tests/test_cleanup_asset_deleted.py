@@ -168,8 +168,8 @@ def _build_workspace(root: Path) -> dict[str, Path]:
     plan.write_text(json.dumps({"asset_ids": [_UUID, _OTHER]}, indent=2))
     paths["plan"] = plan
 
-    untouched = root / "data" / "ignored.md"
-    untouched.parent.mkdir()
+    untouched = root / "protected" / "data" / "ignored.md"
+    untouched.parent.mkdir(parents=True)
     untouched.write_text(f"contains {_UUID} but excluded\n")
     paths["excluded"] = untouched
 
@@ -187,7 +187,7 @@ def test_sweep_rewrites_markdown_and_plan_only_for_target_uuid():
         assert str(paths["memory"]) in result.files_rewritten
         assert str(paths["daily"]) in result.files_rewritten
         assert str(paths["plan"]) in result.files_rewritten
-        # The excluded data/ file was not even discovered.
+        # The excluded protected/data file was not even discovered.
         assert str(paths["excluded"]) not in result.files_inspected
 
         # Memory file: typed link replaced; other UUID preserved.
@@ -252,12 +252,12 @@ def test_discover_files_with_asset_filters_by_extension():
         (root / "good.md").write_text(f"contains {_UUID}")
         (root / "good.json").write_text(json.dumps({"id": _UUID}))
         (root / "bin.txt").write_text(f"also has {_UUID}")
-        (root / "data").mkdir()
-        (root / "data" / "ignored.md").write_text(f"in excluded dir {_UUID}")
+        (root / "protected" / "data").mkdir(parents=True)
+        (root / "protected" / "data" / "ignored.md").write_text(f"in excluded dir {_UUID}")
 
         matches = {p.name for p in discover_files_with_asset(_UUID, root)}
 
         assert "good.md" in matches
         assert "good.json" in matches
-        # data/ is excluded; bin.txt has wrong suffix and isn't rewritten anyway.
+        # protected/ is excluded; bin.txt has wrong suffix and isn't rewritten anyway.
         assert "ignored.md" not in matches

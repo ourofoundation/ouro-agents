@@ -7,7 +7,7 @@ from ouro_agents.provenance import resolve_event_provenance
 
 
 def _write_platform_context(workspace: Path, user_id: str) -> None:
-    data_dir = workspace / "data"
+    data_dir = workspace / "protected" / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / "platform_context.json").write_text(
         json.dumps({"profile": {"id": user_id}})

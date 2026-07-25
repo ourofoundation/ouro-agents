@@ -23,8 +23,8 @@ class TestPlatformContextControllers(unittest.TestCase):
         )
         with TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            data_dir = workspace / "data"
-            data_dir.mkdir()
+            data_dir = workspace / "protected" / "data"
+            data_dir.mkdir(parents=True)
             (data_dir / "platform_context.json").write_text(
                 json.dumps(
                     {
@@ -81,8 +81,8 @@ class TestPlatformContextControllers(unittest.TestCase):
     def test_format_includes_controllers_and_share_hint(self) -> None:
         with TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            data_dir = workspace / "data"
-            data_dir.mkdir()
+            data_dir = workspace / "protected" / "data"
+            data_dir.mkdir(parents=True)
             (data_dir / "platform_context.json").write_text(
                 json.dumps(
                     {

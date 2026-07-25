@@ -2,7 +2,7 @@
 
 Every agent run — in **every mode** (chat, autonomous, heartbeat,
 plan, review, dream) — writes one rich, structured record to a SQLite database at
-`<workspace>/runs.db`, plus the full step trace (when applicable). Records are written on
+`<workspace>/protected/runs.db`, plus the full step trace (when applicable). Records are written on
 success, error, **and** cancellation, so failed and interrupted runs are just
 as visible as successful ones.
 
@@ -68,7 +68,7 @@ Under `run_log` in `config.json` (all optional — defaults shown):
 ```json
 "run_log": {
   "enabled": true,
-  "path": null,                 // default: <workspace>/runs.db
+  "path": null,                 // default: <workspace>/protected/runs.db
   "capture_steps": true,
   "capture_reasoning": true,
   "capture_observations": true,

@@ -42,8 +42,14 @@ class TestDockerSandboxSession(unittest.TestCase):
                 args = session._docker_run_args()
 
             mount_value = f"type=bind,source={Path(tmpdir).resolve()},target=/workspace"
-            self.assertEqual(args.count("--mount"), 1)
+            protected_mount = (
+                f"type=bind,source={Path(tmpdir).resolve() / 'protected'},"
+                f"target=/workspace/protected,readonly"
+            )
+            self.assertEqual(args.count("--mount"), 2)
             self.assertIn(mount_value, args)
+            self.assertIn(protected_mount, args)
+            self.assertTrue((Path(tmpdir) / "protected").is_dir())
             self.assertIn("--security-opt", args)
             self.assertIn("no-new-privileges", args)
             self.assertIn("--cap-drop", args)
@@ -231,13 +237,14 @@ class TestDockerSandboxSession(unittest.TestCase):
             try:
                 result = session.execute(
                     "from pathlib import Path\n"
-                    "Path('created.txt').write_text('hello')\n"
+                    "Path('scratch').mkdir(exist_ok=True)\n"
+                    "Path('scratch/created.txt').write_text('hello')\n"
                     f"Path({str(host_secret)!r}).exists()"
                 )
             finally:
                 session.close()
 
-            self.assertEqual((workspace / "created.txt").read_text(), "hello")
+            self.assertEqual((workspace / "scratch" / "created.txt").read_text(), "hello")
             self.assertFalse(result.output)
 
 

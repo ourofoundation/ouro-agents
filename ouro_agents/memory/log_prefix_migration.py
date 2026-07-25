@@ -165,7 +165,9 @@ def migrate_log_prefix_workspace(
     """Migrate legacy ``DAILY`` keys and ``daily/`` dirs to ``LOG`` / ``logs/``."""
     result = LogPrefixMigrationResult()
     workspace = workspace.resolve()
-    marker = workspace / "data" / MIGRATION_MARKER
+    from ..tools.workspace_paths import protected_data
+
+    marker = protected_data(workspace) / MIGRATION_MARKER
 
     if marker.exists() and not force and not _workspace_needs_migration(workspace):
         result.skipped = True

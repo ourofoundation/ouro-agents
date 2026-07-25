@@ -69,7 +69,20 @@ def strip_empty_sections(text: str) -> str:
 
 
 def _user_model_path(workspace: Path, user_id: str) -> Path:
-    return workspace / "memory" / "users" / f"{user_id}.md"
+    """Local fallback path when no doc store is wired.
+
+    Canonical location is ``shared/users/``; ``protected/memory/users/`` is
+    the pre-migration legacy path under the old top-level ``memory/`` tree.
+    """
+    from ..tools.workspace_paths import protected_memory
+
+    preferred = workspace / "shared" / "users" / f"{user_id}.md"
+    if preferred.exists():
+        return preferred
+    legacy = protected_memory(workspace) / "users" / f"{user_id}.md"
+    if legacy.exists():
+        return legacy
+    return preferred
 
 
 def load_user_model(workspace: Path, user_id: str, doc_store=None) -> str:

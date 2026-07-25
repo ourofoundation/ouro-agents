@@ -23,6 +23,7 @@ from typing import Any, Optional
 from . import MemoryBackend, MemoryResult
 from ..config import MemoryConfig
 from ..constants import CHARS_PER_TOKEN, parse_llm_json, strip_markdown_fence
+from ..tools.workspace_paths import protected_data
 from .naming import period_key, period_key_offset, store_rhythm
 
 logger = logging.getLogger(__name__)
@@ -192,7 +193,7 @@ class DreamResult:
 
 
 def _dream_marker_path(workspace: Path) -> Path:
-    return workspace / "data" / "last_dream_period"
+    return protected_data(workspace) / "last_dream_period"
 
 
 def read_dream_marker(workspace: Path) -> str:
@@ -351,7 +352,7 @@ def _write_dream_audit(workspace: Path, result: DreamResult) -> str:
     from ..memory_lock import memory_write_lock
 
     with memory_write_lock():
-        audit_dir = workspace / "data" / "dream_runs"
+        audit_dir = protected_data(workspace) / "dream_runs"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         path = audit_dir / f"{timestamp}_{_safe_scope(result.plan.scope)}.json"
         try:
@@ -1698,7 +1699,7 @@ def run_refinement_phase(
 
         cfg = getattr(agent.config, "refinement", None)
         queue = ChangeSetQueue(
-            agent.config.agent.workspace / "data" / "change_queue.jsonl"
+            protected_data(agent.config.agent.workspace) / "change_queue.jsonl"
         )
         result = run_refinement(
             agent=agent,
@@ -1763,7 +1764,7 @@ def run_refinement_phase(
 
 
 def _dream_status_path(workspace: Path) -> Path:
-    return workspace / "data" / "dream_status.json"
+    return protected_data(workspace) / "dream_status.json"
 
 
 def write_dream_status(
