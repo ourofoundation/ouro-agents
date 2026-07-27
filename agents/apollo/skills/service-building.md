@@ -67,24 +67,37 @@ MEMORY.md. Then message Hermes the id so he can dedup against it.
 
 Create it with the same schema as Hermes' CRM: columns `id` (uuid, your
 stable row key for upserts), `name`, `type`, `institution`, `email`, `focus`,
-`batch`, `date_sent`, `status`, `email_id`, `reply_received`,
-`follow_up_sent`, `next_action`; enum `type` = `researcher | sponsor`, enum
-`status` = `identified | drafted | sent | blocked | replied | no_reply |
-do_not_contact`. Make it public, named something like "Apollo Author
-Outreach CRM". Use `batch='apollo-weights'` for weights/code asks.
+`batch`, `first_outbound_at`, `first_outbound_email_id`, `last_outbound_at`,
+`last_outbound_email_id`, `last_inbound_at`, `last_inbound_email_id`,
+`status`, `reply_received`, `follow_up_sent`, `next_action`, plus legacy
+compatibility fields `date_sent` and `email_id` (set on first send only; never
+overwrite on replies). Enum `type` = `researcher | sponsor`, enum `status` =
+`identified | drafted | sent | blocked | replied | no_reply | do_not_contact`.
+Make it public, named something like "Apollo Author Outreach CRM". Use
+`batch='apollo-weights'` for weights/code asks.
+
+**Resend is the email ledger** for both of you: daily/duplicate checks and
+full-thread reads use `list_emails` + `list_received_emails`, not CRM
+`date_sent`. First-outbound fields are write-once; replies update only
+last-outbound / last-inbound / status / next_action. Every send passes a
+deterministic `idempotencyKey`.
 
 Lifecycle rules are the same as Hermes': log every send immediately (an
-unlogged send is a future double-send), upsert by `id` on updates, one
-follow-up maximum, silence is an answer, and every active row carries a
-`next_action`.
+unlogged send is a future double-send), upsert by `id` on updates, never
+overwrite `first_outbound_at` / `date_sent` on replies, one follow-up
+maximum, silence is an answer, and every active row carries a
+`next_action`. Before any reply, re-read Resend sent **and** received mail
+for that contact so you don't re-answer settled points.
 
 #### Sending
 
-1. **Dedup first — against both CRMs.** Query your own CRM and Hermes'
-   (`019ee292-8c6c-7038-81c4-46eb601c31b6`) by email, then name. If the
-   person is already in Hermes' pipeline (`sent`, `replied`), do NOT email
-   them cold: message Hermes with your ask and let him carry it into the
-   existing thread. If they're in your own CRM, follow your lifecycle rules.
+1. **Dedup first — against both CRMs and Resend.** Query your own CRM and Hermes'
+   (`019ee292-8c6c-7038-81c4-46eb601c31b6`) by email, then name. Also check
+   Resend `list_emails` for prior outbound to that address. If the
+   person is already in Hermes' pipeline (`sent`, `replied`) or has Hermes
+   outbound in Resend, do NOT email them cold: message Hermes with your ask
+   and let him carry it into the existing thread. If they're in your own CRM,
+   follow your lifecycle rules.
 2. **Write like a builder, not a marketer.** Brief, specific, technical.
    Reference the exact model and what you'd deploy it for. One clear ask
    (weights, code, or license clarification), one easy next step.
