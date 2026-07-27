@@ -13,7 +13,6 @@ class RunMode(str, Enum):
     AUTONOMOUS = "autonomous"
     HEARTBEAT = "heartbeat"
     PLAN = "plan"
-    REVIEW = "review"
 ```
 
 Each value maps to a built-in `ModeProfile`.
@@ -79,9 +78,6 @@ Generates a new plan cycle. Restricted servers, only `memory_recall` from
 memory tools, no post-reflection. Drives a quest creation flow inside
 `modes/planning.py`.
 
-### `review`
-Updates an existing plan based on feedback. Same restrictions as `plan`.
-
 ### `dream` (run-log mode, not a ModeProfile)
 Memory maintenance cycle (compaction, promotion, decay, review). Not in the
 `RunMode` enum — it has no smolagents framing/tools/max_steps — but each scope
@@ -137,7 +133,7 @@ response.
 ## Concurrency
 
 Top-level modes (`chat`, `autonomous` / comments, `heartbeat`, `plan`,
-`review`, and dream) **overlap** on one agent process. There is no global run
+and dream) **overlap** on one agent process. There is no global run
 lock and no cross-mode preemption.
 
 Shared-state hardening:

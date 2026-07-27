@@ -54,7 +54,7 @@ class QuestSidebar(Vertical):
 class QuestsView(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(
-            "[b]Quests[/]\n[dim]Create, review, and track quests by team. "
+            "[b]Quests[/]\n[dim]Create and track quests by team. "
             "Pick a quest in the sidebar to see its items.[/]",
             markup=True,
             classes="view-title",
@@ -67,7 +67,6 @@ class QuestsView(Vertical):
         yield Horizontal(
             Input(placeholder="Optional quest goal/directive", id="quest-input"),
             Button("Create quest", id="create-quest", variant="primary"),
-            Button("Review quest", id="review-quest"),
             classes="input-row",
         )
         yield ActivityLog(id="quests-log")

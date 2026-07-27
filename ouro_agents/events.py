@@ -60,21 +60,30 @@ _THREAD_REPLY_CAUTION = (
     "Prefer silence over a redundant reply."
 )
 
-# Comments on quests often unblock parked work (approval to send, go-ahead on
-# a draft). Agents that only do the side effect and reply leave items stuck
-# on `waiting_on` — remind them to close the item loop.
+# Comments on quests often change item state (unblock, skip, reassign). Agents
+# that only reply leave items disagreeing with the feedback — close the loop.
 _QUEST_COMMENT_GUIDANCE = """\
 ## Quest items
 
-This comment is on a quest. If it unblocks an item you parked with \
-`waiting_on` (e.g. approval to send an email), do the work **and** update \
-the item: clear waiting fields with `update_quest_item` (pass empty strings \
-for `waiting_on` / `waiting_until` / `waiting_check_every`) and call \
-`complete_quest_item` when the item's Done criteria are met. Do not stop at \
-the side effect and a reply while the item still says it is waiting. Use \
-`list_quest_items` if you need item ids."""
+This comment is on a quest. If it changes what should happen on an item, \
+update the item in the same turn as any reply — do not stop at a verbal \
+acknowledgment while items still disagree with the feedback. Use \
+`list_quest_items` if you need item ids.
 
-_QUEST_FEEDBACK_PRELOADS: List[str] = [
+- **Unblocks** parked work (`waiting_on`, e.g. approval to send): do the \
+work **and** clear waiting fields with `update_quest_item` (pass empty \
+strings for `waiting_on` / `waiting_until` / `waiting_check_every`). Call \
+`complete_quest_item` when the item's Done criteria are met.
+- **Cancels, skips, or hands off** work ("skip this", "I'll handle it", \
+"stand down"): set that item's status to `skipped` with \
+`update_quest_item`, clear waiting fields, and note why in `notes`. Do not \
+leave cancelled work as `in_progress`.
+- **Revises** the plan (change description, add/remove items): use \
+`update_quest` / `update_quest_item` / `create_quest_items` / \
+`delete_quest_item` as needed."""
+
+_QUEST_COMMENT_PRELOADS: List[str] = [
+    "ouro:get_asset",
     "ouro:get_comments",
     "ouro:write_comment",
     "ouro:update_quest",
@@ -82,7 +91,7 @@ _QUEST_FEEDBACK_PRELOADS: List[str] = [
     "ouro:create_quest_items",
     "ouro:update_quest_item",
     "ouro:delete_quest_item",
-    "ouro:get_asset",
+    "ouro:complete_quest_item",
 ]
 
 
@@ -264,33 +273,6 @@ class CommentContext:
 # ---------------------------------------------------------------------------
 
 
-def _quest_feedback_task(ctx: CommentContext) -> str:
-    """Fallback task when quest feedback can't take the dedicated review path.
-
-    The normal route is ``agent.handle_quest_feedback`` → review run, which
-    builds its own prompt from the live quest. This task only runs when that
-    path declines (e.g. the quest turns out not to be the agent's own).
-    """
-    feedback = _untrusted_comment_evidence(ctx, "quest feedback comment")
-    reply_instruction = (
-        f"Reply in the same thread by calling write_comment with parent_id "
-        f"`{ctx.reply_parent_id}`."
-        if ctx.reply_parent_id and ctx.reply_parent_id != ctx.root_asset_id
-        else "Reply on the quest with write_comment."
-    )
-    return (
-        f"You received a comment on a quest "
-        f"(quest id: {ctx.root_asset_id}).\n\n"
-        f"## Feedback\n{feedback}\n\n"
-        f"Inspect the quest with get_asset if needed. If it is your quest and "
-        f"the feedback calls for changes, revise the description with "
-        f"update_quest and manage task items directly with list_quest_items, "
-        f"update_quest_item, create_quest_items, or delete_quest_item; do not "
-        f"rewrite task progress as a markdown checklist. {reply_instruction}\n\n"
-        f"{_ready_hint(list(_QUEST_FEEDBACK_PRELOADS))}"
-    )
-
-
 def _default_comment_task(
     ctx: CommentContext,
     event_type: str,
@@ -439,11 +421,9 @@ def _build_event_task(
     if event_type in {"comment", "mention"}:
         ctx = comment_ctx or CommentContext.from_event(event)
         prefetch = ctx.build_prefetch()
-
-        if provenance and provenance.is_quest_feedback:
-            task = _quest_feedback_task(ctx)
-            return task, RunMode.AUTONOMOUS, tuple(_QUEST_FEEDBACK_PRELOADS), prefetch
-
+        if ctx.root_asset_type == "quest":
+            # Quest comments often change item state; preload manage tools.
+            preload_names = list(_QUEST_COMMENT_PRELOADS)
         task = _default_comment_task(ctx, event_type, provenance, preload_names)
         return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 

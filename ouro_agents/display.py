@@ -482,16 +482,6 @@ class OuroDisplay:
             self.info("planning: no plan generated")
         self.flush_pending_run_summary()
 
-    def review_result(self, result: str | None) -> None:
-        self.blank()
-        if result:
-            self.rule("review")
-            self.blank()
-            self.markdown(result)
-        else:
-            self.info("review: no plan to review")
-        self.flush_pending_run_summary()
-
 
 _display: OuroDisplay | None = None
 

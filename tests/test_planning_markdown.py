@@ -1,4 +1,4 @@
-"""Tests for planning cursors, quest helpers, and planning/review prompts."""
+"""Tests for planning cursors, quest helpers, and planning prompts."""
 
 import asyncio
 import json
@@ -9,7 +9,6 @@ from ouro_agents.memory.focus import build_focus_memory_context
 from ouro_agents.modes.planning import (
     PlanningCursor,
     auto_approve_due_drafts,
-    build_feedback_review_prompt,
     build_planning_prompt,
     build_previous_quest_context,
     item_is_waiting,
@@ -17,7 +16,6 @@ from ouro_agents.modes.planning import (
     planning_due,
     render_quest_items,
     run_planning_run,
-    run_quest_feedback_run,
     save_cursor,
 )
 
@@ -25,74 +23,6 @@ from ouro_agents.modes.planning import (
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
-
-
-def test_feedback_review_prompt_targets_same_thread_reply():
-    prompt = build_feedback_review_prompt(
-        quest_id="plan-quest-1",
-        plan_text="# Plan",
-        current_items_section="[ ] Do first thing (item_id: item-1)",
-        feedback_text="Please narrow scope.",
-        current_status="draft",
-        reply_parent_id="comment-123",
-        thread_parent_id="thread-456",
-    )
-
-    assert "parent_id `comment-123`" in prompt
-    assert "get_comments(parent_id=`thread-456`)" in prompt
-    assert "Please narrow scope." in prompt
-
-
-def test_feedback_review_prompt_for_open_quest_preserves_open_state():
-    prompt = build_feedback_review_prompt(
-        quest_id="plan-quest-1",
-        plan_text="# Plan",
-        current_items_section="[ ] Do first thing (item_id: item-1)",
-        feedback_text="Tighten task 2 and keep going.",
-        current_status="open",
-        reply_parent_id="comment-123",
-    )
-
-    assert "Current quest lifecycle status: open" in prompt
-    assert "already open" in prompt
-    assert 'Keep "next_status": "open"' in prompt
-    assert "waiting for initial approval" in prompt
-
-
-def test_feedback_review_prompt_mentions_next_status_for_cancellation():
-    prompt = build_feedback_review_prompt(
-        quest_id="plan-quest-1",
-        plan_text="# Plan",
-        current_items_section="[ ] Keep body (item_id: item-1)",
-        feedback_text="Please deactivate this quest.",
-        current_status="open",
-    )
-
-    assert '"next_status": "draft|open|closed"' in prompt
-    assert 'Set "next_status": "closed"' in prompt
-
-
-def test_feedback_review_prompt_uses_structured_item_numbering():
-    prompt = build_feedback_review_prompt(
-        quest_id="plan-quest-1",
-        plan_text="# Plan",
-        current_items_section="\n".join(
-            [
-                "1. [ ] First task (item_id: item-1)",
-                "2. [ ] Explore XRD route status (item_id: item-2)",
-            ]
-        ),
-        feedback_text="Please remove item 2.",
-        current_status="open",
-    )
-
-    assert "frontend numbering is 1-indexed" in prompt
-    assert "1. [ ] First task (item_id: item-1)" in prompt
-    assert "2. [ ] Explore XRD route status (item_id: item-2)" in prompt
-    assert "Do NOT infer item numbers from prose headings" in prompt
-    assert "update_quest_item(quest_id, item_id, ...): change description, notes, status," in prompt
-    assert "or sort_order" in prompt
-    assert "normalize sort_order to match the frontend's 1-indexed numbering" in prompt
 
 
 def test_build_planning_prompt_uses_natural_goal_quest_name():
@@ -558,161 +488,6 @@ def _feedback_agent(workspace, ouro_client, run_result):
     return agent
 
 
-def test_run_quest_feedback_run_closes_quest_on_cancellation(tmp_path):
-    class FakeQuests:
-        def __init__(self):
-            self.updates = []
-
-        def retrieve(self, quest_id):
-            assert quest_id == "plan-quest-1"
-            return SimpleNamespace(
-                id="plan-quest-1",
-                name="Plan",
-                team_id="team-1",
-                description="# Original Plan",
-                quest=SimpleNamespace(status="open"),
-                items=[
-                    SimpleNamespace(
-                        id="keepbody", description="Keep body", status="pending"
-                    )
-                ],
-            )
-
-        def update(self, quest_id, **kwargs):
-            self.updates.append((quest_id, kwargs))
-
-    ouro = SimpleNamespace(quests=FakeQuests())
-    agent = _feedback_agent(
-        tmp_path,
-        ouro,
-        json.dumps(
-            {
-                "feedback_summary": "User asked to deactivate the quest.",
-                "next_status": "closed",
-            }
-        ),
-    )
-
-    result = asyncio.run(
-        run_quest_feedback_run(
-            agent,
-            hb_model=None,
-            quest_id="plan-quest-1",
-            servers=["ouro"],
-            feedback="Please deactivate this quest.",
-        )
-    )
-
-    assert result is not None
-    assert "closed" in result
-    assert ouro.quests.updates == [("plan-quest-1", {"status": "closed"})]
-
-
-def test_run_quest_feedback_run_stores_directional_feedback_memory(tmp_path):
-    class FakeMemory:
-        def __init__(self):
-            self.added = []
-
-        def add(self, text, **kwargs):
-            self.added.append((text, kwargs))
-
-    class FakeQuests:
-        def __init__(self):
-            self.updates = []
-
-        def retrieve(self, _quest_id):
-            return SimpleNamespace(
-                id="plan-quest-1",
-                name="Plan",
-                team_id="team-1",
-                description="# Original Plan",
-                quest=SimpleNamespace(status="draft"),
-                items=[],
-            )
-
-        def update(self, quest_id, **kwargs):
-            self.updates.append((quest_id, kwargs))
-
-    ouro = SimpleNamespace(quests=FakeQuests())
-    agent = _feedback_agent(
-        tmp_path,
-        ouro,
-        json.dumps(
-            {
-                "feedback_summary": (
-                    "User asked the agent to focus on evaluation quality before "
-                    "publishing more demos."
-                ),
-                "next_status": "draft",
-            }
-        ),
-    )
-    agent.memory = FakeMemory()
-
-    asyncio.run(
-        run_quest_feedback_run(
-            agent,
-            hb_model=None,
-            quest_id="plan-quest-1",
-            servers=["ouro"],
-            feedback="Please focus on evaluation quality.",
-        )
-    )
-
-    assert agent.memory.added
-    text, kwargs = agent.memory.added[0]
-    assert "Planning guidance from review feedback" in text
-    assert kwargs["metadata"]["category"] == "direction"
-    assert kwargs["metadata"]["asset_ids"] == "plan-quest-1"
-    assert kwargs["team_id"] == "team-1"
-    # No lifecycle change was requested, so no status update fired.
-    assert ouro.quests.updates == []
-
-
-def test_run_quest_feedback_run_approves_draft_to_open(tmp_path):
-    class FakeQuests:
-        def __init__(self):
-            self.updates = []
-
-        def retrieve(self, _quest_id):
-            return SimpleNamespace(
-                id="plan-quest-1",
-                name="Plan",
-                team_id="team-1",
-                description="# Plan",
-                quest=SimpleNamespace(status="draft"),
-                items=[],
-            )
-
-        def update(self, quest_id, **kwargs):
-            self.updates.append((quest_id, kwargs))
-
-    ouro = SimpleNamespace(quests=FakeQuests())
-    agent = _feedback_agent(
-        tmp_path,
-        ouro,
-        json.dumps({"feedback_summary": "Approved.", "next_status": "open"}),
-    )
-
-    result = asyncio.run(
-        run_quest_feedback_run(
-            agent,
-            hb_model=None,
-            quest_id="plan-quest-1",
-            servers=["ouro"],
-            feedback="Looks good, go ahead.",
-        )
-    )
-
-    assert "approved" in result
-    assert ouro.quests.updates == [("plan-quest-1", {"status": "open"})]
-
-
-# ---------------------------------------------------------------------------
-# Anti-stale planning: history, skip, PLANNING.md, quality bar
-# ---------------------------------------------------------------------------
-
-
 def test_build_planning_prompt_allows_skip_and_requires_novelty():
     prompt = build_planning_prompt(cadence="12h", heartbeat_every="1h")
 
@@ -815,104 +590,3 @@ def test_append_and_load_planning_guidance(tmp_path):
     assert "Stop repeating the CIF pipeline." in loaded
     assert "2026-07-14" in loaded
 
-
-def test_controller_feedback_appends_planning_md(tmp_path):
-    class FakeMemory:
-        def add(self, *args, **kwargs):
-            return None
-
-    class FakeQuests:
-        def retrieve(self, _quest_id):
-            return SimpleNamespace(
-                id="plan-quest-1",
-                name="Plan",
-                team_id="team-1",
-                description="# Plan",
-                quest=SimpleNamespace(status="open"),
-                items=[],
-            )
-
-        def update(self, *_args, **_kwargs):
-            return None
-
-    ouro = SimpleNamespace(quests=FakeQuests())
-    agent = _feedback_agent(
-        tmp_path,
-        ouro,
-        json.dumps(
-            {
-                "feedback_summary": "Stop the formulaic cycle pattern.",
-                "next_status": "open",
-            }
-        ),
-    )
-    agent.memory = FakeMemory()
-    agent.config.security.resolved_controller_ids = ["controller-1"]
-
-    asyncio.run(
-        run_quest_feedback_run(
-            agent,
-            hb_model=None,
-            quest_id="plan-quest-1",
-            servers=["ouro"],
-            feedback=(
-                "These quests have become very stale and formulaic. "
-                "Stop repeating the CIF-validate-ML-predict pipeline."
-            ),
-            feedback_author_user_id="controller-1",
-        )
-    )
-
-    from ouro_agents.modes.planning import planning_md_path
-
-    text = planning_md_path(tmp_path).read_text()
-    assert "stale and formulaic" in text
-
-
-def test_non_controller_feedback_does_not_append_planning_md(tmp_path):
-    class FakeMemory:
-        def add(self, *args, **kwargs):
-            return None
-
-    class FakeQuests:
-        def retrieve(self, _quest_id):
-            return SimpleNamespace(
-                id="plan-quest-1",
-                name="Plan",
-                team_id="team-1",
-                description="# Plan",
-                quest=SimpleNamespace(status="open"),
-                items=[],
-            )
-
-        def update(self, *_args, **_kwargs):
-            return None
-
-    ouro = SimpleNamespace(quests=FakeQuests())
-    agent = _feedback_agent(
-        tmp_path,
-        ouro,
-        json.dumps(
-            {
-                "feedback_summary": "Please focus on evaluation quality.",
-                "next_status": "open",
-            }
-        ),
-    )
-    agent.memory = FakeMemory()
-    agent.config.security.resolved_controller_ids = ["controller-1"]
-
-    asyncio.run(
-        run_quest_feedback_run(
-            agent,
-            hb_model=None,
-            quest_id="plan-quest-1",
-            servers=["ouro"],
-            feedback="Please focus on evaluation quality before shipping more routes.",
-            feedback_author_user_id="someone-else",
-        )
-    )
-
-    from ouro_agents.modes.planning import planning_md_path
-
-    assert not planning_md_path(tmp_path).exists()

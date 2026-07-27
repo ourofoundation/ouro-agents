@@ -42,7 +42,6 @@ from .views.heartbeat import HeartbeatView
 from .views.inbox import InboxView
 from .views.dream import DreamView
 from .views.quests import QuestItem, QuestSidebar, QuestsView
-from .views.review import ReviewView
 from .views.runs import RunsView
 from .widgets.activity import ActivityLog, StatusBar
 from .widgets.nav import NavItem, NavTarget
@@ -54,9 +53,8 @@ NAV_TARGETS = [
     NavTarget("chat", "Chat", "Ouro conversations"),
     NavTarget("runs", "Runs", "general execution"),
     NavTarget("heartbeat", "Heartbeat", "proactive tick"),
-    NavTarget("quests", "Quests", "quests and reviews"),
+    NavTarget("quests", "Quests", "quests"),
     NavTarget("dream", "Dream", "dream cycle & memory"),
-    NavTarget("review", "Review", "review heartbeat"),
     NavTarget("inbox", "Inbox", "quests and mentions"),
 ]
 
@@ -174,8 +172,7 @@ class OuroApp(App[None]):
         Binding("4", "show_view('heartbeat')", "Heartbeat"),
         Binding("5", "show_view('quests')", "Quests"),
         Binding("6", "show_view('dream')", "Dream"),
-        Binding("7", "show_view('review')", "Review"),
-        Binding("8", "show_view('inbox')", "Inbox"),
+        Binding("7", "show_view('inbox')", "Inbox"),
         Binding("ctrl+n", "new_chat", "New chat"),
         Binding("ctrl+r", "refresh", "Refresh"),
         Binding("escape", "nav_back", "Back", show=False),
@@ -218,7 +215,6 @@ class OuroApp(App[None]):
                 yield HeartbeatView(id="heartbeat")
                 yield QuestsView(id="quests")
                 yield DreamView(id="dream")
-                yield ReviewView(id="review")
                 yield InboxView(id="inbox")
         yield StatusBar(id="status")
         yield Footer()
@@ -394,8 +390,6 @@ class OuroApp(App[None]):
             self.run_worker(self.refresh_chats(), name="refresh-chats", exclusive=True)
         elif button_id == "start-run":
             self.run_worker(self.start_autonomous_run(), name="run", exclusive=True)
-        elif button_id == "review-quest" or button_id == "run-review":
-            self.run_worker(self.review_quest(), name="review-quest", exclusive=True)
         elif button_id == "refresh-quests":
             self.refresh_quests()
         elif button_id == "dream-all":
@@ -555,18 +549,6 @@ class OuroApp(App[None]):
             log.line("Quest creation cancelled.", style="red")
             return
         log.panel("quest", result or "No quest generated.")
-        self.refresh_quests()
-
-    async def review_quest(self) -> None:
-        log = self._view_log("review" if self.current_view_key == "review" else "quests")
-        log.line("Reviewing latest reviewable quest...")
-        agent = await self._ensure_agent()
-        try:
-            result = await agent.force_review_heartbeat()
-        except RunCancelled:
-            log.line("Review cancelled.", style="red")
-            return
-        log.panel("review", result or "No quest to review.")
         self.refresh_quests()
 
     async def run_dream(self, team_id: str | None) -> None:
@@ -780,8 +762,6 @@ class OuroApp(App[None]):
             return self.query_one(QuestsView).log
         if view_key == "dream":
             return self.query_one(DreamView).log
-        if view_key == "review":
-            return self.query_one(ReviewView).log
         if view_key == "inbox":
             return self.query_one(InboxView).log
         raise KeyError(f"No activity log for view {view_key!r}")

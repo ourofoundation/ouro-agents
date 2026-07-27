@@ -159,11 +159,6 @@ app = FastAPI(title="Ouro Agents Server", lifespan=lifespan)
 
 def _event_envelope(event_run: EventRunContext):
     assert agent_instance is not None
-    surface = (
-        EventSurface.PLAN_REVIEW
-        if event_run.provenance and event_run.provenance.is_quest_feedback
-        else event_run.surface
-    )
     role = actor_role_for(
         actor_user_id=event_run.actor_user_id,
         actor_is_agent=event_run.actor_is_agent,
@@ -172,10 +167,8 @@ def _event_envelope(event_run: EventRunContext):
     )
     envelope = resolve_envelope(
         role,
-        surface,
-        surface_capabilities=event_run.surface_capabilities
-        if surface == event_run.surface
-        else None,
+        event_run.surface,
+        surface_capabilities=event_run.surface_capabilities,
     )
     logger.info(
         "Capability envelope for %s: role=%s surface=%s capabilities=%s",
@@ -808,21 +801,6 @@ async def _run_event_task(event_run: EventRunContext) -> None:
     await _mark_event_notifications_read(event_run)
     capability_envelope = _event_envelope(event_run)
 
-    # Route active/pending plan feedback to the dedicated review path
-    prov = event_run.provenance
-    if prov and prov.is_quest_feedback:
-        try:
-            await agent_instance.handle_quest_feedback(
-                event_run,
-                capability_envelope=capability_envelope,
-            )
-            get_display().flush_pending_run_summary()
-        except RunCancelled:
-            logger.info("Cancelled quest feedback event run")
-        except Exception:
-            logger.exception("Failed to handle quest feedback event")
-        return
-
     if event_run.event_type == "new-conversation":
         # Conversation creation has no user message yet; we do not run the agent.
         return
@@ -1224,9 +1202,10 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         logger.warning("Invalid webhook payload: %s", body)
         raise HTTPException(status_code=400, detail=f"Invalid webhook payload: {exc}")
 
-    if provenance and provenance.is_quest_feedback:
+    if provenance and provenance.is_own_asset:
         logger.info(
-            "Event provenance: quest_feedback on %s team_id=%s",
+            "Event provenance: own %s %s team_id=%s",
+            provenance.root_asset_type,
             provenance.root_asset_id,
             provenance.team_id,
         )

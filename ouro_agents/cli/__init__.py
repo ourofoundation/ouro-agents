@@ -14,7 +14,6 @@ from ..cancellation import RunCancelled
 from ..config import OuroAgentsConfig, RunMode
 from ..display import OuroDisplay, Verbosity, set_display
 from ..server import start_server
-from ..tui.review_picker import choose_review_plan
 from ..tui.team_picker import _ALL_TEAMS_SENTINEL, choose_dream_team, choose_plan_team
 from ..uuid_v7 import uuid7_str
 from .auth import (
@@ -280,33 +279,6 @@ def plan(
             state.display.info("Planning cancelled.")
             raise typer.Exit(130)
     state.display.planning_result(result)
-
-
-@cli.command()
-def review(ctx: typer.Context) -> None:
-    """Force a review check on one of the agent's quests."""
-    state = _state(ctx)
-    from ..modes.planning import find_reviewable_quests
-
-    with OuroAgent(state.config) as agent:
-        try:
-            agent._refresh_platform_context()
-        except Exception:
-            pass
-        reviewable = find_reviewable_quests(agent)
-        selected_quest_id = choose_review_plan(reviewable)
-        if reviewable and selected_quest_id is None:
-            state.display.info("Review cancelled.")
-            raise typer.Exit(0)
-        try:
-            result = asyncio.run(
-                agent.force_review_heartbeat(quest_id=selected_quest_id)
-            )
-        except (KeyboardInterrupt, RunCancelled):
-            agent.cancel_active_runs("interrupted")
-            state.display.info("Review cancelled.")
-            raise typer.Exit(130)
-    state.display.review_result(result)
 
 
 @cli.command()

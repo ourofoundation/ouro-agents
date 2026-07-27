@@ -78,15 +78,13 @@ The order of branches in the server handler:
 2. **Cleanup** — `asset.deleted` runs the deterministic cleanup and
    returns. No LLM is invoked.
 3. **Mark notifications read** — best-effort, before the run starts.
-4. **Quest feedback** — if `provenance.is_quest_feedback`, dispatch the
-   review run through `OuroAgent.handle_quest_feedback`.
-5. **`new-conversation`** — no-op; nothing to respond to until a message
+4. **`new-conversation`** — no-op; nothing to respond to until a message
    arrives.
-6. **Normal run** — otherwise, build a `ServerAgentObserver` (which
+5. **Normal run** — otherwise, build a `ServerAgentObserver` (which
    streams activity into Ouro for chat events) and call
    `OuroAgent.run(task, mode, conversation_id, team_id, prefetch, ...)`.
 
-## Provenance and quest-feedback events
+## Provenance
 
 `resolve_event_provenance` inspects the incoming payload (thread-root
 asset and author) against the cached agent identity and produces an
@@ -94,13 +92,7 @@ asset and author) against the cached agent identity and produces an
 
 - `is_own_asset`
 - `root_asset_id` / `root_asset_type`
-- `is_quest_feedback` (own asset whose thread root is a quest)
 - `team_id`
-
-When `is_quest_feedback=True`, the handler routes through
-`handle_quest_feedback`, which re-verifies quest ownership against the
-platform and dispatches a `review` run with the inline feedback text.
-If verification fails, the event falls back to the normal comment run.
 
 ## Adding a new event type
 

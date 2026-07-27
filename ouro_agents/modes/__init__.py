@@ -5,7 +5,6 @@ from .profiles import (
     HEARTBEAT,
     MODE_REGISTRY,
     PLAN,
-    REVIEW,
     ModeProfile,
     RunMode,
     apply_capability_envelope,
@@ -25,5 +24,4 @@ __all__ = [
     "AUTONOMOUS",
     "HEARTBEAT",
     "PLAN",
-    "REVIEW",
 ]

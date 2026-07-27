@@ -1504,24 +1504,3 @@ async def force_planning_heartbeat(
         return None
 
     return await run_planning_run(agent, hb_model, selected_team_id, servers, goal=goal)
-
-
-async def force_review_heartbeat(
-    agent: OuroAgent, quest_id: str | None = None
-) -> Optional[str]:
-    """Force a review check on one of the agent's quests (CLI entry point)."""
-    from .planning import find_reviewable_quests, run_quest_feedback_run
-
-    selected = quest_id
-    if not selected:
-        reviewable = find_reviewable_quests(agent, limit=1)
-        selected = reviewable[0]["id"] if reviewable else None
-    if not selected:
-        logger.info("No reviewable quest found")
-        return None
-
-    hb_model = resolve_heartbeat_model(agent)
-    refresh_heartbeat_platform_context(agent)
-    servers = heartbeat_servers(agent)
-
-    return await run_quest_feedback_run(agent, hb_model, selected, servers)

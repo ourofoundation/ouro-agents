@@ -140,13 +140,6 @@ PLANNING_FRAMING = (
     "the plan and publish it as a quest."
 )
 
-REVIEW_FRAMING = (
-    "One of your quests may have received human feedback. "
-    "Check for comments on the quest, incorporate any feedback, and report the "
-    "quest's next lifecycle status (draft/open/closed) in your structured output. "
-    "Do NOT execute quest items — only check for feedback, revise if needed, and report."
-)
-
 # ---------------------------------------------------------------------------
 # Output format text (one per mode, static portion)
 # ---------------------------------------------------------------------------
@@ -201,15 +194,8 @@ PLAN_OUTPUT = (
     "containing the required structured JSON and no tool calls. "
     "Read-only tools (`search_assets`, `get_asset`, `get_comments`, `list_quest_items`) "
     "may be used for targeted inspection before writing. "
-    "In planning runs, the only write tool is `create_quest`. In review runs, "
-    "you may use `update_quest`, `list_quest_items`, `create_quest_items`, "
-    "`update_quest_item`, and `delete_quest_item` as needed before finishing."
-)
-
-REVIEW_OUTPUT = (
-    "## OUTPUT FORMAT\n"
-    "Check for feedback, revise the plan if needed, then end the turn with a final "
-    "message containing the required structured JSON and no tool calls. "
+    "In planning runs, the only write tool is `create_quest`.\n\n"
+    f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 
 def build_output_format(

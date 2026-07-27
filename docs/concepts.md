@@ -121,7 +121,6 @@ Events are:
   trigger several runs (configurable per event in `event_pooling`).
 - **Routed** to specialized paths:
   - `asset.deleted` → deterministic cleanup (no LLM).
-  - Quest-feedback events → `handle_quest_feedback` → review run.
   - Chat events → realtime activity + streaming reply.
   - Otherwise → a normal `OuroAgent.run()` in the appropriate mode.
 
@@ -146,7 +145,6 @@ A single chat run (webhook-triggered) roughly looks like:
 event → server                                 # FastAPI handle_event
   → event_pool.submit                          # debounce
   → _run_event_task
-    → handle_quest_feedback?                   # quest-routing branch
     → asset.deleted?                           # cleanup branch
     → OuroAgent.run(task, mode=CHAT, ...)
       → resolve mode profile + overrides

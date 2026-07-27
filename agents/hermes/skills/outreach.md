@@ -5,9 +5,10 @@ load: always
 
 # Outreach
 
-This is the operational layer under your SOUL and HEARTBEAT. They tell you *why*
-and *what bar*; this tells you *exactly how* to run outreach without spamming,
-losing track of anyone, or guessing.
+This is the operational layer under your SOUL. SOUL tells you *why* and *what
+bar*; this tells you *exactly how* to run outreach — including every numeric
+cap — without spamming, losing track of anyone, or guessing. HEARTBEAT
+orchestrates *which* slice to take on a tick; it does not redefine these rules.
 
 **Sources of truth:**
 - **Resend** is authoritative for email history (what was sent, what was
@@ -16,6 +17,25 @@ losing track of anyone, or guessing.
 - **The CRM dataset** is the durable contact-state index (who, status, next
   action, first/last timestamps). It is *not* the full thread and *not* the
   send ledger. Scratch JSON files in the workspace are never authoritative.
+
+## Daily caps (canonical)
+
+These numbers live here only. Do not invent alternate caps from memory or
+period logs.
+
+| Cap | Limit |
+|---|---|
+| Outbound emails / day (cold + follow-up + live-thread reply) | **4** total |
+| Cold / first contacts / day | **2** |
+| Follow-ups / day | **2** |
+| Same artifact as the "something new" in follow-ups / day | **2** (so one artifact never headlines more than one day's follow-ups) |
+
+At 4 outbound for the day, the only email still allowed is a live-thread reply
+that would otherwise sit a full day — and it still counts. Cold sends and
+follow-ups never exceed the total cap.
+
+Batch cold sends create batch follow-up waves a week later; spreading sends
+spreads follow-ups. Respect stop requests immediately and permanently.
 
 ## One quest per research group
 
@@ -154,11 +174,10 @@ you have something genuinely strong.
 
 **Spread the wave.** "Due" means eligible, not urgent. Contacts sent on the
 same day all come due on the same day; do not drain that queue tick after tick.
-Follow-ups are also subject to the daily caps in HEARTBEAT.md (Constraints) —
-pick the best-fit contact from the due window rather than mechanically taking
-the oldest row. If the queue is long, that's a sign the original cold sends
-were too batched — fix that upstream (see the daily cold-send cap in
-HEARTBEAT.md), don't compensate with volume.
+Follow-ups are also subject to the daily caps above — pick the best-fit contact
+from the due window rather than mechanically taking the oldest row. If the
+queue is long, that's a sign the original cold sends were too batched — fix
+that upstream (cold-send subcap), don't compensate with volume.
 
 ## Daily email budget (count from Resend, not CRM)
 
@@ -174,10 +193,7 @@ Before any outbound email, count today's sends from Resend:
 3. Count messages **from** `hermes@agents.ouro.foundation` (ignore digests,
    chat notifications, and other senders). Every outbound counts: cold,
    follow-up, and live-thread reply.
-4. Cap is 4/day total. At 4, only a priority-1 live-thread reply may still go
-   out (and it still counts). Cold sends and follow-ups never exceed the cap.
-5. Cold-send subcap: at most 2 first contacts/day (no prior Hermes outbound
-   to that address in Resend).
+4. Apply the Daily caps table above.
 
 ## Never email the same person twice by accident
 
@@ -286,8 +302,18 @@ do not pass the string `"null"` or `""`.
    it, pick someone else and mark this one `identified` with a note.
 2. **Write the email** per your SOUL writing style: warm, brief, specific, one
    easy next step, no emdashes, no LLM tells. Lead with them, not with Ouro.
+   **Always sign as an AI agent** — never a name-only close. Prefer:
+
+   ```
+   Best,
+   Hermes
+   AI agent at Ouro Foundation (hermes@agents.ouro.foundation)
+   ```
+
+   Variants are fine as long as "AI agent" (or equivalent) is unmistakable.
 3. **Self-review.** Would you be proud to have it forwarded to their whole
-   department? If not, fix it before sending.
+   department? Does the sign-off make clear you are an AI? If not, fix it
+   before sending.
 4. **Send** via Resend with `idempotencyKey` and capture the returned message
    id. **Always CC `matt@ouro.foundation` and `will.bryan421@gmail.com`**.
    Pass both in the Resend `cc` field. Matt and Will (@will) are on the
@@ -385,33 +411,25 @@ something new (a fresh result, a more specific invitation, a quest that fits
 them), never "just checking in." After it, if they're still silent, set
 `next_action` to leave them be and never contact again. Silence is an answer.
 
-**Daily follow-up caps (the one canonical statement):**
+Timing windows and daily follow-up / artifact caps are in **Daily caps** and
+**Follow-up timing** above. If everyone in the due queue would get the same
+attachment with a re-personalized wrapper, that's a mail-merge, not outreach —
+several recipients know each other and compare notes. Find substance specific
+to the next person or stop following up and go build something new worth
+sharing.
 
-- At most **2 follow-ups per day**, total.
-- Within that, the **same artifact** (a dataset, a benchmark, a post) may be
-  the "something new" in at most 2 follow-ups per day — which, combined with
-  the cap above, means a given artifact never headlines more than one day's
-  worth of follow-ups. If everyone in the due queue would get the same
-  attachment with a re-personalized wrapper, that's a mail-merge, not outreach
-  — several recipients know each other and compare notes. Find substance
-  specific to the next person (their problem, their data, a result that only
-  matters to them) or stop following up and go build something new worth
-  sharing.
+## Track notes (CRM behavior by type)
 
-## Two tracks, one dataset
+Pitch and voice live in SOUL. CRM-side differences:
 
-**Researchers** (`type='researcher'`). The pitch is about *them*: a larger
-audience, real collaborators, and infrastructure (compute, models, routes,
-datasets) to build on. Connect their work to specific Ouro teams, open quests,
-or people working the same problem. Reference 1-3 of their actual recent works.
+**Researchers** (`type='researcher'`). Connect their work to specific Ouro
+teams, open quests, or people on the same problem. Reference 1-3 of their
+actual recent works in the email. Follow-up window: 7-12 days.
 
-**Sponsors** (`type='sponsor'`). Lead with the mission and a concrete, fundable
-opportunity, never with an ask for money. Translate a community open question
-into a quest: what gets done, the deliverable, why it matters, roughly what it
-takes. Be scrupulously honest about stage and uncertainty. Match the funder to
-the work. Make the next step a conversation, not a commitment. Many sponsors
-have no public address; those live as `identified`/`blocked` with a
-`next_action` describing the warm-intro path.
+**Sponsors** (`type='sponsor'`). Many have no public address — those live as
+`identified`/`blocked` with a `next_action` describing the warm-intro path.
+Follow-up window: 14-21 days. Never overstate stage or traction in the CRM
+notes you leave yourself.
 
 ## End-of-tick discipline
 

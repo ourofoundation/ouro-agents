@@ -1,19 +1,17 @@
-"""Planning: periodic quest creation plus quest feedback review.
+"""Planning: periodic quest creation and draft auto-approval.
 
 A plan is just a quest. The platform is the single source of truth for plan
 content, item status, and lifecycle (``draft`` → ``open`` → ``closed``); the
 only local state is a tiny per-team cursor recording when the agent last
 planned and which quests it published.
 
-The planning loop has three moving parts, all driven from the heartbeat:
+The planning loop has two moving parts, both driven from the heartbeat:
 
 - **Creation**: when the cadence comes due and the work inbox has drained,
   a planning run publishes a new draft quest scoped to one focus.
 - **Approval**: draft quests auto-promote to ``open`` after the review window
-  elapses (when ``auto_approve`` is set); reviewer comments route through the
-  feedback run instead.
-- **Feedback**: comments on the agent's own quests trigger a review run that
-  revises the quest in place and moves its lifecycle status.
+  elapses (when ``auto_approve`` is set). Comments on quests use the normal
+  autonomous comment path — there is no dedicated review run.
 """
 
 from __future__ import annotations
@@ -662,13 +660,6 @@ def append_planning_guidance(
         return False
 
 
-def _is_controller_feedback(agent: "OuroAgent", author_user_id: str | None) -> bool:
-    """True when *author_user_id* is a configured controller."""
-    if not author_user_id:
-        return False
-    security = getattr(getattr(agent, "config", None), "security", None)
-    resolved = getattr(security, "resolved_controller_ids", None) or []
-    return str(author_user_id) in {str(x) for x in resolved}
 PLAN_ITEM_QUALITY_BAR = """\
 Every plan item must pass this bar:
 - It names a concrete deliverable or observable outcome (an asset created or
@@ -863,171 +854,6 @@ def build_planning_prompt(
     )
 
 
-FEEDBACK_REVIEW_PROMPT_TEMPLATE = """\
-You received feedback on one of your quests (Ouro quest ID: {quest_id}).
-
-Current quest lifecycle status: {current_status}
-(draft = awaiting approval before execution; open = approved and being
-executed; closed = finished or shelved.)
-
-Current structured quest items (frontend numbering is 1-indexed):
-{current_items_section}
-
-Current quest description:
-{plan_text}
-
-Feedback received:
-{feedback_text}
-
-{thread_context}
-
-Steps:
-1. First interpret any "item N" references against the structured quest item list
-   above, using its 1-indexed numbering. Do NOT infer item numbers from prose headings,
-   markdown bullets, or the quest description.
-2. Revise the quest to incorporate this feedback (if changes are needed).
-3. Manage structured quest items directly as needed:
-   - Use the item_id values shown above when calling item tools.
-   - update_quest_item(quest_id, item_id, ...): change description, notes, status,
-     or sort_order
-   - delete_quest_item(quest_id, item_id): remove irrelevant items (only if no entries)
-   - If you remove or reorder items, normalize sort_order to match the frontend's 1-indexed numbering (1, 2, 3, ...).
-   - If the list above seems stale, call list_quest_items(quest_id) before editing.
-4. If you revised the quest description, update it with update_quest. Do not
-   change the quest's lifecycle status yourself — report it in the JSON below.
-5. {reply_instruction} Summarize what you changed, and if the quest is still a
-   draft, note that you're awaiting their go-ahead before executing.
-
-Do NOT execute any quest items — only review feedback and revise.
-
-IMPORTANT — approval vs. revision:
-- {approval_guidance}
-
-IMPORTANT — closing / cancellation:
-- If the reviewer asks you to deactivate, cancel, stop, shelve, or archive the
-  quest, do NOT rewrite the quest description unless they also asked for
-  textual edits. Set "next_status": "closed".
-
-Return a JSON summary:
-```json
-{{"feedback_summary": "<brief summary of feedback received>", "next_status": "draft|open|closed"}}
-```
-"""
-
-POLL_REVIEW_PROMPT_TEMPLATE = """\
-You published a plan as an Ouro quest (asset ID: {quest_id}).
-Check if there are any comments on that quest with feedback from a human reviewer
-(use get_comments with parent_id={quest_id}).
-
-IMPORTANT: get_comments only returns top-level comments. Reviewer feedback is
-often a REPLY to your own "ready for review" comment, which is nested one level
-deeper. For each top-level comment authored by you, call get_comments again with
-that comment's id to fetch its replies before concluding there is no feedback.
-
-Current quest lifecycle status: {current_status}
-(draft = awaiting approval before execution; open = approved and being
-executed; closed = finished or shelved.)
-
-Current structured quest items (frontend numbering is 1-indexed):
-{current_items_section}
-
-Current quest description:
-{plan_text}
-
-If there is feedback, revise the quest to incorporate it: update the
-description with update_quest and manage items with list_quest_items,
-create_quest_items, update_quest_item, and delete_quest_item. Then reply to the
-reviewer with a comment (write_comment) summarizing what you changed. Do not
-change the quest's lifecycle status yourself — report it in the JSON below.
-
-If there are no comments or the comments don't require changes, keep the quest as-is.
-
-Do NOT execute any quest items — only review feedback and revise.
-
-IMPORTANT — approval vs. revision:
-- {approval_guidance}
-
-Return a JSON summary:
-```json
-{{"feedback_summary": "<brief summary of feedback received, or null if none>", "next_status": "draft|open|closed"}}
-```
-"""
-
-
-def _approval_guidance(current_status: str) -> str:
-    if current_status == "open":
-        return (
-            "This quest is already open, which means it has already been approved. "
-            'Keep "next_status": "open" after incorporating feedback unless the '
-            "reviewer explicitly asks you to pause, stop, or hold execution "
-            "pending another review (then use \"draft\") or to cancel/close it "
-            '(then use "closed"). Reply as someone continuing an active plan, '
-            "not as someone waiting for initial approval."
-        )
-    return (
-        'Set "next_status": "open" ONLY when the feedback explicitly approves the '
-        'quest with positive affirmation (e.g. "good to go", "approved", "looks '
-        'good", "ship it"). Set "next_status": "draft" when the reviewer requests '
-        "changes or gives direction WITHOUT explicit approval — the quest stays "
-        "awaiting another round of review."
-    )
-
-
-def build_feedback_review_prompt(
-    quest_id: str,
-    plan_text: str,
-    current_items_section: str,
-    feedback_text: str,
-    current_status: str,
-    reply_parent_id: str | None = None,
-    thread_parent_id: str | None = None,
-) -> str:
-    if reply_parent_id and reply_parent_id != quest_id:
-        reply_instruction = (
-            f"Reply in the same comment thread by calling write_comment with "
-            f"parent_id `{reply_parent_id}`."
-        )
-    else:
-        reply_instruction = (
-            f"Reply on the quest by calling write_comment with parent_id `{quest_id}`."
-        )
-
-    if thread_parent_id:
-        thread_context = (
-            f"If you need more thread context, inspect the active discussion thread with "
-            f"get_comments(parent_id=`{thread_parent_id}`). The relevant thread may also "
-            f"already be included in your prefetched context."
-        )
-    else:
-        thread_context = ""
-
-    return FEEDBACK_REVIEW_PROMPT_TEMPLATE.format(
-        quest_id=quest_id,
-        current_status=current_status or "unknown",
-        current_items_section=current_items_section or "(no quest items)",
-        plan_text=plan_text or "(no description)",
-        feedback_text=feedback_text,
-        reply_instruction=reply_instruction,
-        thread_context=thread_context,
-        approval_guidance=_approval_guidance(current_status),
-    )
-
-
-def build_poll_review_prompt(
-    quest_id: str,
-    plan_text: str,
-    current_items_section: str,
-    current_status: str,
-) -> str:
-    return POLL_REVIEW_PROMPT_TEMPLATE.format(
-        quest_id=quest_id,
-        current_status=current_status or "unknown",
-        current_items_section=current_items_section or "(no quest items)",
-        plan_text=plan_text or "(no description)",
-        approval_guidance=_approval_guidance(current_status),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Planning run — create a new plan quest
 # ---------------------------------------------------------------------------
@@ -1040,7 +866,7 @@ def _plan_doc_store(agent: "OuroAgent", team_id: str | None):
 
 
 def resolve_planning_model(agent: "OuroAgent", hb_model=None):
-    """Build the planning/review model, falling back to *hb_model* if needed."""
+    """Build the planning model, falling back to *hb_model* if needed."""
     planning_cfg = agent.config.planning
     tier_model = None
     if hasattr(agent, "_model_id_for_role"):
@@ -1187,141 +1013,6 @@ async def run_planning_run(
 
 
 # ---------------------------------------------------------------------------
-# Feedback / review run — revise a quest and move its lifecycle
-# ---------------------------------------------------------------------------
-
-
-async def run_quest_feedback_run(
-    agent: "OuroAgent",
-    hb_model,
-    quest_id: str,
-    servers: list[str],
-    feedback: Optional[str] = None,
-    reply_parent_id: str | None = None,
-    thread_parent_id: str | None = None,
-    prefetch=None,
-    capability_envelope=None,
-    feedback_author_user_id: str | None = None,
-) -> Optional[str]:
-    """Review feedback on one of the agent's own quests.
-
-    When *feedback* is provided (e.g. from a webhook event) it is included
-    directly in the prompt; otherwise the run polls the quest's comments.
-    The run's reported ``next_status`` moves the quest lifecycle
-    (draft/open/closed). Returns a short human-readable outcome, or None when
-    the quest could not be loaded.
-    """
-    from ..memory.focus import is_directional_feedback
-    from ..memory.reflection import write_log
-    from .profiles import RunMode
-
-    ouro = agent._get_ouro_client()
-    try:
-        quest = ouro.quests.retrieve(quest_id)
-    except Exception as e:
-        logger.warning("Failed to retrieve quest %s for review: %s", quest_id, e)
-        return None
-
-    current_status = quest_status(quest) or "unknown"
-    team_id = str(read_field(quest, "team_id") or "") or None
-    items = quest_items(quest)
-    items_section = (
-        render_numbered_quest_items(items) if items else "(no quest items)"
-    )
-    plan_text = quest_description_text(quest)
-
-    if feedback:
-        prompt = build_feedback_review_prompt(
-            quest_id=quest_id,
-            plan_text=plan_text,
-            current_items_section=items_section,
-            feedback_text=feedback,
-            current_status=current_status,
-            reply_parent_id=reply_parent_id,
-            thread_parent_id=thread_parent_id,
-        )
-    else:
-        prompt = build_poll_review_prompt(
-            quest_id=quest_id,
-            plan_text=plan_text,
-            current_items_section=items_section,
-            current_status=current_status,
-        )
-
-    plan_model = resolve_planning_model(agent, hb_model)
-
-    review_preload = [
-        "ouro:get_comments",
-        "ouro:write_comment",
-        "ouro:update_quest",
-        "ouro:list_quest_items",
-        "ouro:create_quest_items",
-        "ouro:update_quest_item",
-        "ouro:delete_quest_item",
-    ]
-
-    result = await agent.run(
-        prompt,
-        model_override=plan_model,
-        mode=RunMode.REVIEW,
-        allowed_servers=servers,
-        preload_tools=review_preload,
-        prefetch=prefetch,
-        team_id=team_id,
-        capability_envelope=capability_envelope,
-    )
-
-    parsed = parse_json_from_llm(result)
-    if not parsed:
-        logger.warning("Could not parse review result as JSON")
-        return None
-
-    feedback_summary = parsed.get("feedback_summary")
-    next_status = parsed.get("next_status")
-    if next_status not in {"draft", "open", "closed"}:
-        next_status = current_status
-
-    if feedback_summary:
-        remember_plan_feedback_direction(agent, quest_id, team_id, feedback_summary)
-        # Durable standing guidance for controller directional feedback.
-        guidance_text = feedback or feedback_summary
-        if (
-            _is_controller_feedback(agent, feedback_author_user_id)
-            and is_directional_feedback(guidance_text)
-        ):
-            append_planning_guidance(
-                agent.config.agent.workspace,
-                guidance_text,
-                source="controller",
-            )
-
-    outcome = "unchanged"
-    if next_status != current_status:
-        if set_quest_status(ouro, quest_id, next_status):
-            outcome = f"{current_status} → {next_status}"
-        else:
-            outcome = "status update failed"
-
-    label = {
-        ("draft", "open"): "approved",
-        ("open", "closed"): "closed",
-        ("draft", "closed"): "cancelled",
-    }.get((current_status, next_status), "revised" if feedback_summary else "reviewed")
-    summary_text = (feedback_summary or "no feedback found")[:100]
-    logger.info("Quest %s review: %s (%s)", quest_id[:8], label, outcome)
-    write_log(
-        agent.config.agent.workspace,
-        f"[planning:{label}] [plan](asset:{quest_id}) {summary_text}",
-        doc_store=_plan_doc_store(agent, team_id),
-        agent_name=agent.config.agent.name,
-    )
-
-    if feedback_summary:
-        return f"Quest {label} ({outcome}): {feedback_summary}"
-    return f"No feedback found — quest remains {current_status}."
-
-
-# ---------------------------------------------------------------------------
 # Reviewable quest discovery (CLI / force helpers)
 # ---------------------------------------------------------------------------
 
@@ -1329,7 +1020,7 @@ async def run_quest_feedback_run(
 def find_reviewable_quests(
     agent: "OuroAgent", limit: int = 10
 ) -> list[dict[str, Any]]:
-    """The agent's own draft/open quests, drafts first (for review pickers)."""
+    """The agent's own draft/open quests, drafts first (for CLI/TUI listings)."""
     ouro = agent._get_ouro_client()
     reviewable: list[dict[str, Any]] = []
     for asset in search_own_quests(agent, limit=25):

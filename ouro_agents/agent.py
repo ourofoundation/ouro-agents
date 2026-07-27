@@ -3356,11 +3356,6 @@ class OuroAgent:
 
         return await force_planning_heartbeat(self, goal=goal, team_id=team_id)
 
-    async def force_review_heartbeat(self, quest_id: str | None = None) -> Optional[str]:
-        from .modes.heartbeat import force_review_heartbeat
-
-        return await force_review_heartbeat(self, quest_id=quest_id)
-
     def _run_dream_scope(
         self,
         *,
@@ -3544,68 +3539,6 @@ class OuroAgent:
                     doc_store=store,
                 )
         return results
-
-    async def handle_quest_feedback(
-        self,
-        event_run,
-        capability_envelope: Optional[CapabilityEnvelope] = None,
-    ) -> Optional[str]:
-        """Handle feedback on one of the agent's own quests from an event.
-
-        Verifies ownership against the platform (provenance only checks the
-        payload); when the quest isn't ours or can't be loaded, the event
-        falls through to a normal run with the prebuilt task.
-        """
-        from .modes.planning import run_quest_feedback_run
-        from .syncing import read_field
-
-        prov = event_run.provenance
-        quest_id = str(getattr(prov, "root_asset_id", "") or "")
-        own_quest = False
-        if quest_id and self.own_user_id:
-            try:
-                quest = self._get_ouro_client().quests.retrieve(quest_id)
-                own_quest = str(read_field(quest, "user_id") or "") == str(
-                    self.own_user_id
-                )
-            except Exception as e:
-                logger.warning("Failed to verify quest %s ownership: %s", quest_id, e)
-
-        if own_quest:
-            hb_model_id = (
-                self._model_id_for_role("heartbeat")
-                or self.config.heartbeat.model
-                or self.config.agent.model
-            )
-            hb_model = self._build_model(hb_model_id, heartbeat=True, role="heartbeat")
-            servers = list(getattr(self.config.heartbeat, "servers", None) or ["ouro"])
-
-            result = await run_quest_feedback_run(
-                self,
-                hb_model,
-                quest_id,
-                servers,
-                feedback=event_run.feedback_text or event_run.task,
-                reply_parent_id=event_run.reply_parent_id,
-                thread_parent_id=event_run.thread_parent_id,
-                prefetch=event_run.prefetch if not event_run.prefetch.empty else None,
-                capability_envelope=capability_envelope,
-                feedback_author_user_id=event_run.actor_user_id,
-            )
-            if result is not None:
-                logger.info("Quest %s updated via event feedback", quest_id[:8])
-                return result
-
-        return await self.run(
-            task=event_run.task,
-            mode=event_run.mode,
-            user_id=event_run.user_id,
-            preload_tools=(
-                list(event_run.preload_tools) if event_run.preload_tools else None
-            ),
-            team_id=event_run.team_id,
-            capability_envelope=capability_envelope,
-        )
 
     def _finalize_run_record(self, record: RunRecord) -> None:
         """Snapshot steps + usage onto the record and persist it.

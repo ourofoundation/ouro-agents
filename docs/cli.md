@@ -101,18 +101,6 @@ the planner builds around.
 The planner publishes an Ouro **quest** (as a draft awaiting review) and
 records it in the team's planning cursor. See [Planning](./planning.md).
 
-## `review`
-
-```bash
-ouro-agents review
-```
-
-Forces a review check on one of the agent's quests. If multiple quests
-are reviewable (draft or open), a TUI picker (`tui/review_picker.py`)
-lets you pick which one. The review run re-checks comments on the quest,
-applies feedback, and moves the quest's lifecycle status (`draft` →
-`open` on approval, or `closed` on cancellation).
-
 ## `runs`
 
 ```bash

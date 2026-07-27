@@ -36,7 +36,6 @@ class EventSurface(str, Enum):
     COMMENT = "comment"
     MENTION = "mention"
     HEARTBEAT = "heartbeat"
-    PLAN_REVIEW = "plan_review"
     CLEANUP = "cleanup"
     UNKNOWN = "unknown"
 
@@ -107,16 +106,6 @@ SURFACE_CAPABILITIES: dict[EventSurface, frozenset[Capability]] = {
     EventSurface.COMMENT: READ_REPLY_CAPABILITIES,
     EventSurface.MENTION: MENTION_CAPABILITIES,
     EventSurface.HEARTBEAT: ALL_CAPABILITIES,
-    EventSurface.PLAN_REVIEW: frozenset(
-        {
-            Capability.READ_PLATFORM,
-            Capability.REPLY,
-            Capability.MANAGE_QUEST,
-            Capability.UPDATE_ASSET,
-            Capability.LOAD_MCP_TOOL,
-            Capability.MEMORY_WRITE,
-        }
-    ),
     EventSurface.CLEANUP: NO_ACTION_CAPABILITIES,
     EventSurface.UNKNOWN: READ_REPLY_CAPABILITIES,
 }

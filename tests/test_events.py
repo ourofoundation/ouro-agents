@@ -30,7 +30,6 @@ def _load_events_module():
         AUTONOMOUS = "autonomous"
         HEARTBEAT = "heartbeat"
         PLAN = "plan"
-        REVIEW = "review"
 
     config_module.RunMode = RunMode
     sys.modules["ouro_agents.config"] = config_module
@@ -437,7 +436,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertNotIn("Thread reply caution", event_run.task)
 
     def test_quest_comment_includes_item_hygiene_guidance(self):
-        """Comments on quests remind the agent to clear waiting / complete items."""
+        """Comments on quests remind the agent to close the item loop."""
         event_run = build_event_run_context(
             {
                 "event": "comment",
@@ -464,6 +463,10 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertIn("waiting_on", event_run.task)
         self.assertIn("update_quest_item", event_run.task)
         self.assertIn("complete_quest_item", event_run.task)
+        self.assertIn("skipped", event_run.task)
+        self.assertIn("ouro:update_quest_item", event_run.preload_tools)
+        self.assertIn("ouro:complete_quest_item", event_run.preload_tools)
+        self.assertEqual(event_run.mode.value, "autonomous")
 
     def test_post_comment_omits_quest_item_hygiene_guidance(self):
         event_run = build_event_run_context(

@@ -5,7 +5,7 @@ resource limits, and behavioral flags.  This mirrors SubAgentProfile — a singl
 declarative object that captures everything about a mode, replacing scattered
 conditionals throughout agent.py and soul.py.
 
-Built-in profiles cover the five core modes.  User config can override
+Built-in profiles cover the four core modes.  User config can override
 ``max_steps`` and ``preload_tools`` per mode via ``ModeOverride``.
 """
 
@@ -25,8 +25,6 @@ from .framing import (
     HEARTBEAT_OUTPUT,
     PLAN_OUTPUT,
     PLANNING_FRAMING,
-    REVIEW_FRAMING,
-    REVIEW_OUTPUT,
 )
 
 
@@ -35,7 +33,6 @@ class RunMode(str, Enum):
     AUTONOMOUS = "autonomous"
     HEARTBEAT = "heartbeat"
     PLAN = "plan"
-    REVIEW = "review"
 
 
 class ModeProfile(BaseModel):
@@ -174,30 +171,17 @@ PLAN = ModeProfile(
     append_conversation_turns=False,
 )
 
-REVIEW = ModeProfile(
-    name="review",
-    framing=REVIEW_FRAMING,
-    output_format=REVIEW_OUTPUT,
-    max_steps=12,
-    restricted_servers=True,
-    memory_tool_filter=["memory_recall"],
-    lightweight=True,
-    skip_post_reflection=True,
-    append_conversation_turns=False,
-)
-
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
-PROFILES = [CHAT, AUTONOMOUS, HEARTBEAT, PLAN, REVIEW]
+PROFILES = [CHAT, AUTONOMOUS, HEARTBEAT, PLAN]
 
 MODE_REGISTRY: dict[RunMode, ModeProfile] = {
     RunMode.CHAT: CHAT,
     RunMode.AUTONOMOUS: AUTONOMOUS,
     RunMode.HEARTBEAT: HEARTBEAT,
     RunMode.PLAN: PLAN,
-    RunMode.REVIEW: REVIEW,
 }
 
 

@@ -6,7 +6,7 @@ from ouro_agents.modes.framing import (
     HEARTBEAT_OUTPUT,
     heartbeat_framing_for_kind,
 )
-from ouro_agents.modes.profiles import CHAT, HEARTBEAT, PLAN, REVIEW
+from ouro_agents.modes.profiles import CHAT, HEARTBEAT, PLAN
 from ouro_agents.skills import load_startup_skills, resolve_skill, resolve_skills
 from ouro_agents.subagents.context import SubAgentContext
 from ouro_agents.subagents.prompts import DEVELOPER_PROMPT, EXECUTOR_PROMPT
@@ -177,7 +177,7 @@ def test_always_loaded_platform_skills_are_injected_for_all_main_modes(tmp_path)
     assert "# Ouro Platform" in startup_skills
     assert "## Ouro Markdown Syntax" in startup_skills
 
-    for profile in (CHAT, HEARTBEAT, PLAN, REVIEW):
+    for profile in (CHAT, HEARTBEAT, PLAN):
         system_prompt, _dynamic_context = build_prompt(
             soul="",
             notes="",
@@ -193,7 +193,7 @@ def test_current_datetime_is_dynamic_not_in_cacheable_static_prompt():
     """The volatile timestamp must live in dynamic context, not the static
     system prompt — otherwise it busts prompt-prefix caching for everything
     after it (soul, platform context, skills, tool directory)."""
-    for profile in (CHAT, HEARTBEAT, PLAN, REVIEW):
+    for profile in (CHAT, HEARTBEAT, PLAN):
         system_prompt, dynamic_context = build_prompt(
             soul="Be precise.",
             notes="",

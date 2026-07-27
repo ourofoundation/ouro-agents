@@ -3,11 +3,12 @@
 A plan is just an Ouro **quest**. The platform is the single source of truth
 for plan content, item status, and lifecycle; there is no local plan mirror.
 The agent publishes a new draft quest on a cadence, the quest is approved into
-`open` (by a reviewer or automatically), and its items are then worked through
-the same quest inbox as any other quest.
+`open` (automatically after the review window, or via a controller comment
+on the quest), and its items are then worked through the same quest inbox as
+any other quest.
 
-Implementation lives in `ouro_agents/modes/planning.py` (quest creation,
-approval, feedback review) and `ouro_agents/modes/heartbeat.py` (the work
+Implementation lives in `ouro_agents/modes/planning.py` (quest creation and
+draft auto-approval) and `ouro_agents/modes/heartbeat.py` (the work
 inbox and orchestration). Configuration is under `modes.planning` (hoisted
 into top-level `PlanningConfig` at load): `enabled`, `model`, `cadence`,
 `review_window`, `auto_approve`.
@@ -43,18 +44,12 @@ review)   worked)   or shelved)
   with `status="draft"`, notifies the controller, and records the cursor.
   Each planning run creates its own quest; unfinished items from earlier
   plans stay on their original quests, which remain open until they resolve.
-- **Approval**: a reviewer comment routes through the feedback run (below);
-  with `auto_approve=true`, drafts older than `review_window` are promoted
-  to `open` by `auto_approve_due_drafts` at the start of each heartbeat.
-  Only cursor-tracked drafts auto-open — a draft someone deliberately parked
-  never activates itself.
-- **Feedback** (`run_quest_feedback_run`): comments on the agent's own
-  quests (recognized structurally: thread root is a quest the agent
-  authored) trigger a review run that revises the quest in place and reports
-  a `next_status` (`draft`/`open`/`closed`). Explicit approval opens a
-  draft; requests for changes keep it in draft; cancellation closes it.
-  Direction-shaping feedback is stored as durable `direction` memory via
-  `remember_plan_feedback_direction` so it influences future plans.
+- **Approval**: with `auto_approve=true`, drafts older than `review_window`
+  are promoted to `open` by `auto_approve_due_drafts` at the start of each
+  heartbeat. Only cursor-tracked drafts auto-open — a draft someone
+  deliberately parked never activates itself. Comments on quests (including
+  draft approval, item skips, and plan revisions) use the normal autonomous
+  comment path — there is no dedicated review run.
 
 ## The heartbeat loop
 
@@ -110,12 +105,10 @@ detail.
 |---------|--------|
 | `ouro-agents plan` | Force a planning run (TUI to pick team). |
 | `ouro-agents plan "<goal>" --team-id <id>` | Plan around an explicit goal. |
-| `ouro-agents review` | Force a feedback check on a quest (TUI to pick). |
 
 Programmatically:
 
 ```python
 async with OuroAgent(config) as agent:
     result = await agent.force_planning_heartbeat(goal="...", team_id="...")
-    reviewed = await agent.force_review_heartbeat(quest_id="...")
 ```

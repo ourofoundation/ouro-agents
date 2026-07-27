@@ -2,11 +2,7 @@
 
 When a webhook event arrives (e.g. a comment), this module checks the payload
 against cheap local state to determine: is this about something I created?
-Is it feedback on one of my quests? Which team did it come from?
-
-Quest feedback is recognized structurally — the thread root is a quest the
-agent authored — with no plan-specific local state. The quest-feedback
-handler re-verifies ownership against the platform before acting.
+Which team did it come from?
 """
 
 from __future__ import annotations
@@ -29,15 +25,6 @@ class AssetProvenance:
     team_id: Optional[str] = None
     root_asset_id: Optional[str] = None
     root_asset_type: Optional[str] = None
-
-    @property
-    def is_quest_feedback(self) -> bool:
-        """Comment lands on a quest the agent authored — route to review."""
-        return bool(
-            self.is_own_asset
-            and self.root_asset_id
-            and self.root_asset_type == "quest"
-        )
 
 
 def _load_agent_user_id(workspace: Path) -> Optional[str]:

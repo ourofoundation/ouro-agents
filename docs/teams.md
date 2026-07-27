@@ -80,10 +80,6 @@ prompt when needed. Quest creation goes into the team's Ouro workspace
 and the team's planning cursor (`teams/<team_id>/planning.json`) records
 the published quest.
 
-Quest-feedback events are routed by `handle_quest_feedback`, which
-verifies quest ownership against the platform and scopes the review run
-to the quest's own team.
-
 ## Writeability fallback
 
 If the platform reports a team with `agent_can_create=False` (e.g.
