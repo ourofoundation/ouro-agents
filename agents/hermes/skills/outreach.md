@@ -245,13 +245,14 @@ Skipping the sent-mail check because "the CRM says waiting on CIFs" is a
 failure mode — that is exactly how duplicate replies happen. If Resend tools
 fail, stop and message Matt — do not send from memory.
 
-**If Matt has replied on the thread, stand down.** Matt is CC'd on every
-outreach email, and sometimes he takes the conversation over directly. If the
-thread shows a message *from* Matt to the contact that you have not been
-explicitly asked to follow up on, do not chime in — no "adding to what Matt
-said," no parallel replies. Set `next_action` to "Matt is driving this thread;
-do not reply unless asked" and move on. You re-enter only when Matt explicitly
-asks you to (in the thread or in a message to you).
+**If Matt or Will has replied on the thread, stand down.** Matt and Will are
+CC'd on every outreach email, and sometimes one of them takes the conversation
+over directly. If the thread shows a message *from* Matt (`matt@ouro.foundation`)
+or Will (`will.bryan421@gmail.com` / @will) to the contact that you have not
+been explicitly asked to follow up on, do not chime in — no "adding to what
+they said," no parallel replies. Set `next_action` to "Matt/Will is driving
+this thread; do not reply unless asked" and move on. You re-enter only when
+Matt or Will explicitly asks you to (in the thread or in a message to you).
 
 ## Sending workflow
 
@@ -288,9 +289,10 @@ do not pass the string `"null"` or `""`.
 3. **Self-review.** Would you be proud to have it forwarded to their whole
    department? If not, fix it before sending.
 4. **Send** via Resend with `idempotencyKey` and capture the returned message
-   id. **Always CC `matt@ouro.foundation`**. Pass it in the Resend `cc` field.
-   Matt is on the thread so he can add color or corrections — do not omit
-   this, and do not BCC instead.
+   id. **Always CC `matt@ouro.foundation` and `will.bryan421@gmail.com`**.
+   Pass both in the Resend `cc` field. Matt and Will (@will) are on the
+   thread so they can add color or corrections — do not omit either, and do
+   not BCC instead.
 5. **Log immediately** by upserting a row (see below). An unlogged send is a
    future double-send.
 
@@ -299,8 +301,8 @@ do not pass the string `"null"` or `""`.
 0. **Read the full thread (sent + received)** per the section above. No
    exceptions. Run the duplicate guard before drafting.
 1. Confirm you are not re-asking or re-answering anything already settled.
-2. Write, self-review, send (CC Matt, with `idempotencyKey`), and log — same
-   bar as a first send.
+2. Write, self-review, send (CC Matt and Will, with `idempotencyKey`), and
+   log — same bar as a first send.
 3. Update last-outbound / reply fields / `next_action` so the next tick cannot
    miss what just happened. **Do not touch** `first_outbound_at`,
    `first_outbound_email_id`, or legacy `date_sent`.
