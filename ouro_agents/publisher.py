@@ -1,4 +1,5 @@
 import logging
+import time
 from contextlib import contextmanager
 from functools import cached_property
 from typing import Iterator, Optional
@@ -6,6 +7,12 @@ from typing import Iterator, Optional
 from ouro import Ouro
 
 log = logging.getLogger(__name__)
+
+# Providers emit deltas of a few characters each; forwarding every one as its
+# own websocket event floods the socket for no visual benefit (the client
+# smooths display locally). Coalesce until either threshold is hit.
+COALESCE_MAX_CHARS = 24
+COALESCE_MAX_INTERVAL_S = 0.05
 
 
 class OuroReplyPublisher:
@@ -26,6 +33,10 @@ class OuroReplyPublisher:
         self._client = client
         self._api_key = api_key
         self._base_url = base_url
+        # Pending coalesced stream chunk: {emit, kwargs, content, first_at}.
+        # At most one stream (message_id + event kind) buffers at a time; a
+        # chunk for a different stream flushes the previous one first.
+        self._pending: Optional[dict] = None
 
     @cached_property
     def client(self) -> Ouro:
@@ -75,7 +86,10 @@ class OuroReplyPublisher:
         try:
             with session_cm:
                 entered = True
-                yield
+                try:
+                    yield
+                finally:
+                    self._flush_pending()
         except Exception:
             if entered:
                 raise
@@ -92,6 +106,40 @@ class OuroReplyPublisher:
         except Exception:
             log.warning("Websocket emit failed (%s), skipping", fn.__name__, exc_info=True)
 
+    def _flush_pending(self) -> None:
+        pending = self._pending
+        if pending is None:
+            return
+        self._pending = None
+        self._safe_emit(pending["emit"], content=pending["content"], **pending["kwargs"])
+
+    def _emit_coalesced(self, emit_fn, *, content: str, **kwargs) -> None:
+        """Buffer a stream delta, flushing once it grows big or old enough.
+
+        Any emit for a different stream (or any non-stream emit) flushes the
+        buffer first, so event ordering on the wire is preserved.
+        """
+        pending = self._pending
+        if pending is not None and (
+            pending["emit"] is not emit_fn or pending["kwargs"] != kwargs
+        ):
+            self._flush_pending()
+            pending = None
+        if pending is None:
+            pending = {
+                "emit": emit_fn,
+                "kwargs": kwargs,
+                "content": "",
+                "first_at": time.monotonic(),
+            }
+            self._pending = pending
+        pending["content"] += content
+        if (
+            len(pending["content"]) >= COALESCE_MAX_CHARS
+            or time.monotonic() - pending["first_at"] >= COALESCE_MAX_INTERVAL_S
+        ):
+            self._flush_pending()
+
     def emit_activity(
         self,
         *,
@@ -102,6 +150,7 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id:
             return
+        self._flush_pending()
         self._safe_emit(
             self.client.websocket.emit_activity,
             conversation_id=conversation_id,
@@ -121,10 +170,10 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id or not content:
             return
-        self._safe_emit(
+        self._emit_coalesced(
             self.client.websocket.emit_llm_response,
-            conversation_id=conversation_id,
             content=content,
+            conversation_id=conversation_id,
             message_id=message_id,
             turn_id=turn_id,
             seq=seq,
@@ -139,6 +188,7 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id:
             return
+        self._flush_pending()
         self._safe_emit(
             self.client.websocket.emit_llm_response_end,
             conversation_id=conversation_id,
@@ -157,10 +207,10 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id or not content:
             return
-        self._safe_emit(
+        self._emit_coalesced(
             self.client.websocket.emit_reasoning,
-            conversation_id=conversation_id,
             content=content,
+            conversation_id=conversation_id,
             message_id=message_id,
             turn_id=turn_id,
             seq=seq,
@@ -177,6 +227,7 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id or not subagent_name:
             return
+        self._flush_pending()
         self._safe_emit(
             self.client.websocket.emit_subagent_start,
             conversation_id=conversation_id,
@@ -198,6 +249,7 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id or not detail:
             return
+        self._flush_pending()
         self._safe_emit(
             self.client.websocket.emit_subagent_step,
             conversation_id=conversation_id,
@@ -221,6 +273,7 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id:
             return
+        self._flush_pending()
         self._safe_emit(
             self.client.websocket.emit_tool_start,
             conversation_id=conversation_id,
@@ -244,6 +297,7 @@ class OuroReplyPublisher:
     ) -> None:
         if not conversation_id:
             return
+        self._flush_pending()
         self._safe_emit(
             self.client.websocket.emit_tool_result,
             conversation_id=conversation_id,
