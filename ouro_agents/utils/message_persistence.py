@@ -10,6 +10,10 @@ from smolagents import ActionStep
 
 logger = logging.getLogger(__name__)
 
+# Match agent tool-output budget so chat UI sees what the model saw, not a
+# short preview. Larger MCP payloads are already compacted upstream at 50k.
+_MAX_CHAT_TOOL_RESULT_CHARS = 50_000
+
 
 def should_persist_tool_call_payload(payload: dict) -> bool:
     # Subagent progress is persisted as its own `subagent` row; the delegate
@@ -48,12 +52,23 @@ def build_persistence_step_callback(
     return _callback
 
 
+def _truncate_tool_result(obs: str) -> str:
+    if len(obs) <= _MAX_CHAT_TOOL_RESULT_CHARS:
+        return obs
+    return (
+        obs[:_MAX_CHAT_TOOL_RESULT_CHARS]
+        + f"\n... [truncated: {len(obs):,} chars total,"
+        f" showing first {_MAX_CHAT_TOOL_RESULT_CHARS:,}]"
+    )
+
+
 def extract_tool_call_payloads(step: ActionStep) -> list[dict]:
     if getattr(step, "is_final_answer", False) or step.error:
         return []
 
     payloads: list[dict] = []
     obs = step.observations or ""
+    result = _truncate_tool_result(obs)
     for tc in getattr(step, "tool_calls", None) or []:
         if isinstance(tc, dict):
             if "function" in tc:
@@ -79,7 +94,7 @@ def extract_tool_call_payloads(step: ActionStep) -> list[dict]:
             {
                 "name": name,
                 "arguments": args,
-                "result": obs[:4000],
+                "result": result,
             }
         )
 
