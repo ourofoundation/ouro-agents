@@ -1192,6 +1192,50 @@ def _append_shared_context_snapshot(
     return playbook
 
 
+def _append_notification_inbox(
+    agent: "OuroAgent",
+    playbook: str | None,
+    preload_tools: list[str],
+) -> tuple[str | None, list[str]]:
+    """Append the Notification Inbox section and extend preload tools.
+
+    Failures are swallowed so a broken notifications API never aborts the tick.
+    An inbox-only playbook is valid when there is no other work.
+    """
+    try:
+        from ..notification_inbox import build_notification_inbox
+
+        get_client = getattr(agent, "_get_ouro_client", None)
+        if not callable(get_client):
+            return playbook, preload_tools
+        ouro = get_client()
+        if ouro is None:
+            return playbook, preload_tools
+
+        inbox_cfg = agent.config.event_delivery.notification_inbox
+        notif_inbox = build_notification_inbox(ouro, inbox_cfg)
+        if not notif_inbox.section:
+            return playbook, preload_tools
+
+        if playbook:
+            playbook = f"{playbook}\n\n{notif_inbox.section}"
+        else:
+            playbook = notif_inbox.section
+
+        for tool_name in (
+            "ouro:get_asset",
+            "ouro:get_comments",
+            "ouro:write_comment",
+            "ouro:read_notification",
+        ):
+            if tool_name not in preload_tools:
+                preload_tools.append(tool_name)
+    except Exception:
+        logger.warning("Failed to attach notification inbox to heartbeat", exc_info=True)
+
+    return playbook, preload_tools
+
+
 def build_heartbeat_task_context(
     agent: "OuroAgent",
     *,
@@ -1244,8 +1288,15 @@ def build_heartbeat_task_context(
             tick_kind = TickKind.OPEN_ENDED
 
     if not playbook:
+        # Notification inbox alone can justify a tick when there is no other work.
+        playbook, preload_tools = _append_notification_inbox(
+            agent, playbook, preload_tools
+        )
+        if playbook:
+            source = "notification-inbox"
+            tick_kind = TickKind.OPEN_ENDED
         return HeartbeatTaskContext(
-            playbook=None,
+            playbook=playbook,
             team_id=team_id,
             source=source,
             tick_kind=tick_kind,
@@ -1280,6 +1331,10 @@ def build_heartbeat_task_context(
     )
     if recent_digest:
         playbook = f"{playbook}\n\n{recent_digest}"
+
+    playbook, preload_tools = _append_notification_inbox(
+        agent, playbook, preload_tools
+    )
 
     if not is_within_active_hours(agent.config.heartbeat):
         playbook += (

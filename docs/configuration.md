@@ -24,6 +24,7 @@ point.
   "mcp_servers":   [ ... ],
   "server":        { ... },
   "event_pooling": { ... },
+  "event_delivery":{ ... },
   "security":      { ... },
   "ask_controller":{ ... },
   "display":       { ... },
@@ -399,6 +400,46 @@ Per-event timing config (`EventPoolTimingConfig`):
 
 Defaults are merged with the user's overrides per-event so missing fields
 keep sensible values.
+
+## `event_delivery`
+
+Controls whether each webhook event type runs the agent immediately or is
+deferred to the next heartbeat's Notification Inbox.
+
+```json
+"event_delivery": {
+  "events": {
+    "comment": "heartbeat",
+    "mention": "heartbeat"
+  },
+  "realtime_for_controllers": true,
+  "notification_inbox": {
+    "expire_after_hours": 72,
+    "max_threads": 15,
+    "max_fetch": 100,
+    "snippet_chars": 150,
+    "categories": ["mentions", "comments", "shares"]
+  }
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `events` | `{}` | Map of event type → `"realtime"` \| `"heartbeat"`. Unlisted types default to realtime. |
+| `realtime_for_controllers` | `true` | Controllers bypass heartbeat deferral and wake the agent immediately. Trusted users do not. |
+| `notification_inbox.expire_after_hours` | `72` | Unread items older than this are auto-marked read before the digest renders. |
+| `notification_inbox.max_threads` | `15` | Max thread groups shown in the digest; overflow summarized as a count. |
+| `notification_inbox.max_fetch` | `100` | Cap on unread notifications fetched per tick. |
+| `notification_inbox.snippet_chars` | `150` | Truncation length for the latest comment text per thread. |
+| `notification_inbox.categories` | `mentions,comments,shares` | Backend notification categories included in the digest. |
+
+`interrupt`, `asset.deleted`, and `new-conversation` cannot be set to
+`heartbeat`. See [Events & webhooks](events.md#delivery-modes) for triage
+semantics (handle / dismiss / defer).
+
+Pooling (`event_pooling`) still applies to events whose delivery mode is
+`realtime`. Flipping an event back to `"realtime"` restores pooling with
+no other edits.
 
 ## `security`
 

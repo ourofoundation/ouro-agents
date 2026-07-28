@@ -429,6 +429,80 @@ class EventPoolingConfig(BaseModel):
         return {**data, "events": merged}
 
 
+def _default_notification_inbox_categories() -> List[str]:
+    return ["mentions", "comments", "shares"]
+
+
+class NotificationInboxConfig(BaseModel):
+    """Settings for the heartbeat Notification Inbox digest."""
+
+    expire_after_hours: int = Field(default=72, ge=1)
+    max_threads: int = Field(default=15, ge=1)
+    max_fetch: int = Field(default=100, ge=1, le=200)
+    snippet_chars: int = Field(default=150, ge=20)
+    # Backend notification categories included in the digest.
+    categories: List[str] = Field(
+        default_factory=_default_notification_inbox_categories
+    )
+
+
+_ALWAYS_REALTIME_EVENTS = frozenset(
+    {"interrupt", "asset.deleted", "new-conversation"}
+)
+
+
+class EventDeliveryConfig(BaseModel):
+    """Per-event-type delivery mode.
+
+    ``realtime`` runs the agent on webhook receipt (with pooling if configured).
+    ``heartbeat`` acknowledges the webhook without running and leaves the
+    notification unread for the next heartbeat's Notification Inbox.
+
+    When ``realtime_for_controllers`` is true (default), controllers bypass
+    heartbeat deferral so their comments/mentions still wake the agent
+    immediately.
+    """
+
+    events: Dict[str, Literal["realtime", "heartbeat"]] = Field(default_factory=dict)
+    realtime_for_controllers: bool = True
+    notification_inbox: NotificationInboxConfig = Field(
+        default_factory=NotificationInboxConfig
+    )
+
+    @model_validator(mode="after")
+    def _validate_events(self) -> "EventDeliveryConfig":
+        from ouro.events import WEBHOOK_EVENT_TYPES
+
+        for name, mode in self.events.items():
+            if name not in WEBHOOK_EVENT_TYPES:
+                raise ValueError(f"Unknown event type in event_delivery: {name}")
+            if mode == "heartbeat" and name in _ALWAYS_REALTIME_EVENTS:
+                raise ValueError(f"Event '{name}' must stay realtime")
+        return self
+
+    def mode_for(self, event_type: str) -> str:
+        return self.events.get(event_type, "realtime")
+
+    def should_defer_to_heartbeat(
+        self,
+        event_type: str,
+        *,
+        actor_user_id: Optional[str] = None,
+        controller_user_ids: Optional[List[str]] = None,
+    ) -> bool:
+        """Whether this event should be deferred to the heartbeat inbox."""
+        if self.mode_for(event_type) != "heartbeat":
+            return False
+        if (
+            self.realtime_for_controllers
+            and actor_user_id
+            and controller_user_ids
+            and actor_user_id in controller_user_ids
+        ):
+            return False
+        return True
+
+
 class PlanningConfig(BaseModel):
     enabled: bool = False
     model: Optional[str] = None
@@ -838,6 +912,7 @@ class OuroAgentsConfig(BaseSettings):
     memory: MemoryConfig
     server: ServerConfig = Field(default_factory=ServerConfig)
     event_pooling: EventPoolingConfig = Field(default_factory=EventPoolingConfig)
+    event_delivery: EventDeliveryConfig = Field(default_factory=EventDeliveryConfig)
     subagents: SubAgentConfig = Field(default_factory=SubAgentConfig)
     planning: PlanningConfig = Field(default_factory=PlanningConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)

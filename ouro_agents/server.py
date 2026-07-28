@@ -1245,6 +1245,26 @@ async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
         await _handle_interrupt_event(event_run)
         return {"status": "accepted", "event_type": "interrupt"}
 
+    # Heartbeat delivery: acknowledge without running; leave notifications
+    # unread so the next heartbeat Notification Inbox can triage them.
+    # Controllers bypass this by default (realtime_for_controllers).
+    if agent_instance.config.event_delivery.should_defer_to_heartbeat(
+        event_run.event_type,
+        actor_user_id=event_run.actor_user_id,
+        controller_user_ids=agent_instance.config.security.resolved_controller_ids,
+    ):
+        logger.info(
+            "Deferring %s event to heartbeat inbox (actor=%s, source=%s)",
+            event_run.event_type,
+            event_run.actor_username,
+            event_run.source_id,
+        )
+        return {
+            "status": "accepted",
+            "event_type": event_run.event_type,
+            "delivery": "heartbeat",
+        }
+
     # Controller decision replies bypass event pooling so a live run can continue
     # within the short prompt-cache window.
     if event_run.event_type == "new-message":

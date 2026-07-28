@@ -7,7 +7,56 @@ small registry that decides:
 - whether the event is a **chat event** (drives realtime activity / streaming),
 - which MCP tools to **preload** for the run,
 - whether to **pool** bursts of events into a single dispatch,
+- whether delivery is **realtime** or deferred to the **heartbeat** inbox,
 - and which special path to take (cleanup, plan-feedback, normal run).
+
+## Delivery modes
+
+`event_delivery` controls whether a webhook runs the agent immediately or
+is deferred until the next heartbeat:
+
+| Mode | Behavior |
+|------|----------|
+| `realtime` (default) | Acknowledge, optionally pool, then run the agent. Notifications are marked read on dispatch. |
+| `heartbeat` | Acknowledge and return. Notifications stay **unread** and surface in the next heartbeat's Notification Inbox. |
+
+Controllers bypass heartbeat deferral by default (`realtime_for_controllers: true`):
+their comments/mentions still wake the agent immediately. Trusted users and other
+agents do not — that keeps agent↔agent chatter on the heartbeat cadence.
+
+```json
+"event_delivery": {
+  "events": {
+    "comment": "heartbeat",
+    "mention": "heartbeat"
+  },
+  "realtime_for_controllers": true,
+  "notification_inbox": {
+    "expire_after_hours": 72,
+    "max_threads": 15,
+    "categories": ["mentions", "comments", "shares"]
+  }
+}
+```
+
+Control / cleanup events (`interrupt`, `asset.deleted`, `new-conversation`)
+must stay realtime — the config validator rejects deferring them.
+
+### Notification Inbox triage
+
+When the heartbeat builds its playbook it fetches unread notifications in
+the configured categories, auto-expires anything older than
+`expire_after_hours`, groups the rest by thread, and appends a compact
+`## Notification Inbox` section. Per thread the agent chooses:
+
+- **Handle** — reply (e.g. `write_comment`), then include the thread's ids
+  in one batch `read_notification(ids=[...])` call.
+- **Dismiss** — nothing worth doing; include ids in the same batch call
+  without acting.
+- **Defer** — do nothing; ids stay unread and reappear next tick.
+
+Unread on the platform **is** the queue. There is no local ledger. Silence
+is the default; planned / quest work stays primary.
 
 ## Event registry
 
@@ -43,7 +92,7 @@ Every webhook is parsed into an `EventRunContext`
 | `actor_user_id` | Used for the self-event guard. |
 | `conversation_id` | When the event has one. |
 | `team_id` | Team scope, if any. |
-| `notification_ids` | Marked as read after dispatch. |
+| `notification_ids` | Marked as read after realtime dispatch (not for heartbeat delivery). |
 | `prefetch` | Pre-resolved asset blobs to inject into the prompt. |
 | `preload_tools` | Tools to preload (overrides registry preloads). |
 | `provenance` | Plan-feedback metadata; see below. |
@@ -67,22 +116,27 @@ The `EventPool` (`ouro_agents/event_pool.py`) is a debounce buffer:
 - `max_wait_seconds` — hard ceiling per batch from the first event.
 
 Defaults are tuned per event type in `EventPoolingConfig` and merged
-with user overrides field-by-field.
+with user overrides field-by-field. Pooling only applies to events whose
+delivery mode is `realtime`.
 
-## Routing inside `_run_event_task`
+## Routing inside `handle_event` / `_run_event_task`
 
 The order of branches in the server handler:
 
 1. **Self-event guard** — drop events whose actor is the agent's own
    user id.
-2. **Cleanup** — `asset.deleted` runs the deterministic cleanup and
-   returns. No LLM is invoked.
-3. **Mark notifications read** — best-effort, before the run starts.
-4. **`new-conversation`** — no-op; nothing to respond to until a message
-   arrives.
-5. **Normal run** — otherwise, build a `ServerAgentObserver` (which
-   streams activity into Ouro for chat events) and call
-   `OuroAgent.run(task, mode, conversation_id, team_id, prefetch, ...)`.
+2. **Interrupt** — cancel in-flight chat work; no LLM run.
+3. **Heartbeat delivery** — if the event should defer to the heartbeat
+   inbox (delivery mode `heartbeat`, and the actor is not a controller
+   when `realtime_for_controllers` is on), return accepted without marking
+   notifications read and without running.
+4. **Controller decision** — short-circuit for live ask-controller replies.
+5. **Pooling** — coalesce poolable realtime events, then dispatch.
+6. Inside `_run_event_task`:
+   - **Cleanup** — `asset.deleted` runs deterministic cleanup; no LLM.
+   - **Mark notifications read** — best-effort, before the realtime run.
+   - **`new-conversation`** — no-op until a message arrives.
+   - **Normal run** — otherwise call `OuroAgent.run(...)`.
 
 ## Provenance
 
@@ -101,6 +155,8 @@ asset and author) against the cached agent identity and produces an
    `ouro-js`).
 2. Add an `EventSpec` to `EVENT_REGISTRY` with appropriate `is_chat`,
    `tool_preloads`, and `pool_key_fn`.
-3. If the event needs a special path (deterministic cleanup, planning
+3. Optionally set `event_delivery.events[<name>]` to `heartbeat` if the
+   event should wait for the next tick instead of running immediately.
+4. If the event needs a special path (deterministic cleanup, planning
    side effects, etc.), branch on `event_type` in `_run_event_task`
    before falling through to the generic run.

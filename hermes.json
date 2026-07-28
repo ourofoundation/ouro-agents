@@ -141,6 +141,12 @@
       }
     }
   },
+  "event_delivery": {
+    "events": {
+      "comment": "heartbeat",
+      "mention": "heartbeat"
+    }
+  },
   "mcp_servers": [
     {
       "name": "ouro",
