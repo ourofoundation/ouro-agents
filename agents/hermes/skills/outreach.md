@@ -25,12 +25,12 @@ period logs.
 
 | Cap | Limit |
 |---|---|
-| Outbound emails / day (cold + follow-up + live-thread reply) | **4** total |
-| Cold / first contacts / day | **2** |
-| Follow-ups / day | **2** |
+| Outbound emails / day (cold + follow-up + live-thread reply) | **8** total |
+| Cold / first contacts / day | **4** |
+| Follow-ups / day | **4** |
 | Same artifact as the "something new" in follow-ups / day | **2** (so one artifact never headlines more than one day's follow-ups) |
 
-At 4 outbound for the day, the only email still allowed is a live-thread reply
+At 8 outbound for the day, the only email still allowed is a live-thread reply
 that would otherwise sit a full day — and it still counts. Cold sends and
 follow-ups never exceed the total cap.
 

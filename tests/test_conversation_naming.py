@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from smolagents.models import ChatMessage, MessageRole
+
 from ouro_agents.conversation_naming import (
     generate_conversation_name,
     name_conversation_if_needed,
@@ -22,6 +24,23 @@ class TestConversationNaming(unittest.TestCase):
         messages = model.call_args.args[0]
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("unnamed email threads", messages[1]["content"])
+
+    def test_rejects_message_repr_when_model_returns_no_content(self):
+        model = Mock(
+            return_value=ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=None,
+                tool_calls=None,
+            )
+        )
+
+        title = generate_conversation_name(
+            model,
+            "What are you working on tomorrow?",
+            "Tomorrow I am working on outreach.",
+        )
+
+        self.assertIsNone(title)
 
     def test_names_an_unnamed_conversation(self):
         conversations = Mock()
@@ -61,6 +80,28 @@ class TestConversationNaming(unittest.TestCase):
         self.assertIsNone(title)
         model_factory.assert_not_called()
         conversations.update.assert_not_called()
+
+    def test_replaces_a_legacy_message_repr_name(self):
+        conversations = Mock()
+        conversations.retrieve.return_value = SimpleNamespace(
+            name="ChatMessage(role='assistant', content=None, tool_calls=None"
+        )
+        client = SimpleNamespace(conversations=conversations)
+        model = Mock(return_value=SimpleNamespace(content="Plan tomorrow's work"))
+
+        title = name_conversation_if_needed(
+            client,
+            "conversation-id",
+            "What are you working on tomorrow?",
+            "Tomorrow I am working on outreach.",
+            Mock(return_value=model),
+        )
+
+        self.assertEqual(title, "Plan tomorrow's work")
+        conversations.update.assert_called_once_with(
+            "conversation-id",
+            name="Plan tomorrow's work",
+        )
 
 
 if __name__ == "__main__":

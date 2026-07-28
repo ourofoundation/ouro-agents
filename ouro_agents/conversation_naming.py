@@ -14,6 +14,7 @@ Prefer specific nouns and verbs. Do not use generic titles such as
 "New conversation", "Chat", "Help request", or "User question"."""
 
 MAX_TITLE_LENGTH = 72
+_MESSAGE_REPR_RE = re.compile(r"^(?:ChatMessage|ChatMessageStreamDelta)\s*\(", re.I)
 
 
 def _read_field(value: Any, field: str) -> Any:
@@ -23,14 +24,27 @@ def _read_field(value: Any, field: str) -> Any:
 
 
 def _clean_title(value: Any) -> str | None:
-    content = _read_field(value, "content")
-    raw = content if content is not None else value
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        raw = value
+    elif isinstance(value, dict) and "content" in value:
+        raw = value["content"]
+    elif hasattr(value, "content"):
+        raw = value.content
+    else:
+        raw = value
+
+    if raw is None:
+        return None
+
     line = next((line.strip() for line in str(raw).splitlines() if line.strip()), "")
     line = line.strip(" \t#`\"'")
     line = re.sub(r"^(?:title|conversation title)\s*:\s*", "", line, flags=re.I)
     line = line.strip(" \t#`\"'")
     line = re.sub(r"\s+", " ", line).rstrip(".")
-    if not line:
+    if not line or _MESSAGE_REPR_RE.match(line):
         return None
     if len(line) > MAX_TITLE_LENGTH:
         line = line[: MAX_TITLE_LENGTH + 1].rsplit(" ", 1)[0].rstrip(" ,:;—-")
@@ -65,7 +79,7 @@ def name_conversation_if_needed(
     model_factory: Callable[[], Callable[..., Any]],
 ) -> str | None:
     conversation = ouro_client.conversations.retrieve(conversation_id)
-    if str(_read_field(conversation, "name") or "").strip():
+    if _clean_title(_read_field(conversation, "name")):
         return None
 
     title = generate_conversation_name(
