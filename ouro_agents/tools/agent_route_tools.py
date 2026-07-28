@@ -93,11 +93,13 @@ def make_run_route_tool(workspace: Path, executor: Any):
                 f"Available drafts: {available}"
             )
 
-        missing = manifest.missing_required(params)
-        if missing:
+        violations = manifest.validate_params(params)
+        if violations:
+            joined = "; ".join(violations[:8])
+            more = f" (+{len(violations) - 8} more)" if len(violations) > 8 else ""
             return (
-                f"Error: missing required inputs for {name}: {', '.join(missing)}. "
-                f"Required: {', '.join(manifest.required_inputs) or '(none)'}"
+                f"Error: params failed JSON Schema validation for {name}: "
+                f"{joined}{more}"
             )
 
         handler_rel = manifest.relative_handler_path()
@@ -144,64 +146,55 @@ def _service_base_url(public_base_url: str | None, path_prefix: str) -> str:
     return f"{base}{prefix}"
 
 
-def _provision_ouro_auth(
+def _sync_ouro_auth(
     ouro_client: Any,
     *,
     service_id: str,
     serve_token: str,
 ) -> str:
-    """Best-effort vault + authentications insert; return operator instructions otherwise."""
-    user_id = None
+    """Sync AGENT_ROUTES_SERVE_TOKEN into the service's Ouro auth via the API."""
+    set_auth = getattr(
+        getattr(ouro_client, "services", None), "set_authentication", None
+    )
+    if not callable(set_auth):
+        return (
+            "WARNING: ouro-py client has no services.set_authentication; "
+            "upgrade ouro-py and retry publish_route to provision Ouro auth."
+        )
     try:
-        user = getattr(ouro_client, "user", None)
-        user_id = getattr(user, "id", None) if user is not None else None
-    except Exception:  # noqa: BLE001
-        user_id = None
+        result = set_auth(service_id, serve_token, method="Ouro")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ouro auth sync failed for service %s: %s", service_id, exc)
+        return (
+            f"WARNING: could not sync Ouro auth for service {service_id}: "
+            f"{type(exc).__name__}: {exc}. Ensure AGENT_ROUTES_SERVE_TOKEN is set "
+            "and retry publish_route."
+        )
 
-    # ouro-py does not expose vault RPCs; try raw supabase if present.
-    supabase = getattr(ouro_client, "supabase", None) or getattr(
-        ouro_client, "db", None
-    )
-    if supabase is not None and user_id:
+    payload = result
+    if hasattr(result, "model_dump") and callable(result.model_dump):
         try:
-            secret_resp = supabase.rpc("insert_secret", {"secret": serve_token}).execute()
-            secret_id = secret_resp.data
-            if isinstance(secret_id, list) and secret_id:
-                secret_id = secret_id[0]
-            if isinstance(secret_id, dict):
-                secret_id = secret_id.get("insert_secret") or secret_id.get("id")
-            supabase.table("authentications").insert(
-                {
-                    "user_id": str(user_id),
-                    "service_id": str(service_id),
-                    "secret_id": str(secret_id),
-                    "method": "Ouro",
-                }
-            ).execute()
-            return (
-                f"Provisioned Ouro auth for service {service_id} "
-                f"(secret_id={secret_id})."
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Automatic Ouro auth provisioning failed: %s", exc)
+            payload = result.model_dump()
+        except Exception:  # noqa: BLE001
+            payload = result
+    if not isinstance(payload, dict):
+        return f"Synced Ouro auth for service {service_id}."
 
-    sql = (
-        "-- Run as the agent user (or via service role) after first publish:\n"
-        "WITH s AS (\n"
-        "  INSERT INTO vault.secrets (secret)\n"
-        f"  VALUES ('{serve_token}')\n"
-        "  RETURNING id\n"
-        ")\n"
-        "INSERT INTO public.authentications (user_id, service_id, secret_id, method)\n"
-        "SELECT '<AGENT_USER_ID>', "
-        f"'{service_id}', id, 'Ouro' FROM s\n"
-        "ON CONFLICT DO NOTHING;\n"
-        "-- Also ensure AGENT_ROUTES_SERVE_TOKEN in the agent env matches this secret.\n"
-    )
+    rotated = payload.get("rotated")
+    secret_id = payload.get("secret_id")
+    if rotated is False:
+        return (
+            f"Ouro auth already in sync for service {service_id}"
+            + (f" (secret_id={secret_id})." if secret_id else ".")
+        )
+    if rotated is True:
+        return (
+            f"Rotated Ouro auth for service {service_id}"
+            + (f" (secret_id={secret_id})." if secret_id else ".")
+        )
     return (
-        "Could not auto-provision vault auth. Set AGENT_ROUTES_SERVE_TOKEN in the "
-        "agent env to the service Basic token, then insert the authentications row. "
-        f"Suggested SQL:\n{sql}"
+        f"Provisioned Ouro auth for service {service_id}"
+        + (f" (secret_id={secret_id})." if secret_id else ".")
     )
 
 
@@ -348,7 +341,6 @@ def make_publish_route_tools(
 
             action = "updated"
             location_note = ""
-            needs_auth = False
             try:
                 if registry.service_id:
                     service = ouro_client.services.update(
@@ -366,7 +358,6 @@ def make_publish_route_tools(
                             getattr(service, "id", service["id"])
                         )
                         save_published_registry(workspace, registry)
-                        needs_auth = True
                     else:
                         if not org or not team:
                             _rollback_registry()
@@ -396,7 +387,6 @@ def make_publish_route_tools(
                         )
                         save_published_registry(workspace, registry)
                         location_note = f"\n- Location: org={org} team={team}"
-                        needs_auth = True
             except Exception as exc:  # noqa: BLE001
                 _rollback_registry()
                 return (
@@ -409,20 +399,20 @@ def make_publish_route_tools(
             service_id = registry.service_id or str(getattr(service, "id", ""))
             serve_token = os.environ.get(routes_config.serve_token_env) or ""
             auth_note = ""
-            if needs_auth:
-                if not serve_token:
-                    auth_note = (
-                        "\nWARNING: AGENT_ROUTES_SERVE_TOKEN is unset. Generate one "
-                        "(`openssl rand -hex 32`), put it in the agent env, and "
-                        "insert an authentications row (method='Ouro') for this "
-                        f"service_id={service_id}."
-                    )
-                else:
-                    auth_note = "\n" + _provision_ouro_auth(
-                        ouro_client,
-                        service_id=service_id,
-                        serve_token=serve_token,
-                    )
+            # Sync serve token on every successful publish (idempotent upsert).
+            if not serve_token:
+                auth_note = (
+                    f"\nWARNING: {routes_config.serve_token_env} is unset. "
+                    "Generate one (`openssl rand -hex 32`), put it in the agent "
+                    "env, restart the agent, and call publish_route again so "
+                    f"Ouro auth can be synced for service_id={service_id}."
+                )
+            else:
+                auth_note = "\n" + _sync_ouro_auth(
+                    ouro_client,
+                    service_id=service_id,
+                    serve_token=serve_token,
+                )
 
             return (
                 f"Published {name} v{version}.\n"

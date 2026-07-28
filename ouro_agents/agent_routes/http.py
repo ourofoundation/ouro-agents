@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from ..config import AgentRoutesConfig, OuroAgentsConfig, SandboxConfig
 from .executor import execute_agent_route
+from .manifest import RouteManifest
 from .openapi import build_openapi_spec
 from .registry import load_published_registry
 
@@ -118,6 +119,30 @@ class AgentRoutesServer:
         if entry is None:
             raise HTTPException(status_code=404, detail=f"Unknown route: {route_name}")
 
+        try:
+            manifest = RouteManifest.model_validate(entry.manifest)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Published route %s has invalid manifest: %s", route_name, exc)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Published route {route_name} has an invalid manifest",
+            ) from exc
+
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=400,
+                detail="Request body must be a JSON object",
+            )
+        violations = manifest.validate_params(body)
+        if violations:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Request body failed JSON Schema validation",
+                    "errors": violations,
+                },
+            )
+
         context = {
             "route_name": route_name,
             "source": "http",
@@ -127,7 +152,7 @@ class AgentRoutesServer:
             "org_id": headers.get("ouro-route-org-id") or None,
             "team_id": headers.get("ouro-route-team-id") or None,
         }
-        params = body if isinstance(body, dict) else {}
+        params = body
 
         async with self._semaphore:
             async with self._lock:
@@ -200,10 +225,16 @@ def build_agent_routes_router(
     ):
         try:
             body = await request.json()
-        except Exception:  # noqa: BLE001
-            body = {}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400,
+                detail="Request body must be valid JSON",
+            ) from exc
         if not isinstance(body, dict):
-            body = {}
+            raise HTTPException(
+                status_code=400,
+                detail="Request body must be a JSON object",
+            )
         header_map = {k.lower(): v for k, v in request.headers.items()}
         return await routes_server.invoke(
             route_name,

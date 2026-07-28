@@ -24,6 +24,6 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         modal
 
 # Thin layer: bump this pin without rebuilding the stack above.
-RUN python -m pip install --no-cache-dir "ouro-py>=0.11.2"
+RUN python -m pip install --no-cache-dir "ouro-py>=0.11.3"
 
 WORKDIR /workspace

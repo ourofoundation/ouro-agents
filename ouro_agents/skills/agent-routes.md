@@ -40,6 +40,7 @@ routes/<name>/
 ```json
 {
   "name": "load-thread-context",
+  "title": "Load thread context",
   "description": "Fetch an asset, its comments, and related actions.",
   "timeout_seconds": 60,
   "inputs": {
@@ -56,15 +57,17 @@ routes/<name>/
 }
 ```
 
-- `name` must match the directory (slug: `^[a-z0-9][a-z0-9-]{1,63}$`).
-  Use a **short, action-oriented** kebab slug: verb + noun(s), e.g.
-  `load-asset-comments`, `fetch-team-feed`, `score-composition`. Avoid long
-  phrases — the slug is humanized into the Ouro route display name in
-  sentence case (`load-asset-comments` → "Load asset comments"). Never put
-  the description in the name.
+- `name` must match the directory (slug: `^[a-z0-9][a-z0-9-]{1,63}$`). It is
+  only the URL/directory id — keep it short and stable. Prefer verb + noun(s),
+  e.g. `load-asset-comments`, `fetch-team-feed`.
+- `title` (optional) is the **display name** shown on Ouro (OpenAPI summary).
+  Free-form, up to 80 chars. If omitted, the slug is humanized
+  (`load-asset-comments` → "Load asset comments").
 - `description` is **one short sentence** of docs (what it does). Not a
   paragraph, and not reused as the display name.
-- `inputs` is a JSON Schema object (tool params / HTTP body).
+- `inputs` is a JSON Schema object (tool params / HTTP body). Params are
+  validated against this schema on both `run_route` and the live HTTP path —
+  bad input returns a corrective error / HTTP 422 and never reaches the handler.
 - Optional `input_assets` / `output_assets` use the same shape as Modal
   `x-ouro-input-assets` (see `modal-app-template`).
 - Optional `mined_from`: the tool-name list from a `route-candidates` suggestion
@@ -104,6 +107,11 @@ over HTTP: `action_id`, `route_id`, `org_id`, `team_id`, `user_id`.
 Handlers run in the Docker sandbox — same as `run_python`. Use **ouro-py**,
 never MCP, inside the handler. The executor JSON-normalizes the return value
 (UUIDs, datetimes, pydantic models), so you do not need a custom `_safe_dump`.
+
+**Credentials:** published (and draft) handlers always run with **your** ouro-py
+credentials — the agent owner's token — regardless of who called the route.
+`context["user_id"]` is advisory only (the caller). Never mutate assets on a
+caller's behalf assuming their permissions; you are acting as yourself.
 
 **Comments:** MCP `get_comments` flattens to a `text` field. In ouro-py, use
 `comment.text` (or `comment.content.text`). `description.text` is only a
@@ -153,6 +161,12 @@ Load the `ouro-py` skill for full SDK docs. Do not guess method names.
 4. After publish, verify through the **live** Ouro route (`execute_route`), not
    only `run_route`.
 5. Unpublish with `unpublish_route(name)` when retiring a route.
+
+## Auth (operator, once)
+
+`publish_route` syncs `AGENT_ROUTES_SERVE_TOKEN` into the service's Ouro
+authentication automatically (idempotent). The operator only needs to set that
+env var once in the agent env and restart; no manual vault SQL.
 
 ## Testing bar
 

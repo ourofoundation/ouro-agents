@@ -44,34 +44,41 @@ from ouro_agents.tools.agent_route_tools import (
 from ouro_agents.tools.workspace_layout import check_workspace_write
 
 
-def _write_draft(workspace: Path, name: str, *, description: str = "demo") -> None:
+def _write_draft(
+    workspace: Path,
+    name: str,
+    *,
+    description: str = "demo",
+    title: str | None = None,
+    inputs: dict | None = None,
+) -> None:
     route_dir = workspace / "routes" / name
     route_dir.mkdir(parents=True, exist_ok=True)
-    (route_dir / "route.json").write_text(
-        json.dumps(
-            {
-                "name": name,
-                "description": description,
-                "timeout_seconds": 30,
-                "inputs": {
-                    "type": "object",
-                    "properties": {
-                        "asset_id": {"type": "string"},
-                        "limit": {"type": "integer", "default": 5},
-                    },
-                    "required": ["asset_id"],
-                },
-                "input_assets": {
-                    "file": {
-                        "asset_type": "file",
-                        "primary": True,
-                        "file_extensions": ["cif"],
-                    }
-                },
+    payload = {
+        "name": name,
+        "description": description,
+        "timeout_seconds": 30,
+        "inputs": inputs
+        or {
+            "type": "object",
+            "properties": {
+                "asset_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 5},
             },
-            indent=2,
-        )
-        + "\n",
+            "required": ["asset_id"],
+        },
+        "input_assets": {
+            "file": {
+                "asset_type": "file",
+                "primary": True,
+                "file_extensions": ["cif"],
+            }
+        },
+    }
+    if title is not None:
+        payload["title"] = title
+    (route_dir / "route.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
     )
     (route_dir / "handler.py").write_text(
@@ -137,8 +144,38 @@ class TestManifestLoading(unittest.TestCase):
             )
             self.assertEqual(load_route_manifests(workspace), {})
 
+    def test_title_and_invalid_schema_skipped(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(workspace, "load-context", title="Load thread context")
+            bad_schema = workspace / "routes" / "bad-schema"
+            bad_schema.mkdir(parents=True)
+            (bad_schema / "route.json").write_text(
+                json.dumps(
+                    {
+                        "name": "bad-schema",
+                        "inputs": {
+                            "type": "object",
+                            "properties": {"x": {"type": "not-a-type"}},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            manifests = load_route_manifests(workspace)
+            self.assertEqual(manifests["load-context"].title, "Load thread context")
+            self.assertNotIn("bad-schema", manifests)
 
-class TestLayoutGuardRoutes(unittest.TestCase):
+    def test_validate_params(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(workspace, "load-context")
+            manifest = load_route_manifests(workspace)["load-context"]
+            self.assertTrue(manifest.validate_params({}))
+            self.assertEqual(manifest.validate_params({"asset_id": "abc"}), [])
+            self.assertTrue(
+                any("limit" in v for v in manifest.validate_params({"asset_id": "a", "limit": "nope"}))
+            )
     def test_routes_writable(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -177,6 +214,26 @@ class TestOpenAPI(unittest.TestCase):
             self.assertEqual(
                 op["x-ouro-input-assets"]["file"]["asset_type"], "file"
             )
+
+    def test_title_overrides_slug_humanize(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(
+                workspace,
+                "load-context",
+                description="Longer docs text.",
+                title="Fetch comments + asset",
+            )
+            manifests = load_route_manifests(workspace)
+            spec = build_openapi_spec(
+                "apollo",
+                "https://agents.ouro.foundation/apollo",
+                "/routes",
+                manifests,
+            )
+            op = spec["paths"]["/load-context"]["post"]
+            self.assertEqual(op["summary"], "Fetch comments + asset")
+            self.assertEqual(op["description"], "Longer docs text.")
 
     def test_display_name_from_slug(self):
         self.assertEqual(
@@ -356,6 +413,73 @@ class TestPublishSnapshot(unittest.TestCase):
             )
             self.assertIn("Published load-context v1", result2)
 
+    def test_publish_syncs_authentication(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(workspace, "load-context")
+            ouro = MagicMock()
+            created = MagicMock()
+            created.id = "service-auth"
+            ouro.services.create.return_value = created
+            ouro.services.set_authentication.return_value = {
+                "id": "auth-1",
+                "secret_id": "sec-1",
+                "method": "Ouro",
+                "rotated": False,
+            }
+            tools = make_publish_route_tools(
+                workspace,
+                routes_config=AgentRoutesConfig(
+                    enabled=True,
+                    path_prefix="/routes",
+                    serve_token_env="AGENT_ROUTES_SERVE_TOKEN_TEST",
+                ),
+                agent_name="apollo",
+                ouro_client=ouro,
+                allow_publish=True,
+                public_base_url="https://agents.ouro.foundation/apollo",
+            )
+            publish = next(t for t in tools if t.name == "publish_route")
+            os.environ["AGENT_ROUTES_SERVE_TOKEN_TEST"] = "token-abc"
+            try:
+                result = publish(
+                    name="load-context", org_id="org-1", team_id="team-1"
+                )
+                self.assertIn("Ouro auth already in sync", result)
+                ouro.services.set_authentication.assert_called_once_with(
+                    "service-auth", "token-abc", method="Ouro"
+                )
+            finally:
+                os.environ.pop("AGENT_ROUTES_SERVE_TOKEN_TEST", None)
+
+    def test_publish_warns_when_serve_token_unset(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(workspace, "load-context")
+            ouro = MagicMock()
+            created = MagicMock()
+            created.id = "service-warn"
+            ouro.services.create.return_value = created
+            os.environ.pop("AGENT_ROUTES_SERVE_TOKEN", None)
+            tools = make_publish_route_tools(
+                workspace,
+                routes_config=AgentRoutesConfig(
+                    enabled=True,
+                    path_prefix="/routes",
+                    serve_token_env="AGENT_ROUTES_SERVE_TOKEN",
+                ),
+                agent_name="apollo",
+                ouro_client=ouro,
+                allow_publish=True,
+                public_base_url="https://agents.ouro.foundation/apollo",
+            )
+            publish = next(t for t in tools if t.name == "publish_route")
+            result = publish(
+                name="load-context", org_id="org-1", team_id="team-1"
+            )
+            self.assertIn("AGENT_ROUTES_SERVE_TOKEN is unset", result)
+            ouro.services.set_authentication.assert_not_called()
+
 
 class TestRunRouteTool(unittest.TestCase):
     def test_missing_required_inputs(self):
@@ -365,7 +489,20 @@ class TestRunRouteTool(unittest.TestCase):
             session = FakeSession('{"ok": true}')
             tool = make_run_route_tool(workspace, session)
             out = tool(name="load-context", params={})
-            self.assertIn("missing required inputs", out)
+            self.assertIn("JSON Schema validation", out)
+            self.assertIn("asset_id", out)
+            self.assertFalse(session.calls)
+
+    def test_type_mismatch_rejected(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(workspace, "load-context")
+            session = FakeSession('{"ok": true}')
+            tool = make_run_route_tool(workspace, session)
+            out = tool(name="load-context", params={"asset_id": "abc", "limit": "nope"})
+            self.assertIn("JSON Schema validation", out)
+            self.assertIn("limit", out)
+            self.assertFalse(session.calls)
 
     def test_runs_handler(self):
         with TemporaryDirectory() as tmp:
@@ -456,6 +593,23 @@ class TestHttpRouter(unittest.TestCase):
                 )
                 self.assertEqual(r.status_code, 200)
                 self.assertEqual(r.json()["served"], True)
+                # schema violation
+                r = client.post(
+                    "/apollo/routes/load-context",
+                    json={"limit": "nope"},
+                    headers={"Authorization": "Basic secret-token"},
+                )
+                self.assertEqual(r.status_code, 422)
+                # malformed JSON
+                r = client.post(
+                    "/apollo/routes/load-context",
+                    content="{not-json",
+                    headers={
+                        "Authorization": "Basic secret-token",
+                        "Content-Type": "application/json",
+                    },
+                )
+                self.assertEqual(r.status_code, 400)
                 # unknown
                 r = client.post(
                     "/apollo/routes/missing",

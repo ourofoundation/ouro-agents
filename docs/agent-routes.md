@@ -41,32 +41,20 @@ The HTTP router mounts at `{urlparse(server.public_base_url).path}/routes` on th
 agent server (no nginx changes). The backend must reach that public URL when
 proxying `execute_route`.
 
-## One-time Ouro auth provisioning
+## Ouro auth provisioning
 
 Published services use `authentication: "Ouro"`. The backend loads the
 service owner's `authentications` row (`method='Ouro'`) and sends
 `Authorization: Basic <vault secret>` on outbound calls.
 
-After the first successful `publish_route`:
+1. Set `AGENT_ROUTES_SERVE_TOKEN` in the agent env once and restart the agent
+   so the HTTP handler can validate inbound Basic auth.
+2. Call `publish_route` — it syncs that token into the service via
+   `PUT /services/:id/authentication` (owner-scoped, idempotent). Re-publishing
+   rotates the vault secret only when the env token changed.
 
-1. Ensure `AGENT_ROUTES_SERVE_TOKEN` is set in the agent env (same value the
-   agent server validates).
-2. Insert the vault secret + auth row as the agent user:
-
-```sql
-WITH s AS (
-  INSERT INTO vault.secrets (secret)
-  VALUES ('<same value as AGENT_ROUTES_SERVE_TOKEN>')
-  RETURNING id
-)
-INSERT INTO public.authentications (user_id, service_id, secret_id, method)
-SELECT '<AGENT_USER_ID>', '<SERVICE_ID>', id, 'Ouro' FROM s
-ON CONFLICT DO NOTHING;
-```
-
-`publish_route` attempts this automatically when a Supabase session is
-available; otherwise it prints the SQL above. Restart the agent server after
-setting the env token so the HTTP handler picks it up.
+No manual vault SQL is required. The agent never uses a service-role key;
+provisioning runs as the agent user through the normal API.
 
 ## Files
 

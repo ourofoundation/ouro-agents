@@ -16,12 +16,21 @@ ROUTE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 DRAFT_ROUTES_DIR = "routes"
 HANDLER_FILENAME = "handler.py"
 MANIFEST_FILENAME = "route.json"
+TITLE_MAX_LEN = 80
+
+
+def _format_jsonschema_error(error: Any) -> str:
+    path = ".".join(str(part) for part in error.absolute_path)
+    if path:
+        return f"{path}: {error.message}"
+    return str(error.message)
 
 
 class RouteManifest(BaseModel):
     """Validated route.json contents."""
 
     name: str
+    title: Optional[str] = None
     description: str = ""
     timeout_seconds: int = Field(default=60, ge=1, le=600)
     inputs: dict[str, Any] = Field(
@@ -40,6 +49,20 @@ class RouteManifest(BaseModel):
             )
         return value
 
+    @field_validator("title")
+    @classmethod
+    def _validate_title(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        title = value.strip()
+        if not title:
+            return None
+        if len(title) > TITLE_MAX_LEN:
+            raise ValueError(
+                f"title must be at most {TITLE_MAX_LEN} characters, got {len(title)}"
+            )
+        return title
+
     @field_validator("inputs")
     @classmethod
     def _validate_inputs(cls, value: dict[str, Any]) -> dict[str, Any]:
@@ -53,6 +76,12 @@ class RouteManifest(BaseModel):
         required = value.get("required")
         if required is not None and not isinstance(required, list):
             raise ValueError("inputs.required must be a list")
+        try:
+            from jsonschema.validators import Draft202012Validator
+
+            Draft202012Validator.check_schema(value)
+        except Exception as exc:  # noqa: BLE001 — surface as ValidationError
+            raise ValueError(f"inputs is not a valid JSON Schema: {exc}") from exc
         return value
 
     @property
@@ -63,6 +92,14 @@ class RouteManifest(BaseModel):
     def missing_required(self, params: dict[str, Any] | None) -> list[str]:
         params = params or {}
         return [key for key in self.required_inputs if key not in params]
+
+    def validate_params(self, params: dict[str, Any] | None) -> list[str]:
+        """Return human-readable JSON Schema violations for *params* (empty if ok)."""
+        from jsonschema import Draft202012Validator
+
+        instance = params if isinstance(params, dict) else {}
+        validator = Draft202012Validator(self.inputs)
+        return [_format_jsonschema_error(err) for err in validator.iter_errors(instance)]
 
     def draft_dir(self, workspace: Path) -> Path:
         return Path(workspace) / DRAFT_ROUTES_DIR / self.name

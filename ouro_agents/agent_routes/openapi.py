@@ -52,7 +52,7 @@ def build_openapi_spec(
         manifest = manifests[name]
         # summary → Ouro route asset name (must stay short)
         # description → longer docs text
-        title = display_name_from_slug(name)
+        title = (manifest.title or "").strip() or display_name_from_slug(name)
         operation: dict[str, Any] = {
             "operationId": _snake_case(name),
             "summary": title,
