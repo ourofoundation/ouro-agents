@@ -30,7 +30,10 @@ from .config import (
     merge_reasoning,
     tier_spec_for_role,
 )
-from .conversation_naming import name_conversation_if_needed
+from .conversation_naming import (
+    await_conversation_naming,
+    start_name_conversation_if_needed,
+)
 from .constants import openrouter_attribution_headers
 from .controller_questions import ControllerQuestionManager, ControllerReplyResolution
 from .provider_reasoning import first_party_provider_slug
@@ -3045,6 +3048,24 @@ class OuroAgent:
 
         use_reset = not has_history
 
+        # Overlap title generation with the agent run so the first reply is
+        # not blocked on naming. Title uses the user message only; we await
+        # the future just before persisting so email subjects see the name.
+        naming_future = None
+        if mode == RunMode.CHAT and conversation_id:
+            ouro_client = self._get_ouro_client()
+            if ouro_client is not None:
+                naming_future = start_name_conversation_if_needed(
+                    ouro_client,
+                    conversation_id,
+                    task,
+                    lambda: self._build_model(
+                        self._utility_model_id(),
+                        role="utility",
+                        max_completion_tokens=64,
+                    ),
+                )
+
         token.raise_if_cancelled()
         emit_progress(
             observer,
@@ -3179,35 +3200,8 @@ class OuroAgent:
 
         tool_summary = extract_tool_summary(agent, for_persistence=True)
 
-        # Name before persisting the final message so the outbound email
-        # notification (and thread subject) can use conversation.name.
-        if mode == RunMode.CHAT and conversation_id:
-            ouro_client = self._get_ouro_client()
-            if ouro_client is not None:
-                try:
-                    title = name_conversation_if_needed(
-                        ouro_client,
-                        conversation_id,
-                        task,
-                        str(result),
-                        lambda: self._build_model(
-                            self._utility_model_id(),
-                            role="utility",
-                            max_completion_tokens=64,
-                        ),
-                    )
-                    if title:
-                        logger.info(
-                            "Named conversation %s: %s",
-                            conversation_id,
-                            title,
-                        )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to name conversation %s: %s",
-                        conversation_id,
-                        e,
-                    )
+        # Finish overlapping naming before persist so email can use the title.
+        await_conversation_naming(naming_future, conversation_id=conversation_id)
 
         if observer:
             try:
