@@ -57,7 +57,7 @@
     "light": {
       "id": "xiaomi/mimo-v2.5",
       "reasoning": {
-        "effort": "high"
+        "effort": "none"
       }
     }
   },

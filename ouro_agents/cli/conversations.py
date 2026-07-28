@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 
 from ouro.resources.conversations import Messages
@@ -56,10 +55,9 @@ def create_conversation(
     team_id: str | None = None,
     name: str | None = None,
 ):
-    title = name or f"Ouro Agents Chat {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
     return user_client.conversations.create(
         member_user_ids=[user_id, agent_id],
-        name=title,
+        name=(name or "").strip() or None,
         org_id=org_id,
         team_id=team_id,
     )

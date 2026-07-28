@@ -61,7 +61,8 @@ and the agent's API key for the agent side, creates a conversation with both
 as members, posts each message you type as you, and posts the agent's reply
 (via `RunMode.CHAT`) back to the same conversation. New conversations are
 created on the platform; pass `--conversation-id` to resume one. Inside the
-REPL:
+REPL, a light model automatically names an unnamed conversation from its first
+user/assistant exchange:
 
 | Input | Behavior |
 |-------|----------|
