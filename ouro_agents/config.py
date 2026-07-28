@@ -363,6 +363,10 @@ class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     webhook_path: str = "/events"
+    # Public HTTPS origin for this agent (nginx front door), e.g.
+    # "https://agents.ouro.foundation/apollo". Used by agent routes, and
+    # available for any other feature that needs the externally reachable URL.
+    public_base_url: Optional[str] = None
 
 
 class EventPoolTimingConfig(BaseModel):
@@ -809,6 +813,16 @@ class RefinementConfig(BaseModel):
     model: Optional[str] = None
 
 
+class AgentRoutesConfig(BaseModel):
+    """Agent-authored routes: draft handlers as tools, publish as Ouro services."""
+
+    enabled: bool = False
+    path_prefix: str = "/routes"
+    serve_token_env: str = "AGENT_ROUTES_SERVE_TOKEN"
+    request_timeout_seconds: int = Field(default=120, ge=1, le=600)
+    max_concurrent_requests: int = Field(default=2, ge=1)
+
+
 class OuroAgentsConfig(BaseSettings):
     agent: AgentConfig
     # Named model roster. When set, roles pick strong/mid/light by default and
@@ -832,6 +846,7 @@ class OuroAgentsConfig(BaseSettings):
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
     run_log: RunLogConfig = Field(default_factory=RunLogConfig)
+    agent_routes: AgentRoutesConfig = Field(default_factory=AgentRoutesConfig)
     env_file: Optional[Path] = None
 
     @classmethod

@@ -186,10 +186,15 @@
   "server": {
     "host": "0.0.0.0",
     "port": 8020,
-    "webhook_path": "/apollo/events"
+    "webhook_path": "/apollo/events",
+    "public_base_url": "https://agents.ouro.foundation/apollo"
   },
   "prompt_caching": {
     "enabled": true,
     "ttl": "5m"
+  },
+  "agent_routes": {
+    "enabled": true,
+    "path_prefix": "/routes"
   }
 }

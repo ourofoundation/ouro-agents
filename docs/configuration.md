@@ -370,6 +370,7 @@ agent's local time.
 | `host` | `0.0.0.0` | uvicorn bind. |
 | `port` | `8000` | uvicorn port. |
 | `webhook_path` | `/events` | URL path Ouro should POST events to. |
+| `public_base_url` | `null` | Public HTTPS origin for this agent (nginx front door), e.g. `https://agents.ouro.foundation/apollo`. Used by agent routes and available to other features that need the externally reachable URL. |
 
 ## `event_pooling`
 

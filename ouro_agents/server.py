@@ -68,6 +68,7 @@ def _is_trivial_final_result(result_text: str) -> bool:
 agent_instance: Optional[OuroAgent] = None
 reply_publisher: Optional[OuroReplyPublisher] = None
 event_pool: Optional[EventPool] = None
+agent_routes_server = None
 last_heartbeat: Optional[datetime] = None
 start_time: datetime = datetime.now(timezone.utc)
 session_threads: Dict[str, str] = {}
@@ -110,7 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     Replaces the deprecated ``@app.on_event("startup" | "shutdown")`` decorators.
     """
-    global agent_instance, reply_publisher, event_pool
+    global agent_instance, reply_publisher, event_pool, agent_routes_server
     config = OuroAgentsConfig.load_from_file(
         os.environ.get("CONFIG_FILE", "config.json")
     )
@@ -139,6 +140,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.add_api_route(config.server.webhook_path, handle_event, methods=["POST"])
 
+    if config.agent_routes.enabled:
+        from .agent_routes.http import build_agent_routes_router
+
+        router, agent_routes_server = build_agent_routes_router(
+            config, config.agent.workspace
+        )
+        mount_prefix = getattr(router, "ouro_mount_prefix", "/routes")
+        app.include_router(router, prefix=mount_prefix)
+        logger.info(
+            "Agent routes mounted at %s (public_base_url=%s)",
+            mount_prefix,
+            config.server.public_base_url,
+        )
+
     await agent_instance.scheduler.start(agent_instance)
 
     try:
@@ -149,6 +164,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if event_pool:
             await event_pool.stop()
             event_pool = None
+        if agent_routes_server is not None:
+            agent_routes_server.close()
+            agent_routes_server = None
         if agent_instance:
             agent_instance.scheduler.stop()
             agent_instance.close()

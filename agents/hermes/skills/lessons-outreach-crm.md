@@ -11,3 +11,4 @@ Canonical CRM / Resend / send rules live in `skills/outreach.md`. Keep only scar
 - `ouro.datasets.query(...)` returns a pandas DataFrame — use `df.iterrows()` / column filters, never assume list[dict] with `.get()`.
 - On Resend `send_email`, omit unused optional fields (`topicId`, `scheduledAt`, etc.) — do not pass the string `"null"` or `""`; both fail validation.
 - Upsert batches must be homogeneous (same column set on every row). Omit keys you are not changing; never include `first_outbound_at` / `date_sent` on a reply upsert.
+- When a CRM record shows follow_up_sent=false but follow-ups have already been sent, correct the flag and do not send further follow-ups to that contact.

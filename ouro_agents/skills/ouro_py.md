@@ -132,7 +132,11 @@ ouro = get_ouro_client()
 - `unreads(id, org_id=None)` → int
 
 ### Comments (ouro.comments)
-- Use for adding comments to assets
+- `list_by_parent(parent_id)` → list of `Comment`
+- `create(...)` → `Comment`
+- Plain body text: `comment.text` (prefers `content.text`, falls back to the
+  truncated `description.text` preview). MCP `get_comments` flattens this to a
+  top-level `text` field — ouro-py does not.
 
 ### Users (ouro.users)
 - User lookup and profile access

@@ -99,6 +99,7 @@ from .subagents.reflector import (
 )
 from .tool_prompt import build_tool_calling_system_prompt
 from .tools.agent_base import SanitizedToolCallingAgent as _SanitizedToolCallingAgent
+from .tools.agent_route_tools import make_publish_route_tools, make_run_route_tool
 from .tools.python_tool import make_code_tools
 from .tools.run_history_tools import make_run_history_tools
 from .tools.scheduler_tools import make_scheduler_tools
@@ -1586,6 +1587,34 @@ class OuroAgent:
                 allowed_code_names.add("run_shell")
             code_tools = [tool for tool in code_tools if tool.name in allowed_code_names]
         closeables = [python_executor] if hasattr(python_executor, "close") else []
+
+        agent_route_tools: list = []
+        if (
+            self.config.agent_routes.enabled
+            and profile.allows_capability(Capability.RUN_PYTHON)
+            and hasattr(python_executor, "execute")
+            and self.config.agent.sandbox.mode == "docker"
+        ):
+            agent_route_tools.append(
+                make_run_route_tool(self.config.agent.workspace, python_executor)
+            )
+            agent_route_tools.extend(
+                make_publish_route_tools(
+                    self.config.agent.workspace,
+                    routes_config=self.config.agent_routes,
+                    agent_name=self.config.agent.name,
+                    ouro_client=self._get_ouro_client(),
+                    allow_publish=profile.allows_capability(Capability.CREATE_ASSET),
+                    public_base_url=self.config.server.public_base_url,
+                )
+            )
+        elif self.config.agent_routes.enabled and self.config.agent.sandbox.mode != "docker":
+            logger.info(
+                "agent_routes enabled but sandbox.mode=%s; skipping run_route "
+                "(handlers require Docker)",
+                self.config.agent.sandbox.mode,
+            )
+
         load_skill = (
             make_load_skill_tool(self.config.agent.workspace)
             if profile.allows_capability(Capability.LOAD_MCP_TOOL)
@@ -1752,6 +1781,7 @@ class OuroAgent:
                 + delegate_tools
                 + [tool for tool in (load_tool, load_skill) if tool is not None]
                 + code_tools
+                + agent_route_tools
             )
 
         preloaded_names: list[str] = []

@@ -39,6 +39,8 @@ def _summary_template() -> dict[str, Any]:
         "promoted": 0,
         "outcome_lessons": 0,
         "skills_distilled": 0,
+        "route_candidates_found": 0,
+        "route_candidates_new": 0,
         "strength_decayed": 0,
         "memories_deleted": 0,
         "refinement": {
@@ -1076,6 +1078,94 @@ def distill_skills(
 
 
 # ---------------------------------------------------------------------------
+# Route-candidate mining (agent-authored routes)
+# ---------------------------------------------------------------------------
+
+
+def mine_and_write_route_candidates(
+    workspace: Path,
+    *,
+    agent: Any | None = None,
+    dry_run: bool = False,
+    plan: DreamPlan | None = None,
+    since_iso: str | None = None,
+) -> tuple[int, int]:
+    """Mine repeated tool sequences and write skills/route-candidates.md.
+
+    Returns ``(found_count, new_count)``.
+    """
+    if agent is None:
+        if plan:
+            plan.add_skip("route_candidates", "no_agent")
+        return 0, 0
+
+    routes_cfg = getattr(getattr(agent, "config", None), "agent_routes", None)
+    run_log_cfg = getattr(getattr(agent, "config", None), "run_log", None)
+    if routes_cfg is None or not getattr(routes_cfg, "enabled", False):
+        if plan:
+            plan.add_skip("route_candidates", "agent_routes_disabled")
+        return 0, 0
+    if run_log_cfg is None or not getattr(run_log_cfg, "enabled", False):
+        if plan:
+            plan.add_skip("route_candidates", "run_log_disabled")
+        return 0, 0
+
+    run_log = getattr(agent, "_run_log", None)
+    if run_log is None or not getattr(run_log, "enabled", False):
+        if plan:
+            plan.add_skip("route_candidates", "run_log_unavailable")
+        return 0, 0
+
+    from ..agent_routes.candidates import (
+        dismiss_mined_signatures,
+        filter_new_candidates,
+        mark_candidates_suggested,
+        mine_route_candidates,
+        write_route_candidates_skill,
+    )
+
+    try:
+        dismiss_mined_signatures(workspace)
+        candidates = mine_route_candidates(run_log, since_iso=since_iso)
+        fresh, _known = filter_new_candidates(workspace, candidates)
+        if not candidates:
+            if plan:
+                plan.add_skip("route_candidates", "none_found")
+            return 0, 0
+
+        # Write the full current candidate set (fresh + still-active known) so
+        # the skill stays useful even when nothing new appeared this cycle.
+        to_write = fresh or candidates
+        if not dry_run:
+            write_route_candidates_skill(workspace, to_write, dry_run=False)
+            if fresh:
+                mark_candidates_suggested(workspace, fresh)
+        else:
+            write_route_candidates_skill(workspace, to_write, dry_run=True)
+
+        if plan:
+            plan.add_operation(
+                DreamOperation(
+                    kind="route_candidates",
+                    status="planned" if dry_run else "applied",
+                    target="skills/route-candidates.md",
+                    detail={
+                        "found": len(candidates),
+                        "new": len(fresh),
+                        "written": len(to_write),
+                    },
+                )
+            )
+        return len(candidates), len(fresh)
+    except Exception as exc:  # noqa: BLE001
+        warning = f"Route candidate mining failed: {exc}"
+        if plan:
+            plan.add_warning(warning)
+        logger.warning(warning)
+        return 0, 0
+
+
+# ---------------------------------------------------------------------------
 # Importance decay (existing behavior)
 # ---------------------------------------------------------------------------
 
@@ -1946,6 +2036,17 @@ def run_dream(
             dry_run=dry_run,
             plan=plan,
         )
+
+    with _time_phase(dream_result, "route_candidates"):
+        results["route_candidates_found"], results["route_candidates_new"] = (
+            mine_and_write_route_candidates(
+                workspace,
+                agent=agent,
+                dry_run=dry_run,
+                plan=plan,
+            )
+        )
+
     with _time_phase(dream_result, "strength_decay"):
         results["strength_decayed"] = decay_memory_strength(
             backend,
