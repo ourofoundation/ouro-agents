@@ -3179,6 +3179,36 @@ class OuroAgent:
 
         tool_summary = extract_tool_summary(agent, for_persistence=True)
 
+        # Name before persisting the final message so the outbound email
+        # notification (and thread subject) can use conversation.name.
+        if mode == RunMode.CHAT and conversation_id:
+            ouro_client = self._get_ouro_client()
+            if ouro_client is not None:
+                try:
+                    title = name_conversation_if_needed(
+                        ouro_client,
+                        conversation_id,
+                        task,
+                        str(result),
+                        lambda: self._build_model(
+                            self._utility_model_id(),
+                            role="utility",
+                            max_completion_tokens=64,
+                        ),
+                    )
+                    if title:
+                        logger.info(
+                            "Named conversation %s: %s",
+                            conversation_id,
+                            title,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to name conversation %s: %s",
+                        conversation_id,
+                        e,
+                    )
+
         if observer:
             try:
                 emit_progress(observer, "persisting_response", "saving response")
@@ -3230,34 +3260,6 @@ class OuroAgent:
             record.worth_remembering = tick_summary["worth_remembering"]
 
         def _do_post_run():
-            if mode == RunMode.CHAT and conversation_id:
-                ouro_client = self._get_ouro_client()
-                if ouro_client is not None:
-                    try:
-                        title = name_conversation_if_needed(
-                            ouro_client,
-                            conversation_id,
-                            task,
-                            str(result),
-                            lambda: self._build_model(
-                                self._utility_model_id(),
-                                role="utility",
-                                max_completion_tokens=64,
-                            ),
-                        )
-                        if title:
-                            logger.info(
-                                "Named conversation %s: %s",
-                                conversation_id,
-                                title,
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to name conversation %s: %s",
-                            conversation_id,
-                            e,
-                        )
-
             if tick_summary is not None:
                 store_semantic = bool(tick_summary["worth_remembering"])
                 want_episode = not tick_summary["is_pass"]
