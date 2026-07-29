@@ -18,6 +18,26 @@ orchestrates *which* slice to take on a tick; it does not redefine these rules.
   action, first/last timestamps). It is *not* the full thread and *not* the
   send ledger. Scratch JSON files in the workspace are never authoritative.
 
+**Sandbox / tier-1 routes:** the Docker sandbox has the `resend` Python package
+and `RESEND_API_KEY` / `RESEND_SENDER` (`hermes@agents.ouro.foundation`). In
+`run_python` / `run_route` handlers use the SDK (not MCP):
+
+```python
+import os
+import resend
+
+resend.api_key = os.environ["RESEND_API_KEY"]
+email = resend.Emails.send({
+    "from": os.environ["RESEND_SENDER"],
+    "to": ["them@example.edu"],
+    "subject": "...",
+    "html": "...",
+})
+```
+
+Interactive heartbeats still use the Resend MCP tools; compress repeated
+send/list/CRM sequences into routes when the pattern stabilizes.
+
 ## Daily caps (canonical)
 
 These numbers live here only. Do not invent alternate caps from memory or

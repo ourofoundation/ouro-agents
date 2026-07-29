@@ -161,14 +161,16 @@ dependencies.
 
 `Dockerfile.sandbox` is the shared base image with the common science stack.
 Agents that need extra tooling get their own thin overlay Dockerfile built
-`FROM` the base (e.g. `Dockerfile.sandbox.apollo` adds git, modal, and spglib
-for service building) and point `agent.sandbox.image` at the overlay tag.
+`FROM` the base (e.g. `Dockerfile.sandbox.apollo` adds git for service
+building; `Dockerfile.sandbox.hermes` adds the Resend SDK for outreach
+routes) and point `agent.sandbox.image` at the overlay tag.
 
 Build from the `ouro-agents` directory, base first:
 
 ```bash
 docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
 docker build -f Dockerfile.sandbox.apollo -t ouro-agents-sandbox-apollo:latest .
+docker build -f Dockerfile.sandbox.hermes -t ouro-agents-sandbox-hermes:latest .
 ```
 
 If you add packages to `agent.sandbox.python_packages`, make sure the agent's

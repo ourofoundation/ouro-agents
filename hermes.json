@@ -23,9 +23,10 @@
         "scipy.*",
         "ase.*",
         "pymatgen.*",
-        "modal.*"
+        "modal.*",
+        "resend.*"
       ],
-      "image": "ouro-agents-sandbox:latest",
+      "image": "ouro-agents-sandbox-hermes:latest",
       "workspace_mount": "/workspace",
       "network": "bridge",
       "memory": "4g",
@@ -37,7 +38,9 @@
         "OURO_API_KEY",
         "OURO_BASE_URL",
         "MODAL_TOKEN_ID",
-        "MODAL_TOKEN_SECRET"
+        "MODAL_TOKEN_SECRET",
+        "RESEND_API_KEY",
+        "RESEND_SENDER"
       ]
     }
   },
