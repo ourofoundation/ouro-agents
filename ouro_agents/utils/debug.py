@@ -36,21 +36,19 @@ def serialize_memory_step_for_debug(step) -> str:
             parts.append("\n\n")
         tcs = getattr(step, "tool_calls", None) or []
         if tcs:
+            from .tool_observations import (
+                attribute_observation_results,
+                tool_call_arguments,
+                tool_call_name,
+            )
+
+            results = attribute_observation_results(
+                tcs, getattr(step, "observations", None) or ""
+            )
             parts.append("### Tool calls\n\n")
-            for tc in tcs:
-                if isinstance(tc, dict):
-                    if "function" in tc:
-                        name = tc["function"].get("name", "?")
-                        args = tc["function"].get("arguments", None)
-                    else:
-                        name = tc.get("name", "?")
-                        args = tc.get("arguments", None)
-                elif hasattr(tc, "function") and tc.function is not None:
-                    name = getattr(tc.function, "name", "?")
-                    args = getattr(tc.function, "arguments", None)
-                else:
-                    name = getattr(tc, "name", "?")
-                    args = getattr(tc, "arguments", None)
+            for tc, result in zip(tcs, results):
+                name = tool_call_name(tc)
+                args = tool_call_arguments(tc)
                 try:
                     args_str = (
                         json.dumps(args, ensure_ascii=False) if args is not None else ""
@@ -60,10 +58,16 @@ def serialize_memory_step_for_debug(step) -> str:
                 if len(args_str) > 8000:
                     args_str = args_str[:8000] + "..."
                 parts.append(f"- **{name}** `{args_str}`\n")
+                if result:
+                    result_s = str(result)
+                    if len(result_s) > 20_000:
+                        result_s = result_s[:20_000] + "..."
+                    parts.append("\n")
+                    parts.append(markdown_fence(result_s))
+                    parts.append("\n")
             parts.append("\n")
-        obs = getattr(step, "observations", None) or ""
-        if obs:
-            obs_s = str(obs)
+        elif getattr(step, "observations", None):
+            obs_s = str(step.observations)
             cap = 80_000
             truncated = len(obs_s) > cap
             if truncated:

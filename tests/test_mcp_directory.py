@@ -135,3 +135,16 @@ def test_batch_tool_schemas_include_array_items(tmp_path: Path):
         t for t in make_memory_tools(_Backend(), agent_id="hermes") if t.name == "memory_recall"
     )
     assert _array_items(memory_recall, "queries")["type"] == "object"
+
+    remember, forget = (
+        next(
+            t
+            for t in make_memory_tools(
+                _Backend(), agent_id="hermes", enable_remember=True
+            )
+            if t.name == name
+        )
+        for name in ("remember", "forget")
+    )
+    assert _array_items(remember, "memories")["type"] == "object"
+    assert _array_items(forget, "items")["type"] == "object"

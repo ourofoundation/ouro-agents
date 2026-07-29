@@ -61,6 +61,67 @@ def _normalize_memory_queries(raw_queries: Any) -> list[dict]:
     return queries
 
 
+def _normalize_remember_specs(raw: Any) -> list[dict]:
+    """Accept list[dict], a single dict, or ``{"memories": [...]}``."""
+
+    if isinstance(raw, dict):
+        nested = raw.get("memories")
+        if isinstance(nested, list):
+            raw = nested
+        elif isinstance(raw.get("text"), str):
+            raw = [raw]
+        else:
+            return []
+
+    if not isinstance(raw, list):
+        return []
+
+    specs: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            specs.append(item)
+    return specs
+
+
+def _normalize_forget_specs(raw: Any) -> list[dict]:
+    """Accept list of ``{memory_id, reason}``, a single dict, or shared-reason form.
+
+    Shared-reason form: ``{"memory_ids": ["a", "b"], "reason": "..."}``.
+    """
+
+    if isinstance(raw, dict):
+        nested = raw.get("items")
+        if isinstance(nested, list):
+            raw = nested
+        elif isinstance(raw.get("memory_ids"), list) and isinstance(
+            raw.get("reason"), str
+        ):
+            reason = raw["reason"]
+            raw = [
+                {"memory_id": str(mid), "reason": reason}
+                for mid in raw["memory_ids"]
+                if str(mid).strip()
+            ]
+        elif raw.get("memory_id") is not None:
+            raw = [raw]
+        else:
+            return []
+
+    if not isinstance(raw, list):
+        return []
+
+    specs: list[dict] = []
+    for item in raw:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                specs.append({"memory_id": text, "reason": ""})
+            continue
+        if isinstance(item, dict) and item.get("memory_id") is not None:
+            specs.append(item)
+    return specs
+
+
 def make_memory_tools(
     backend: MemoryBackend,
     agent_id: str,
@@ -461,52 +522,39 @@ def make_memory_tools(
         return "\n".join(lines)
 
     @tool
-    def remember(
-        text: str,
-        subject_type: str,
-        category: str,
-        subject_id: str = "",
-        asset_ids: Optional[list[str]] = None,
-        team_slug_or_id: str = "",
-        basis: str = "stated",
-        stability: str = "stable",
-        strength: float = 0.5,
-        verification_hint: str = "",
-        reason: str = "",
-    ) -> str:
-        """Store a durable memory through validation. Disabled unless the run opts in.
+    def remember(memories: list[dict]) -> str:
+        """Store one or more durable memories through validation.
+
+        Disabled unless the run opts in. Batch related facts into one call.
 
         Args:
-            text: Memory text to store.
-            subject_type: user, agent, team, asset, conversation, org, or general.
-            category: direction, fact, or preference.
-            subject_id: Optional subject identifier. Use "self" for the current agent.
-            asset_ids: Optional Ouro asset UUIDs referenced by this memory.
-            team_slug_or_id: Optional available team slug or ID to associate.
-            basis: stated, observed, or inferred.
-            stability: stable or evolving.
-            strength: Coarse initial strength: 0.3 minor, 0.5 normal, 0.8 high.
-            verification_hint: How to re-check evolving memories.
-            reason: Required explanation for why this should be durable.
+            memories: List of memory specs. Each dict supports:
+                - text (str, required): Memory text to store.
+                - subject_type (str, required): user, agent, team, asset,
+                  conversation, org, or general.
+                - category (str, required): direction, fact, or preference.
+                - reason (str, required): Why this should be durable.
+                - subject_id (str, optional): Use "self" for the current agent.
+                - asset_ids (list[str], optional): Related Ouro asset UUIDs.
+                - team_slug_or_id (str, optional): Available team slug or ID.
+                - basis (str, optional): stated, observed, or inferred.
+                - stability (str, optional): stable or evolving.
+                - strength (float, optional): 0.3 minor, 0.5 normal, 0.8 high.
+                - verification_hint (str, optional): How to re-check evolving memories.
+
+        Example single: [{"text": "...", "subject_type": "user", "category": "preference", "reason": "..."}]
+        Example multi: [{"text": "...", "subject_type": "agent", "category": "fact", "reason": "..."}, ...]
         """
         if not enable_remember:
             return json.dumps(
                 {"status": "error", "error": "remember is not enabled for this run"}
             )
-        if not reason.strip():
-            return json.dumps({"status": "error", "error": "reason is required"})
 
-        resolved_team_ids: list[str] = []
-        if team_slug_or_id:
-            resolved = team_lookup.get(team_slug_or_id)
-            if not resolved:
-                return json.dumps(
-                    {
-                        "status": "error",
-                        "error": f"unknown or unavailable team: {team_slug_or_id}",
-                    }
-                )
-            resolved_team_ids = [resolved]
+        specs = _normalize_remember_specs(memories)
+        if not specs:
+            return json.dumps(
+                {"status": "error", "error": "No memories provided."}
+            )
 
         ctx = MemoryRunContext(
             agent_id=agent_id,
@@ -519,36 +567,85 @@ def make_memory_tools(
             team_id=run_team_id or "",
             available_team_ids=team_ids,
         )
-        try:
-            item = validate_memory_candidate(
-                {
-                    "text": text,
-                    "subject_type": subject_type,
-                    "subject_id": subject_id,
-                    "category": category,
-                    "asset_ids": asset_ids or [],
-                    "team_ids": resolved_team_ids,
-                    "basis": basis,
-                    "stability": stability,
-                    "strength": strength,
-                    "verification_hint": verification_hint,
-                },
-                ctx,
-                source="remember-tool",
-            )
-        except ValueError as exc:
-            return json.dumps({"status": "error", "error": str(exc)})
 
-        backend.add(
-            item.text,
-            agent_id=agent_id,
-            user_id=user_id,
-            run_id=run_id or conversation_id,
-            metadata=to_metadata(item),
-            team_id=item.team_ids[0] if item.team_ids else None,
-            infer=False,
-        )
-        return json.dumps({"status": "ok", "content_hash": item.content_hash})
+        results: list[dict] = []
+        for index, spec in enumerate(specs):
+            text = str(spec.get("text") or "").strip()
+            reason = str(spec.get("reason") or "").strip()
+            if not text:
+                results.append(
+                    {"status": "error", "index": index, "error": "text is required"}
+                )
+                continue
+            if not reason:
+                results.append(
+                    {"status": "error", "index": index, "error": "reason is required"}
+                )
+                continue
+
+            team_slug_or_id = str(spec.get("team_slug_or_id") or "").strip()
+            resolved_team_ids: list[str] = []
+            if team_slug_or_id:
+                resolved = team_lookup.get(team_slug_or_id)
+                if not resolved:
+                    results.append(
+                        {
+                            "status": "error",
+                            "index": index,
+                            "error": f"unknown or unavailable team: {team_slug_or_id}",
+                        }
+                    )
+                    continue
+                resolved_team_ids = [resolved]
+
+            try:
+                item = validate_memory_candidate(
+                    {
+                        "text": text,
+                        "subject_type": spec.get("subject_type", ""),
+                        "subject_id": spec.get("subject_id", ""),
+                        "category": spec.get("category", ""),
+                        "asset_ids": spec.get("asset_ids") or [],
+                        "team_ids": resolved_team_ids,
+                        "basis": spec.get("basis", "stated"),
+                        "stability": spec.get("stability", "stable"),
+                        "strength": spec.get("strength", 0.5),
+                        "verification_hint": spec.get("verification_hint", ""),
+                    },
+                    ctx,
+                    source="remember-tool",
+                )
+            except ValueError as exc:
+                results.append(
+                    {"status": "error", "index": index, "error": str(exc)}
+                )
+                continue
+
+            backend.add(
+                item.text,
+                agent_id=agent_id,
+                user_id=user_id,
+                run_id=run_id or conversation_id,
+                metadata=to_metadata(item),
+                team_id=item.team_ids[0] if item.team_ids else None,
+                infer=False,
+            )
+            results.append(
+                {
+                    "status": "ok",
+                    "index": index,
+                    "content_hash": item.content_hash,
+                }
+            )
+
+        ok_count = sum(1 for r in results if r.get("status") == "ok")
+        if ok_count == len(results):
+            status = "ok"
+        elif ok_count == 0:
+            status = "error"
+        else:
+            status = "partial"
+        return json.dumps({"status": status, "results": results})
 
     @tool
     def update_memory(memory_id: str, text: str, reason: str) -> str:
@@ -581,27 +678,79 @@ def make_memory_tools(
         return json.dumps({"status": "ok", "updated": memory_id})
 
     @tool
-    def forget(memory_id: str, reason: str) -> str:
-        """Permanently delete a memory by id.
+    def forget(items: list[dict]) -> str:
+        """Permanently delete one or more memories by id.
 
-        Use when a memory is wrong, outdated, or fully superseded and should no
+        Use when memories are wrong, outdated, or fully superseded and should no
         longer surface. For a memory that merely changed, prefer update_memory.
-        Get ids from memory_recall. Disabled unless the run opts in.
+        Get ids from memory_recall. Disabled unless the run opts in. Batch
+        related deletes into one call.
 
         Args:
-            memory_id: Id of the memory to delete (from memory_recall output).
-            reason: Why this memory should be removed.
+            items: List of delete specs. Each dict supports:
+                - memory_id (str, required): Id from memory_recall.
+                - reason (str, required): Why this memory should be removed.
+            Shared-reason form also accepted: {"memory_ids": ["a", "b"], "reason": "..."}.
+
+        Example single: [{"memory_id": "mem-1", "reason": "superseded"}]
+        Example multi: [{"memory_id": "a", "reason": "..."}, {"memory_id": "b", "reason": "..."}]
         """
         if not enable_remember:
             return json.dumps(
                 {"status": "error", "error": "forget is not enabled for this run"}
             )
-        if not memory_id.strip():
-            return json.dumps({"status": "error", "error": "memory_id is required"})
-        if not reason.strip():
-            return json.dumps({"status": "error", "error": "reason is required"})
-        backend.delete(memory_id)
-        return json.dumps({"status": "ok", "deleted": memory_id})
+
+        specs = _normalize_forget_specs(items)
+        if not specs:
+            return json.dumps({"status": "error", "error": "No items provided."})
+
+        results: list[dict] = []
+        for index, spec in enumerate(specs):
+            memory_id = str(spec.get("memory_id") or "").strip()
+            reason = str(spec.get("reason") or "").strip()
+            if not memory_id:
+                results.append(
+                    {
+                        "status": "error",
+                        "index": index,
+                        "error": "memory_id is required",
+                    }
+                )
+                continue
+            if not reason:
+                results.append(
+                    {
+                        "status": "error",
+                        "index": index,
+                        "memory_id": memory_id,
+                        "error": "reason is required",
+                    }
+                )
+                continue
+            try:
+                backend.delete(memory_id)
+            except Exception as exc:
+                results.append(
+                    {
+                        "status": "error",
+                        "index": index,
+                        "memory_id": memory_id,
+                        "error": str(exc),
+                    }
+                )
+                continue
+            results.append(
+                {"status": "ok", "index": index, "deleted": memory_id}
+            )
+
+        ok_count = sum(1 for r in results if r.get("status") == "ok")
+        if ok_count == len(results):
+            status = "ok"
+        elif ok_count == 0:
+            status = "error"
+        else:
+            status = "partial"
+        return json.dumps({"status": status, "results": results})
 
     tools = [memory_recall, memory_status]
     if enable_remember:

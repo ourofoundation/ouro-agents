@@ -208,6 +208,25 @@ class TestReflectionCadence(unittest.TestCase):
 
 
 class TestReflectionParsing(unittest.TestCase):
+    def test_reflector_prompt_mentions_coil_adoption(self):
+        self.assertIn("Coil adoption", REFLECTOR_PROMPT)
+        self.assertIn("run_coil", REFLECTOR_PROMPT)
+        self.assertIn("owning workspace skill", REFLECTOR_PROMPT)
+        self.assertIn("addendum.md", REFLECTOR_PROMPT)
+
+    def test_run_reflection_task_mentions_coil_skill_adoption(self):
+        from ouro_agents.subagents.reflector import build_run_reflection_task
+
+        task = build_run_reflection_task(
+            task="author coils",
+            result="wrote coils/outreach-triage",
+            tool_summary=[{"tool": "run_coil", "result": "{}"}],
+            run_mode="chat",
+        )
+        self.assertIn("owning workspace skill", task)
+        self.assertIn("addendum.md", task)
+        self.assertIn("run_coil", task)
+
     def test_reflector_prompt_mentions_recent_asset_interactions(self):
         self.assertIn("avoid repeating immediately", REFLECTOR_PROMPT)
         self.assertIn("already touched this recently", REFLECTOR_PROMPT)

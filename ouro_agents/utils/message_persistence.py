@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Callable
 
 from smolagents import ActionStep
+
+from .tool_observations import (
+    attribute_observation_results,
+    tool_call_arguments,
+    tool_call_id,
+    tool_call_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,35 +72,20 @@ def extract_tool_call_payloads(step: ActionStep) -> list[dict]:
     if getattr(step, "is_final_answer", False) or step.error:
         return []
 
-    payloads: list[dict] = []
+    tool_calls = getattr(step, "tool_calls", None) or []
+    if not tool_calls:
+        return []
+
     obs = step.observations or ""
-    result = _truncate_tool_result(obs)
-    for tc in getattr(step, "tool_calls", None) or []:
-        if isinstance(tc, dict):
-            if "function" in tc:
-                name = tc["function"].get("name", "unknown")
-                args = tc["function"].get("arguments", {})
-            else:
-                name = tc.get("name", "unknown")
-                args = tc.get("arguments", {})
-        elif hasattr(tc, "function") and tc.function is not None:
-            name = getattr(tc.function, "name", "unknown")
-            args = getattr(tc.function, "arguments", {})
-        else:
-            name = getattr(tc, "name", "unknown")
-            args = getattr(tc, "arguments", {})
-
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (json.JSONDecodeError, TypeError):
-                args = {"raw": args}
-
+    results = attribute_observation_results(tool_calls, obs)
+    payloads: list[dict] = []
+    for tc, result in zip(tool_calls, results):
         payloads.append(
             {
-                "name": name,
-                "arguments": args,
-                "result": result,
+                "name": tool_call_name(tc),
+                "arguments": tool_call_arguments(tc),
+                "result": _truncate_tool_result(result),
+                "id": tool_call_id(tc) or None,
             }
         )
 

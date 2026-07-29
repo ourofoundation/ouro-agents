@@ -9,6 +9,7 @@ import queue
 import re
 import subprocess
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -531,9 +532,21 @@ class DockerSandboxSession:
 
     def _wait_for_response(self, request_id: str) -> dict[str, Any]:
         timeout = self.config.timeout_seconds
+        deadline = time.monotonic() + timeout
+        skipped: list[dict[str, Any]] = []
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._reset_worker()
+                raise TimeoutError(
+                    f"Docker sandbox timed out after {timeout} seconds. "
+                    "Worker reset — the next run_python/run_shell call starts a "
+                    "fresh session (workspace files persist; in-memory variables "
+                    "do not). Paginate or checkpoint to disk and continue in a "
+                    "shorter call."
+                )
             try:
-                message = self._messages.get(timeout=timeout)
+                message = self._messages.get(timeout=remaining)
             except queue.Empty as exc:
                 # Reset (do not permanently close) so the next run_python call
                 # can start a fresh worker. Bulk jobs should paginate/checkpoint
@@ -547,7 +560,12 @@ class DockerSandboxSession:
                     "shorter call."
                 ) from exc
             if message.get("id") == request_id:
+                # Re-queue non-matching messages (e.g. a late response from a
+                # prior timed-out call) so they are not silently dropped.
+                for msg in skipped:
+                    self._messages.put(msg)
                 return message
+            skipped.append(message)
 
     def _read_stdout(self, stream) -> None:
         for line in stream:

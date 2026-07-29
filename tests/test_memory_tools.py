@@ -1,6 +1,10 @@
 import json
 
-from ouro_agents.memory.tools import _normalize_memory_queries
+from ouro_agents.memory.tools import (
+    _normalize_forget_specs,
+    _normalize_memory_queries,
+    _normalize_remember_specs,
+)
 from ouro_agents.memory.tools import make_memory_tools
 from ouro_agents.memory import MemoryResult
 
@@ -27,6 +31,29 @@ def test_normalize_memory_queries_accepts_plain_string():
     assert _normalize_memory_queries("materials-science route failures") == [
         {"query": "materials-science route failures"}
     ]
+
+
+def test_normalize_remember_specs_accepts_single_and_wrapper():
+    spec = {
+        "text": "Prefer eval-lab",
+        "subject_type": "agent",
+        "category": "direction",
+        "reason": "stated",
+    }
+    assert _normalize_remember_specs(spec) == [spec]
+    assert _normalize_remember_specs({"memories": [spec]}) == [spec]
+
+
+def test_normalize_forget_specs_accepts_shared_reason_form():
+    assert _normalize_forget_specs(
+        {"memory_ids": ["a", "b"], "reason": "cleanup"}
+    ) == [
+        {"memory_id": "a", "reason": "cleanup"},
+        {"memory_id": "b", "reason": "cleanup"},
+    ]
+    assert _normalize_forget_specs(
+        {"memory_id": "a", "reason": "gone"}
+    ) == [{"memory_id": "a", "reason": "gone"}]
 
 
 class _FakeBackend:
@@ -292,10 +319,14 @@ class _MutableBackend(_FakeBackend):
         super().__init__()
         self.deleted = []
         self.updated = []
+        self.added = []
 
     def search(self, **kwargs):
         self.search_calls.append(kwargs)
         return [MemoryResult(id="mem-1", text="An outdated fact", category="fact")]
+
+    def add(self, text, **kwargs):
+        self.added.append({"text": text, **kwargs})
 
     def delete(self, memory_id):
         self.deleted.append(memory_id)
@@ -330,18 +361,93 @@ def test_recall_surfaces_ids_only_when_writes_enabled():
     assert "id=mem-1" in writable
 
 
-def test_forget_deletes_and_requires_reason():
+def test_forget_batches_deletes_and_requires_reason():
     backend = _MutableBackend()
     forget = _tool_by_name(
         make_memory_tools(backend, agent_id="hermes", enable_remember=True), "forget"
     )
 
-    ok = json.loads(forget.forward("mem-1", "superseded"))
-    assert ok == {"status": "ok", "deleted": "mem-1"}
-    assert backend.deleted == ["mem-1"]
+    ok = json.loads(
+        forget.forward(
+            [
+                {"memory_id": "mem-1", "reason": "superseded"},
+                {"memory_id": "mem-2", "reason": "outdated"},
+            ]
+        )
+    )
+    assert ok["status"] == "ok"
+    assert [r["deleted"] for r in ok["results"]] == ["mem-1", "mem-2"]
+    assert backend.deleted == ["mem-1", "mem-2"]
 
-    err = json.loads(forget.forward("mem-1", ""))
+    shared = json.loads(
+        forget.forward({"memory_ids": ["mem-3", "mem-4"], "reason": "cleanup"})
+    )
+    assert shared["status"] == "ok"
+    assert backend.deleted[-2:] == ["mem-3", "mem-4"]
+
+    err = json.loads(forget.forward([{"memory_id": "mem-1", "reason": ""}]))
     assert err["status"] == "error"
+    assert err["results"][0]["error"] == "reason is required"
+
+
+def test_remember_batches_stores():
+    backend = _MutableBackend()
+    remember = _tool_by_name(
+        make_memory_tools(
+            backend,
+            agent_id="hermes",
+            user_id="user-1",
+            enable_remember=True,
+        ),
+        "remember",
+    )
+
+    ok = json.loads(
+        remember.forward(
+            [
+                {
+                    "text": "User prefers markdown replies.",
+                    "subject_type": "user",
+                    "category": "preference",
+                    "reason": "explicitly stated",
+                },
+                {
+                    "text": "Publish evals to eval-lab team.",
+                    "subject_type": "agent",
+                    "category": "direction",
+                    "subject_id": "self",
+                    "reason": "standing instruction",
+                },
+            ]
+        )
+    )
+    assert ok["status"] == "ok"
+    assert len(ok["results"]) == 2
+    assert all(r["status"] == "ok" for r in ok["results"])
+    assert len(backend.added) == 2
+    assert backend.added[0]["text"] == "User prefers markdown replies."
+
+    partial = json.loads(
+        remember.forward(
+            [
+                {
+                    "text": "A valid fact.",
+                    "subject_type": "general",
+                    "category": "fact",
+                    "reason": "observed",
+                },
+                {
+                    "text": "Missing reason.",
+                    "subject_type": "general",
+                    "category": "fact",
+                    "reason": "",
+                },
+            ]
+        )
+    )
+    assert partial["status"] == "partial"
+    assert partial["results"][0]["status"] == "ok"
+    assert partial["results"][1]["status"] == "error"
 
 
 def test_update_memory_rewrites_text_in_place():

@@ -155,7 +155,21 @@ Load the `ouro-py` skill for full SDK docs. Do not guess method names.
 
 1. Author `coils/<name>/coil.json` + `handler.py` (via `run_python` / file writes).
 2. Test locally: `run_coil(name, params={...})`. Fix until the return shape is right.
-3. Publish the coil when others (or future you via `execute_route`) should call it:
+3. **Adopt in a skill (required — a coil without this is unfinished).** Patch the
+   workspace skill that owns that job (`skills/<domain>.md`, usually
+   `load: always`) so future runs prefer `run_coil` over the hand-rolled
+   sequence. Write a short *when → coil → required inputs* line, and remove or
+   demote the old step-by-step that would otherwise win by familiarity. If the
+   owning skill is **human-authored** (e.g. `outreach`), do **not** edit it —
+   put the `run_coil` preference in `skills/<domain>-addendum.md` with
+   `extends: <domain>` instead (loads with the parent; parent wins on
+   conflict). Do **not** rely on vector memory or the COILS index alone —
+   those lose to an always-loaded skill that still teaches the uncompressed
+   path. Leave handler docs in `coil.json`; the skill is policy (*when/why*),
+   not a second copy of the handler. If no domain skill exists yet, create
+   one (or add a stub section to the closest always-loaded skill) before
+   ending the run.
+4. Publish the coil when others (or future you via `execute_route`) should call it:
    `publish_route(name, org_id=..., team_id=...)`. On the **first** publish,
    pick org/team with `get_organizations` / `get_teams` (check `agent_can_create`)
    — same as creating a post. Later publishes only need `name`.
@@ -163,9 +177,9 @@ Load the `ouro-py` skill for full SDK docs. Do not guess method names.
    cannot write there). If a prior create left `<agent>-routes` on Ouro with
    `service_id` unset locally, just call `publish_route` again — it adopts by
    name. Prefer `publish_route` over hand-building routes with `create_route`.
-4. After publish, verify through the **live** Ouro route (`execute_route`), not
+5. After publish, verify through the **live** Ouro route (`execute_route`), not
    only `run_coil`.
-5. Unpublish with `unpublish_route(name)` when retiring a published coil.
+6. Unpublish with `unpublish_route(name)` when retiring a published coil.
 
 ## Auth (operator, once)
 

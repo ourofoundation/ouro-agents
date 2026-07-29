@@ -58,49 +58,52 @@ def extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dic
     When ``for_persistence`` is True, results are truncated for compact
     JSONL storage.  When False (default), full results are kept so they
     remain available in the current run's context window.
+
+    Parallel step observations are split per ``tool_call_id`` when labeled,
+    so each summary entry carries only that call's result.
     """
+    from .tool_observations import (
+        attribute_observation_results,
+        tool_call_arguments,
+        tool_call_id,
+        tool_call_name,
+    )
+
     max_result_chars = 500 if for_persistence else 4000
     summary = []
     for step in inner_agent.memory.steps:
         if not isinstance(step, ActionStep) or not step.tool_calls:
             continue
-        for tc in step.tool_calls:
-            obs = step.observations or ""
-            if len(obs) > max_result_chars:
-                obs = obs[:max_result_chars] + "..."
-            if isinstance(tc, dict):
-                if "function" in tc:
-                    name = tc["function"].get("name", "unknown")
-                    args = tc["function"].get("arguments", {})
-                else:
-                    name = tc.get("name", "unknown")
-                    args = tc.get("arguments", {})
-            elif hasattr(tc, "function") and tc.function is not None:
-                name = getattr(tc.function, "name", "unknown")
-                args = getattr(tc.function, "arguments", {})
-            else:
-                name = getattr(tc, "name", "unknown")
-                args = getattr(tc, "arguments", {})
-            summary.append({"tool": name, "args": args, "result": obs})
+        results = attribute_observation_results(
+            step.tool_calls, step.observations or ""
+        )
+        for tc, result in zip(step.tool_calls, results):
+            if len(result) > max_result_chars:
+                result = result[:max_result_chars] + "..."
+            entry = {
+                "tool": tool_call_name(tc),
+                "args": tool_call_arguments(tc),
+                "result": result,
+            }
+            call_id = tool_call_id(tc)
+            if call_id:
+                entry["id"] = call_id
+            summary.append(entry)
     return summary
 
 
 def _tool_call_to_dict(tc: Any) -> dict[str, Any]:
-    """Normalize a smolagents tool call (dict or object) to ``{name, args}``."""
-    if isinstance(tc, dict):
-        if "function" in tc:
-            name = tc["function"].get("name", "unknown")
-            args = tc["function"].get("arguments", {})
-        else:
-            name = tc.get("name", "unknown")
-            args = tc.get("arguments", {})
-    elif hasattr(tc, "function") and tc.function is not None:
-        name = getattr(tc.function, "name", "unknown")
-        args = getattr(tc.function, "arguments", {})
-    else:
-        name = getattr(tc, "name", "unknown")
-        args = getattr(tc, "arguments", {})
-    return {"name": name, "args": args}
+    """Normalize a smolagents tool call (dict or object) to ``{name, args, id?}``."""
+    from .tool_observations import tool_call_arguments, tool_call_id, tool_call_name
+
+    out: dict[str, Any] = {
+        "name": tool_call_name(tc),
+        "args": tool_call_arguments(tc),
+    }
+    call_id = tool_call_id(tc)
+    if call_id:
+        out["id"] = call_id
+    return out
 
 
 def _step_reasoning(step: Any) -> Optional[str]:
@@ -419,6 +422,24 @@ def compress_tool_call(tc: dict, max_result_chars: int = 600) -> str:
         if isinstance(names, list) and names:
             return f"- Loaded tools: {', '.join(str(n) for n in names)}"
         return "- Loaded tool(s)"
+    if tool_name == "remember":
+        memories = args.get("memories", [])
+        if isinstance(memories, list) and memories:
+            count = len(memories)
+            first = memories[0] if isinstance(memories[0], dict) else {}
+            preview = str(first.get("text", ""))[:80]
+            suffix = f" and {count - 1} more" if count > 1 else ""
+            return f"- Stored memory: {preview}{suffix}"
+        return "- Stored memory"
+    if tool_name == "forget":
+        items = args.get("items", [])
+        if isinstance(items, dict) and isinstance(items.get("memory_ids"), list):
+            count = len(items["memory_ids"])
+            return f"- Forgot {count} memor{'ies' if count != 1 else 'y'}"
+        if isinstance(items, list) and items:
+            count = len(items)
+            return f"- Forgot {count} memor{'ies' if count != 1 else 'y'}"
+        return "- Forgot memory"
     if tool_name == "memory_store":
         facts = args.get("facts", [])
         if isinstance(facts, list):

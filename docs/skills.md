@@ -30,9 +30,47 @@ Recognized fields:
 - `description` — used by the directory listing.
 - `load` — `always` to inline into every system prompt; anything else
   (default `stub`) leaves it discoverable but not loaded.
+- `extends` — parent skill name. Makes this file an **addendum** to that
+  parent (see below). A child's own `load:` is ignored; it inherits the
+  parent's load behavior.
 
 When frontmatter is missing or malformed, the first markdown heading is
 used as the description.
+
+## Extending a skill you shouldn't edit
+
+When an agent should refine a human-authored operational skill (e.g.
+`outreach`) without overwriting it, write an addendum:
+
+```markdown
+---
+description: Learned refinements to outreach process
+extends: outreach
+---
+
+# Outreach addendum
+
+Prefer `run_coil("outreach-triage", {})` at the start of every tick.
+```
+
+Canonical filename: `skills/<parent>-addendum.md` (e.g.
+`outreach-addendum.md`). Rules:
+
+- The addendum inherits the parent's load behavior — if the parent is
+  `load: always`, the addendum is inlined at startup too.
+- When the parent is emitted (startup inline or `resolve_skill`), the
+  addendum is appended after the parent body under
+  `## Agent addendum: <name>`, with an explicit parent-wins-on-conflict
+  note.
+- One addendum per parent is the convention. Multiple files that claim the
+  same parent are all appended in name order (with a warning).
+- No chaining: an entry that itself has `extends` cannot be a parent.
+- Unknown parent → treated as a standalone stub skill (with a warning).
+- Total addendum body per parent is capped at 8000 characters; overflow is
+  truncated with a visible `[addendum truncated — compact this file]`
+  marker.
+- Valid addenda are excluded from the skill directory and
+  `list_skill_names` — load the parent to get both.
 
 ## Built-in skills
 

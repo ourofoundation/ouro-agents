@@ -265,6 +265,23 @@ class TestDockerSandboxSession(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "session is closed"):
                 session._ensure_started()
 
+    def test_wait_for_response_requeues_unmatched_messages(self):
+        with TemporaryDirectory() as tmpdir:
+            config = SandboxConfig(mode="docker", timeout_seconds=5)
+            session = DockerSandboxSession(
+                config=config,
+                workspace=Path(tmpdir),
+                agent_name="test-agent",
+                run_id="run-requeue",
+            )
+            session._messages.put({"id": "stale", "ok": True, "result": "old"})
+            session._messages.put({"id": "wanted", "ok": True, "result": "new"})
+
+            response = session._wait_for_response("wanted")
+            self.assertEqual(response["result"], "new")
+            leftover = session._messages.get_nowait()
+            self.assertEqual(leftover["id"], "stale")
+
     @unittest.skipUnless(
         os.environ.get("RUN_DOCKER_SANDBOX_TESTS") == "1" and shutil.which("docker"),
         "set RUN_DOCKER_SANDBOX_TESTS=1 with Docker available to run",

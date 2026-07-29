@@ -565,6 +565,27 @@ class OuroLogger(AgentLogger):
             if isinstance(arg, str):
                 if arg.startswith("Observations:"):
                     body = arg[len("Observations:") :].strip()
+                    from .utils.tool_observations import (
+                        split_labeled_observations,
+                        TOOL_RESULT_HEADER_RE,
+                    )
+
+                    by_id = split_labeled_observations(body)
+                    if by_id is not None:
+                        # Parallel results — log each section under its own tool
+                        # name instead of attributing the whole blob to whichever
+                        # call happened to set `_last_tool_name` last.
+                        for match in TOOL_RESULT_HEADER_RE.finditer(body):
+                            call_id = match.group("id")
+                            name = match.group("name")
+                            section = by_id.get(call_id, "") if call_id else ""
+                            if name and name != "final_answer":
+                                if section:
+                                    self._display.observation(section)
+                                self._display.complete_tool_call(name)
+                        self._last_tool_name = None
+                        return
+
                     tool_name = self._last_tool_name
                     if tool_name and tool_name != "final_answer":
                         if body:

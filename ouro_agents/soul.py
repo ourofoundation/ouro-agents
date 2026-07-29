@@ -17,7 +17,7 @@ MCP_TOOL_RULES = (
     "Preloaded MCP tools (listed below when present) can be called directly — no `load_tool` needed.\n"
     '- Skills can also be loaded on demand with `load_skill(["skill-name"])` when you need detailed guidance.\n'
     "- Omit optional params you don't need (don't pass null).\n"
-    "- Batch where possible: load_tool, load_skill, memory_recall, and delegate all accept arrays.\n"
+    "- Batch where possible: load_tool, load_skill, memory_recall, remember, forget, and delegate all accept arrays.\n"
     "- File paths are always relative to the workspace root (e.g. 'scratch/out.json', not 'workspace/scratch/out.json').\n"
     "- Memory writes are usually automatic: after each run, durable facts and daily log entries are "
     "curated from your actions. When the user explicitly states a stable preference, direction, or "
@@ -25,7 +25,8 @@ MCP_TOOL_RULES = (
     "episodes or task mechanics in vector memory, and do not hand-edit MEMORY.md. To retrieve prior "
     "context, call `memory_recall`; when it returns asset refs, use get_asset to load them if needed.\n"
     "- When a recalled memory is wrong or outdated, fix it immediately: `update_memory(id, ...)` to "
-    "revise it in place, or `forget(id, ...)` to delete it. memory_recall returns the id to use.\n"
+    "revise it in place, or `forget([{\"memory_id\": id, \"reason\": \"...\"}])` to delete it "
+    "(batch multiple deletes in one call). memory_recall returns the id to use.\n"
     "- For complex multi-step workflows or batch operations, prefer the `developer` subagent when "
     "delegation is available — it has direct access to the Ouro Python SDK."
 )

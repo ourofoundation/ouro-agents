@@ -155,14 +155,14 @@ Built by `make_memory_tools` (`memory/tools.py`):
 - `memory_recall(query, ...)` — semantic search with filters for category,
   subject, asset, team, and time window. Always available. In chat, recall
   expands the query with the current `ConversationState`.
-- `remember(text, category, basis, stability, strength, …)` — write a
-  durable semantic memory. Exposed in any mode that grants
-  `Capability.MEMORY_WRITE`; reflection remains the safety net.
+- `remember(memories=[...])` — write one or more durable semantic memories
+  in a single call. Exposed in any mode that grants `Capability.MEMORY_WRITE`;
+  reflection remains the safety net.
 - `update_memory(memory_id, text, reason)` — revise a memory in place when
   it is partly wrong or has evolved, keeping its scope and category.
-- `forget(memory_id, reason)` — permanently delete a stale or superseded
-  memory. Both are gated by `Capability.MEMORY_WRITE`, and `memory_recall`
-  surfaces the `id` to act on when the agent can write.
+- `forget(items=[...])` — permanently delete one or more stale or superseded
+  memories. Both write tools are gated by `Capability.MEMORY_WRITE`, and
+  `memory_recall` surfaces the `id` to act on when the agent can write.
 
 Profiles can restrict the visible memory tool set with
 `memory_tool_filter` (e.g. `plan` only sees `memory_recall`).

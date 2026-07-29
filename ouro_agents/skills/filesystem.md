@@ -72,6 +72,14 @@ Put your own files here:
 - `drafts/` — outgoing drafts not tied to a project (emails, follow-ups, posts).
 - `scratch/` — disposable intermediates and cross-run state. Safe to delete.
 - `cifs/` — optional structure library; otherwise keep CIFs under the project.
+- `skills/` — your domain playbooks (markdown with YAML frontmatter). For
+  skills **you** authored, edit in place when you adopt a new coil so
+  heartbeats prefer `run_coil` (see the `coils` skill). For **human-authored**
+  operational skills (e.g. `outreach`), do **not** edit or overwrite them —
+  write `skills/<name>-addendum.md` with `extends: <name>` in the
+  frontmatter instead. The addendum loads whenever the parent loads, and
+  the parent wins on conflict. Workspace skills of the same name otherwise
+  override built-ins.
 
 Period logs: `teams/<team_id>/logs/<period>.md` (not under `memory/`).
 

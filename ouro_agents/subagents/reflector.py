@@ -100,6 +100,23 @@ Do NOT store (common failure modes):
 - Anything fully recoverable from an asset the agent would naturally re-read \
   (schemas, file contents, post text). Store the pointer plus the non-obvious \
   takeaway, not a transcription.
+- Inventories of draft coils/routes, tool renames, or "callable via X" facts \
+  that duplicate the live COILS index or an always-loaded skill. Prefer skill \
+  adoption over storing a second copy in vector memory.
+
+Coil adoption:
+- When the run authored or substantially changed a coil under coils/ (or \
+  legacy routes/), the work is unfinished until the owning workspace skill \
+  (skills/<domain>.md) — or its skills/<domain>-addendum.md extension when \
+  the skill is human-authored — prefers run_coil for that job and demotes \
+  the old hand-rolled steps. If the run did that skill/addendum patch, you \
+  usually need no vector-memory candidate — the skill is the source of truth.
+- If the run left a new/changed coil without updating any skill that would \
+  teach future heartbeats to call it, store ONE category=direction candidate \
+  (strength high, stability evolving) naming the coil(s) and saying which \
+  skill (or <name>-addendum.md) must be patched to prefer run_coil(name, …) \
+  — so a future run finishes adoption. Do not store stale tool names \
+  (e.g. run_route); use run_coil.
 
 Field rules:
 - basis: Use stated for explicit human instructions/preferences/facts, observed \
@@ -320,7 +337,14 @@ def build_run_reflection_task(
         "work on, avoid, prioritize, de-prioritize, or change in future plans, store "
         'that as a category=\"direction\" memory even when the run result is '
         "NO_ACTION. This is especially important for comments, mentions, "
-        "plan-review feedback, and replies on direction-proposal posts."
+        "plan-review feedback, and replies on direction-proposal posts.\n\n"
+        "If this run authored or changed a coil (coils/ or run_coil / publish_route) "
+        "without patching the owning workspace skill (or its "
+        "<name>-addendum.md when the skill is human-authored) to prefer "
+        "run_coil for that job, store one high-strength direction candidate "
+        "naming the coil and the skill/addendum that still needs the adoption "
+        "update. If the skill or addendum was already patched, skip "
+        "inventory-style coil facts."
     )
 
 

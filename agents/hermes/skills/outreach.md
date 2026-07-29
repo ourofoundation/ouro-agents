@@ -18,9 +18,26 @@ orchestrates *which* slice to take on a tick; it does not redefine these rules.
   action, first/last timestamps). It is *not* the full thread and *not* the
   send ledger. Scratch JSON files in the workspace are never authoritative.
 
-**Sandbox / tier-1 routes:** the Docker sandbox has the `resend` Python package
-and `RESEND_API_KEY` / `RESEND_SENDER` (`hermes@agents.ouro.foundation`). In
-`run_python` / `run_coil` handlers use the SDK (not MCP):
+**Outreach coils (prefer these):** four private coils under `coils/` compress
+the repeated CRM + Resend sequences. Call them with `run_coil` — do **not**
+hand-compose the equivalent `run_python` SQL / Resend MCP steps on a normal
+heartbeat when a coil covers the job.
+
+| When | Coil | Call |
+|---|---|---|
+| Start of tick: budget + queues | `outreach-triage` | `run_coil("outreach-triage", {})` |
+| Before any reply / continuation | `read-email-thread` | `run_coil("read-email-thread", {"email": "..."})` |
+| Send + CRM log in one step | `send-and-log` | `run_coil("send-and-log", {to, subject, html, contact_id, intent, …})` |
+| CRM-only update (immutability guard) | `crm-upsert` | `run_coil("crm-upsert", {"contact_id": "…", "updates": {…}})` |
+
+The sections below document caps, schemas, and fallbacks. Use them to
+understand *what* the coils enforce and to repair a coil — not as the default
+tick path. Fall back to Resend MCP / `run_python` only when a coil fails or
+does not cover the case.
+
+**Sandbox:** Docker has the `resend` Python package and `RESEND_API_KEY` /
+`RESEND_SENDER` (`hermes@agents.ouro.foundation`). Inside `run_python` /
+`run_coil` handlers use the SDK (not MCP):
 
 ```python
 import os
@@ -34,9 +51,6 @@ email = resend.Emails.send({
     "html": "...",
 })
 ```
-
-Interactive heartbeats still use the Resend MCP tools; compress repeated
-send/list/CRM sequences into routes when the pattern stabilizes.
 
 ## Daily caps (canonical)
 
@@ -134,13 +148,15 @@ first-send fields is how follow-up windows and history get corrupted.
 
 ## Read before you act
 
-Start of every outreach tick: query the dataset, do not work from assumptions.
-CRM tells you *who* needs attention. For anyone already in a live thread
-(`status='replied'`), that query is only the starting pointer — you still must
-re-read their full Resend thread (sent **and** received) before drafting.
+Start of every outreach tick: **`run_coil("outreach-triage", {})`** for budget
++ queues. Do not work from assumptions. CRM tells you *who* needs attention.
+For anyone already in a live thread (`status='replied'`), triage is only the
+starting pointer — you still must re-read their full Resend thread (sent
+**and** received) before drafting (`run_coil("read-email-thread", …)` below).
 
-In `run_python`, `ouro.datasets.query(...)` returns a **pandas DataFrame**, not
-a list of dicts. Prefer SQL mode for triage:
+Fallback if the coil is unavailable: in `run_python`,
+`ouro.datasets.query(...)` returns a **pandas DataFrame**, not a list of
+dicts. Prefer SQL mode for triage:
 
 ```python
 from datetime import date, datetime, timezone
@@ -202,9 +218,10 @@ that upstream (cold-send subcap), don't compensate with volume.
 ## Daily email budget (count from Resend, not CRM)
 
 CRM `date_sent` is first-send-only and gets stale. **Never** count today's
-budget with `WHERE date_sent = today`.
+budget with `WHERE date_sent = today`. Prefer the `budget` field from
+`run_coil("outreach-triage", {})`.
 
-Before any outbound email, count today's sends from Resend:
+Fallback if the coil is unavailable — count today's sends from Resend:
 
 1. `load_tool(["resend:list_emails"])` (and `get_email` if you need bodies).
 2. Paginate `list_emails` (`limit=100`, then `after=…`) until you cover all
@@ -256,7 +273,9 @@ questions you already settled.
 
 **Before you draft or send any email to someone with `status='replied'` (or
 anyone you have already emailed), you must re-read the full thread in this
-tick — both directions:**
+tick — both directions.** Prefer
+`run_coil("read-email-thread", {"email": "<their address>"})` and read the
+returned `thread`. Fallback if the coil is unavailable:
 
 1. `load_tool(["resend"])` (sent + received tools).
 2. **Inbound:** `list_received_emails` + `get_received_email` on every message
@@ -291,6 +310,11 @@ this thread; do not reply unless asked" and move on. You re-enter only when
 Matt or Will explicitly asks you to (in the thread or in a message to you).
 
 ## Sending workflow
+
+**Default:** once the body is ready, use
+`run_coil("send-and-log", {to, subject, html, contact_id, intent, …})` so
+Resend send + CRM upsert happen in one call (idempotent, CCs Matt/Will). Use
+the manual steps below only as a fallback or when debugging the coil.
 
 ### Idempotency (required on every send)
 
@@ -354,6 +378,10 @@ do not pass the string `"null"` or `""`.
    `first_outbound_email_id`, or legacy `date_sent`.
 
 ## Writing to the CRM
+
+Prefer `run_coil("crm-upsert", {"contact_id": "…", "updates": {…}})` (or
+`send-and-log` when you are also sending). It enforces the immutability
+guard. Manual upsert below is the fallback.
 
 New contact: generate an `id`, append the row.
 
