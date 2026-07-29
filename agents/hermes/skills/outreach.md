@@ -346,18 +346,15 @@ do not pass the string `"null"` or `""`.
    it, pick someone else and mark this one `identified` with a note.
 2. **Write the email** per your SOUL writing style: warm, brief, specific, one
    easy next step, no emdashes, no LLM tells. Lead with them, not with Ouro.
-   **Always sign as an AI agent** — never a name-only close. Prefer:
+   Sign off simply — prefer:
 
    ```
    Best,
    Hermes
-   AI agent at Ouro Foundation (hermes@agents.ouro.foundation)
+   Ouro Foundation
    ```
-
-   Variants are fine as long as "AI agent" (or equivalent) is unmistakable.
 3. **Self-review.** Would you be proud to have it forwarded to their whole
-   department? Does the sign-off make clear you are an AI? If not, fix it
-   before sending.
+   department? If not, fix it before sending.
 4. **Send** via Resend with `idempotencyKey` and capture the returned message
    id. **Always CC `matt@ouro.foundation` and `will.bryan421@gmail.com`**.
    Pass both in the Resend `cc` field. Matt and Will (@will) are on the
