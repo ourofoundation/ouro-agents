@@ -377,6 +377,10 @@ def make_python_tool(
         - Use normal Python APIs: `pathlib.Path`, `open()`, `shutil`, `glob`,
           `zipfile`, installed packages, and `subprocess.run(...)`.
         - Keep file reads and writes under `WORKSPACE_ROOT` / `{sandbox_config.workspace_mount}`.
+        - Call saved coils programmatically with `run_coil(name, params)` (no import
+          needed) — it runs coils/<name>/handler.py in-process and returns its dict.
+          Use this to compose coils in code (loops, fan-out, post-processing) instead
+          of many separate run_coil tool calls.
         - Per-call timeout is `{sandbox_config.timeout_seconds}` seconds. On timeout the
           worker resets and the next call starts fresh — workspace files persist,
           in-memory variables do not. For bulk platform work, write a workspace script

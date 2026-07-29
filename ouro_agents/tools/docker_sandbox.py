@@ -77,6 +77,52 @@ def get_ouro_client():
 _globals["get_ouro_client"] = get_ouro_client
 
 
+def run_coil(name, params=None, context=None):
+    # Run a saved coil handler in-process; returns the handler's dict.
+    import re as _re
+
+    if not isinstance(name, str) or not _re.match(r"^[a-z0-9][a-z0-9-]{1,63}$", name):
+        raise ValueError("invalid coil name: %r" % (name,))
+    params = dict(params or {})
+    base = None
+    for dirname in ("coils", "routes"):
+        candidate = os.path.join(WORKSPACE_ROOT, dirname, name)
+        if os.path.isdir(candidate):
+            base = candidate
+            break
+    if base is None:
+        raise FileNotFoundError("unknown coil: %s (no coils/%s/)" % (name, name))
+    manifest_path = None
+    for filename in ("coil.json", "route.json"):
+        candidate = os.path.join(base, filename)
+        if os.path.isfile(candidate):
+            manifest_path = candidate
+            break
+    if manifest_path is not None:
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        required = (manifest.get("inputs") or {}).get("required") or []
+        missing = [key for key in required if key not in params]
+        if missing:
+            raise ValueError(
+                "coil %s missing required params: %s" % (name, ", ".join(missing))
+            )
+    handler_path = os.path.join(base, "handler.py")
+    with open(handler_path, "r", encoding="utf-8") as fh:
+        source = fh.read()
+    namespace = {"get_ouro_client": get_ouro_client, "__name__": "ouro_coil"}
+    exec(compile(source, handler_path, "exec"), namespace, namespace)
+    handler = namespace.get("handler")
+    if not callable(handler):
+        raise RuntimeError("coil %s handler.py must define handler(params, context)" % name)
+    base_context = {"route_name": name, "source": "run_python"}
+    base_context.update(context or {})
+    return handler(params, base_context)
+
+
+_globals["run_coil"] = run_coil
+
+
 def _json_safe(value):
     try:
         json.dumps(value)

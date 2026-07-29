@@ -11,7 +11,7 @@ call as a route. Use this when the work shouldn't die with your sandbox: when
 someone (including future you) will want to run it again on new inputs.
 
 For light compositions of existing Ouro calls (context loaders, multi-step
-lookups) prefer the `agent-routes` skill — native sandbox handlers without
+lookups) prefer the `coils` skill — native sandbox handlers without
 Modal. Reach for Modal when you need GPU, long-running compute, or heavy deps.
 
 ## When to deploy

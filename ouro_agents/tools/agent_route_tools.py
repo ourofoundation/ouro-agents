@@ -1,4 +1,4 @@
-"""Agent tools for running and publishing workspace routes."""
+"""Agent tools for running coils and publishing them as Ouro routes."""
 
 from __future__ import annotations
 
@@ -14,7 +14,8 @@ from smolagents import tool
 from ..agent_routes.executor import execute_agent_route
 from ..agent_routes.manifest import (
     HANDLER_FILENAME,
-    load_route_manifest,
+    find_draft_dir,
+    load_coil_manifest,
     load_route_manifests,
 )
 from ..agent_routes.registry import (
@@ -30,14 +31,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _format_route_directory(manifests: dict) -> str:
+def build_coil_directory(workspace: Path | str) -> str:
+    """Render the coil index for the system prompt.
+
+    Lists draft coils with their published status so the agent checks here
+    before re-deriving repeated multi-step work by hand.
+    """
+    workspace = Path(workspace)
+    manifests = load_route_manifests(workspace)
     if not manifests:
-        return "(none yet — author one under routes/<name>/; see the agent-routes skill)"
+        return (
+            "(none yet — author one under coils/<name>/; "
+            "load the `coils` skill for the contract)"
+        )
+    registry = load_published_registry(workspace)
     lines = []
     for name, manifest in sorted(manifests.items()):
         required = ", ".join(manifest.required_inputs) or "(none)"
         desc = manifest.description or "(no description)"
-        lines.append(f"- {name}: {desc} (required inputs: {required})")
+        entry = registry.get(name)
+        status = f"published v{entry.version}" if entry else "draft"
+        lines.append(f"- {name} [{status}]: {desc} (required inputs: {required})")
     return "\n".join(lines)
 
 
@@ -61,35 +75,33 @@ def _validate_handler_source(source: str) -> str | None:
     return "handler.py must define a top-level function handler(params, context)"
 
 
-def make_run_route_tool(workspace: Path, executor: Any):
-    """Create the ``run_route`` tool bound to a sandbox executor."""
+def make_run_coil_tool(workspace: Path, executor: Any):
+    """Create the ``run_coil`` tool bound to a sandbox executor."""
     workspace = Path(workspace)
-    manifests = load_route_manifests(workspace)
-    directory = _format_route_directory(manifests)
 
     @tool
-    def run_route(name: str, params: dict) -> str:
-        """Execute one of your saved routes (workspace/routes/<name>/) in the sandbox.
+    def run_coil(name: str, params: dict) -> str:
+        """Execute one of your saved coils (workspace/coils/<name>/) in the sandbox.
 
-        Use this to compress repeated multi-step Ouro work into a single call.
-        Handlers run with get_ouro_client() available (ouro-py), same as run_python.
+        Coils compress repeated multi-step Ouro work into a single call.
+        Your COILS index (in context) lists what exists. Handlers run with
+        get_ouro_client() available (ouro-py), same as run_python.
 
         Args:
-            name: Route directory name under routes/.
-            params: JSON object matching the route's inputs schema.
+            name: Coil directory name under coils/.
+            params: JSON object matching the coil's inputs schema.
         """
         name = str(name or "").strip()
         if not name:
-            return "Error: route name is required."
+            return "Error: coil name is required."
         if not isinstance(params, dict):
             return "Error: params must be a JSON object."
 
-        manifest_path = workspace / "routes" / name / "route.json"
-        manifest = load_route_manifest(manifest_path, expected_name=name)
+        manifest = load_coil_manifest(workspace, name)
         if manifest is None:
             available = ", ".join(sorted(load_route_manifests(workspace))) or "(none)"
             return (
-                f"Error: unknown or invalid route {name!r}. "
+                f"Error: unknown or invalid coil {name!r}. "
                 f"Available drafts: {available}"
             )
 
@@ -102,7 +114,7 @@ def make_run_route_tool(workspace: Path, executor: Any):
                 f"{joined}{more}"
             )
 
-        handler_rel = manifest.relative_handler_path()
+        handler_rel = manifest.relative_handler_path(workspace)
         handler_abs = workspace / handler_rel
         if not handler_abs.is_file():
             return f"Error: missing handler at {handler_rel}"
@@ -124,18 +136,16 @@ def make_run_route_tool(workspace: Path, executor: Any):
         )
         return json.dumps(result, default=str, indent=2)
 
-    run_route.description += f"""
-
-Available draft routes:
-{directory}
+    run_coil.description += """
 
 Authoring:
-- Put files in routes/<name>/route.json and routes/<name>/handler.py
+- Put files in coils/<name>/coil.json and coils/<name>/handler.py
 - handler.py must define: def handler(params: dict, context: dict) -> dict
 - Use get_ouro_client() inside the handler (ouro-py, not MCP)
-- Load the `agent-routes` skill for templates and the MCP→SDK mapping table
+- Load the `coils` skill for templates and the MCP→SDK mapping table
+- Publish a coil as a live Ouro route with publish_route(name)
 """
-    return run_route
+    return run_coil
 
 
 def _service_base_url(public_base_url: str | None, path_prefix: str) -> str:
@@ -220,9 +230,9 @@ def make_publish_route_tools(
             org_id: Optional[str] = None,
             team_id: Optional[str] = None,
         ) -> str:
-            """Publish a draft route so others can call it as an Ouro service route.
+            """Publish a draft coil so others can call it as an Ouro service route.
 
-            Snapshots routes/<name>/ into protected/published_routes/<name>/vN/,
+            Snapshots coils/<name>/ into protected/published_routes/<name>/vN/,
             updates the local registry, and syncs the agent's <agent>-routes
             service on Ouro from the live OpenAPI spec.
 
@@ -232,13 +242,13 @@ def make_publish_route_tools(
             org/team.
 
             Args:
-                name: Draft route name under routes/.
+                name: Draft coil name under coils/.
                 org_id: Organization for the service (required on first publish).
                 team_id: Team for the service (required on first publish).
             """
             name = str(name or "").strip()
             if not name:
-                return "Error: route name is required."
+                return "Error: coil name is required."
             if not public_base_url:
                 return (
                     "Error: server.public_base_url is not configured; "
@@ -247,18 +257,17 @@ def make_publish_route_tools(
             if ouro_client is None:
                 return "Error: Ouro client is not available; cannot register the service."
 
-            manifest_path = workspace / "routes" / name / "route.json"
-            manifest = load_route_manifest(manifest_path, expected_name=name)
+            manifest = load_coil_manifest(workspace, name)
             if manifest is None:
-                return f"Error: unknown or invalid draft route {name!r}."
+                return f"Error: unknown or invalid draft coil {name!r}."
             if manifest.timeout_seconds > routes_config.request_timeout_seconds:
                 return (
-                    f"Error: route timeout_seconds={manifest.timeout_seconds} exceeds "
+                    f"Error: coil timeout_seconds={manifest.timeout_seconds} exceeds "
                     f"agent_routes.request_timeout_seconds="
                     f"{routes_config.request_timeout_seconds}."
                 )
 
-            handler_path = workspace / "routes" / name / HANDLER_FILENAME
+            handler_path = find_draft_dir(workspace, name) / HANDLER_FILENAME
             if not handler_path.is_file():
                 return f"Error: missing {handler_path.relative_to(workspace)}"
             handler_err = _validate_handler_source(

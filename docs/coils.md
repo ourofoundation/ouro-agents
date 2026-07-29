@@ -1,9 +1,15 @@
-# Agent-authored routes
+# Coils (agent-authored routes)
 
-Agents can author small Python handlers under `workspace/routes/<name>/` and
-call them with `run_route` (tier 1), or publish them as a real Ouro service
-served by the agent FastAPI process (tier 2). Modal remains for heavy compute
-(tier 3). Handlers always use **ouro-py** via `get_ouro_client()` — never MCP.
+Coils are small Python handlers agents author under `workspace/coils/<name>/`
+and call with `run_coil` (tier 1). Publishing a coil (`publish_route`) turns it
+into a real Ouro service route served by the agent FastAPI process (tier 2).
+Modal remains for heavy compute (tier 3). Handlers always use **ouro-py** via
+`get_ouro_client()` — never MCP. Legacy workspaces with `routes/<name>/route.json`
+are still read; new coils use `coils/<name>/coil.json`.
+
+Agents see a top-level COILS index in the system prompt (drafts + published
+status), and can call `run_coil(name, params)` inside `run_python` to compose
+coils in code.
 
 ## Enabling
 
@@ -60,15 +66,15 @@ provisioning runs as the agent user through the normal API.
 
 | Path | Role |
 | --- | --- |
-| `routes/<name>/route.json` | Draft manifest (agent-writable) |
-| `routes/<name>/handler.py` | Draft handler (agent-writable) |
+| `coils/<name>/coil.json` | Draft coil manifest (agent-writable) |
+| `coils/<name>/handler.py` | Draft coil handler (agent-writable) |
 | `protected/published_routes/registry.json` | Published registry (host-writable) |
 | `protected/published_routes/<name>/vN/` | Immutable snapshots |
 | `protected/published_routes/candidates.json` | Dream miner state |
-| `skills/route-candidates.md` | Dream-written suggestions |
+| `skills/coil-candidates.md` | Dream-written suggestions |
 
 ## Dream mining
 
 When `agent_routes` and `run_log` are enabled, the dream cycle mines repeated
-tool-call n-grams and writes `skills/route-candidates.md`. See the
-`agent-routes` skill for authoring.
+tool-call n-grams and writes `skills/coil-candidates.md`. See the
+`coils` skill for authoring.

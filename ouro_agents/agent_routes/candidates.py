@@ -26,6 +26,7 @@ EXCLUDED_TOOLS = frozenset(
         "forget",
         "read_context",
         "run_route",
+        "run_coil",
         "publish_route",
         "unpublish_route",
         "delegate",
@@ -291,22 +292,23 @@ def write_route_candidates_skill(
     *,
     dry_run: bool = False,
 ) -> Path | None:
-    """Write ``workspace/skills/route-candidates.md`` for the agent skill directory."""
+    """Write ``workspace/skills/coil-candidates.md`` for the agent skill directory."""
     if not candidates:
         return None
     skills_dir = Path(workspace) / "skills"
-    path = skills_dir / "route-candidates.md"
+    path = skills_dir / "coil-candidates.md"
+    legacy_path = skills_dir / "route-candidates.md"
     lines = [
         "---",
-        "description: Repeated tool-call sequences that are candidates for agent routes",
+        "description: Repeated tool-call sequences that are candidates for coils",
         "load: stub",
         "---",
         "",
-        "# Route candidates",
+        "# Coil candidates",
         "",
         "These tool-call sequences showed up across multiple successful runs.",
-        "Consider authoring a route for any that you still do frequently —",
-        "load the `agent-routes` skill for the contract and templates.",
+        "Consider authoring a coil for any that you still do frequently —",
+        "load the `coils` skill for the contract and templates.",
         "",
     ]
     for cand in candidates:
@@ -325,7 +327,7 @@ def write_route_candidates_skill(
             lines.append("```")
         lines.append("")
         lines.append(
-            f"Suggested `mined_from` for route.json: "
+            f"Suggested `mined_from` for coil.json: "
             f"`{json.dumps(cand.signature)}`"
         )
         lines.append("")
@@ -336,6 +338,11 @@ def write_route_candidates_skill(
         return path
     skills_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
+    if legacy_path.is_file():
+        try:
+            legacy_path.unlink()
+        except OSError as exc:
+            logger.warning("Could not remove legacy %s: %s", legacy_path, exc)
     try:
         from ..skills import invalidate_skill_cache
 

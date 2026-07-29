@@ -61,7 +61,9 @@ WORKSPACE_LAYOUT_RULES = (
     "- `drafts/` — outgoing drafts not tied to a project (emails, follow-ups, posts).\n"
     "- `scratch/` — disposable intermediates and cross-run state. Safe to delete.\n"
     "- `cifs/` — optional structure library when you maintain one (else keep CIFs "
-    "under the relevant `projects/<slug>/`).\n\n"
+    "under the relevant `projects/<slug>/`).\n"
+    "- `coils/<name>/` — saved coil workflows (coil.json + handler.py); see the "
+    "`coils` skill.\n\n"
     "Period logs live at `teams/<team_id>/logs/<period>.md` (period follows "
     "`memory.rhythm`). Do not invent parallel log paths under `memory/`.\n\n"
     "Rules:\n"
@@ -106,6 +108,7 @@ SECTION_PRIORITY = {
     "conversation": 11,
     "working_memory": 12,
     "subagents": 13,
+    "coils": 13.5,
     "tool_rules": 14,
     "workspace_layout": 14.5,
     "skills": 15,
@@ -289,6 +292,7 @@ def build_prompt(
     entity_context: str = "",
     deferred_tool_directory: str = "",
     subagent_directory: str = "",
+    coil_directory: str = "",
     mode_framing_override: str = "",
     platform_context: str = "",
     chat_conversation_id: Optional[str] = None,
@@ -362,6 +366,17 @@ def build_prompt(
             f"## SUBAGENTS (use `delegate` tool to invoke)\n"
             f"{rules}\n\n"
             f"{subagent_directory}"
+        )
+
+    if coil_directory:
+        sections["coils"] = (
+            "## COILS (saved workflows — use `run_coil` to invoke)\n"
+            "Coils are your saved multi-step workflows. Before hand-composing "
+            "a sequence of Ouro calls you have done before, check this index "
+            "and prefer `run_coil(name, params)`. Author new coils under "
+            "coils/<name>/ (load the `coils` skill); publish with "
+            "`publish_route` to serve one as a live Ouro route.\n\n"
+            f"{coil_directory}"
         )
 
     if deferred_tool_directory:

@@ -99,7 +99,7 @@ from .subagents.reflector import (
 )
 from .tool_prompt import build_tool_calling_system_prompt
 from .tools.agent_base import SanitizedToolCallingAgent as _SanitizedToolCallingAgent
-from .tools.agent_route_tools import make_publish_route_tools, make_run_route_tool
+from .tools.agent_route_tools import make_publish_route_tools, make_run_coil_tool
 from .tools.python_tool import make_code_tools
 from .tools.run_history_tools import make_run_history_tools
 from .tools.scheduler_tools import make_scheduler_tools
@@ -1596,7 +1596,7 @@ class OuroAgent:
             and self.config.agent.sandbox.mode == "docker"
         ):
             agent_route_tools.append(
-                make_run_route_tool(self.config.agent.workspace, python_executor)
+                make_run_coil_tool(self.config.agent.workspace, python_executor)
             )
             agent_route_tools.extend(
                 make_publish_route_tools(
@@ -1610,8 +1610,8 @@ class OuroAgent:
             )
         elif self.config.agent_routes.enabled and self.config.agent.sandbox.mode != "docker":
             logger.info(
-                "agent_routes enabled but sandbox.mode=%s; skipping run_route "
-                "(handlers require Docker)",
+                "agent_routes enabled but sandbox.mode=%s; skipping run_coil "
+                "(coil handlers require Docker)",
                 self.config.agent.sandbox.mode,
             )
 
@@ -1947,6 +1947,17 @@ class OuroAgent:
         ):
             framing = f"{framing}\n\n{ASK_CONTROLLER_GUIDANCE}"
 
+        coil_directory = ""
+        if (
+            self.config.agent_routes.enabled
+            and self.config.agent.sandbox.mode == "docker"
+            and profile.allows_capability(Capability.RUN_PYTHON)
+            and not profile.lightweight
+        ):
+            from .tools.agent_route_tools import build_coil_directory
+
+            coil_directory = build_coil_directory(self.config.agent.workspace)
+
         return build_prompt(
             soul=shared_context["soul"],
             notes=shared_context["notes"],
@@ -1960,6 +1971,7 @@ class OuroAgent:
             entity_context=entity_context_text,
             deferred_tool_directory=deferred_tool_directory,
             subagent_directory=subagent_directory,
+            coil_directory=coil_directory,
             mode_framing_override=framing,
             platform_context=shared_context["platform_context"],
             chat_conversation_id=(

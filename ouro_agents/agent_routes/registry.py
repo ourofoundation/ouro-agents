@@ -11,7 +11,12 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from ..tools.workspace_paths import ensure_protected_dir, protected_root
-from .manifest import HANDLER_FILENAME, MANIFEST_FILENAME, RouteManifest
+from .manifest import (
+    HANDLER_FILENAME,
+    MANIFEST_FILENAME,
+    RouteManifest,
+    find_manifest_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +104,7 @@ def snapshot_route(
     ensure_protected_dir(workspace)
     draft_dir = manifest.draft_dir(workspace)
     handler_src = draft_dir / HANDLER_FILENAME
-    manifest_src = draft_dir / MANIFEST_FILENAME
+    manifest_src = find_manifest_path(draft_dir)
     if not handler_src.is_file():
         raise FileNotFoundError(f"Missing handler: {handler_src}")
     if not manifest_src.is_file():

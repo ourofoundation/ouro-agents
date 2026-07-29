@@ -22,6 +22,7 @@ ALLOWED_TOP_LEVEL_DIRS = frozenset(
         "subagents",
         "debug-runs",
         "routes",
+        "coils",
     }
 )
 
@@ -195,7 +196,7 @@ from pathlib import Path as _OuroPath
 
 _OURO_ALLOWED_TOP = frozenset({
     "projects", "drafts", "scratch", "cifs", "teams", "conversations",
-    "shared", "skills", "subagents", "debug-runs", "routes",
+    "shared", "skills", "subagents", "debug-runs", "routes", "coils",
 })
 _OURO_FORBIDDEN_TOP = frozenset({"protected", "data", "memory"})
 _OURO_WRITE_MODE = frozenset("wax+")

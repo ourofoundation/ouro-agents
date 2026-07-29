@@ -16,6 +16,59 @@ from ouro_agents.tools.docker_sandbox import (
 )
 
 
+class TestWorkerRunCoil(unittest.TestCase):
+    """The worker-side run_coil helper (available inside run_python)."""
+
+    def _worker_ns(self, workspace: str) -> dict:
+        # Execute the worker definitions without entering the stdin loop, and
+        # skip the layout guard so it does not monkeypatch this test process's
+        # builtins (in production it runs inside the container).
+        from ouro_agents.tools.workspace_layout import DOCKER_WORKER_LAYOUT_GUARD
+
+        head = docker_sandbox._WORKER_CODE.split(
+            'print(json.dumps({"type": "ready"})'
+        )[0].replace(DOCKER_WORKER_LAYOUT_GUARD, "\n")
+        namespace: dict = {}
+        with patch.dict(os.environ, {"WORKSPACE_ROOT": workspace}):
+            exec(head, namespace)
+        return namespace
+
+    def test_run_coil_executes_handler(self):
+        with TemporaryDirectory() as tmp:
+            coil_dir = Path(tmp) / "coils" / "demo"
+            coil_dir.mkdir(parents=True)
+            (coil_dir / "coil.json").write_text(
+                json.dumps(
+                    {"name": "demo", "inputs": {"type": "object", "required": ["x"]}}
+                )
+            )
+            (coil_dir / "handler.py").write_text(
+                "def handler(params, context):\n"
+                "    return {'x2': params['x'] * 2, 'src': context['source']}\n"
+            )
+            run_coil = self._worker_ns(tmp)["run_coil"]
+            self.assertEqual(run_coil("demo", {"x": 21}), {"x2": 42, "src": "run_python"})
+            with self.assertRaises(ValueError):
+                run_coil("demo", {})
+            with self.assertRaises(FileNotFoundError):
+                run_coil("missing", {})
+            with self.assertRaises(ValueError):
+                run_coil("../escape", {})
+
+    def test_run_coil_reads_legacy_routes_layout(self):
+        with TemporaryDirectory() as tmp:
+            coil_dir = Path(tmp) / "routes" / "legacy"
+            coil_dir.mkdir(parents=True)
+            (coil_dir / "route.json").write_text(
+                json.dumps({"name": "legacy", "inputs": {"type": "object"}})
+            )
+            (coil_dir / "handler.py").write_text(
+                "def handler(params, context):\n    return {'ok': True}\n"
+            )
+            run_coil = self._worker_ns(tmp)["run_coil"]
+            self.assertEqual(run_coil("legacy"), {"ok": True})
+
+
 class TestDockerSandboxSession(unittest.TestCase):
     def test_docker_run_args_mount_only_workspace_and_include_limits(self):
         with TemporaryDirectory() as tmpdir:

@@ -1,41 +1,41 @@
 ---
-description: Author and publish agent routes — compress repeated Ouro tool sequences into sandbox handlers (tier 1) or live Ouro services (tier 2)
+description: Author and publish coils — compress repeated Ouro tool sequences into saved sandbox workflows (tier 1) that publish as live Ouro routes (tier 2)
 load: stub
 ---
 
-# Agent routes
+# Coils
 
 Turn repeated multi-step Ouro work into a single callable. Use this when you
 keep making the same 3+ tool calls (or the dream cycle surfaces them in
-`route-candidates`). Prefer agent routes for light compositions; use
+`coil-candidates`). Prefer coils for light compositions; use
 `deploying-services` + Modal only for heavy / GPU / long-running compute.
 
 ## Tier ladder
 
-1. **Draft (tier 1)** — write `routes/<name>/`, call with `run_route`. Private to you.
-2. **Publish (tier 2)** — `publish_route(name)` snapshots + registers an Ouro
+1. **Coil (tier 1)** — write `coils/<name>/`, call with `run_coil`. Private to you.
+2. **Route (tier 2)** — `publish_route(name)` snapshots the coil + registers an Ouro
    service served by this agent server. Other users/agents call it via
    `execute_route`.
 3. **Modal (tier 3)** — `deploying-services` for real compute. Same ouro-py
    client patterns; different hosting.
 
-## When to write a route
+## When to write a coil
 
 The test: **have you (or would you) run the same 3+ Ouro calls twice?** Context
 loaders, multi-route compositions, and frequent lookups are good candidates.
-Check `route-candidates` (load that skill) for mined sequences from your run log.
+Check `coil-candidates` (load that skill) for mined sequences from your run log.
 
 One endpoint that does one thing. Don't invent options nobody asked for.
 
 ## Contract
 
 ```
-routes/<name>/
-├── route.json     # manifest (parsed on the host — never import it)
+coils/<name>/
+├── coil.json      # manifest (parsed on the host — never import it)
 └── handler.py     # def handler(params, context) -> dict
 ```
 
-### `route.json`
+### `coil.json`
 
 ```json
 {
@@ -66,11 +66,11 @@ routes/<name>/
 - `description` is **one short sentence** of docs (what it does). Not a
   paragraph, and not reused as the display name.
 - `inputs` is a JSON Schema object (tool params / HTTP body). Params are
-  validated against this schema on both `run_route` and the live HTTP path —
+  validated against this schema on both `run_coil` and the live HTTP path —
   bad input returns a corrective error / HTTP 422 and never reaches the handler.
 - Optional `input_assets` / `output_assets` use the same shape as Modal
   `x-ouro-input-assets` (see `modal-app-template`).
-- Optional `mined_from`: the tool-name list from a `route-candidates` suggestion
+- Optional `mined_from`: the tool-name list from a `coil-candidates` suggestion
   (closes the dream loop so it won't keep suggesting the same pattern).
 
 ### `handler.py`
@@ -101,12 +101,17 @@ def handler(params: dict, context: dict) -> dict:
     }
 ```
 
-`context` keys: `route_name`, `source` (`"tool"` | `"http"`), and when called
+`context` keys: `route_name` (the coil name), `source` (`"tool"` | `"http"` |
+`"run_python"`), and when called
 over HTTP: `action_id`, `route_id`, `org_id`, `team_id`, `user_id`.
 
 Handlers run in the Docker sandbox — same as `run_python`. Use **ouro-py**,
 never MCP, inside the handler. The executor JSON-normalizes the return value
 (UUIDs, datetimes, pydantic models), so you do not need a custom `_safe_dump`.
+
+Inside `run_python`, `run_coil(name, params)` is available as a plain function —
+use it to compose coils in code (loops, fan-out, post-processing) instead of
+many separate tool calls.
 
 **Credentials:** published (and draft) handlers always run with **your** ouro-py
 credentials — the agent owner's token — regardless of who called the route.
@@ -148,9 +153,9 @@ Load the `ouro-py` skill for full SDK docs. Do not guess method names.
 
 ## Workflow
 
-1. Author `routes/<name>/route.json` + `handler.py` (via `run_python` / file writes).
-2. Test locally: `run_route(name, params={...})`. Fix until the return shape is right.
-3. Publish when others (or future you via `execute_route`) should call it:
+1. Author `coils/<name>/coil.json` + `handler.py` (via `run_python` / file writes).
+2. Test locally: `run_coil(name, params={...})`. Fix until the return shape is right.
+3. Publish the coil when others (or future you via `execute_route`) should call it:
    `publish_route(name, org_id=..., team_id=...)`. On the **first** publish,
    pick org/team with `get_organizations` / `get_teams` (check `agent_can_create`)
    — same as creating a post. Later publishes only need `name`.
@@ -159,8 +164,8 @@ Load the `ouro-py` skill for full SDK docs. Do not guess method names.
    `service_id` unset locally, just call `publish_route` again — it adopts by
    name. Prefer `publish_route` over hand-building routes with `create_route`.
 4. After publish, verify through the **live** Ouro route (`execute_route`), not
-   only `run_route`.
-5. Unpublish with `unpublish_route(name)` when retiring a route.
+   only `run_coil`.
+5. Unpublish with `unpublish_route(name)` when retiring a published coil.
 
 ## Auth (operator, once)
 

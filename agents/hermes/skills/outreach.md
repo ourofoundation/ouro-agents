@@ -20,7 +20,7 @@ orchestrates *which* slice to take on a tick; it does not redefine these rules.
 
 **Sandbox / tier-1 routes:** the Docker sandbox has the `resend` Python package
 and `RESEND_API_KEY` / `RESEND_SENDER` (`hermes@agents.ouro.foundation`). In
-`run_python` / `run_route` handlers use the SDK (not MCP):
+`run_python` / `run_coil` handlers use the SDK (not MCP):
 
 ```python
 import os

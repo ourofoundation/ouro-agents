@@ -1090,7 +1090,7 @@ def mine_and_write_route_candidates(
     plan: DreamPlan | None = None,
     since_iso: str | None = None,
 ) -> tuple[int, int]:
-    """Mine repeated tool sequences and write skills/route-candidates.md.
+    """Mine repeated tool sequences and write skills/coil-candidates.md.
 
     Returns ``(found_count, new_count)``.
     """
@@ -1148,7 +1148,7 @@ def mine_and_write_route_candidates(
                 DreamOperation(
                     kind="route_candidates",
                     status="planned" if dry_run else "applied",
-                    target="skills/route-candidates.md",
+                    target="skills/coil-candidates.md",
                     detail={
                         "found": len(candidates),
                         "new": len(fresh),

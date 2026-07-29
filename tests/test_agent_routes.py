@@ -38,8 +38,9 @@ from ouro_agents.agent_routes.registry import (
 from ouro_agents.config import AgentRoutesConfig, OuroAgentsConfig
 from ouro_agents.tools.agent_route_tools import (
     _validate_handler_source,
+    build_coil_directory,
     make_publish_route_tools,
-    make_run_route_tool,
+    make_run_coil_tool,
 )
 from ouro_agents.tools.workspace_layout import check_workspace_write
 
@@ -51,8 +52,11 @@ def _write_draft(
     description: str = "demo",
     title: str | None = None,
     inputs: dict | None = None,
+    dirname: str = "routes",
+    manifest_filename: str = "route.json",
 ) -> None:
-    route_dir = workspace / "routes" / name
+    """Write a draft coil. Defaults to the legacy routes/route.json layout."""
+    route_dir = workspace / dirname / name
     route_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "name": name,
@@ -77,7 +81,7 @@ def _write_draft(
     }
     if title is not None:
         payload["title"] = title
-    (route_dir / "route.json").write_text(
+    (route_dir / manifest_filename).write_text(
         json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -180,6 +184,7 @@ class TestManifestLoading(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             check_workspace_write(root / "routes" / "x" / "handler.py", root)
+            check_workspace_write(root / "coils" / "x" / "handler.py", root)
             with self.assertRaises(PermissionError):
                 check_workspace_write(root / "foo.py", root)
             with self.assertRaises(PermissionError):
@@ -286,7 +291,7 @@ class TestPublishSnapshot(unittest.TestCase):
 
             snap = workspace / "protected" / "published_routes" / "load-context" / "v1"
             self.assertTrue((snap / "handler.py").is_file())
-            self.assertTrue((snap / "route.json").is_file())
+            self.assertTrue((snap / "coil.json").is_file())
 
             registry2 = load_published_registry(workspace)
             self.assertEqual(registry2.service_id, "svc-1")
@@ -481,13 +486,13 @@ class TestPublishSnapshot(unittest.TestCase):
             ouro.services.set_authentication.assert_not_called()
 
 
-class TestRunRouteTool(unittest.TestCase):
+class TestRunCoilTool(unittest.TestCase):
     def test_missing_required_inputs(self):
         with TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             _write_draft(workspace, "load-context")
             session = FakeSession('{"ok": true}')
-            tool = make_run_route_tool(workspace, session)
+            tool = make_run_coil_tool(workspace, session)
             out = tool(name="load-context", params={})
             self.assertIn("JSON Schema validation", out)
             self.assertIn("asset_id", out)
@@ -498,7 +503,7 @@ class TestRunRouteTool(unittest.TestCase):
             workspace = Path(tmp)
             _write_draft(workspace, "load-context")
             session = FakeSession('{"ok": true}')
-            tool = make_run_route_tool(workspace, session)
+            tool = make_run_coil_tool(workspace, session)
             out = tool(name="load-context", params={"asset_id": "abc", "limit": "nope"})
             self.assertIn("JSON Schema validation", out)
             self.assertIn("limit", out)
@@ -509,11 +514,73 @@ class TestRunRouteTool(unittest.TestCase):
             workspace = Path(tmp)
             _write_draft(workspace, "load-context")
             session = FakeSession('{"ok": true, "asset_id": "abc"}')
-            tool = make_run_route_tool(workspace, session)
+            tool = make_run_coil_tool(workspace, session)
             out = tool(name="load-context", params={"asset_id": "abc"})
             payload = json.loads(out)
             self.assertTrue(payload["ok"])
             self.assertTrue(session.calls)
+
+
+
+class TestCoilLayout(unittest.TestCase):
+    def test_coils_dir_and_coil_json_preferred(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(
+                workspace, "new-style", dirname="coils", manifest_filename="coil.json"
+            )
+            _write_draft(workspace, "old-style")  # legacy routes/route.json
+            manifests = load_route_manifests(workspace)
+            self.assertIn("new-style", manifests)
+            self.assertIn("old-style", manifests)
+
+    def test_coils_shadow_legacy_duplicates(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(
+                workspace,
+                "dup",
+                description="coil version",
+                dirname="coils",
+                manifest_filename="coil.json",
+            )
+            _write_draft(workspace, "dup", description="legacy version")
+            manifests = load_route_manifests(workspace)
+            self.assertEqual(manifests["dup"].description, "coil version")
+
+    def test_run_coil_tool_with_coils_layout(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _write_draft(
+                workspace, "load-context", dirname="coils", manifest_filename="coil.json"
+            )
+            session = FakeSession('{"ok": true}')
+            tool = make_run_coil_tool(workspace, session)
+            out = tool(name="load-context", params={"asset_id": "abc"})
+            self.assertTrue(json.loads(out)["ok"])
+            self.assertIn("coils/load-context/handler.py", session.calls[0])
+
+    def test_build_coil_directory(self):
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            self.assertIn("none yet", build_coil_directory(workspace))
+            _write_draft(
+                workspace,
+                "load-context",
+                description="Load ctx",
+                dirname="coils",
+                manifest_filename="coil.json",
+            )
+            listing = build_coil_directory(workspace)
+            self.assertIn("load-context [draft]: Load ctx", listing)
+            self.assertIn("required inputs: asset_id", listing)
+            manifests = load_route_manifests(workspace)
+            registry = load_published_registry(workspace)
+            registry.routes["load-context"] = snapshot_route(
+                workspace, manifests["load-context"], version=1
+            )
+            save_published_registry(workspace, registry)
+            self.assertIn("load-context [published v1]", build_coil_directory(workspace))
 
 
 class TestHandlerValidation(unittest.TestCase):
