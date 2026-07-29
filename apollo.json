@@ -2,8 +2,7 @@
   "env_file": ".env.apollo",
   "security": {
     "controllers": [
-      "mmoderwell",
-      "hermes"
+      "mmoderwell"
     ],
     "trusted": [
       "hermes",

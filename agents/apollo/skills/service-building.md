@@ -11,7 +11,7 @@ live, tested, announced service on Ouro.
 
 ## The build backlog
 
-Keep the backlog as a workspace file: `memory/backlog.md`. One entry per
+Keep the backlog as a workspace file: `projects/service-building/backlog.md`. One entry per
 candidate model, newest at the top of its priority tier:
 
 ```markdown
@@ -62,7 +62,7 @@ wanted for a real problem.
 
 You keep your own CRM: one Ouro dataset, one row per author you contact. On
 your first send, create it yourself (so you own it and can always write to
-it) and record the dataset id in `memory/backlog.md`'s header and in
+it) and record the dataset id in `projects/service-building/backlog.md`'s header and in
 MEMORY.md. Then message Hermes the id so he can dedup against it.
 
 Create it with the same schema as Hermes' CRM: columns `id` (uuid, your

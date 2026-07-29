@@ -115,12 +115,76 @@ def _move_sqlite_sidecars(src_db: Path, dest_db: Path) -> None:
         logger.info("Protected migration: moved %s → %s", src_side, dest_side)
 
 
+def _looks_like_chroma_store(path: Path) -> bool:
+    """True when *path* contains mem0/Chroma store markers."""
+    if not path.is_dir():
+        return False
+    return (path / "chroma").exists() or (path / "chroma.sqlite3").exists()
+
+
+def _evacuate_agent_only_memory(workspace: Path) -> bool:
+    """Clear a leftover top-level ``memory/`` that is not a chroma store.
+
+    When ``protected/memory/`` already holds the real store, agents sometimes
+    recreate top-level ``memory/`` with writable notes (e.g. backlog.md). Those
+    files must not merge into protected (RO for agents). Evacuate them to
+    ``scratch/legacy-memory-migration/`` and remove the forbidden top-level dir.
+    """
+    src = workspace / "memory"
+    dest = protected_memory(workspace)
+    if not src.is_dir() or not dest.exists():
+        return False
+    if _looks_like_chroma_store(src):
+        return False
+    if not _looks_like_chroma_store(dest) and not _is_empty_or_stub_dest(dest, src):
+        # Dest exists but neither side looks like chroma — leave the skip warning.
+        return False
+
+    quarantine = workspace / "scratch" / "legacy-memory-migration"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    evacuated: list[str] = []
+    for child in sorted(src.iterdir()):
+        target = quarantine / child.name
+        if target.exists():
+            logger.warning(
+                "Protected migration: skip evacuating %s — %s already exists",
+                child,
+                target,
+            )
+            continue
+        shutil.move(str(child), str(target))
+        evacuated.append(child.name)
+        logger.info(
+            "Protected migration: evacuated leftover memory/%s → %s",
+            child.name,
+            target,
+        )
+
+    # Remove src only when empty (skipped collisions may leave files behind).
+    try:
+        remaining = list(src.iterdir())
+    except OSError:
+        remaining = [True]
+    if remaining:
+        logger.warning(
+            "Protected migration: leftover memory/ not empty after evacuate (%s)",
+            src,
+        )
+        return bool(evacuated)
+
+    src.rmdir()
+    logger.info("Protected migration: removed empty leftover memory/ at %s", src)
+    return True
+
+
 def migrate_protected_workspace(workspace: Path | str) -> list[str]:
     """Move legacy harness paths into ``protected/``. Idempotent.
 
     Migrates:
     - ``data/`` → ``protected/data/``
     - top-level ``memory/`` → ``protected/memory/`` (not ``teams/*/memory/``)
+    - agent-only leftover ``memory/`` (no chroma) → ``scratch/legacy-memory-migration/``
+      when ``protected/memory/`` already holds the store
     - ``runs.db`` (+ ``-wal``/``-shm``) → ``protected/runs.db``
 
     Returns labels of items that were moved.
@@ -131,7 +195,18 @@ def migrate_protected_workspace(workspace: Path | str) -> list[str]:
 
     if _move_if_needed(ws / "data", protected_data(ws), label="data/"):
         moved.append("data")
-    if _move_if_needed(ws / "memory", protected_memory(ws), label="memory/"):
+    mem_src = ws / "memory"
+    mem_dest = protected_memory(ws)
+    # Agent-only leftovers (no chroma) when the real store is already under
+    # protected/: evacuate before _move_if_needed so we don't warn-and-skip.
+    if (
+        mem_src.is_dir()
+        and mem_dest.exists()
+        and not _looks_like_chroma_store(mem_src)
+        and _evacuate_agent_only_memory(ws)
+    ):
+        moved.append("memory-leftovers")
+    elif _move_if_needed(mem_src, mem_dest, label="memory/"):
         moved.append("memory")
 
     runs_src = ws / "runs.db"

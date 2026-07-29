@@ -111,6 +111,44 @@ class TestMigrateProtectedWorkspace(unittest.TestCase):
             )
             self.assertFalse((ws / "runs.db-wal").exists())
 
+    def test_evacuates_agent_only_memory_leftovers(self):
+        with TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            # Real store already under protected/
+            (protected_memory(ws) / "chroma").mkdir(parents=True)
+            (
+                protected_memory(ws) / "chroma" / "chroma.sqlite3"
+            ).write_bytes(b"x" * 2_000_000)
+            # Forbidden top-level leftover (agent notes, no chroma)
+            (ws / "memory").mkdir()
+            (ws / "memory" / "backlog.md").write_text("# backlog\n")
+
+            moved = migrate_protected_workspace(ws)
+
+            self.assertEqual(moved, ["memory-leftovers"])
+            self.assertFalse((ws / "memory").exists())
+            quarantine = ws / "scratch" / "legacy-memory-migration" / "backlog.md"
+            self.assertEqual(quarantine.read_text(), "# backlog\n")
+            self.assertTrue(
+                (protected_memory(ws) / "chroma" / "chroma.sqlite3").is_file()
+            )
+
+    def test_skips_when_both_memory_trees_have_chroma(self):
+        with TemporaryDirectory() as tmpdir:
+            ws = Path(tmpdir)
+            (ws / "memory" / "chroma").mkdir(parents=True)
+            (ws / "memory" / "chroma" / "chroma.sqlite3").write_bytes(b"a" * 1000)
+            (protected_memory(ws) / "chroma").mkdir(parents=True)
+            (
+                protected_memory(ws) / "chroma" / "chroma.sqlite3"
+            ).write_bytes(b"b" * 2_000_000)
+
+            moved = migrate_protected_workspace(ws)
+
+            self.assertEqual(moved, [])
+            self.assertTrue((ws / "memory" / "chroma").is_dir())
+            self.assertTrue((protected_memory(ws) / "chroma").is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()
