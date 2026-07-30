@@ -26,6 +26,49 @@ _DECISION_ID_RE = re.compile(
     re.IGNORECASE,
 )
 
+_TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "for",
+        "from",
+        "i",
+        "in",
+        "is",
+        "it",
+        "me",
+        "my",
+        "of",
+        "on",
+        "or",
+        "should",
+        "the",
+        "to",
+        "we",
+        "will",
+        "with",
+        "you",
+        "your",
+    }
+)
+
+_QUESTION_MAX = 400
+_CONTEXT_MAX = 400
+_RECOMMENDATION_MAX = 200
+_PROPOSED_ACTION_MAX = 200
+_RESUME_RESULT_MAX = 600
+_LEDGER_QUESTION_MAX = 140
+_LEDGER_ANSWER_MAX = 200
+_DEDUPE_THRESHOLD = 0.35
+_STANDING_DAYS = 14
+_STANDING_LIMIT = 8
+
 
 @dataclass(frozen=True)
 class ControllerReplyResolution:
@@ -92,6 +135,90 @@ class ControllerDecisionBroker:
                 waiter.event.set()
 
 
+def _truncate_at_sentence(text: str, max_chars: int) -> str:
+    """Truncate at a sentence boundary when possible; otherwise hard-cap."""
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    window = cleaned[:max_chars]
+    for sep in (". ", "? ", "! "):
+        idx = window.rfind(sep)
+        if idx >= max(20, max_chars // 3):
+            return window[: idx + 1].rstrip()
+    cut = window.rsplit(" ", 1)[0].rstrip(".,;:") if " " in window else window
+    return (cut or window[: max_chars - 1]).rstrip() + "…"
+
+
+def _significant_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in _TOKEN_RE.findall((text or "").lower())
+        if token not in _STOPWORDS and len(token) > 1
+    }
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    intersection = len(a & b)
+    union = len(a | b)
+    return intersection / union if union else 0.0
+
+
+def _match_fingerprint(question: str, proposed_action: str = "") -> set[str]:
+    return _significant_tokens(f"{question} {proposed_action}")
+
+
+def render_standing_controller_decisions(
+    questions: list[dict],
+) -> str:
+    """Compact always-on ledger of recent controller decisions for heartbeats."""
+    if not questions:
+        return ""
+
+    settled: list[str] = []
+    pending: list[str] = []
+    for question in questions:
+        qid = str(question.get("question_id") or "")[:8]
+        q_text = _truncate_at_sentence(
+            str(question.get("question") or ""), _LEDGER_QUESTION_MAX
+        )
+        status = str(question.get("status") or "")
+        if status == "waiting":
+            created = str(question.get("created_at") or "")[:10]
+            pending.append(
+                f"- `{qid}` (asked {created or 'recently'}): {q_text} — awaiting controller"
+            )
+            continue
+        answer = _truncate_at_sentence(
+            str(question.get("answer") or ""), _LEDGER_ANSWER_MAX
+        )
+        answered = str(question.get("answered_at") or question.get("created_at") or "")[
+            :10
+        ]
+        settled.append(
+            f"- `{qid}` (answered {answered or 'recently'}): "
+            f"Q: {q_text} → A: {answer or '(no answer text)'}"
+        )
+
+    lines = ["## Standing Controller Decisions"]
+    if settled:
+        lines.append(
+            "Settled — these bind your actions; never re-ask or revisit:"
+        )
+        lines.extend(settled)
+    if pending:
+        if settled:
+            lines.append("")
+        lines.append(
+            "Pending — do not re-ask and do not take the proposed action:"
+        )
+        lines.extend(pending)
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 class ControllerQuestionManager:
     """Coordinates controller DMs, durable question state, and live waits."""
 
@@ -105,6 +232,7 @@ class ControllerQuestionManager:
         ouro_client: Callable[[], Any],
         store: RunLogStore,
         fast_wait_seconds: float = 90.0,
+        remember_direction: Optional[Callable[..., bool]] = None,
     ) -> None:
         self.agent_name = agent_name
         self.org_id = org_id
@@ -113,6 +241,7 @@ class ControllerQuestionManager:
         self._ouro_client = ouro_client
         self.store = store
         self.fast_wait_seconds = fast_wait_seconds
+        self._remember_direction = remember_direction
         self.broker = ControllerDecisionBroker()
         self._conversation_lock = threading.RLock()
         self._conversation_cache: dict[str, str] = {}
@@ -120,6 +249,17 @@ class ControllerQuestionManager:
     @property
     def available(self) -> bool:
         return bool(self._controller_ids()) and bool(self._own_user_id())
+
+    def standing_decisions_context(
+        self, *, days: int = _STANDING_DAYS, limit: int = _STANDING_LIMIT
+    ) -> str:
+        """Deterministic standing-decisions block for heartbeat injection."""
+        try:
+            questions = self.store.recent_controller_questions(days=days, limit=limit)
+        except Exception:
+            logger.debug("Failed to load standing controller decisions", exc_info=True)
+            return ""
+        return render_standing_controller_decisions(questions)
 
     def make_tool(
         self,
@@ -137,20 +277,25 @@ class ControllerQuestionManager:
             recommendation: str,
             context: str = "",
             proposed_action: str = "",
+            supersedes: str = "",
         ) -> str:
             """Ask a configured human controller before an uncertain or consequential action.
 
             Use this when facts conflict, required evidence is missing, or the action
             would make an external commitment that the controller should choose.
-            The run waits briefly for a quick answer and otherwise leaves a durable
-            pending question for later resumption.
+            Check Standing Controller Decisions first — never re-ask a settled or
+            pending decision. Keep each field brief (2–3 sentences); options are
+            short imperative phrases. The run waits briefly for a quick answer and
+            otherwise leaves a durable pending question for later resumption.
 
             Args:
-                question: One concise decision question.
-                options: Two or more concrete choices the controller can select.
-                recommendation: Your recommended option and brief reason.
-                context: Essential evidence or uncertainty; omit unrelated history.
+                question: One concise decision question (2–3 sentences max).
+                options: Two or more short concrete choices the controller can select.
+                recommendation: Recommended option and brief reason (1–2 sentences).
+                context: Essential evidence only; omit unrelated history.
                 proposed_action: Exact action you intend to take if approved.
+                supersedes: Optional prior decision id to re-open only when facts
+                    genuinely changed; otherwise leave empty.
             """
             return manager.ask(
                 question=question,
@@ -158,6 +303,7 @@ class ControllerQuestionManager:
                 recommendation=recommendation,
                 context=context,
                 proposed_action=proposed_action,
+                supersedes=supersedes,
                 cancellation_token=cancellation_token,
                 preferred_conversation_id=(
                     current_conversation_id
@@ -178,6 +324,7 @@ class ControllerQuestionManager:
         proposed_action: str,
         cancellation_token: Optional[RunCancellationToken],
         preferred_conversation_id: Optional[str] = None,
+        supersedes: str = "",
     ) -> str:
         controllers = self._controller_ids()
         if not controllers:
@@ -202,6 +349,14 @@ class ControllerQuestionManager:
             return json.dumps(
                 {"status": "unavailable", "error": "No active run context."}
             )
+
+        dedupe = self._check_duplicate(
+            question=question.strip(),
+            proposed_action=proposed_action.strip(),
+            supersedes=supersedes.strip(),
+        )
+        if dedupe is not None:
+            return dedupe
 
         controller_id = controllers[0]
         try:
@@ -257,6 +412,13 @@ class ControllerQuestionManager:
             raise
         if answer is not None:
             self.store.update_controller_question(question_id, status="completed")
+            refreshed = self.store.get_controller_question(question_id) or {
+                **record.__dict__,
+                "answer": answer,
+                "status": "completed",
+            }
+            refreshed["answer"] = answer
+            self._consolidate_answer(refreshed, run_id=run_ctx.run_id)
             return json.dumps(
                 {
                     "status": "answered",
@@ -342,6 +504,12 @@ class ControllerQuestionManager:
             result=result,
             error=error,
         )
+        if error is None:
+            question = self.store.get_controller_question(question_id)
+            if question is not None:
+                self._consolidate_answer(
+                    question, run_id=str(question.get("resume_run_id") or "")
+                )
 
     def resume_task(self, question: dict) -> str:
         options = "\n".join(
@@ -358,15 +526,114 @@ class ControllerQuestionManager:
             f"Controller answer: {question.get('answer') or '(none)'}\n\n"
             "Continue the blocked work from this answer. Re-read current state before "
             "any side effect, do not repeat completed actions, and report what you "
-            "actually did."
+            "actually did. Keep any controller-facing summary brief."
         )
 
     def send_resume_result(self, question: dict, result: str) -> None:
+        summary = _truncate_at_sentence(
+            _first_paragraph(result), _RESUME_RESULT_MAX
+        )
         text = (
-            f"Decision `{question['question_id'][:8]}` resumed and completed.\n\n"
-            f"{result}"
+            f"Decision `{question['question_id'][:8]}` resolved: {summary}\n\n"
+            "(full details in the run log)"
         )
         self._send_message(question["conversation_id"], text)
+
+    def _check_duplicate(
+        self,
+        *,
+        question: str,
+        proposed_action: str,
+        supersedes: str,
+    ) -> Optional[str]:
+        """Return a JSON response if a near-duplicate should block a new ask."""
+        supersedes_norm = supersedes.lower().strip()
+        try:
+            recent = self.store.recent_controller_questions(
+                days=_STANDING_DAYS, limit=_STANDING_LIMIT
+            )
+        except Exception:
+            logger.debug("Failed to load recent controller questions", exc_info=True)
+            return None
+
+        new_tokens = _match_fingerprint(question, proposed_action)
+        if not new_tokens:
+            return None
+
+        best: Optional[dict] = None
+        best_score = 0.0
+        for prior in recent:
+            prior_id = str(prior.get("question_id") or "")
+            if supersedes_norm and (
+                prior_id.lower() == supersedes_norm
+                or prior_id.lower().startswith(supersedes_norm)
+            ):
+                continue
+            prior_tokens = _match_fingerprint(
+                str(prior.get("question") or ""),
+                str(prior.get("proposed_action") or ""),
+            )
+            score = _jaccard(new_tokens, prior_tokens)
+            if score > best_score:
+                best_score = score
+                best = prior
+
+        if best is None or best_score < _DEDUPE_THRESHOLD:
+            return None
+
+        prior_id = str(best.get("question_id") or "")
+        if str(best.get("status") or "") == "waiting":
+            return json.dumps(
+                {
+                    "status": "already_pending",
+                    "question_id": prior_id,
+                    "question": best.get("question"),
+                    "similarity": round(best_score, 3),
+                    "instruction": (
+                        "A similar controller question is already pending. Do not "
+                        "re-ask and do not take the proposed action. Wait for the "
+                        "controller reply (or end cleanly). Pass "
+                        f"`supersedes={prior_id[:8]}` only if facts genuinely changed."
+                    ),
+                }
+            )
+
+        return json.dumps(
+            {
+                "status": "already_decided",
+                "question_id": prior_id,
+                "question": best.get("question"),
+                "answer": best.get("answer"),
+                "answered_at": best.get("answered_at"),
+                "similarity": round(best_score, 3),
+                "instruction": (
+                    "A similar controller decision was already settled. Apply that "
+                    "answer; do not re-ask. Pass "
+                    f"`supersedes={prior_id[:8]}` only if material facts changed."
+                ),
+            }
+        )
+
+    def _consolidate_answer(self, question: dict, *, run_id: str = "") -> None:
+        if self._remember_direction is None:
+            return
+        q_text = str(question.get("question") or "").strip()
+        answer = str(question.get("answer") or "").strip()
+        if not q_text or not answer:
+            return
+        direction = (
+            f"`{str(question.get('question_id') or '')[:8]}`: "
+            f"Q: {_truncate_at_sentence(q_text, 200)} → "
+            f"A: {_truncate_at_sentence(answer, 200)}. Do not re-ask or revisit."
+        )
+        try:
+            self._remember_direction(
+                direction,
+                run_id=run_id or str(question.get("origin_run_id") or ""),
+                team_id=question.get("team_id"),
+            )
+        except Exception:
+            logger.warning("Failed to consolidate controller direction", exc_info=True)
 
     def _ensure_conversation(self, controller_id: str, own_id: str) -> str:
         with self._conversation_lock:
@@ -401,7 +668,7 @@ class ControllerQuestionManager:
         lines = [
             f"## Controller decision `{record.question_id[:8]}`",
             "",
-            record.question,
+            _truncate_at_sentence(record.question, _QUESTION_MAX),
             "",
             "Options:",
         ]
@@ -409,11 +676,28 @@ class ControllerQuestionManager:
             f"{index}. {option}" for index, option in enumerate(record.options, 1)
         )
         if record.recommendation:
-            lines.extend(["", f"Recommendation: {record.recommendation}"])
+            lines.extend(
+                [
+                    "",
+                    "Recommendation: "
+                    + _truncate_at_sentence(record.recommendation, _RECOMMENDATION_MAX),
+                ]
+            )
         if record.context:
-            lines.extend(["", f"Context: {record.context}"])
+            lines.extend(
+                [
+                    "",
+                    "Context: " + _truncate_at_sentence(record.context, _CONTEXT_MAX),
+                ]
+            )
         if record.proposed_action:
-            lines.extend(["", f"Proposed action: {record.proposed_action}"])
+            lines.extend(
+                [
+                    "",
+                    "Proposed action: "
+                    + _truncate_at_sentence(record.proposed_action, _PROPOSED_ACTION_MAX),
+                ]
+            )
         lines.extend(
             [
                 "",
@@ -454,3 +738,14 @@ class ControllerQuestionManager:
             return matches[0] if len(matches) == 1 else None
         return pending[0] if len(pending) == 1 else None
 
+
+def _first_paragraph(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    for sep in ("\n\n", "\n"):
+        if sep in cleaned:
+            first = cleaned.split(sep, 1)[0].strip()
+            if first:
+                return first
+    return cleaned

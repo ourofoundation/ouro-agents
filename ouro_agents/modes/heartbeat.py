@@ -262,7 +262,7 @@ def build_recent_tick_digest(
     team_id: str | None = None,
     limit: int = 5,
 ) -> str:
-    """Compact digest of recent heartbeat outcomes for the tick.
+    """Compact digest of recent heartbeat and controller-decision outcomes.
 
     Lets the heartbeat see what recent ticks already did — so it avoids
     repeating a slice and can audit priority tiers against fresh evidence
@@ -274,27 +274,39 @@ def build_recent_tick_digest(
     if not callable(query_runs):
         return ""
 
-    kwargs: dict[str, Any] = {"mode": "heartbeat", "limit": limit}
+    base_kwargs: dict[str, Any] = {"limit": limit}
     if team_id:
-        kwargs["team_id"] = team_id
+        base_kwargs["team_id"] = team_id
     try:
-        rows = query_runs(**kwargs)
+        heartbeat_rows = query_runs(mode="heartbeat", **base_kwargs)
+        decision_rows = query_runs(event_type="controller-decision", **base_kwargs)
     except Exception as e:
         logger.debug("Failed to query recent heartbeat outcomes: %s", e)
         return ""
+
+    rows = list(heartbeat_rows or []) + list(decision_rows or [])
     if not rows:
         return ""
+    rows.sort(key=lambda row: str(row.get("started_at") or ""), reverse=True)
+    rows = rows[:limit]
 
     lines: list[str] = []
     for row in rows:
         started = str(row.get("started_at") or "")[:16].replace("T", " ")
         status = str(row.get("status") or "")
-        intent = str(row.get("preflight_intent") or "")
-        complexity = str(row.get("preflight_complexity") or "")
-        tier = intent if intent in ("pass", "act") else "?"
-        if complexity.startswith("priority:"):
-            tier = f"{tier} {complexity}"
-        summary = _summarize_tick_result(row.get("result"))
+        event_type = str(row.get("event_type") or "")
+        if event_type == "controller-decision":
+            tier = "controller-decision"
+            summary = _summarize_tick_result(row.get("result"))
+            if not summary:
+                summary = _summarize_tick_result(row.get("task"))
+        else:
+            intent = str(row.get("preflight_intent") or "")
+            complexity = str(row.get("preflight_complexity") or "")
+            tier = intent if intent in ("pass", "act") else "?"
+            if complexity.startswith("priority:"):
+                tier = f"{tier} {complexity}"
+            summary = _summarize_tick_result(row.get("result"))
         parts = [p for p in (started, status, tier) if p]
         line = "- " + " · ".join(parts)
         if summary:
@@ -305,9 +317,10 @@ def build_recent_tick_digest(
         return ""
     return (
         "## Recent Heartbeat Outcomes\n"
-        "What the last few ticks already did (most recent first). Do not repeat "
-        "a slice that is clearly finished; use this as fresh evidence when "
-        "auditing priority tiers.\n" + "\n".join(lines)
+        "What the last few ticks already did (most recent first), including "
+        "controller-decision resumes. Do not repeat a slice that is clearly "
+        "finished; use this as fresh evidence when auditing priority tiers.\n"
+        + "\n".join(lines)
     )
 
 
@@ -1319,6 +1332,21 @@ def build_heartbeat_task_context(
             "Before choosing work for this heartbeat, apply the current work "
             "direction above as a hard priority signal. Do not choose unrelated "
             "research or browsing when a current direction names a concrete focus."
+        )
+
+    standing = ""
+    controller_manager = getattr(agent, "_controller_questions", None)
+    standing_fn = getattr(controller_manager, "standing_decisions_context", None)
+    if callable(standing_fn):
+        try:
+            standing = standing_fn() or ""
+        except Exception:
+            logger.debug("Failed to load standing controller decisions", exc_info=True)
+    if standing:
+        playbook = (
+            f"{playbook}\n\n{standing}\n\n"
+            "Standing controller decisions bind this tick. Do not re-ask them or "
+            "take an action they forbid."
         )
 
     playbook = _append_shared_context_snapshot(

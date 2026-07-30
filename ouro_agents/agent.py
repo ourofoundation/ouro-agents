@@ -214,6 +214,7 @@ class OuroAgent:
             ouro_client=self._get_ouro_client,
             store=self._run_log,
             fast_wait_seconds=config.ask_controller.fast_wait_seconds,
+            remember_direction=self._remember_controller_direction,
         )
         self._current_tick_id: Optional[str] = None
 
@@ -1071,6 +1072,27 @@ class OuroAgent:
             self._ouro_client = None
 
         return self._ouro_client
+
+    def _remember_controller_direction(
+        self,
+        direction: str,
+        *,
+        run_id: str = "",
+        team_id: Optional[str] = None,
+    ) -> bool:
+        """Persist a settled controller answer as durable work-direction memory."""
+        from .memory.focus import remember_work_direction
+
+        return remember_work_direction(
+            getattr(self, "memory", None),
+            self.config.agent.name,
+            direction,
+            source="controller-decision",
+            run_id=run_id,
+            team_id=team_id,
+            strength=0.95,
+            text_prefix="Controller decision",
+        )
 
     def _resolve_conversation_turns(
         self,

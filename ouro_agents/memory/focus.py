@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 from . import MemoryBackend
@@ -38,6 +39,8 @@ FOCUS_KEYWORDS = {
 }
 
 _FOCUS_CATEGORIES = frozenset({"direction", "preference", "fact"})
+_RECENCY_SLOTS = 2
+_RECENCY_DAYS = 7
 
 
 def looks_like_focus_memory(memory) -> bool:
@@ -152,6 +155,49 @@ def _focus_sort_key(memory) -> tuple[int, float, str]:
     return (priority, -signal, created_at)
 
 
+def _created_at_sort_key(memory) -> str:
+    return str(getattr(memory, "created_at", "") or "")
+
+
+def _recent_direction_slots(
+    memory: MemoryBackend,
+    agent_id: str,
+    *,
+    team_id: Optional[str],
+    asset_id: Optional[str],
+    slots: int = _RECENCY_SLOTS,
+    days: int = _RECENCY_DAYS,
+) -> list[Any]:
+    """Newest direction memories from the last N days, ignoring similarity."""
+    get_all = getattr(memory, "get_all", None)
+    if not callable(get_all) or slots <= 0:
+        return []
+
+    since = datetime.now(timezone.utc) - timedelta(days=max(0, days))
+    try:
+        recent = get_all(
+            agent_id=agent_id,
+            limit=max(slots * 4, 8),
+            team_id=team_id,
+            asset_id=asset_id,
+            category="direction",
+            since=since,
+        )
+    except TypeError:
+        try:
+            recent = get_all(agent_id=agent_id, limit=max(slots * 4, 8))
+        except Exception as e:
+            logger.debug("Failed to load recent direction memories: %s", e)
+            return []
+    except Exception as e:
+        logger.debug("Failed to load recent direction memories: %s", e)
+        return []
+
+    eligible = [item for item in (recent or []) if memory_steers_focus(item)]
+    eligible.sort(key=_created_at_sort_key, reverse=True)
+    return eligible[:slots]
+
+
 def build_focus_memory_context(
     memory: MemoryBackend | None,
     agent_id: str,
@@ -165,13 +211,34 @@ def build_focus_memory_context(
     ),
     queries: Iterable[str] = FOCUS_MEMORY_QUERIES,
     reinforce: bool = True,
+    recency_slots: int = _RECENCY_SLOTS,
 ) -> str:
-    """Recall durable focus guidance and render it for a prompt context block."""
+    """Recall durable focus guidance and render it for a prompt context block.
+
+    Reserves ``recency_slots`` of the ``limit`` for the newest direction
+    memories from the last week (regardless of similarity), then fills the
+    remainder from semantic focus search.
+    """
     if not memory or not agent_id:
         return ""
 
     scope = "team" if team_id else "global"
     seen: set[str] = set()
+    ordered: list[Any] = []
+
+    for recent in _recent_direction_slots(
+        memory,
+        agent_id,
+        team_id=team_id,
+        asset_id=asset_id,
+        slots=min(recency_slots, limit),
+    ):
+        text = (getattr(recent, "text", "") or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        ordered.append(recent)
+
     results = []
     for query in queries:
         matches = []
@@ -205,12 +272,15 @@ def build_focus_memory_context(
             seen.add(text)
             results.append(match)
 
-    if not results:
+    results.sort(key=_focus_sort_key)
+    remaining = max(0, limit - len(ordered))
+    ordered.extend(results[:remaining])
+
+    if not ordered:
         return ""
 
-    results.sort(key=_focus_sort_key)
     lines = [f"### {heading}", guidance]
-    for memory_item in results[:limit]:
+    for memory_item in ordered[:limit]:
         category = getattr(memory_item, "category", "fact") or "fact"
         lines.append(f"- [{category}] {memory_item.text}")
     return "\n".join(lines)

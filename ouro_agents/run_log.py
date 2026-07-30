@@ -25,7 +25,7 @@ import logging
 import sqlite3
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -595,6 +595,37 @@ class RunLogStore:
             rows = self._conn.execute(sql, params).fetchall()
         return [self._decode_controller_question(row) for row in rows if row]
 
+    def recent_controller_questions(
+        self,
+        *,
+        days: int = 14,
+        limit: int = 8,
+    ) -> list[dict]:
+        """Return recent waiting/settled controller questions, newest first.
+
+        Pure SQL by recency — used for heartbeat standing-decision injection and
+        ask-time dedupe. Includes ``waiting`` plus statuses that already have an
+        answer (``answered`` / ``resuming`` / ``completed``).
+        """
+        if not self.enabled or self._conn is None:
+            return []
+        cutoff = (
+            datetime.now(timezone.utc).replace(microsecond=0)
+            - timedelta(days=max(0, int(days)))
+        ).isoformat()
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT * FROM controller_questions
+                WHERE created_at >= ?
+                  AND status IN ('waiting', 'answered', 'resuming', 'completed')
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (cutoff, int(limit)),
+            ).fetchall()
+        return [self._decode_controller_question(row) for row in rows if row]
+
     def controller_question_by_answer_message(
         self, answer_message_id: str
     ) -> Optional[dict]:
@@ -734,6 +765,7 @@ class RunLogStore:
         self,
         *,
         mode: Optional[str] = None,
+        event_type: Optional[str] = None,
         status: Optional[str] = None,
         team_id: Any = _UNSET,
         include_shared_team: bool = True,
@@ -758,6 +790,9 @@ class RunLogStore:
         if mode:
             where.append("mode = ?")
             params.append(mode)
+        if event_type:
+            where.append("event_type = ?")
+            params.append(event_type)
         if status:
             where.append("status = ?")
             params.append(status)

@@ -10,13 +10,17 @@ and an output format section that tells the LLM how to return results.
 
 ASK_CONTROLLER_GUIDANCE = (
     "Controller questions: you have an `ask_controller` tool for decisions that "
-    "should not be guessed. Use it when material facts conflict, required evidence "
-    "is unavailable, or a consequential action would make an external commitment "
-    "the configured controller should choose. Ask one concise question with concrete "
-    "options, your recommendation, the essential context, and the exact proposed "
-    "action. Do not use it for routine reversible work or questions you can resolve "
-    "from available evidence. If it returns `waiting`, do not take the uncertain "
-    "action; end cleanly so the later answer can resume the work."
+    "should not be guessed. Check Standing Controller Decisions first — never "
+    "re-ask a settled or still-pending decision. Use the tool when material facts "
+    "conflict, required evidence is unavailable, or a consequential action would "
+    "make an external commitment the configured controller should choose. Ask one "
+    "concise question (2–3 sentences) with short imperative options, a brief "
+    "recommendation, essential context only, and the exact proposed action. Pass "
+    "`supersedes=<prior id>` only when material facts changed. Do not use it for "
+    "routine reversible work or questions you can resolve from available evidence. "
+    "If it returns `waiting`, `already_pending`, or `already_decided`, do not take "
+    "the uncertain action; apply the prior answer or end cleanly so a later reply "
+    "can resume the work."
 )
 
 CHAT_FRAMING = (

@@ -96,6 +96,54 @@ def test_build_focus_memory_context_filters_and_formats_guidance():
     assert "2:17 RE-Fe/Co" not in context
 
 
+def test_build_focus_memory_context_reserves_recent_direction_slots():
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    recent = SimpleNamespace(
+        text="Stop emailing Janine George; Matt owns that thread.",
+        category="direction",
+        score=0.05,
+        strength=0.95,
+        basis="stated",
+        subject_type="user",
+        source="controller-decision",
+        created_at=(now - timedelta(hours=2)).isoformat(),
+    )
+    old_high_signal = SimpleNamespace(
+        text="Focus all energy on the outreach sprint and sponsor pipeline.",
+        category="direction",
+        score=0.99,
+        strength=0.9,
+        basis="stated",
+        subject_type="general",
+        source="planning",
+        created_at=(now - timedelta(days=40)).isoformat(),
+    )
+
+    class FakeMemory:
+        def search(self, **kwargs):
+            return [old_high_signal, recent]
+
+        def get_all(self, **kwargs):
+            assert kwargs.get("category") == "direction"
+            return [recent, old_high_signal]
+
+    context = build_focus_memory_context(
+        FakeMemory(),
+        "hermes",
+        limit=2,
+        heading="Work Direction Guidance",
+        recency_slots=1,
+    )
+
+    assert "Stop emailing Janine George" in context
+    lines = [
+        line for line in context.splitlines() if line.startswith("- [direction]")
+    ]
+    assert lines[0].endswith("Stop emailing Janine George; Matt owns that thread.")
+
+
 def test_build_planning_prompt_includes_heartbeat_budget():
     prompt = build_planning_prompt(cadence="4h", heartbeat_every="30m")
 

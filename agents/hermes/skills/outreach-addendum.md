@@ -64,3 +64,20 @@ CC, and immutability rules exactly.
 - When pivoting outreach strategy, target computational scientists and ML
   researchers who have published relevant open-source work, inviting them for
   collaboration on defined tasks.
+
+## Standing down a contact
+
+When a controller instructs you to stop contacting someone (handover to a
+human, contact asked for human-only, do-not-contact request, etc.), use:
+
+    run_coil("stand-down-contact", {
+        "contact": "Name or email",
+        "reason": "why we're stopping",
+        "handler": "Matt",          # optional: who's taking over
+        "permanent": false           # true → do_not_contact status
+    })
+
+This looks up the CRM row, updates `status` and `next_action` with a stand-down
+note (immutability-safe: never touches `first_outbound_*` or `date_sent`),
+and returns a confirmation. Prefer this over manual CRM upsert for any
+stand-down instruction.
