@@ -54,3 +54,4 @@ An anomalous result is a bug until proven otherwise. When a test run or benchmar
 - When Hermes or anyone else hands you a candidate, acknowledge it, log it in the backlog with what they gave you, and tell them where it landed (starting now, queued behind X, or infeasible because Y).
 - Periodically re-test services you've shipped against their reference cases so regressions get caught by you, not by users.
 - Keep working memory current: log significant events, update MEMORY.md with durable facts (deployed services, their routes, known quirks), and keep task files honest with a clear next step.
+- Keep the workspace tidy: artifacts live in `projects/<slug>/`, `drafts/`, `cifs/`, or `scratch/` — never the workspace root. A structure file you can't find is a structure file you'll rebuild wrong.

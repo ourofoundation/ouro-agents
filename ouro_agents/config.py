@@ -69,11 +69,11 @@ class ModelTierSpec(BaseModel):
 class ModelTiersConfig(BaseModel):
     """Opinionated model roster. Configure once; roles pick a tier.
 
-    ``strong`` — main agent, planning, heartbeat, writer, executor, developer.
+    ``strong`` — main agent, planning, writer, executor, developer.
     ``light`` — search, research, reflector, extraction, utilities
     (compaction, summarize, dream, refinement).
-    ``mid`` — chat and heartbeat cheap-worker ceiling when set, otherwise
-    ``strong``.
+    ``mid`` — chat, heartbeat, and heartbeat cheap-worker ceiling when set,
+    otherwise ``strong``.
     """
 
     strong: ModelTierSpec
@@ -90,7 +90,9 @@ MODEL_ROLE_TIERS: Dict[str, ModelTierName] = {
     "developer": "strong",
     "planner": "strong",
     "chat": "mid",
-    "heartbeat": "strong",
+    # Routine ticks run at mid; planning (which drives everything until the
+    # next cycle) stays strong. Falls back to strong when mid is unset.
+    "heartbeat": "mid",
     "search": "light",
     "research": "light",
     "reflector": "light",
@@ -161,10 +163,13 @@ def _hydrate_from_model_tiers(expanded_data: dict[str, Any]) -> None:
 
     strong_id = _tier_id(models_data, "strong")
     light_id = _tier_id(models_data, "light")
-    # Heartbeat is the strong orchestrator; mid is only the cheap-worker ceiling.
-    heartbeat_id = strong_id
+    mid_id = _tier_id(models_data, "mid")
+    # Heartbeat runs at mid when a mid tier is configured; planning stays strong.
+    heartbeat_id = mid_id or strong_id
     strong_reasoning = _tier_reasoning_payload(models_data, "strong")
-    heartbeat_reasoning = strong_reasoning
+    heartbeat_reasoning = (
+        _tier_reasoning_payload(models_data, "mid") if mid_id else strong_reasoning
+    )
 
     if not strong_id or not light_id:
         return

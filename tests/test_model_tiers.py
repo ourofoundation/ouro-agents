@@ -102,7 +102,7 @@ class TestModelTierHydration(unittest.TestCase):
             "anthropic/claude-sonnet-4",
         )
 
-    def test_heartbeat_hydrates_from_strong_not_mid(self):
+    def test_heartbeat_hydrates_from_mid_when_set(self):
         data = _tiered_config()
         data["models"]["mid"] = {
             "id": "moonshotai/kimi-k3",
@@ -111,9 +111,10 @@ class TestModelTierHydration(unittest.TestCase):
 
         config = _load(data)
 
-        # Heartbeat is the strong orchestrator; mid is only the cheap-worker ceiling.
-        self.assertEqual(config.heartbeat.model, "z-ai/glm-5.2")
-        self.assertEqual(config.heartbeat.reasoning.effort, "medium")
+        # Heartbeat runs at mid when a mid tier is configured; planning stays strong.
+        self.assertEqual(config.heartbeat.model, "moonshotai/kimi-k3")
+        self.assertTrue(config.heartbeat.reasoning.enabled)
+        self.assertEqual(config.planning.model, "z-ai/glm-5.2")
 
     def test_legacy_config_without_models_still_loads(self):
         config = _load(_legacy_config())
@@ -134,7 +135,7 @@ class TestModelRoleTiers(unittest.TestCase):
         self.assertEqual(MODEL_ROLE_TIERS["reflector"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["utility"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["chat"], "mid")
-        self.assertEqual(MODEL_ROLE_TIERS["heartbeat"], "strong")
+        self.assertEqual(MODEL_ROLE_TIERS["heartbeat"], "mid")
 
     def test_mid_falls_back_to_strong(self):
         config = _load(_tiered_config())
@@ -143,12 +144,14 @@ class TestModelRoleTiers(unittest.TestCase):
         chat_spec = tier_spec_for_role(config.models, "chat")
         self.assertEqual(chat_spec.id, "z-ai/glm-5.2")
 
-    def test_heartbeat_uses_strong_even_when_mid_set(self):
+    def test_heartbeat_uses_mid_when_set(self):
         data = _tiered_config()
         data["models"]["mid"] = {"id": "moonshotai/kimi-k3"}
         config = _load(data)
         spec = tier_spec_for_role(config.models, "heartbeat")
-        self.assertEqual(spec.id, "z-ai/glm-5.2")
+        self.assertEqual(spec.id, "moonshotai/kimi-k3")
+        planning_spec = tier_spec_for_role(config.models, "planning")
+        self.assertEqual(planning_spec.id, "z-ai/glm-5.2")
 
     def test_legacy_proactive_migrates_to_servers(self):
         data = _tiered_config()

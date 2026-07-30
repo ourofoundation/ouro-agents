@@ -594,7 +594,10 @@ def build_quest_history_context(
 # ---------------------------------------------------------------------------
 
 PLANNING_MD_NAME = "PLANNING.md"
-PLANNING_MD_MAX_CHARS = 8000  # ~2k tokens
+# ~4k tokens. Loose on purpose: controller feedback is the highest-leverage
+# steering channel; dream/reflection is expected to consolidate it over time
+# rather than the loader truncating it.
+PLANNING_MD_MAX_CHARS = 16000
 
 
 def planning_md_path(workspace: Path) -> Path:

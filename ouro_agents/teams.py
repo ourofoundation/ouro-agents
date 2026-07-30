@@ -65,11 +65,14 @@ class TeamRegistry:
             )
             if org_id and team_org and team_org != org_id:
                 continue
+            # Platform payloads often include ``slug: null``; ``dict.get`` would
+            # return None and skip the name fallback, so treat null as missing.
+            slug = team.get("slug") or team.get("name") or ""
             self._teams[tid] = TeamInfo(
                 id=tid,
-                name=team.get("name", ""),
+                name=team.get("name", "") or "",
                 org_id=team_org or "",
-                slug=team.get("slug", team.get("name", "")),
+                slug=slug,
                 agent_can_create=bool(team.get("agent_can_create", True)),
                 source_policy=team.get("source_policy", "any") or "any",
             )

@@ -1184,11 +1184,14 @@ class OuroAgent:
         when the team isn't writable by agents."""
         agent_cfg = self.config.agent
         team_info = self.team_registry.get_team(team_id)
+        team_slug = team_info.slug if team_info else None
+        team_name = team_info.name if team_info else None
         local = LocalDocStore(
             self._workspace,
             agent_name=agent_cfg.name,
             team_id=team_id,
-            team_slug=team_info.slug if team_info else None,
+            team_slug=team_slug,
+            team_name=team_name,
             rhythm=self.config.memory.rhythm,
         )
         if team_info and not team_info.agent_can_create:
@@ -1204,8 +1207,8 @@ class OuroAgent:
             team_id=team_id,
             client=client if client is not None else self._get_ouro_client(),
             registry_path=self._workspace / "teams" / team_id / "state.json",
-            team_slug=team_info.slug if team_info else None,
-            team_name=team_info.name if team_info else None,
+            team_slug=team_slug,
+            team_name=team_name,
             rhythm=self.config.memory.rhythm,
         )
         return CompositeDocStore(local=local, ouro=ouro)
@@ -2040,7 +2043,8 @@ class OuroAgent:
         role = profile.name
         # During heartbeat ticks, delegated workers stay at mid/light even if
         # the profile defaults to strong in chat/autonomous modes. The main
-        # heartbeat itself is strong; this clamp only applies to subagents.
+        # heartbeat runs at mid (strong when no mid tier is configured); this
+        # clamp only applies to subagents.
         if self._get_heartbeat_cheap_workers():
             cheap_id = None
             tiers = self.config.models

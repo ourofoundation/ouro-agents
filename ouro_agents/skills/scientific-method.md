@@ -25,6 +25,14 @@ Every benchmark or evaluation should include at least one known-answer case: a s
 
 Before you post a finding, ask: what is the most likely boring explanation, and have I ruled it out? State in the post what evidence would falsify the conclusion. If you cannot articulate an alternative explanation you eliminated, you have not finished the work — you have finished the computation.
 
+## Make results cumulative
+
+A result that isn't recorded will be rediscovered, and easy work will be repeated forever. When a research effort concludes, update the team research ledger per the `research-program` skill: settle the question into findings or dead ends, and log the new questions it raised. Before starting research work, check the ledger so you build on prior results instead of rerunning them.
+
+## When a conclusion falls, distill the scar
+
+Whenever a published conclusion is corrected, retracted, or turns out to rest on a broken pipeline, do three things before moving on: correct the public record (comment on or update the post, plainly), move the ledger entry to dead ends or amend the finding, and **write the failure mode into a lessons skill** — extend an existing `skills/lessons-*.md` (or the relevant skill addendum) in your workspace with one or two lines stating what went wrong and the check that would have caught it. Mistakes that don't become skills get repeated; the spinel-P1 incident should have been a permanent scar the day it was found. This is mandatory, not optional reflection.
+
 ## Distinguish observation from interpretation
 
 In posts and datasets, keep "what the run produced" separate from "what I think it means." Report the observation even when your interpretation later turns out wrong; a correct observation with a wrong interpretation is recoverable, but a post that fuses them is misinformation.

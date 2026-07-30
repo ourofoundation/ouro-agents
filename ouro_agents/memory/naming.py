@@ -13,6 +13,9 @@ from typing import Literal, get_args
 
 _TEAM_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
+# Platform catch-all team; prefer a human qualifier over the nil UUID.
+_NIL_TEAM_ID = "00000000-0000-0000-0000-000000000000"
+
 # Wire-format prefix for period logs.
 LOG_PREFIX = "LOG"
 LEGACY_LOG_PREFIX = "DAILY"
@@ -181,14 +184,46 @@ def team_doc_key(
     team_name: str | None = None,
     team_id: str | None = None,
 ) -> str:
-    """Resolve the canonical team qualifier used in MEMORY/log doc names."""
+    """Resolve the canonical team qualifier used in MEMORY/log doc names.
+
+    Prefer a human slug/name over the raw team id. A candidate that normalizes
+    to the same value as ``team_id`` is treated as a last-resort fallback so a
+    poisoned registry slug (or a null platform ``slug`` that leaked the id)
+    does not win over a real team name.
+    """
+    team_id_norm = slugify_team_key(team_id) if team_id else ""
+    fallback = ""
     for candidate in (team_slug, team_name, team_id):
         if not candidate:
             continue
-        normalized = slugify_team_key(candidate)
-        if normalized:
-            return normalized
-    return ""
+        normalized = slugify_team_key(str(candidate))
+        if not normalized:
+            continue
+        if team_id_norm and normalized == team_id_norm:
+            if not fallback:
+                fallback = normalized
+            continue
+        return normalized
+    if fallback == slugify_team_key(_NIL_TEAM_ID):
+        return "all"
+    return fallback
+
+
+def rewrite_team_qualifier(name: str, *, old: str, new: str) -> str:
+    """Replace a team qualifier segment in a MEMORY/LOG logical key."""
+    old_norm = slugify_team_key(old)
+    new_norm = slugify_team_key(new)
+    if not old_norm or not new_norm or old_norm == new_norm:
+        return name
+    parts = name.split(":")
+    if len(parts) < 3:
+        return name
+    prefix = parts[0]
+    if prefix == "MEMORY" and len(parts) >= 3 and slugify_team_key(parts[2]) == old_norm:
+        return f"MEMORY:{parts[1]}:{new_norm}"
+    if is_log_prefix(prefix) and len(parts) >= 4 and slugify_team_key(parts[2]) == old_norm:
+        return f"{prefix}:{parts[1]}:{new_norm}:{parts[3]}"
+    return name
 
 
 def memory_doc_name(

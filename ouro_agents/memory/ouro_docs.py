@@ -40,6 +40,7 @@ from .naming import (
     log_name_lookup_keys,
     memory_doc_name,
     remote_display_name,
+    rewrite_team_qualifier,
     slugify_team_key,
     team_doc_key,
 )
@@ -172,7 +173,11 @@ class OuroDocStore:
         self.org_id = org_id
         self.team_id = team_id
         self.team_name = team_name or ""
-        self.team_slug = team_doc_key(team_slug=team_slug, team_id=team_id)
+        self.team_slug = team_doc_key(
+            team_slug=team_slug,
+            team_name=self.team_name,
+            team_id=team_id,
+        )
         self.rhythm = rhythm
         self._client = client or _build_client(api_key, base_url)
         self._owner_cache: set[str] = set()
@@ -237,11 +242,32 @@ class OuroDocStore:
             team = data.get("team")
             if isinstance(team, dict):
                 self.team_name = str(team.get("name") or self.team_name or "")
+                previous_slug = self.team_slug
+                disk_slug = str(team.get("slug") or "")
                 self.team_slug = team_doc_key(
-                    team_slug=str(team.get("slug") or ""),
+                    team_slug=disk_slug,
                     team_name=self.team_name,
                     team_id=str(team.get("id") or self.team_id),
                 )
+                # Recover registries that baked the team UUID into logical keys
+                # or persisted the id as ``team.slug``.
+                poisoned = slugify_team_key(str(team.get("id") or self.team_id))
+                migrated = False
+                if (
+                    poisoned
+                    and self.team_slug
+                    and self.team_slug != poisoned
+                ):
+                    entries, migrated = self._rewrite_registry_qualifiers(
+                        entries, old=poisoned, new=self.team_slug
+                    )
+                if migrated or previous_slug != self.team_slug or (
+                    poisoned
+                    and slugify_team_key(disk_slug) == poisoned
+                    and self.team_slug != poisoned
+                ):
+                    self._uuid_cache = entries
+                    self._save_registry()
             logger.debug(
                 "Loaded doc registry: %d entries (%d owned)",
                 len(entries),
@@ -251,6 +277,32 @@ class OuroDocStore:
         except Exception as e:
             logger.warning("Failed to load doc registry: %s", e)
             return {}
+
+    def _rewrite_registry_qualifiers(
+        self,
+        entries: dict[str, str],
+        *,
+        old: str,
+        new: str,
+    ) -> tuple[dict[str, str], bool]:
+        """Rewrite MEMORY/LOG keys that used a poisoned team-id qualifier."""
+        rewritten: dict[str, str] = {}
+        owner_updates: list[tuple[str, str]] = []
+        changed = False
+        for key, uuid in entries.items():
+            new_key = rewrite_team_qualifier(key, old=old, new=new)
+            if new_key != key:
+                changed = True
+                if key in self._owner_cache:
+                    owner_updates.append((key, new_key))
+            # Prefer the rewritten key if both somehow exist.
+            if new_key in rewritten and new_key != key:
+                continue
+            rewritten[new_key] = uuid
+        for old_key, new_key in owner_updates:
+            self._owner_cache.discard(old_key)
+            self._owner_cache.add(new_key)
+        return rewritten, changed
 
     def _save_registry(self) -> None:
         """Persist the name→UUID cache (and ownership) to disk."""
@@ -758,12 +810,17 @@ class LocalDocStore:
         agent_name: str = "",
         team_id: str | None = None,
         team_slug: str | None = None,
+        team_name: str | None = None,
         rhythm: str = "daily",
     ):
         self._workspace = workspace
         self.agent_name = agent_name
         self.team_id = team_id
-        self.team_slug = team_doc_key(team_slug=team_slug, team_id=team_id)
+        self.team_slug = team_doc_key(
+            team_slug=team_slug,
+            team_name=team_name,
+            team_id=team_id,
+        )
         self.rhythm = rhythm
 
     def memory_name(self, agent_name: str | None = None) -> str:
