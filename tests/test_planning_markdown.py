@@ -544,7 +544,8 @@ def test_build_planning_prompt_allows_skip_and_requires_novelty():
     assert "Standing Planning Guidance" in prompt or "decline to plan" in prompt
     assert "checkpoint item" in prompt
     assert "what is *different*" in prompt or "different from your" in prompt
-    assert "Completion without engagement is not success" in prompt or "outcomes" in prompt
+    assert "Default to publishing a plan" in prompt
+    assert "not a reason to decline" in prompt or "change approach" in prompt
 
 
 def test_build_quest_history_context_summarizes_recent_quests():

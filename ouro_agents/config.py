@@ -69,11 +69,12 @@ class ModelTierSpec(BaseModel):
 class ModelTiersConfig(BaseModel):
     """Opinionated model roster. Configure once; roles pick a tier.
 
-    ``strong`` — main agent, planning, writer, executor, developer.
+    ``strong`` — planning, writer, executor, developer (and ``agent.model``
+    fallback when mid is unset).
     ``light`` — search, research, reflector, extraction, utilities
     (compaction, summarize, dream, refinement).
-    ``mid`` — chat, heartbeat, and heartbeat cheap-worker ceiling when set,
-    otherwise ``strong``.
+    ``mid`` — chat, autonomous, heartbeat, and heartbeat cheap-worker
+    ceiling when set; otherwise those roles use ``strong``.
     """
 
     strong: ModelTierSpec
@@ -90,6 +91,7 @@ MODEL_ROLE_TIERS: Dict[str, ModelTierName] = {
     "developer": "strong",
     "planner": "strong",
     "chat": "mid",
+    "autonomous": "mid",
     # Routine ticks run at mid; planning (which drives everything until the
     # next cycle) stays strong. Falls back to strong when mid is unset.
     "heartbeat": "mid",

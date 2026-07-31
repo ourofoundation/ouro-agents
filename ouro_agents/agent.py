@@ -2797,6 +2797,15 @@ class OuroAgent:
                 role="chat",
                 conversational=run_profile.conversational,
             )
+        elif mode == RunMode.AUTONOMOUS:
+            auto_model_id = (
+                self._model_id_for_role("autonomous") or self.config.agent.model
+            )
+            model = self._build_model(
+                auto_model_id,
+                role="autonomous",
+                conversational=run_profile.conversational,
+            )
         else:
             model = self._build_model(
                 self.config.agent.model,

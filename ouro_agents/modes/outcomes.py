@@ -393,10 +393,9 @@ def build_outcome_evidence_context(
 
     lines = [
         "## Outcome Evidence",
-        "External engagement on work your recent quests produced. Grade plans "
-        "against these outcomes — completion without engagement is not success. "
-        "A pattern with repeated near-zero external engagement must be named as "
-        "failing and changed.",
+        "External engagement on work your recent quests produced. Use these "
+        "outcomes to shape the next plan's focus when useful. Low engagement "
+        "is a signal to change approach, not a reason to skip planning.",
     ]
     any_row = False
     for quest in quests:

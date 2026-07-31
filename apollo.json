@@ -24,7 +24,9 @@
         "ase.*",
         "pymatgen.*",
         "spglib.*",
-        "modal.*"
+        "modal.*",
+        "fastapi.*",
+        "uvicorn.*"
       ],
       "image": "ouro-agents-sandbox-apollo:latest",
       "workspace_mount": "/workspace",
@@ -44,19 +46,19 @@
   },
   "models": {
     "strong": {
-      "id": "moonshotai/kimi-k3",
-      "reasoning": {
-        "effort": "max"
-      }
-    },
-    "mid": {
       "id": "openai/gpt-5.6-terra",
       "reasoning": {
         "effort": "max"
       }
     },
-    "light": {
+    "mid": {
       "id": "openai/gpt-5.6-luna",
+      "reasoning": {
+        "effort": "max"
+      }
+    },
+    "light": {
+      "id": "deepseek/deepseek-v4-flash-0731",
       "reasoning": {
         "effort": "none"
       }

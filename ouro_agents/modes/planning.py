@@ -729,13 +729,12 @@ Allowed write tools: create_quest, create_quest_items, update_quest.
 Do NOT attempt to execute any plan items or do actual work — only write and
 publish the plan, or skip.
 
-You may skip planning when any of these hold:
+Default to publishing a plan. You may skip only when:
 - Open quests still have real backlog (including waiting/parked items) that
-  should be worked before inventing new focus.
-- Outcome evidence shows the recent pattern produced near-zero external
-  engagement and you do not yet have a different approach.
-- Nothing novel is worth committing to given Your Recent Quests and Standing
-  Planning Guidance.
+  clearly should be worked before inventing new focus, or
+- Standing Planning Guidance explicitly forbids a new cycle right now.
+Do not skip because recent quests got little external engagement — treat that
+as a signal to change approach in the new plan, not a reason to decline.
 If you skip, do NOT call create_quest. End the turn with only this JSON:
 ```json
 {{"quest_id": null, "skip_reason": "<brief reason>"}}
@@ -749,11 +748,10 @@ Step 1. Call create_quest exactly once to publish your plan{quest_instructions}.
    - Pass status="draft" so the plan quest is not live until approved.
    - Pass description_markdown with **prose context**: background, reasoning,
      focus areas. Use headers and paragraphs — no checklists in the description.
-   - Open the description with a short retrospective (2-3 sentences) that grades
-     the previous plan against **outcomes** (did anyone respond, use, or build
-     on the work?), not just item completion. Completion without engagement is
-     not success. If a pattern shows repeated near-zero external engagement,
-     name it as failing and change approach.
+   - Open the description with a short retrospective (2-3 sentences) that notes
+     outcomes (did anyone respond, use, or build on the work?) as well as item
+     completion. If engagement was weak, say so briefly and state how this plan
+     changes approach — then still publish.
    - Explicitly state what this plan does differently from recent quests.
    - Pass items as a list of specific, actionable task descriptions (strings).
      Each item becomes a trackable task on the platform.

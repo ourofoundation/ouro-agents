@@ -61,11 +61,11 @@ config aliases `chat-reply` and `reply` still resolve to `chat`.
 The default for `ouro-agents run`. Preloads action-oriented Ouro tools
 (`search_assets`, `get_asset`, `execute_route`, `get_action`). Runs
 post-reflection. Persists conversation turns when `conversation_id` is
-provided.
+provided. Uses the mid model tier when configured (falls back to strong).
 
 ### `heartbeat`
 Scheduler-driven mode. Restricted to the `ouro` MCP server (search is
-delegated to subagents). One strong-model run owns the whole tick: it
+delegated to subagents). One mid-model run owns the whole tick: it
 decides and executes one bounded slice, delegating heavy work to cheap
 subagents. Tick kind (`quest_work` vs `open_ended`) is chosen
 deterministically before the LLM call and gates context/framing. The final

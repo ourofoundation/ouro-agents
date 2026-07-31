@@ -135,6 +135,7 @@ class TestModelRoleTiers(unittest.TestCase):
         self.assertEqual(MODEL_ROLE_TIERS["reflector"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["utility"], "light")
         self.assertEqual(MODEL_ROLE_TIERS["chat"], "mid")
+        self.assertEqual(MODEL_ROLE_TIERS["autonomous"], "mid")
         self.assertEqual(MODEL_ROLE_TIERS["heartbeat"], "mid")
 
     def test_mid_falls_back_to_strong(self):
@@ -328,6 +329,35 @@ class TestAgentModelResolution(unittest.TestCase):
     def test_chat_role_falls_back_to_strong_without_mid(self):
         agent = self._agent(_tiered_config())
         self.assertEqual(agent._model_id_for_role("chat"), "z-ai/glm-5.2")
+
+    def test_autonomous_role_uses_mid_tier(self):
+        data = _tiered_config()
+        data["models"]["mid"] = {
+            "id": "moonshotai/kimi-k3",
+            "reasoning": {"enabled": True},
+        }
+        agent = self._agent(data)
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model(
+                agent._model_id_for_role("autonomous"),
+                role="autonomous",
+            )
+
+        self.assertEqual(
+            tracked_model.call_args.kwargs["model_id"],
+            "moonshotai/kimi-k3",
+        )
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(reasoning, {"enabled": True})
+
+    def test_autonomous_role_falls_back_to_strong_without_mid(self):
+        agent = self._agent(_tiered_config())
+        self.assertEqual(agent._model_id_for_role("autonomous"), "z-ai/glm-5.2")
 
 
 class TestHermesConfigLoads(unittest.TestCase):

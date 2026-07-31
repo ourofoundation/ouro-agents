@@ -60,9 +60,9 @@ Configure two or three model bundles once; the harness picks a tier per role.
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `strong` | ModelTierSpec | required | Main agent, planning, writer, executor, developer. |
+| `strong` | ModelTierSpec | required | Planning, writer, executor, developer; also `agent.model` fallback. |
 | `light` | ModelTierSpec | required | Preflight, research, reflector, extraction, utilities (compact / summarize / dream / refinement). |
-| `mid` | ModelTierSpec | none | Chat and heartbeat when set; otherwise both use `strong`. |
+| `mid` | ModelTierSpec | none | Chat, autonomous, and heartbeat when set; otherwise those use `strong`. |
 
 Each tier spec:
 
@@ -82,9 +82,9 @@ Role → tier map (code-owned, not configurable):
 
 | Role | Tier |
 |------|------|
-| agent, planning, heartbeat, writer, executor, developer, planner | strong |
-| chat, heartbeat | mid → strong |
-| research, reflector | light |
+| agent, planning, writer, executor, developer, planner | strong |
+| chat, autonomous, heartbeat | mid → strong |
+| search, research, reflector | light |
 | utility, extraction, refinement | light |
 
 Legacy configs without `models` keep working: set `agent.model`,
@@ -231,9 +231,8 @@ Legacy `proactive.enabled` / `proactive.servers` configs are migrated to
 `servers` at load time (always `["ouro"]` for the main heartbeat when search
 was previously listed — search is delegated).
 
-Heartbeat flow: one strong-model run decides and executes. Delegated workers
-are capped to
-mid/light for that tick.
+Heartbeat flow: one mid-model run decides and executes (strong when mid is
+unset). Delegated workers are capped to mid/light for that tick.
 
 ## `planning`
 
