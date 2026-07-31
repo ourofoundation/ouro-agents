@@ -6,6 +6,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 from smolagents import ActionStep, ToolCallingAgent
@@ -23,32 +24,15 @@ from ..cancellation import RunCancellationToken
 from ..display import get_display
 from ..provider_reasoning import copy_reasoning_fields
 from ..security.action_gates import observed_action_category
+from .observation_policy import (
+    ObservationPolicy,
+    RUN_COMPACT_MARKER,
+    enforce_step_budget,
+    fold_observation_excerpt,
+    maybe_spill_and_stub,
+)
 
 logger = logging.getLogger(__name__)
-
-# Trigger compaction when a tool result exceeds this size (~12k tokens).
-_MAX_TOOL_OUTPUT_CHARS = 50_000
-# Compacted summaries are targeted at this size (~2k tokens).
-_COMPACT_TARGET_CHARS = 8_000
-
-# Within-run memory pressure: when the accumulated tool observations across all
-# steps exceed this size (~60k tokens), the oldest steps' observations are
-# folded down so long tool-heavy runs don't blow the context window.
-_RUN_OBSERVATIONS_HIGH_WATER_CHARS = 240_000
-# Compaction shrinks total observations to below this (~40k tokens).
-_RUN_OBSERVATIONS_LOW_WATER_CHARS = 160_000
-# The most recent steps are always left untouched — the model still needs
-# their full detail to continue the task.
-_RUN_COMPACT_KEEP_RECENT_STEPS = 5
-# Per-step observation excerpt retained when a step is folded.
-_RUN_COMPACT_EXCERPT_CHARS = 1_500
-_RUN_COMPACT_MARKER = "[older observation folded to save context"
-
-_COMPACT_SYSTEM_PROMPT = """\
-A tool returned output that is too large to include verbatim in context.
-Compress it into a concise but faithful summary. Preserve all specific facts, numbers, \
-names, URLs, code snippets, error messages, and structured data. Omit filler, repetition, \
-and boilerplate. Do not add commentary — output only the compressed content."""
 
 _EMPTY_MODEL_RESPONSE_ANSWER = (
     "MODEL_EMPTY_RESPONSE: model returned no content and no tool calls."
@@ -103,44 +87,6 @@ class PlainTaskStep(TaskStep):
                 [{"type": "image", "image": image} for image in self.task_images]
             )
         return [ChatMessage(role=MessageRole.USER, content=content)]
-
-
-def _compact_tool_output(
-    tool_name: str,
-    output: str,
-    task: str,
-    model,
-    target_chars: int = _COMPACT_TARGET_CHARS,
-) -> str | None:
-    """Ask a cheap LLM to summarize a large tool result.
-
-    Returns the compacted string, or None if compaction fails (caller should
-    fall back to truncation).
-    """
-    user_content = (
-        f"Agent task: {task}\n"
-        f"Tool: {tool_name}\n"
-        f"Target length: under {target_chars:,} characters\n\n"
-        f"Raw output:\n{output}"
-    )
-    try:
-        result = model(
-            [
-                {"role": "system", "content": _COMPACT_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content},
-            ]
-        )
-        text = result.content if hasattr(result, "content") else str(result)
-        logger.info(
-            "Compacted tool '%s' output: %d → %d chars",
-            tool_name,
-            len(output),
-            len(text),
-        )
-        return text
-    except Exception as e:
-        logger.warning("Tool output compaction failed for '%s': %s", tool_name, e)
-        return None
 
 
 _NULL_STRINGS = {"null", "None", "none", "undefined"}
@@ -1057,11 +1003,15 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
     def __init__(
         self,
         *args,
-        compactor_model=None,
+        observation_policy: ObservationPolicy | None = None,
+        workspace: Path | str | None = None,
+        run_id: str = "",
         cancellation_token: RunCancellationToken | None = None,
         **kwargs,
     ):
-        self._compactor_model = compactor_model
+        self._observation_policy = observation_policy or ObservationPolicy()
+        self._workspace = Path(workspace).resolve() if workspace else None
+        self._run_id = run_id or ""
         self._cancellation_token = cancellation_token
         self._action_gate_mode = kwargs.pop("action_gate_mode", "off")
         self._action_gate_observer: Optional[Callable[[str, str], None]] = kwargs.pop(
@@ -1069,6 +1019,7 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         )
         self._reasoning_only_streak = 0
         self._reasoning_only_warned = False
+        self._observation_compact_done = False
         configured_max_steps = kwargs.get("max_steps")
         self._plain_task_messages = bool(kwargs.pop("plain_task_messages", False))
         super().__init__(*args, **kwargs)
@@ -1139,53 +1090,50 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         self._track_reasoning_only_step(memory_step)
         self._inject_nudge_observation(memory_step)
         self._inject_step_budget_observation(memory_step)
-        self._compact_old_observations()
+        self._maybe_one_shot_compact_observations()
 
-    def _compact_old_observations(self) -> None:
-        """Fold old step observations when the run's context grows too large.
+    def _maybe_one_shot_compact_observations(self) -> None:
+        """One-shot fold of old observations when cumulative size crosses a ceiling.
 
-        Individual oversized tool outputs are compacted at the point of return
-        (see ``execute_tool_call``), but a long run of many medium-sized
-        observations can still exhaust the context window. When cumulative
-        observation size passes the high-water mark, the oldest steps'
-        observations are reduced to a short excerpt until the total drops
-        below the low-water mark. The most recent steps are never touched.
+        History stays append-only until this fires so prompt cache remains stable.
+        Crossing the ceiling rewrites older steps once (accept one cache break),
+        then append-only resumes until another material overrun.
         """
+        policy = self._observation_policy
         action_steps = [s for s in self.memory.steps if isinstance(s, ActionStep)]
-        if len(action_steps) <= _RUN_COMPACT_KEEP_RECENT_STEPS:
+        if len(action_steps) <= policy.keep_recent_steps:
             return
 
-        def _total() -> int:
-            return sum(len(s.observations or "") for s in action_steps)
-
-        total = _total()
-        if total <= _RUN_OBSERVATIONS_HIGH_WATER_CHARS:
+        total = sum(len(s.observations or "") for s in action_steps)
+        if total <= policy.run_compact_ceiling:
+            return
+        if self._observation_compact_done and total <= policy.run_compact_ceiling * 1.5:
+            # Already compacted; wait for a material overrun before rewriting again
+            # (avoids thrashing the cached prefix every step).
             return
 
         folded = 0
-        for step in action_steps[:-_RUN_COMPACT_KEEP_RECENT_STEPS]:
-            if total <= _RUN_OBSERVATIONS_LOW_WATER_CHARS:
-                break
+        for step in action_steps[: -policy.keep_recent_steps]:
             observations = step.observations or ""
             if (
-                len(observations) <= _RUN_COMPACT_EXCERPT_CHARS
-                or _RUN_COMPACT_MARKER in observations
+                len(observations) <= policy.excerpt_chars
+                or RUN_COMPACT_MARKER in observations
             ):
                 continue
-            excerpt = observations[:_RUN_COMPACT_EXCERPT_CHARS]
-            step.observations = (
-                f"{excerpt}\n\n{_RUN_COMPACT_MARKER}: "
-                f"{len(observations):,} chars originally; re-run the tool if the "
-                "full output is needed again]"
+            step.observations = fold_observation_excerpt(
+                observations, excerpt_chars=policy.excerpt_chars
             )
-            total -= len(observations) - len(step.observations)
             folded += 1
 
+        self._observation_compact_done = True
         if folded:
+            new_total = sum(len(s.observations or "") for s in action_steps)
             logger.info(
-                "Compacted %d old step observation(s); run observations now ~%d chars",
+                "One-shot compacted %d old step observation(s); "
+                "run observations %d → %d chars (cache prefix rewritten once)",
                 folded,
                 total,
+                new_total,
             )
 
     def _inject_nudge_observation(self, memory_step: ActionStep) -> None:
@@ -1324,6 +1272,19 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                 if not str(body).startswith("=== Tool result:"):
                     output.observation = f"{header}\n{body}"
             yield output
+        # Bound the combined step observation before it is treated as committed
+        # history (parallel tools can still sum past per-call spill limits).
+        observations = getattr(memory_step, "observations", None)
+        if observations:
+            capped = enforce_step_budget(
+                observations,
+                tool_name="step",
+                workspace=self._workspace,
+                run_id=self._run_id,
+                policy=self._observation_policy,
+            )
+            if capped != observations:
+                memory_step.observations = capped
 
     def execute_tool_call(self, tool_name, arguments):
         self._raise_if_cancelled()
@@ -1369,26 +1330,13 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                         )
         result = super().execute_tool_call(tool_name, arguments)
         self._raise_if_cancelled()
-        if isinstance(result, str) and len(result) > _MAX_TOOL_OUTPUT_CHARS:
-            logger.warning(
-                "Tool '%s' returned %d chars (limit %d); compacting...",
-                tool_name,
-                len(result),
-                _MAX_TOOL_OUTPUT_CHARS,
-            )
-            if self._compactor_model is not None:
-                task = getattr(self, "task", "") or ""
-                compacted = _compact_tool_output(
-                    tool_name, result, task, self._compactor_model
-                )
-                if compacted:
-                    return compacted
-            # Compactor unavailable or failed — fall back to hard truncation.
-            truncated = result[:_MAX_TOOL_OUTPUT_CHARS]
-            suffix = (
-                f"\n\n[Output truncated: {len(result):,} chars total,"
-                f" showing first {_MAX_TOOL_OUTPUT_CHARS:,}]"
-            )
-            logger.warning("Fell back to truncation for tool '%s'", tool_name)
-            return truncated + suffix
-        return result
+        if result is None:
+            return result
+        text = result if isinstance(result, str) else str(result)
+        return maybe_spill_and_stub(
+            text,
+            tool_name=str(tool_name),
+            workspace=self._workspace,
+            run_id=self._run_id,
+            policy=self._observation_policy,
+        )

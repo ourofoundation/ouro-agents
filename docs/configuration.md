@@ -16,6 +16,7 @@ point.
   "agent":         { ... },   // model/reasoning optional when ``models`` is set
   "models":        { ... },   // preferred: strong / light / optional mid
   "prompt_caching":{ ... },
+  "observations":  { ... },
   "heartbeat":     { ... },     // populated from modes.heartbeat
   "planning":      { ... },     // populated from modes.planning
   "modes":         { ... },
@@ -213,6 +214,41 @@ need an explicit ceiling (for example to avoid a provider reserving a huge
 default). There are no role-level defaults — leave the field unset to let the
 model finish normally.
 
+## `observations`
+
+Spill-and-cap policy for tool results in every mode (chat, heartbeat,
+autonomous, plan, subagents). Oversized outputs are written under
+`scratch/tool-outputs/<run_id>/` and replaced with a head/tail stub **before**
+they enter agent memory. History stays append-only for prompt-cache stability;
+older steps are rewritten only on a rare one-shot compact when cumulative
+observation size crosses `run_compact_ceiling`.
+
+```json
+"observations": {
+  "max_inline_chars": 6000,
+  "head_chars": 1200,
+  "tail_chars": 800,
+  "max_step_chars": 12000,
+  "run_compact_ceiling": 80000,
+  "keep_recent_steps": 3,
+  "excerpt_chars": 800
+}
+```
+
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `max_inline_chars` | int | `6000` | Spill + head/tail stub when a single tool result exceeds this. |
+| `head_chars` | int | `1200` | Leading chars kept in the stub. |
+| `tail_chars` | int | `800` | Trailing chars kept in the stub (catches deploy success / exit codes). |
+| `max_step_chars` | int | `12000` | Cap after parallel tools concatenate into one step observation. |
+| `run_compact_ceiling` | int | `80000` | One-shot fold of older steps only above this cumulative size (one cache break). |
+| `keep_recent_steps` | int | `3` | Recent action steps left untouched on one-shot compact. |
+| `excerpt_chars` | int | `800` | Remnant per compacted older step (spill paths are preserved). |
+
+Sandbox `max_output_chars` stays high (default `50000`) so spill files still
+receive useful full tool output; the agent-layer stub is what protects the
+prompt.
+
 ## `heartbeat`
 
 Top-level scheduler/model fields for the heartbeat tick. Usually written
@@ -222,7 +258,7 @@ inside `modes.heartbeat` and hoisted out at load time.
 |-------|------|---------|-------|
 | `enabled` | bool | `true` | Disable to stop scheduling heartbeats. |
 | `every` | str | `30m` | Interval (`30s`, `5m`, `1h`, `1d`) or 5-field cron. |
-| `model` | str | required | Heartbeat executor model id (also used by the cheap "compactor" model). |
+| `model` | str | required | Heartbeat executor model id. |
 | `active_hours` | `{start, end, timezone}` | none | Skip ticks outside this window. |
 | `servers` | list[str] | `["ouro"]` | MCP servers the main heartbeat may load. Search belongs to `search`/`research` subagents. |
 | `reasoning` | ReasoningConfig | none | Overlay on top of `agent.reasoning`. |
@@ -507,7 +543,7 @@ Durable SQLite logging of every run to `<workspace>/protected/runs.db`.
 | `capture_steps` | `true` | Persist the per-step trace to `run_steps`. |
 | `capture_reasoning` | `true` | Include provider reasoning on steps. |
 | `capture_observations` | `true` | Persist tool results (observations). |
-| `max_observation_chars` | `0` | Truncate observations to this many chars; `0` = keep full. |
+| `max_observation_chars` | `0` | Truncate observations to this many chars when writing `runs.db`; `0` = keep as stored in memory (typically spill stubs after the observations policy runs). |
 | `capture_subagent_runs` | `true` | Log each subagent as a child run (`parent_run_id`). |
 | `expose_to_agent` | `true` | Give the agent `recall_runs` / `get_run_detail` tools. |
 | `agent_default_scope` | `team` | Max recall breadth: `team` (+ shared), `conversation`, or `all`. |

@@ -99,7 +99,8 @@ class SubAgentContext:
     agent_id: str
     memory_config: "MemoryConfig"
     model: Any  # TrackedOpenAIModel or compatible callable
-    compactor_model: Any = None
+    # Spill/stub policy for tool observations (defaults if unset).
+    observation_policy: Any = None
 
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None

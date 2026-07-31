@@ -141,6 +141,21 @@ def _truncate(value, limit):
     return text[:limit] + f"\n... truncated to {limit} chars ..."
 
 
+def _truncate_result(value, max_output_chars):
+    # Truncate the JSON-safe result field the same way as stdout/stderr.
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _truncate(value, max_output_chars)
+    try:
+        text = json.dumps(value, default=str)
+    except Exception:
+        text = str(value)
+    if len(text) <= max_output_chars:
+        return value
+    return _truncate(text, max_output_chars)
+
+
 def _execute(code, max_output_chars):
     stdout = io.StringIO()
     stderr = io.StringIO()
@@ -162,7 +177,7 @@ def _execute(code, max_output_chars):
             "ok": True,
             "stdout": _truncate(stdout.getvalue(), max_output_chars),
             "stderr": _truncate(stderr.getvalue(), max_output_chars),
-            "result": _json_safe(result),
+            "result": _truncate_result(_json_safe(result), max_output_chars),
         }
     except BaseException as exc:
         return {

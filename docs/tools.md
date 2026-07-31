@@ -133,9 +133,15 @@ workspace mounted as the working directory.
 
 The command inherits the Docker sandbox limits: configured image, network mode,
 environment allowlist, memory/CPU/pid limits, `timeout_seconds`, and
-`max_output_chars`. The result includes exit code, stdout, stderr, and a timeout
-marker when applicable. Use it for short CLI commands and tests; use
-`run_python` for persistent Python state or workflows that need `get_ouro_client()`.
+`max_output_chars` (stdout/stderr/result). Use it for short CLI commands and
+tests; use `run_python` for persistent Python state or workflows that need
+`get_ouro_client()`.
+
+Large tool results (including shell output) are also governed by the top-level
+`observations` policy: payloads over `max_inline_chars` are spilled to
+`scratch/tool-outputs/<run_id>/` with a head/tail stub left in memory. Keep
+history append-only until a rare one-shot compact at `run_compact_ceiling` so
+prompt cache stays stable. See [configuration.md](configuration.md#observations).
 
 ## MCP tools
 

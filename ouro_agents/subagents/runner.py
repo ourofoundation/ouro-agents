@@ -354,7 +354,7 @@ def _build_chain_delegate(
             agent_id=ctx.agent_id,
             memory_config=ctx.memory_config,
             model=ctx.model,
-            compactor_model=ctx.compactor_model,
+            observation_policy=ctx.observation_policy,
             user_id=ctx.user_id,
             conversation_id=ctx.conversation_id,
             run_id=ctx.run_id,
@@ -689,10 +689,21 @@ def _run_agent(
                 },
             )
 
+    from ouro_agents.tools.observation_policy import ObservationPolicy, to_observation_policy
+
+    if isinstance(ctx.observation_policy, ObservationPolicy):
+        obs_policy = ctx.observation_policy
+    elif ctx.observation_policy is not None:
+        obs_policy = to_observation_policy(ctx.observation_policy)
+    else:
+        obs_policy = ObservationPolicy()
+
     agent = _SanitizedToolCallingAgent(
         tools=tools,
         model=ctx.model,
-        compactor_model=ctx.compactor_model,
+        observation_policy=obs_policy,
+        workspace=ctx.workspace,
+        run_id=ctx.run_id,
         max_steps=profile.max_steps,
         logger=subagent_logger,
         step_callbacks=[_subagent_step_callback],

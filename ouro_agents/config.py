@@ -291,6 +291,24 @@ class ChatCompactionConfig(BaseModel):
         return self
 
 
+class ObservationPolicyConfig(BaseModel):
+    """Spill oversized tool results; keep in-run history append-only for cache.
+
+    Results over ``max_inline_chars`` are written to
+    ``scratch/tool-outputs/<run_id>/`` and replaced with a head/tail stub before
+    they enter agent memory. Older steps are rewritten only on a rare one-shot
+    compact when cumulative observation chars cross ``run_compact_ceiling``.
+    """
+
+    max_inline_chars: int = Field(default=6_000, ge=500)
+    head_chars: int = Field(default=1_200, ge=0)
+    tail_chars: int = Field(default=800, ge=0)
+    max_step_chars: int = Field(default=12_000, ge=500)
+    run_compact_ceiling: int = Field(default=80_000, ge=1_000)
+    keep_recent_steps: int = Field(default=3, ge=1, le=20)
+    excerpt_chars: int = Field(default=800, ge=100)
+
+
 class HeartbeatConfig(BaseModel):
     enabled: bool = True
     every: str = "30m"
@@ -938,6 +956,7 @@ class OuroAgentsConfig(BaseSettings):
     openrouter_provider: Optional[Dict[str, Any]] = None
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
     chat_compaction: ChatCompactionConfig = Field(default_factory=ChatCompactionConfig)
+    observations: ObservationPolicyConfig = Field(default_factory=ObservationPolicyConfig)
     heartbeat: HeartbeatConfig
     mcp_servers: List[MCPServerConfig]
     memory: MemoryConfig

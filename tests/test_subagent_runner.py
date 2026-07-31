@@ -32,7 +32,6 @@ def test_nested_delegate_inherits_parent_context_and_runs_in_order(
     monkeypatch, tmp_path,
 ):
     model = object()
-    compactor_model = object()
     doc_store = object()
     child_profile = SubAgentProfile(
         name="child",
@@ -49,7 +48,6 @@ def test_nested_delegate_inherits_parent_context_and_runs_in_order(
         agent_id="hermes",
         memory_config=object(),
         model=model,
-        compactor_model=compactor_model,
         user_id="user-1",
         conversation_id="conversation-1",
         run_id="run-1",
@@ -96,7 +94,6 @@ def test_nested_delegate_inherits_parent_context_and_runs_in_order(
 
     child_ctx = seen[0][1]
     assert child_ctx.model is model
-    assert child_ctx.compactor_model is compactor_model
     assert child_ctx.soul == "soul text"
     assert child_ctx.notes == "notes text"
     assert child_ctx.platform_context == "platform text"

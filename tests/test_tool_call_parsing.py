@@ -981,10 +981,10 @@ class TestMiniMaxToolCallParsing(unittest.TestCase):
 
 
 class TestRunObservationCompaction(unittest.TestCase):
-    """Within-run memory pressure: old step observations get folded."""
+    """One-shot compact when cumulative observations cross the ceiling."""
 
     @staticmethod
-    def _make_steps(count, observation_chars):
+    def _make_steps(count, observation_chars, prefix="step"):
         from smolagents import ActionStep
         from smolagents.monitoring import Timing
 
@@ -992,54 +992,181 @@ class TestRunObservationCompaction(unittest.TestCase):
             ActionStep(
                 step_number=i,
                 timing=Timing(start_time=0.0, end_time=0.0),
-                observations=f"step-{i} " + "x" * observation_chars,
+                observations=f"{prefix}-{i} " + "x" * observation_chars,
             )
             for i in range(count)
         ]
 
     @staticmethod
-    def _fake_agent(steps):
+    def _fake_agent(steps, policy=None):
         import types
 
         from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+        from ouro_agents.tools.observation_policy import ObservationPolicy
 
-        fake = types.SimpleNamespace(memory=types.SimpleNamespace(steps=steps))
-        fake._compact_old_observations = (
-            SanitizedToolCallingAgent._compact_old_observations.__get__(fake)
+        fake = types.SimpleNamespace(
+            memory=types.SimpleNamespace(steps=steps),
+            _observation_policy=policy or ObservationPolicy(),
+            _observation_compact_done=False,
+        )
+        fake._maybe_one_shot_compact_observations = (
+            SanitizedToolCallingAgent._maybe_one_shot_compact_observations.__get__(
+                fake
+            )
         )
         return fake
 
-    def test_folds_oldest_steps_when_over_high_water(self):
-        from ouro_agents.tools.agent_base import (
-            _RUN_COMPACT_KEEP_RECENT_STEPS,
-            _RUN_COMPACT_MARKER,
-            _RUN_OBSERVATIONS_LOW_WATER_CHARS,
+    def test_one_shot_folds_oldest_when_over_ceiling(self):
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            RUN_COMPACT_MARKER,
         )
 
-        # 20 steps x 20k chars = 400k chars, well over the 240k high-water mark.
-        steps = self._make_steps(20, 20_000)
-        agent = self._fake_agent(steps)
+        policy = ObservationPolicy(
+            run_compact_ceiling=20_000,
+            keep_recent_steps=3,
+            excerpt_chars=200,
+        )
+        # 10 steps x 5k = 50k > 20k ceiling
+        steps = self._make_steps(10, 5_000)
+        originals = [s.observations for s in steps]
+        agent = self._fake_agent(steps, policy)
 
-        agent._compact_old_observations()
+        agent._maybe_one_shot_compact_observations()
 
-        # Oldest steps folded; total under the low-water mark.
-        self.assertIn(_RUN_COMPACT_MARKER, steps[0].observations)
-        total = sum(len(s.observations or "") for s in steps)
-        self.assertLessEqual(total, _RUN_OBSERVATIONS_LOW_WATER_CHARS)
-        # The most recent steps are never touched.
-        for step in steps[-_RUN_COMPACT_KEEP_RECENT_STEPS:]:
-            self.assertNotIn(_RUN_COMPACT_MARKER, step.observations)
+        self.assertTrue(agent._observation_compact_done)
+        self.assertIn(RUN_COMPACT_MARKER, steps[0].observations)
+        for step in steps[-policy.keep_recent_steps :]:
+            self.assertNotIn(RUN_COMPACT_MARKER, step.observations)
+            self.assertEqual(step.observations, originals[step.step_number])
 
-    def test_noop_under_high_water(self):
-        from ouro_agents.tools.agent_base import _RUN_COMPACT_MARKER
+    def test_noop_under_ceiling_keeps_history_stable(self):
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            RUN_COMPACT_MARKER,
+        )
 
+        policy = ObservationPolicy(run_compact_ceiling=100_000, keep_recent_steps=3)
         steps = self._make_steps(10, 1_000)
-        agent = self._fake_agent(steps)
+        originals = [s.observations for s in steps]
+        agent = self._fake_agent(steps, policy)
 
-        agent._compact_old_observations()
+        agent._maybe_one_shot_compact_observations()
 
-        for step in steps:
-            self.assertNotIn(_RUN_COMPACT_MARKER, step.observations)
+        self.assertFalse(agent._observation_compact_done)
+        for step, original in zip(steps, originals):
+            self.assertEqual(step.observations, original)
+            self.assertNotIn(RUN_COMPACT_MARKER, step.observations)
+
+    def test_preserves_spill_paths_when_folding(self):
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            RUN_COMPACT_MARKER,
+        )
+
+        spill_header = (
+            "[tool output spilled: 41,625 chars → "
+            "scratch/tool-outputs/run/0016-run_shell.txt]\n"
+        )
+        policy = ObservationPolicy(
+            run_compact_ceiling=5_000,
+            keep_recent_steps=2,
+            excerpt_chars=100,
+        )
+        steps = self._make_steps(5, 2_000)
+        steps[0].observations = spill_header + ("y" * 3_000)
+        agent = self._fake_agent(steps, policy)
+
+        agent._maybe_one_shot_compact_observations()
+
+        self.assertIn(RUN_COMPACT_MARKER, steps[0].observations)
+        self.assertIn(
+            "scratch/tool-outputs/run/0016-run_shell.txt",
+            steps[0].observations,
+        )
+
+
+class TestObservationSpill(unittest.TestCase):
+    def test_spill_creates_file_and_stub(self):
+        import tempfile
+        from pathlib import Path
+
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            SPILL_MARKER_PREFIX,
+            maybe_spill_and_stub,
+        )
+
+        policy = ObservationPolicy(
+            max_inline_chars=100,
+            head_chars=20,
+            tail_chars=10,
+        )
+        text = "HEAD" + ("body" * 500) + "TAIL_END!!"
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = maybe_spill_and_stub(
+                text,
+                tool_name="run_shell",
+                workspace=Path(tmp),
+                run_id="test-run",
+                policy=policy,
+            )
+            self.assertIn(SPILL_MARKER_PREFIX, stub)
+            self.assertIn("scratch/tool-outputs/test-run/", stub)
+            self.assertLess(len(stub), len(text))
+            # Full payload on disk
+            spill_files = list(Path(tmp).joinpath("scratch/tool-outputs/test-run").glob("*"))
+            self.assertEqual(len(spill_files), 1)
+            self.assertEqual(spill_files[0].read_text(), text)
+
+    def test_under_inline_limit_unchanged(self):
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            maybe_spill_and_stub,
+        )
+
+        policy = ObservationPolicy(max_inline_chars=1_000)
+        text = "short result"
+        out = maybe_spill_and_stub(
+            text,
+            tool_name="get_asset",
+            workspace=None,
+            run_id="r",
+            policy=policy,
+        )
+        self.assertEqual(out, text)
+
+    def test_step_budget_spills_combined(self):
+        import tempfile
+        from pathlib import Path
+
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            SPILL_MARKER_PREFIX,
+            enforce_step_budget,
+        )
+
+        policy = ObservationPolicy(
+            max_inline_chars=50,
+            max_step_chars=80,
+            head_chars=15,
+            tail_chars=10,
+        )
+        combined = "a" * 5_000
+        with tempfile.TemporaryDirectory() as tmp:
+            out = enforce_step_budget(
+                combined,
+                tool_name="step",
+                workspace=Path(tmp),
+                run_id="r",
+                policy=policy,
+            )
+            self.assertIn(SPILL_MARKER_PREFIX, out)
+            self.assertLess(len(out), len(combined))
+            spill_files = list(Path(tmp).joinpath("scratch/tool-outputs/r").glob("*"))
+            self.assertEqual(len(spill_files), 1)
+            self.assertEqual(spill_files[0].read_text(), combined)
+
 
 
 class TestParallelObservationLabeling(unittest.TestCase):

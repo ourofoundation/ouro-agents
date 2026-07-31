@@ -2150,12 +2150,7 @@ class OuroAgent:
         allowed_capabilities: Optional[frozenset[Capability]] = None,
     ) -> "SubAgentContext":
         from .subagents.context import SubAgentContext
-
-        compactor_model = self._build_model(
-            self._utility_model_id(),
-            role="utility",
-            usage_tracker=usage_tracker,
-        )
+        from .tools.observation_policy import to_observation_policy
 
         ouro_client = (
             self._get_ouro_client()
@@ -2177,7 +2172,7 @@ class OuroAgent:
             agent_id=self.config.agent.name,
             memory_config=self.config.memory,
             model=model,
-            compactor_model=compactor_model,
+            observation_policy=to_observation_policy(self.config.observations),
             user_id=user_id,
             conversation_id=conversation_id,
             deferred_tools=self._deferred_tools,
@@ -3164,10 +3159,6 @@ class OuroAgent:
             progress_callback=_progress_cb,
         )
         main_max_steps = profile.max_steps
-        compactor_model = self._build_model(
-            self._utility_model_id(),
-            role="utility",
-        )
         # NOTE: tool persistence/emission (observer.on_step_persist) is
         # deliberately NOT registered as a smolagents step_callback. smolagents
         # fires step_callbacks inside _finalize_step *before* yielding the
@@ -3179,6 +3170,8 @@ class OuroAgent:
         # the streaming loop, after _flush_intermediate, to keep the order correct.
         step_callbacks = [step_callback]
 
+        from .tools.observation_policy import to_observation_policy
+
         agent = _SanitizedToolCallingAgent(
             tools=all_tools,
             model=model,
@@ -3186,7 +3179,9 @@ class OuroAgent:
             stream_outputs=bool(observer),
             step_callbacks=step_callbacks,
             logger=create_logger(display=display),
-            compactor_model=compactor_model,
+            observation_policy=to_observation_policy(self.config.observations),
+            workspace=self._workspace,
+            run_id=run_id,
             cancellation_token=token,
             plain_task_messages=profile.conversational,
             action_gate_mode=self.config.ask_controller.gate_mode,
