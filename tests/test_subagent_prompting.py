@@ -128,6 +128,13 @@ def test_ouro_skill_describes_quest_lifecycle_semantics():
 def test_executor_and_developer_prompts_require_concrete_work():
     assert "Do the task, not just the reasoning around it" in EXECUTOR_PROMPT
     assert "Return concrete evidence of completion" in EXECUTOR_PROMPT
+    assert "run_python" in EXECUTOR_PROMPT
+    assert EXECUTOR.needs_python_tool is True
+    assert "load_skill" in EXECUTOR.allowed_tools
+    assert "read_context" in EXECUTOR.allowed_tools
+    assert "filesystem" in EXECUTOR.skills
+    assert EXECUTOR.can_delegate_to == []
+    assert "Side-branch" in EXECUTOR.description or "side-branch" in EXECUTOR.description
     assert "complete the workflow end to end" in DEVELOPER_PROMPT
     assert "return a plan in place of execution" in DEVELOPER_PROMPT
 
@@ -154,10 +161,12 @@ def test_quest_work_framing_includes_mechanics_open_ended_does_not():
     assert "`update_quest_item`" not in open_ended
 
 
-def test_chat_framing_treats_status_questions_as_conversation():
+def test_chat_framing_status_questions_require_lookup_not_new_work():
     assert "what are you up to?" in CHAT_FRAMING
-    assert "not a request to" in CHAT_FRAMING
-    assert "start research" in CHAT_FRAMING
+    assert "report recent work" in CHAT_FRAMING
+    assert "read_context" in CHAT_FRAMING
+    assert "Looking things up is not taking initiative" in CHAT_FRAMING
+    assert "do not start new research" in CHAT_FRAMING
     assert "Subagents" in CHAT_FRAMING
     assert "explicitly asks for substantial work" in CHAT_FRAMING
     assert "Only perform side-effecting platform actions" in CHAT_FRAMING
@@ -236,6 +245,22 @@ def test_search_profile_is_exported_from_package():
     assert "SEARCH" in subagents_pkg.__all__
 
 
+def test_writer_profile_is_ouro_only_prose_specialist():
+    assert WRITER.delegatable is True
+    assert WRITER.allowed_servers == ["ouro"]
+    assert WRITER.needs_python_tool is False
+    assert WRITER.can_delegate_to == []
+    assert "memory_recall" in WRITER.allowed_tools
+    assert WRITER.preload_tools == [
+        "ouro:create_post",
+        "ouro:update_post",
+        "ouro:get_asset",
+    ]
+    assert "Not for research" in WRITER.description
+    assert "do not research the web" in WRITER.system_prompt.lower()
+    assert "local paths via web crawl" in WRITER.system_prompt
+
+
 def test_platform_subagents_receive_ouro_asset_semantics():
     for profile in (EXECUTOR, WRITER, DEVELOPER):
         assert "ouro" in profile.skills
@@ -246,5 +271,5 @@ def test_platform_subagents_receive_ouro_asset_semantics():
 
 
 def test_skill_docs_use_load_tool_list_syntax():
-    assert 'load_tool(["search:tavily_search"])' in resolve_skill("web-search")
+    assert 'load_tool(["search:web_search_exa"])' in resolve_skill("web-search")
     assert 'load_tool(["ouro:create_file"])' in resolve_skill("filesystem")

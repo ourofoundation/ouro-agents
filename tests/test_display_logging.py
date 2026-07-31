@@ -161,10 +161,10 @@ def test_subagent_step_is_spinner_only():
     progress.on_progress(
         ProgressEvent(
             "subagent_step",
-            "research: using tavily_search",
-            detail={"name": "research", "tool": "tavily_search"},
+            "research: using web_search_exa",
+            detail={"name": "research", "tool": "web_search_exa"},
         )
     )
     assert not any(
-        "tavily_search" in message for _, message in display.calls
+        "web_search_exa" in message for _, message in display.calls
     )

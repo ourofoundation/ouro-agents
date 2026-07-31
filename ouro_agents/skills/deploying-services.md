@@ -79,7 +79,9 @@ outlive a shell call; deploy and test against the deployed URL.)
 
 Then register it on Ouro with `create_service` (pointing at the deployed
 OpenAPI URL) so it appears as a callable route, in the org and team where its
-users are.
+users are. The service/route `description` is for callers: what it does and
+what to pass in/get back. Keep GPU choice, weight hosting, secrets, and
+other deploy notes out of it — those go in `deployment.json` / MEMORY.
 
 After a successful deploy, write `deployment.json` with the Modal app name,
 live URL, OpenAPI URL, provenance links (paper/repo/source post), license,

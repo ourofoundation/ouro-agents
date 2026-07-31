@@ -35,7 +35,7 @@ def test_all_in_repo_ouro_mcp_tools_have_capabilities():
 
 
 def test_known_external_servers_are_classified():
-    assert capability_for_tool("search:tavily_search") is Capability.EXTERNAL_SEARCH
+    assert capability_for_tool("search:web_search_exa") is Capability.EXTERNAL_SEARCH
     assert capability_for_tool("resend:send_email") is Capability.SEND_MESSAGE
     assert capability_for_tool("unknown:danger") is None
 

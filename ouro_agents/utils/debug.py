@@ -38,12 +38,15 @@ def serialize_memory_step_for_debug(step) -> str:
         if tcs:
             from .tool_observations import (
                 attribute_observation_results,
+                get_step_tool_results,
                 tool_call_arguments,
                 tool_call_name,
             )
 
             results = attribute_observation_results(
-                tcs, getattr(step, "observations", None) or ""
+                tcs,
+                getattr(step, "observations", None) or "",
+                per_call=get_step_tool_results(step),
             )
             parts.append("### Tool calls\n\n")
             for tc, result in zip(tcs, results):

@@ -24,7 +24,8 @@
         "ase.*",
         "pymatgen.*",
         "modal.*",
-        "resend.*"
+        "resend.*",
+        "exa_py.*"
       ],
       "image": "ouro-agents-sandbox-hermes:latest",
       "workspace_mount": "/workspace",
@@ -40,7 +41,8 @@
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "RESEND_API_KEY",
-        "RESEND_SENDER"
+        "RESEND_SENDER",
+        "EXA_API_KEY"
       ]
     }
   },
@@ -58,7 +60,7 @@
       }
     },
     "light": {
-      "id": "deepseek/deepseek-v4-flash-0731",
+      "id": "openai/gpt-5.6-luna",
       "reasoning": {
         "effort": "none"
       }
@@ -78,7 +80,7 @@
       "max_steps": 5
     },
     "executor": {
-      "max_steps": 10
+      "max_steps": 16
     },
     "developer": {
       "max_steps": 20
@@ -170,10 +172,10 @@
       "command": "npx",
       "args": [
         "-y",
-        "tavily-mcp@0.1.4"
+        "exa-mcp-server"
       ],
       "env": {
-        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+        "EXA_API_KEY": "${EXA_API_KEY}"
       }
     },
     {

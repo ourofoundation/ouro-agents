@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -18,6 +19,29 @@ RATE_LIMIT_NOTE_MIN_DELAY_S = 15.0
 # OpenRouter often returns Retry-After: 1 while the upstream is still hot.
 # Never sleep less than this on a rate-limit retry or we burn attempts hammering.
 MIN_RATE_LIMIT_SLEEP_S = 15.0
+
+# Floor for non-rate-limit transient retries (bad JSON body, connection drop).
+MIN_TRANSIENT_SLEEP_S = 2.0
+
+# HTTP statuses that are usually safe to retry against OpenRouter / gateways.
+_TRANSIENT_STATUS_CODES = frozenset({408, 409, 425, 500, 502, 503, 504, 520, 524})
+
+# Exception class names from openai/httpx that indicate transport flakes.
+_TRANSIENT_EXC_NAMES = frozenset(
+    {
+        "APIConnectionError",
+        "APITimeoutError",
+        "ConnectError",
+        "ConnectTimeout",
+        "ReadTimeout",
+        "WriteTimeout",
+        "PoolTimeout",
+        "RemoteProtocolError",
+        "LocalProtocolError",
+        "ReadError",
+        "WriteError",
+    }
+)
 
 RATE_LIMIT_NOTE = (
     "Hit a provider rate limit. Retrying, this may take a couple of minutes."
@@ -82,6 +106,55 @@ def is_credit_error(exc: BaseException) -> bool:
     credits (or lower max_tokens) before the next request can succeed.
     """
     return any(_is_credit_error_one(current) for current in _walk_exception_chain(exc))
+
+
+def is_transient_provider_error(exc: BaseException) -> bool:
+    """Return True when *exc* is safe to retry (rate-limit, transport, bad body).
+
+    Covers the common OpenRouter failure mode where the gateway returns an
+    empty/HTML/truncated body and the OpenAI client raises ``JSONDecodeError``
+    while parsing. Credit / auth failures are excluded.
+    """
+    if is_credit_error(exc):
+        return False
+    if is_rate_limit_error(exc):
+        return True
+    return any(
+        _is_transient_provider_error_one(current)
+        for current in _walk_exception_chain(exc)
+    )
+
+
+def _is_transient_provider_error_one(exc: BaseException) -> bool:
+    if isinstance(exc, json.JSONDecodeError):
+        return True
+    if type(exc).__name__ in _TRANSIENT_EXC_NAMES:
+        return True
+    status = getattr(exc, "status_code", None)
+    if status in _TRANSIENT_STATUS_CODES:
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) in _TRANSIENT_STATUS_CODES:
+        return True
+    error_str = str(exc).lower()
+    if "expecting value" in error_str and (
+        "json" in error_str or "line " in error_str
+    ):
+        return True
+    if any(
+        needle in error_str
+        for needle in (
+            "bad gateway",
+            "gateway timeout",
+            "cloudflare",
+            "connection reset",
+            "connection aborted",
+            "temporarily unavailable",
+            "service unavailable",
+        )
+    ):
+        return True
+    return False
 
 
 def _is_credit_error_one(exc: BaseException) -> bool:
@@ -254,7 +327,11 @@ class NotifyingRetrying:
                 # Grow the exponential backoff independently of any Retry-After
                 # shortening applied to this sleep only.
                 backoff *= exponential_base * (1 + jitter * random.random())
-                delay = resolve_retry_delay(backoff, e)
+                if is_rate_limit_error(e):
+                    delay = resolve_retry_delay(backoff, e)
+                else:
+                    # Transport / malformed-body flakes: no 15s rate-limit floor.
+                    delay = max(MIN_TRANSIENT_SLEEP_S, float(backoff))
 
                 if before_sleep_logger:
                     log, log_level = before_sleep_logger
@@ -270,7 +347,7 @@ class NotifyingRetrying:
                         self.retry_callback(e, delay, attempt_number)
                     except Exception:
                         logger.warning(
-                            "rate-limit retry_callback failed", exc_info=True
+                            "provider retry_callback failed", exc_info=True
                         )
 
                 if delay > 0:

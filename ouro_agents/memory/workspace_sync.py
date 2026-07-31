@@ -63,9 +63,19 @@ def sync_workspace(
     result = SyncResult()
 
     for team_id, doc_store in sorted(team_doc_stores.items()):
-        local_path = workspace / "teams" / team_id / "MEMORY.md"
+        from .team_paths import preferred_team_dir_name, team_workspace_dir
+
+        team_dir = team_workspace_dir(
+            workspace,
+            team_id,
+            team_slug=getattr(doc_store, "team_slug", None),
+        )
+        local_path = team_dir / "MEMORY.md"
         post_name = doc_store.memory_name(agent_name)
-        key = f"teams/{team_id}/MEMORY.md"
+        leaf = preferred_team_dir_name(
+            team_id, team_slug=getattr(doc_store, "team_slug", None)
+        )
+        key = f"teams/{leaf}/MEMORY.md"
         _sync_target(
             local_path=local_path,
             post_name=post_name,

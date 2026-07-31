@@ -225,25 +225,27 @@ observation size crosses `run_compact_ceiling`.
 
 ```json
 "observations": {
-  "max_inline_chars": 6000,
-  "head_chars": 1200,
-  "tail_chars": 800,
-  "max_step_chars": 12000,
-  "run_compact_ceiling": 80000,
+  "max_inline_chars": 20000,
+  "head_chars": 2500,
+  "tail_chars": 1500,
+  "max_step_chars": 40000,
+  "run_compact_ceiling": 160000,
   "keep_recent_steps": 3,
-  "excerpt_chars": 800
+  "excerpt_chars": 1200,
+  "exempt_tools": ["load_skill"]
 }
 ```
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `max_inline_chars` | int | `6000` | Spill + head/tail stub when a single tool result exceeds this. |
-| `head_chars` | int | `1200` | Leading chars kept in the stub. |
-| `tail_chars` | int | `800` | Trailing chars kept in the stub (catches deploy success / exit codes). |
-| `max_step_chars` | int | `12000` | Cap after parallel tools concatenate into one step observation. |
-| `run_compact_ceiling` | int | `80000` | One-shot fold of older steps only above this cumulative size (one cache break). |
+| `max_inline_chars` | int | `20000` | Spill + head/tail stub when a single tool result exceeds this. Stubs (and the system prompt) tell the agent this budget so follow-up `head`/`tail`/`sed`/`rg` reads stay inline. |
+| `head_chars` | int | `2500` | Leading chars kept in the stub. |
+| `tail_chars` | int | `1500` | Trailing chars kept in the stub (catches deploy success / exit codes). |
+| `max_step_chars` | int | `40000` | Cap after parallel tools concatenate into one step observation. |
+| `run_compact_ceiling` | int | `160000` | One-shot fold of older steps only above this cumulative size (one cache break). |
 | `keep_recent_steps` | int | `3` | Recent action steps left untouched on one-shot compact. |
-| `excerpt_chars` | int | `800` | Remnant per compacted older step (spill paths are preserved). |
+| `excerpt_chars` | int | `1200` | Remnant per compacted older step (spill paths are preserved). |
+| `exempt_tools` | list[str] | `["load_skill"]` | Tool names whose results never spill — use for intentional context payloads (skill bodies). Pass `[]` to disable. |
 
 Sandbox `max_output_chars` stays high (default `50000`) so spill files still
 receive useful full tool output; the agent-layer stub is what protects the

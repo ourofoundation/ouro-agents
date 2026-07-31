@@ -139,9 +139,13 @@ tests; use `run_python` for persistent Python state or workflows that need
 
 Large tool results (including shell output) are also governed by the top-level
 `observations` policy: payloads over `max_inline_chars` are spilled to
-`scratch/tool-outputs/<run_id>/` with a head/tail stub left in memory. Keep
-history append-only until a rare one-shot compact at `run_compact_ceiling` so
-prompt cache stays stable. See [configuration.md](configuration.md#observations).
+`scratch/tool-outputs/<run_id>/` with a head/tail stub left in memory. The stub
+and system prompt advertise that inline limit so follow-up reads can stay under
+it (`head`/`tail`, bounded `sed`/`rg`) instead of re-`cat`ting the whole file.
+Some tools are exempt (default: `load_skill`) because their payload *is* the
+context the agent requested. History stays append-only until a rare one-shot
+compact at `run_compact_ceiling` so prompt cache stays stable. See
+[configuration.md](configuration.md#observations).
 
 ## MCP tools
 

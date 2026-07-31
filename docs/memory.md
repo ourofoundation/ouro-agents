@@ -101,7 +101,7 @@ Three implementations:
 
 - `LocalDocStore` — pure filesystem under `workspace/`.
 - `OuroDocStore` — backed by Ouro posts. Maintains a name → post UUID
-  registry in `workspace/teams/<team_id>/state.json`.
+  registry in `workspace/teams/<slug>/state.json`.
 - `CompositeDocStore` — local for fast reads, Ouro for durable writes;
   each per-team store is a Composite. The root (no-team) store is
   Composite(local, **None**) — root docs stay local-only.

@@ -51,6 +51,20 @@ class TestToolPrompt(unittest.TestCase):
         self.assertIn("Turn mechanics", analysis)
         self.assertEqual(scoped, "You own the whole tick.")
 
+    def test_observation_budget_hint_when_policy_provided(self):
+        from ouro_agents.tools.observation_policy import ObservationPolicy
+
+        policy = ObservationPolicy(max_inline_chars=12_345)
+        with_hint = build_tool_calling_system_prompt(observation_policy=policy)
+        without = build_tool_calling_system_prompt()
+
+        self.assertIn("Tool-result size budget", with_hint)
+        self.assertIn("12,345 characters", with_hint)
+        self.assertIn("Do not `cat` the whole spill file", with_hint)
+        self.assertIn("Exempt from spilling", with_hint)
+        self.assertIn("`load_skill`", with_hint)
+        self.assertNotIn("Tool-result size budget", without)
+
 
 if __name__ == "__main__":
     unittest.main()

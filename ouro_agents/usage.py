@@ -9,7 +9,11 @@ from typing import Any, Callable, Optional, Sequence
 from smolagents import OpenAIModel
 
 from .provider_reasoning import active_model_id, attach_reasoning_from_raw_response
-from .provider_errors import NotifyingRetrying, RetryCallback
+from .provider_errors import (
+    NotifyingRetrying,
+    RetryCallback,
+    is_transient_provider_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -557,6 +561,11 @@ class TrackedOpenAIModel(OpenAIModel):
         retryer = getattr(self, "retryer", None)
         if retryer is None:
             return
+        # smolagents only retries rate limits; also retry transport flakes and
+        # malformed/empty JSON bodies from OpenRouter gateways.
+        inner = retryer._inner if isinstance(retryer, NotifyingRetrying) else retryer
+        if hasattr(inner, "retry_predicate"):
+            inner.retry_predicate = is_transient_provider_error
         if isinstance(retryer, NotifyingRetrying):
             retryer.retry_callback = self._retry_callback
             return

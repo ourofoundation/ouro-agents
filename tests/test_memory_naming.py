@@ -5,9 +5,11 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 from ouro_agents.memory.naming import (
+    is_catch_all_team_id,
     log_doc_display_name,
     log_doc_name,
     log_entry_timestamp,
+    memory_team_id,
     rewrite_team_qualifier,
     team_doc_key,
 )
@@ -58,6 +60,20 @@ class TeamDocKeyTests(unittest.TestCase):
             team_doc_key(team_slug=tid, team_name=tid, team_id=tid),
             "all",
         )
+
+    def test_catch_all_team_id_helpers(self):
+        nil = "00000000-0000-0000-0000-000000000000"
+        self.assertTrue(is_catch_all_team_id(nil))
+        self.assertTrue(is_catch_all_team_id(nil.upper()))
+        self.assertFalse(is_catch_all_team_id(None))
+        self.assertFalse(is_catch_all_team_id(""))
+        self.assertFalse(
+            is_catch_all_team_id("01954d5f-fcea-7970-b8d8-b68879df9d7f")
+        )
+        self.assertIsNone(memory_team_id(nil))
+        self.assertIsNone(memory_team_id(None))
+        real = "01954d5f-fcea-7970-b8d8-b68879df9d7f"
+        self.assertEqual(memory_team_id(real), real)
 
     def test_rewrite_team_qualifier_for_log_and_memory(self):
         tid = "019f4c4e-8427-7150-95d4-8140a15e2540"

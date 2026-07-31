@@ -32,7 +32,7 @@ setting `env_file` in `config.json` (see
 `OPENROUTER_API_KEY` is the only required model-provider key — every
 configurable model id is routed through OpenRouter.
 
-If you use the search subagent, set `TAVILY_API_KEY` (the example config
+If you use the search subagent, set `EXA_API_KEY` (the example config
 plumbs it into the search MCP server).
 
 ## 3. Configure your agent

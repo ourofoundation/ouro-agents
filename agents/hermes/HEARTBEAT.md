@@ -7,7 +7,7 @@ Outreach mechanics, daily email caps, follow-up windows, thread-reading, and CRM
 
 ## How to start
 
-Review your context fast: your outreach CRM (who you've contacted, who replied, what's pending), your task files (`teams/{team_id}/memory/tasks/`), the current period log at `teams/{team_id}/logs/` (weekly rhythm → `YYYY-Www.md`; do not invent parallel logs under `memory/`), MEMORY.md, and recent platform activity. Then commit to ONE focus for this tick within the first few steps. Pick deliberately, then execute.
+Review your context fast: your outreach CRM (who you've contacted, who replied, what's pending), your task files (`teams/{slug}/memory/tasks/`), the current period log at `teams/{slug}/logs/` (weekly rhythm → `YYYY-Www.md`; do not invent parallel logs under `memory/`), MEMORY.md, and recent platform activity. Then commit to ONE focus for this tick within the first few steps. Pick deliberately, then execute.
 
 ## Priority order
 
@@ -42,7 +42,7 @@ Work down this list. Take the first thing that applies — with two exceptions:
 
 ## When you're done
 
-Log what you did to the period log (`teams/{team_id}/logs/<period>.md`) and update the CRM, then return a JSON summary:
+Log what you did to the period log (`teams/{slug}/logs/<period>.md`) and update the CRM, then return a JSON summary:
 
 ```json
 {"action": "<what_you_did>", "tier": <1-6>, "details": "brief description", "next": "the hook you left for the next tick"}

@@ -88,6 +88,56 @@ class TestWorkingMemoryDedup(unittest.TestCase):
         self.assertEqual(deduped.count("- a"), 1)
 
 
+class TestCatchAllMemoryScope(unittest.TestCase):
+    def test_load_shared_prompt_context_remaps_nil_to_root(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from ouro_agents.agent import OuroAgent
+
+        root_store = MagicMock()
+        root_store.memory_name.return_value = "MEMORY:hermes"
+        root_store.log_name.return_value = "LOG:hermes:2026-W31"
+        root_store.read.side_effect = lambda name: {
+            "MEMORY:hermes": "# Shared root memory\n",
+            "LOG:hermes:2026-W31": "",
+            "NOTES:hermes": "",
+            "SHARED:memory": "# Shared root memory\n",
+        }.get(name, "")
+
+        team_store = MagicMock()
+        team_store.memory_name.return_value = "MEMORY:hermes:all"
+        team_store.log_name.return_value = "LOG:hermes:all:2026-W31"
+        team_store.read.return_value = "# Should not load for catch-all\n"
+
+        agent = OuroAgent.__new__(OuroAgent)
+        agent.config = SimpleNamespace(
+            agent=SimpleNamespace(name="hermes", workspace="/tmp"),
+            memory=SimpleNamespace(rhythm="weekly"),
+        )
+        agent.doc_store = root_store
+        agent.notes = ""
+        agent.soul = ""
+        agent._load_platform_context = lambda: ""
+        agent._own_quests_index = lambda: ""
+        agent.doc_store_for = MagicMock(return_value=team_store)
+        # store_rhythm reads from doc_store; stub via a simple rhythm attr path
+        from ouro_agents.memory import naming as naming_mod
+
+        original_store_rhythm = naming_mod.store_rhythm
+        naming_mod.store_rhythm = lambda _ds: "weekly"
+        try:
+            ctx = agent._load_shared_prompt_context(
+                team_id="00000000-0000-0000-0000-000000000000"
+            )
+        finally:
+            naming_mod.store_rhythm = original_store_rhythm
+
+        agent.doc_store_for.assert_not_called()
+        self.assertIn("Shared root memory", ctx["working_memory"])
+        self.assertNotIn("Should not load for catch-all", ctx["working_memory"])
+
+
 class TestChatHistoryGate(unittest.TestCase):
     def test_chat_history_gate_is_conversational(self):
         self.assertTrue(CHAT.conversational)

@@ -20,12 +20,16 @@ so other code paths can read it cheaply without re-hitting Ouro.
 
 | Field | Notes |
 |-------|-------|
-| `id` | Team UUID, used everywhere. |
+| `id` | Team UUID — stable identity for registry, events, memory metadata. |
 | `name` | Display name. |
-| `slug` | Short URL slug; used in doc names. |
+| `slug` | Short URL slug; used in logical doc names **and** on-disk `teams/<slug>/` directories. |
 | `org_id` | Filtered against `agent.org_id` at refresh time. |
 | `agent_can_create` | False when `source_policy=web_only`. Falls back to local-only doc store. |
 | `source_policy` | `any` / `web_only` / `api_only`. |
+
+On disk, team workspaces live at `teams/<slug>/` (catch-all → `teams/all/`).
+The UUID stays in `state.json` (`team.id`) so slug renames move the directory
+without losing identity. Legacy `teams/<uuid>/` dirs are migrated at startup.
 
 ## Team-scoped runs
 
@@ -38,14 +42,14 @@ A run becomes "team-scoped" when `team_id` is passed to
 
 For team-scoped runs:
 
-- Working memory loads `teams/<team_id>/MEMORY.md` and the team's daily
+- Working memory loads `teams/<slug>/MEMORY.md` and the team's period
   log; the root `MEMORY.md` is appended as `## Shared Memory (cross-team)`
   context.
 - Memories written by the reflector record the team in `team_ids`.
 - The doc store routes through `doc_store_for(team_id)`, which is a
   `CompositeDocStore(local, ouro)` (or local-only when the team isn't
   writable by agents).
-- The planning cursor lives at `teams/<team_id>/planning.json`.
+- The planning cursor lives at `teams/<slug>/planning.json`.
 
 ## Untargeted runs
 
@@ -77,7 +81,7 @@ even when only the id is known.
 Plans are always team-scoped. `force_planning_heartbeat(team_id=...)`
 refuses to run without a team id; the CLI uses `tui/team_picker.py` to
 prompt when needed. Quest creation goes into the team's Ouro workspace
-and the team's planning cursor (`teams/<team_id>/planning.json`) records
+and the team's planning cursor (`teams/<slug>/planning.json`) records
 the published quest.
 
 ## Writeability fallback

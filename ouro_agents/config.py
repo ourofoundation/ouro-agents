@@ -298,15 +298,19 @@ class ObservationPolicyConfig(BaseModel):
     ``scratch/tool-outputs/<run_id>/`` and replaced with a head/tail stub before
     they enter agent memory. Older steps are rewritten only on a rare one-shot
     compact when cumulative observation chars cross ``run_compact_ceiling``.
+
+    ``exempt_tools`` never spill — use for tools whose payload *is* the context
+    the agent asked for (skill bodies via ``load_skill``).
     """
 
-    max_inline_chars: int = Field(default=6_000, ge=500)
-    head_chars: int = Field(default=1_200, ge=0)
-    tail_chars: int = Field(default=800, ge=0)
-    max_step_chars: int = Field(default=12_000, ge=500)
-    run_compact_ceiling: int = Field(default=80_000, ge=1_000)
+    max_inline_chars: int = Field(default=20_000, ge=500)
+    head_chars: int = Field(default=2_500, ge=0)
+    tail_chars: int = Field(default=1_500, ge=0)
+    max_step_chars: int = Field(default=40_000, ge=500)
+    run_compact_ceiling: int = Field(default=160_000, ge=1_000)
     keep_recent_steps: int = Field(default=3, ge=1, le=20)
-    excerpt_chars: int = Field(default=800, ge=100)
+    excerpt_chars: int = Field(default=1_200, ge=100)
+    exempt_tools: List[str] = Field(default_factory=lambda: ["load_skill"])
 
 
 class HeartbeatConfig(BaseModel):

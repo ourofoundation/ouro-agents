@@ -574,6 +574,11 @@ def _run_agent(
             )
         )
 
+    if "load_skill" in set(profile.allowed_tools) and ctx.workspace is not None:
+        from ..tools.skills_tools import make_load_skill_tool
+
+        tools.append(make_load_skill_tool(ctx.workspace))
+
     agent_ref: dict = {}
     if (
         profile.can_load_mcp_tools
@@ -716,11 +721,13 @@ def _run_agent(
             profile.system_prompt,
             include_work_directive=profile.include_work_directive,
             include_mechanics=profile.include_tool_mechanics,
+            observation_policy=obs_policy,
         )
     else:
         agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
             include_work_directive=profile.include_work_directive,
             include_mechanics=profile.include_tool_mechanics,
+            observation_policy=obs_policy,
         )
 
     task_sections: list[str] = []
@@ -729,6 +736,16 @@ def _run_agent(
         skill_bodies = resolve_skills(profile.skills, workspace=ctx.workspace)
         if skill_bodies:
             task_sections.append("## Skills\n" + "\n\n---\n\n".join(skill_bodies))
+
+    if "load_skill" in set(profile.allowed_tools) and ctx.workspace is not None:
+        from ..skills import list_skill_names
+
+        skill_names = list_skill_names(ctx.workspace, include_always=False)
+        if skill_names:
+            task_sections.append(
+                "## Available Skills (use `load_skill` to activate)\n"
+                + "\n".join(f"- {name}" for name in skill_names)
+            )
 
     if preloaded_raw_names:
         task_sections.append(

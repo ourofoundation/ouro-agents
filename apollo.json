@@ -26,7 +26,8 @@
         "spglib.*",
         "modal.*",
         "fastapi.*",
-        "uvicorn.*"
+        "uvicorn.*",
+        "exa_py.*"
       ],
       "image": "ouro-agents-sandbox-apollo:latest",
       "workspace_mount": "/workspace",
@@ -40,7 +41,8 @@
         "OURO_API_KEY",
         "OURO_BASE_URL",
         "MODAL_TOKEN_ID",
-        "MODAL_TOKEN_SECRET"
+        "MODAL_TOKEN_SECRET",
+        "EXA_API_KEY"
       ]
     }
   },
@@ -58,7 +60,7 @@
       }
     },
     "light": {
-      "id": "deepseek/deepseek-v4-flash-0731",
+      "id": "openai/gpt-5.6-luna",
       "reasoning": {
         "effort": "none"
       }
@@ -81,7 +83,7 @@
       "max_steps": 5
     },
     "executor": {
-      "max_steps": 10
+      "max_steps": 16
     }
   },
   "modes": {
@@ -170,10 +172,10 @@
       "command": "npx",
       "args": [
         "-y",
-        "tavily-mcp@0.1.4"
+        "exa-mcp-server"
       ],
       "env": {
-        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+        "EXA_API_KEY": "${EXA_API_KEY}"
       }
     },
     {

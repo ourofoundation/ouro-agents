@@ -1,9 +1,9 @@
 ---
-description: Web search via Tavily for current information, research, and fact-checking
+description: Web search via Exa for current information, research, and fact-checking
 load: stub
 ---
 
-# Web Search Skill (Tavily)
+# Web Search Skill (Exa)
 
 You have access to web search via the `search` MCP server. This lets you find current information from across the internet.
 
@@ -22,9 +22,9 @@ You have access to web search via the `search` MCP server. This lets you find cu
 
 ## How to Use
 
-1. `load_tool(["search:tavily_search"])` to activate the tool.
+1. `load_tool(["search:web_search_exa"])` to activate search (or `search:web_fetch_exa` to read a known URL).
 2. Call with a clear, specific query. Write queries like you'd type into a search engine — keywords and phrases, not full sentences.
-3. Review the results before acting on them. Tavily returns extracted content and source URLs.
+3. Review the results before acting on them. Exa returns clean extracted content and source URLs. Use `web_fetch_exa` when you already have a URL and need the full page.
 
 ## Query Tips
 

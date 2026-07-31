@@ -37,13 +37,13 @@ Your local workspace is organized by team. When working in a team context, store
 
 | Path | Purpose |
 |------|---------|
-| `teams/{team_id}/MEMORY.md` | Team working memory (synced with Ouro post) |
-| `teams/{team_id}/logs/{period}.md` | Team period logs |
-| `teams/{team_id}/HEARTBEAT.md` | Team-specific playbook |
-| `teams/{team_id}/NOTES.md` | Team-specific deployment notes |
-| `teams/{team_id}/plans/active/` | Active plan cycle JSON |
-| `teams/{team_id}/memory/entities/{name}.md` | Entity context files for this team |
-| `teams/{team_id}/memory/tasks/{slug}.md` | Task tracking files for this team |
+| `teams/{slug}/MEMORY.md` | Team working memory (synced with Ouro post) |
+| `teams/{slug}/logs/{period}.md` | Team period logs |
+| `teams/{slug}/HEARTBEAT.md` | Team-specific playbook |
+| `teams/{slug}/NOTES.md` | Team-specific deployment notes |
+| `teams/{slug}/plans/active/` | Active plan cycle JSON |
+| `teams/{slug}/memory/entities/{name}.md` | Entity context files for this team |
+| `teams/{slug}/memory/tasks/{slug}.md` | Task tracking files for this team |
 
 ### Root-level paths (shared across teams)
 
@@ -57,9 +57,9 @@ Your local workspace is organized by team. When working in a team context, store
 ### Where to store artifacts
 
 When you create files, entity docs, or task tracking during team work, **always use the team-scoped path**:
-- Entity files → `teams/{team_id}/memory/entities/{name}.md`
-- Task files → `teams/{team_id}/memory/tasks/{slug}.md`
-- Data/output files → `teams/{team_id}/data/`
+- Entity files → `teams/{slug}/memory/entities/{name}.md`
+- Task files → `teams/{slug}/memory/tasks/{slug}.md`
+- Data/output files → `teams/{slug}/data/`
 
 Start every entity and task file with YAML frontmatter so it can be indexed and matched:
 
@@ -98,6 +98,6 @@ Memory is handled automatically — you don't need to manage it manually.
 - **MEMORY and today's daily log are auto-loaded** into your context at the start of every run. During team-scoped runs, both the team MEMORY and the root shared MEMORY are loaded.
 - **User model is auto-loaded** when a user_id is known.
 - **Entity and task files are auto-loaded** when their slug or frontmatter aliases appear in recent conversation text and the current task. A one-line index of all entity/task files is injected every run so you can read the rest on demand.
-- **Store team artifacts in team directories.** Entity files, task files, and data outputs belong under `teams/{team_id}/` — not at the workspace root.
+- **Store team artifacts in team directories.** Entity files, task files, and data outputs belong under `teams/{slug}/` (slug from the team, not the UUID) — not at the workspace root. The UUID lives in `state.json` and stays stable across renames.
 - **Focus on the task, not on memory.** Facts, asset references, and daily log entries are extracted automatically from your actions by the post-run reflection system.
 - **Asset references are tracked automatically.** When you create or interact with Ouro assets, the reflection system captures the asset IDs and links them in memory and the daily log.

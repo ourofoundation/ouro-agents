@@ -84,9 +84,14 @@ lifecycle or status update tool first.
 
 - `search_assets(query=...)` — hybrid semantic + full-text search across
 accessible assets. Without a query it returns recent assets by creation date.
-- `get_asset(id=...)` — asset details; use it for schemas, metadata, route
-inputs, or linked outputs.
-- `get_team_feed(id=...)` — recent activity in a team.
+Returns slim rows (id, name, asset_type, description, username, created_at,
+optional snippet).
+- `get_asset(id=...)` — asset details; summary is compact (flat username/org_id/
+team_id). Use `detail="full"` for schemas, bodies, download URLs; creation
+producer is a compact `creation_action` pointer — use `list_asset_actions` for
+the full run.
+- `get_team_feed(id=...)` — recent activity in a team (same slim row shape as
+search).
 - `get_teams(org_id=..., discover=true)` — browse public teams by topic before
 joining or publishing.
 
@@ -115,7 +120,10 @@ Async actions need care. If `execute_route` returns
 `{"status": "pending", "action_id": ...}`, the action is still running
 server-side — do NOT re-execute (that duplicates). Call `get_action(action_id)`
 to check status, or `get_action(action_id, wait=true, timeout=...)` to wait. For
-routes known to be slow, pass a larger `timeout=` on the initial call. Errored
+routes known to be slow, pass a larger `timeout=` on the initial call. Default
+`get_action` is compact (status + output asset ids, no response body); pass
+`include_response=true` when you need `data`/`error` payloads. Prefer following
+output asset ids with `get_asset` / download when the payload is large. Errored
 actions still preserve the `action_id` (`{"action_status": "error", ...}`) and
 can be inspected or embedded when explaining what happened.
 Use `list_asset_actions(asset_id)` to find runs that produced an asset

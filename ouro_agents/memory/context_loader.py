@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Optional
 import yaml
 
 from ..constants import CHARS_PER_TOKEN
-from .naming import period_key_offset, store_rhythm
+from .naming import is_catch_all_team_id, period_key, period_key_offset, store_rhythm
 
 if TYPE_CHECKING:
     from . import DocStore
@@ -33,7 +33,9 @@ def _slugify(name: str) -> str:
 
 def _team_memory_dir(workspace: Path, team_id: str | None, leaf: str) -> Path:
     if team_id:
-        return workspace / "teams" / team_id / "memory" / leaf
+        from .team_paths import team_workspace_dir
+
+        return team_workspace_dir(workspace, team_id) / "memory" / leaf
     from ..tools.workspace_paths import protected_memory
 
     return protected_memory(workspace) / leaf
@@ -324,6 +326,8 @@ def load_entity_context(
 MAX_CROSS_TEAM_INDEX_LINES = 40
 MAX_READ_CONTEXT_PATHS = 4
 MAX_READ_CONTEXT_TOKENS_PER_FILE = 800
+MAX_RECENT_ACTIVITY_TOKENS = 1000
+MAX_RECENT_ACTIVITY_TOKENS_PER_TEAM = 200
 
 
 def build_cross_team_task_index(
@@ -337,20 +341,27 @@ def build_cross_team_task_index(
     Used by open-ended heartbeat ticks so the agent can pick a path to
     ``read_context`` instead of guessing team IDs.
     """
-    teams_root = workspace / "teams"
-    if not teams_root.is_dir():
-        return ""
+    from .naming import is_catch_all_team_id
+    from .team_paths import (
+        iter_team_dirs,
+        preferred_team_dir_name,
+        public_team_relpath,
+    )
 
     labels = team_labels or {}
     lines: list[str] = []
-    for team_dir in sorted(teams_root.iterdir()):
-        if not team_dir.is_dir():
+    for team_dir, tid, slug in iter_team_dirs(workspace):
+        if tid and is_catch_all_team_id(tid):
             continue
-        team_id = team_dir.name
         tasks_dir = team_dir / "memory" / "tasks"
         if not tasks_dir.is_dir():
             continue
-        label = labels.get(team_id, team_id[:8])
+        if tid:
+            label = labels.get(tid) or preferred_team_dir_name(
+                tid, team_slug=slug
+            )
+        else:
+            label = team_dir.name
         for path in sorted(tasks_dir.glob("*.md")):
             try:
                 head = path.read_text(errors="replace")[:500].lower()
@@ -364,7 +375,7 @@ def build_cross_team_task_index(
                 continue
             meta = _file_frontmatter(path)
             desc = _file_description(path, meta)
-            rel = path.relative_to(workspace)
+            rel = public_team_relpath(workspace, path)
             lines.append(
                 f"- `{rel}` · team={label}" + (f" — {desc}" if desc else "")
             )
@@ -381,16 +392,85 @@ def build_cross_team_task_index(
     )
 
 
+def build_cross_team_recent_activity(
+    workspace: Path,
+    *,
+    period: str | None = None,
+    team_labels: dict[str, str] | None = None,
+    rhythm: str = "weekly",
+    max_tokens: int = MAX_RECENT_ACTIVITY_TOKENS,
+    max_tokens_per_team: int = MAX_RECENT_ACTIVITY_TOKENS_PER_TEAM,
+) -> str:
+    """Compact tails of current period logs across ``teams/*/logs``.
+
+    Skips the All/nil catch-all team. Used by chat so status questions can
+    report recent work without depending on a single team-scoped log.
+    Paths are slug-based (``teams/<slug>/logs/...``) for ``read_context``.
+    """
+    from .naming import is_catch_all_team_id
+    from .team_paths import (
+        iter_team_dirs,
+        preferred_team_dir_name,
+        public_team_relpath,
+    )
+
+    period_name = period or period_key(rhythm)
+    labels = team_labels or {}
+    sections: list[str] = []
+    total_tokens = 0
+
+    for team_dir, tid, slug in iter_team_dirs(workspace):
+        if tid and is_catch_all_team_id(tid):
+            continue
+        log_path = team_dir / "logs" / f"{period_name}.md"
+        if not log_path.is_file():
+            continue
+        try:
+            content = log_path.read_text(errors="replace").strip()
+        except OSError:
+            continue
+        if not content:
+            continue
+
+        remaining = max_tokens - total_tokens
+        if remaining < 50:
+            break
+        team_budget = min(max_tokens_per_team, remaining)
+        max_chars = team_budget * CHARS_PER_TOKEN
+        if len(content) > max_chars:
+            # Prefer the newest entries (logs append chronologically).
+            content = "[...earlier truncated]\n" + content[-max_chars:]
+
+        if tid:
+            label = labels.get(tid) or preferred_team_dir_name(
+                tid, team_slug=slug
+            )
+        else:
+            label = team_dir.name
+        rel = public_team_relpath(workspace, log_path)
+        block = f"### {label} (`{rel}`)\n{content}"
+        sections.append(block)
+        total_tokens += len(block) // CHARS_PER_TOKEN
+
+    if not sections:
+        return ""
+    return (
+        "## Recent activity across teams\n"
+        "Tails of current period logs. Read fuller history with `read_context` "
+        "on the paths below.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
 def _allowed_context_roots(workspace: Path) -> list[Path]:
-    """Roots the heartbeat may read: protected/memory/, teams/*/memory/."""
+    """Roots the agent may read: protected/memory/, teams/*/memory/, teams/*/logs/."""
     from ..tools.workspace_paths import protected_memory
+    from .team_paths import iter_team_dirs
 
     roots = [protected_memory(workspace)]
-    teams_root = workspace / "teams"
-    if teams_root.is_dir():
-        for team_dir in teams_root.iterdir():
-            if team_dir.is_dir():
-                roots.append(team_dir / "memory")
+    for team_dir, _tid, _slug in iter_team_dirs(workspace):
+        roots.append(team_dir / "memory")
+        roots.append(team_dir / "logs")
     return roots
 
 
@@ -400,13 +480,19 @@ def resolve_readable_context_path(
     """Return an absolute path if *relative_path* is under an allowed memory root.
 
     Accepts legacy ``memory/...`` paths as aliases for ``protected/memory/...``.
+    ``teams/<slug|uuid>/...`` is resolved onto the on-disk team directory.
     """
+    from .team_paths import rewrite_teams_relative_path
+
     text = (relative_path or "").strip().lstrip("./")
     if not text or ".." in Path(text).parts:
         return None
     parts = Path(text).parts
     if parts and parts[0] == "memory":
         text = str(Path("protected") / text)
+    rewritten = rewrite_teams_relative_path(workspace, text)
+    if rewritten:
+        text = rewritten
     candidate = (workspace / text).resolve()
     workspace_resolved = workspace.resolve()
     try:
@@ -431,11 +517,12 @@ def read_context_paths(
     max_paths: int = MAX_READ_CONTEXT_PATHS,
     max_tokens_per_file: int = MAX_READ_CONTEXT_TOKENS_PER_FILE,
 ) -> str:
-    """Batch-read allowed memory/task files (and optional current team logs).
+    """Batch-read allowed memory/task/log files (and optional current team logs).
 
     Paths must be workspace-relative under ``protected/memory/`` (or legacy
-    ``memory/``), or ``teams/<id>/memory/``. Log names like
-    ``LOG:hermes:2026-07-20`` are resolved via *doc_store* when provided.
+    ``memory/``), ``teams/<slug|id>/memory/``, or ``teams/<slug|id>/logs/``. Log
+    names like ``LOG:hermes:2026-07-20`` are resolved via *doc_store* when
+    provided.
     """
     parts: list[str] = []
     seen: set[str] = set()
@@ -467,8 +554,11 @@ def read_context_paths(
             continue
 
         resolved = resolve_readable_context_path(workspace, key)
-        if resolved is None or not resolved.is_file():
-            parts.append(f"### {key}\n(not readable or outside allowed memory roots)")
+        if resolved is None:
+            parts.append(f"### {key}\n(outside allowed memory roots)")
+            continue
+        if not resolved.is_file():
+            parts.append(f"### {key}\n(not found)")
             continue
         content = _load_file_truncated(resolved, max_tokens_per_file)
         parts.append(f"### {key}\n{content or '(empty)'}")
@@ -484,17 +574,17 @@ def make_read_context_tool(
     doc_store=None,
     agent_name: str = "",
 ):
-    """Build the path-confined ``read_context`` tool for heartbeat ticks."""
+    """Build the path-confined ``read_context`` tool for heartbeat and chat."""
     from smolagents import tool
 
     @tool
     def read_context(paths: list[str]) -> str:
-        """Read indexed memory/task files or current team logs (batch, path-confined).
+        """Read indexed memory/task/log files (batch, path-confined).
 
         Args:
             paths: Workspace-relative paths under protected/memory/ (or legacy
-                memory/) or teams/<id>/memory/, or LOG:<name> keys for the
-                current doc-store log. Max 4 paths.
+                memory/), teams/<id>/memory/, or teams/<id>/logs/, or LOG:<name>
+                keys for the current doc-store log. Max 4 paths.
         """
         if isinstance(paths, str):
             paths = [paths]

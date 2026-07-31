@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Callable
 
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 # Match agent tool-output budget so chat UI sees what the model saw, not a
 # short preview. Larger MCP payloads are already compacted upstream at 50k.
 _MAX_CHAT_TOOL_RESULT_CHARS = 50_000
+_CHAT_LIST_RESULT_CAP = 20
 
 
 def should_persist_tool_call_payload(payload: dict) -> bool:
@@ -58,9 +60,62 @@ def build_persistence_step_callback(
     return _callback
 
 
+def _slim_list_envelope_for_chat(obs: str) -> str | None:
+    """Re-encode a list envelope so truncation keeps valid JSON + counts.
+
+    Raw mid-string truncation breaks ``JSON.parse`` in the chat UI, which then
+    falls back to static titles like "Searched assets" next to siblings that
+    still parse as "Found N assets".
+    """
+    try:
+        data = json.loads(obs)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        return None
+
+    results = data["results"]
+    original_count = len(results)
+    capped = results[:_CHAT_LIST_RESULT_CAP]
+    slim = {
+        "results": capped,
+        "total": data.get("total", original_count),
+        "hasMore": bool(data.get("hasMore")) or original_count > len(capped),
+        "shown": len(capped),
+        "original_result_count": original_count,
+        "truncated": original_count > len(capped),
+    }
+    for key in ("nextCursor", "limit"):
+        if key in data:
+            slim[key] = data[key]
+    return json.dumps(slim, default=str)
+
+
 def _truncate_tool_result(obs: str) -> str:
     if len(obs) <= _MAX_CHAT_TOOL_RESULT_CHARS:
         return obs
+
+    slim = _slim_list_envelope_for_chat(obs)
+    if slim is not None and len(slim) <= _MAX_CHAT_TOOL_RESULT_CHARS:
+        return slim
+    if slim is not None:
+        # Even the capped envelope is huge — keep metadata only.
+        try:
+            data = json.loads(slim)
+            meta = {
+                "results": [],
+                "total": data.get("total"),
+                "hasMore": data.get("hasMore"),
+                "shown": 0,
+                "original_result_count": data.get("original_result_count"),
+                "truncated": True,
+            }
+            meta_json = json.dumps(meta, default=str)
+            if len(meta_json) <= _MAX_CHAT_TOOL_RESULT_CHARS:
+                return meta_json
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     return (
         obs[:_MAX_CHAT_TOOL_RESULT_CHARS]
         + f"\n... [truncated: {len(obs):,} chars total,"
@@ -76,8 +131,14 @@ def extract_tool_call_payloads(step: ActionStep) -> list[dict]:
     if not tool_calls:
         return []
 
+    from .tool_observations import get_step_tool_results
+
     obs = step.observations or ""
-    results = attribute_observation_results(tool_calls, obs)
+    results = attribute_observation_results(
+        tool_calls,
+        obs,
+        per_call=get_step_tool_results(step),
+    )
     payloads: list[dict] = []
     for tc, result in zip(tool_calls, results):
         payloads.append(

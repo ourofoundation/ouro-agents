@@ -18,6 +18,7 @@ from ouro_agents.provider_errors import (
     format_rate_limit_activity,
     is_credit_error,
     is_rate_limit_error,
+    is_transient_provider_error,
     parse_retry_after_seconds,
     provider_fail_reply,
     resolve_retry_delay,
@@ -38,6 +39,67 @@ def test_is_rate_limit_error_detects_429_and_message():
     exc = Exception("boom")
     exc.status_code = 429  # type: ignore[attr-defined]
     assert is_rate_limit_error(exc)
+
+
+def test_is_transient_provider_error_retries_json_and_transport():
+    import json
+
+    assert is_transient_provider_error(
+        json.JSONDecodeError("Expecting value", "x", 0)
+    )
+    assert is_transient_provider_error(
+        Exception("Expecting value: line 8327 column 1 (char 45793)")
+    )
+    assert is_transient_provider_error(Exception("502 Bad Gateway"))
+    assert is_transient_provider_error(Exception("Error code: 429 - rate limited"))
+
+    class APIConnectionError(Exception):
+        pass
+
+    assert is_transient_provider_error(APIConnectionError("connection reset"))
+
+    # Credit errors stay non-retryable even if message mentions gateway noise.
+    assert not is_transient_provider_error(
+        Exception("Error code: 402 - requires more credits")
+    )
+    assert not is_transient_provider_error(Exception("invalid api key"))
+
+
+def test_notifying_retryer_retries_json_decode_error():
+    import json
+
+    sleeps: list[float] = []
+    callbacks: list[tuple[float, int]] = []
+
+    class _Inner:
+        max_attempts = 3
+        wait_seconds = 2.0
+        exponential_base = 2.0
+        jitter = False
+        reraise = True
+        before_sleep_logger = None
+        after_logger = None
+        retry_predicate = staticmethod(is_transient_provider_error)
+
+    attempts = {"n": 0}
+
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise json.JSONDecodeError("Expecting value", "", 0)
+        return "ok"
+
+    retryer = NotifyingRetrying(
+        _Inner(),
+        retry_callback=lambda exc, delay, attempt: callbacks.append((delay, attempt)),
+        sleep=sleeps.append,
+    )
+    assert retryer(flaky) == "ok"
+    assert attempts["n"] == 3
+    assert len(callbacks) == 2
+    # Non-rate-limit transient: no 15s floor; first delay is wait*base = 4s.
+    assert callbacks[0][0] == 4.0
+    assert sleeps == [4.0, 8.0]
 
 
 def test_is_credit_error_detects_402_and_message():
@@ -181,6 +243,7 @@ def test_tracked_openai_model_disables_sdk_retries_and_wraps_retryer():
         )
     assert model.client_kwargs.get("max_retries") == 0
     assert isinstance(model.retryer, NotifyingRetrying)
+    assert model.retryer._inner.retry_predicate is is_transient_provider_error
 
     seen: list[float] = []
     model.retry_callback = lambda _e, delay, _a: seen.append(delay)

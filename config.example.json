@@ -5,7 +5,9 @@
     "org_id": "00000000-0000-0000-0000-000000000000",
     "sandbox": {
       "mode": "local",
-      "python_packages": [],
+      "python_packages": [
+        "exa_py.*"
+      ],
       "image": "ouro-agents-sandbox:latest",
       "workspace_mount": "/workspace",
       "network": "bridge",
@@ -17,7 +19,8 @@
       "enable_shell": false,
       "env_allowlist": [
         "OURO_API_KEY",
-        "OURO_BASE_URL"
+        "OURO_BASE_URL",
+        "EXA_API_KEY"
       ]
     }
   },
@@ -125,10 +128,10 @@
       "command": "npx",
       "args": [
         "-y",
-        "tavily-mcp@0.1.4"
+        "exa-mcp-server"
       ],
       "env": {
-        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+        "EXA_API_KEY": "${EXA_API_KEY}"
       }
     }
   ],

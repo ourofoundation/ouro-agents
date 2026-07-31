@@ -33,10 +33,10 @@ Defined in `ouro_agents/subagents/profiles.py`. Key fields:
 | Name | Delegatable | What it does |
 |------|-------------|--------------|
 | `reflector` | no | Curates long-term memory after a run or every N turns in chat. |
-| `research` | yes | Investigates a topic via `tavily_search`, saves a local doc for the main agent to read. |
+| `research` | yes | Investigates a topic via `web_search_exa`, saves a local doc for the main agent to read. |
 | `planner` | yes | Returns a short numbered execution plan. |
-| `executor` | yes | Runs a focused sub-task with MCP tools. |
-| `writer` | yes | Drafts polished posts; saves them to Ouro. |
+| `executor` | yes | Side-branch worker with full tools (MCP, python/shell, memory, skills) for a focused sub-goal. |
+| `writer` | yes | Publishes polished long-form posts from supplied notes (Ouro-only tools). |
 | `developer` | yes | Uses the Ouro Python SDK directly through `run_python`. |
 
 ## Custom profiles

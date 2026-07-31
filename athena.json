@@ -43,7 +43,7 @@
       "max_steps": 8
     },
     "executor": {
-      "max_steps": 10
+      "max_steps": 16
     }
   },
   "modes": {
@@ -102,10 +102,10 @@
       "command": "npx",
       "args": [
         "-y",
-        "tavily-mcp@0.1.4"
+        "exa-mcp-server"
       ],
       "env": {
-        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+        "EXA_API_KEY": "${EXA_API_KEY}"
       }
     }
   ],

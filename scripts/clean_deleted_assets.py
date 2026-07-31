@@ -116,9 +116,13 @@ def collect_known_non_asset_uuids(workspace: Path, org_id: str | None) -> set[st
         skip.add(org_id)
     teams_root = workspace / "teams"
     if teams_root.is_dir():
-        for child in teams_root.iterdir():
-            if child.is_dir() and _UUID_RE.fullmatch(child.name):
-                skip.add(child.name)
+        from ouro_agents.memory.team_paths import iter_team_dirs
+
+        for team_dir, tid, _slug in iter_team_dirs(workspace):
+            if tid and _UUID_RE.fullmatch(tid):
+                skip.add(tid)
+            elif _UUID_RE.fullmatch(team_dir.name):
+                skip.add(team_dir.name)
     return skip
 
 

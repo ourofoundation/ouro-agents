@@ -125,6 +125,7 @@ class TestNativeToolCallReconstruction(unittest.TestCase):
         self.assertEqual(
             tool_msgs[1]["content"], '{"id": "quest-xyz", "name": "Plan"}'
         )
+        self.assertNotIn("parallel step", tool_msgs[1]["content"])
         self.assertNotIn("result included with the first tool call", tool_msgs[1]["content"])
 
     def test_error_step_carries_error_text_as_tool_message(self):

@@ -75,6 +75,7 @@ def extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dic
     """
     from .tool_observations import (
         attribute_observation_results,
+        get_step_tool_results,
         tool_call_arguments,
         tool_call_id,
         tool_call_name,
@@ -86,7 +87,9 @@ def extract_tool_summary(inner_agent, for_persistence: bool = False) -> list[dic
         if not isinstance(step, ActionStep) or not step.tool_calls:
             continue
         results = attribute_observation_results(
-            step.tool_calls, step.observations or ""
+            step.tool_calls,
+            step.observations or "",
+            per_call=get_step_tool_results(step),
         )
         for tc, result in zip(step.tool_calls, results):
             if len(result) > max_result_chars:

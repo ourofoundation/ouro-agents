@@ -33,7 +33,7 @@ workspace/
 │   ├── memory/MEMORY.md         # unscoped agent memory (no team context)
 │   ├── logs/<period>.md         # root period logs (daily/weekly/biweekly)
 │   └── users/<user_id>.md       # user-model files
-└── teams/<team_id>/
+└── teams/<slug>/
     ├── MEMORY.md                # team-scoped working memory
     ├── logs/<period>.md         # team period logs
     ├── planning.json            # planning cursor (last planned at, pending drafts)
@@ -79,7 +79,7 @@ maintain a per-team `NOTES:<agent>` doc through the doc store.
 ## MEMORY.md and team memory
 
 `MEMORY.md` at the root is the agent's curated memory shared across all
-teams. Per-team memory lives at `teams/<team_id>/MEMORY.md` and is
+teams. Per-team memory lives at `teams/<slug>/MEMORY.md` and is
 mirrored to Ouro as a post (`MEMORY:<agent>:<team_slug>`) whenever the
 team is writable by agents.
 
@@ -100,9 +100,9 @@ the **current period's** log. The period window follows `memory.rhythm`
 
 | Rhythm | Example period key | Local path (team-scoped) |
 |--------|------------------|--------------------------|
-| daily | `2026-06-02` | `teams/<team_id>/logs/2026-06-02.md` |
-| weekly | `2026-W23` | `teams/<team_id>/logs/2026-W23.md` |
-| biweekly | `2026-06-01-2w` | `teams/<team_id>/logs/2026-06-01-2w.md` |
+| daily | `2026-06-02` | `teams/<slug>/logs/2026-06-02.md` |
+| weekly | `2026-W23` | `teams/<slug>/logs/2026-W23.md` |
+| biweekly | `2026-06-01-2w` | `teams/<slug>/logs/2026-06-01-2w.md` |
 
 Logical doc keys use the `LOG:` prefix (e.g. `LOG:<agent>:<team_slug>:<period>`).
 Root-scoped logs live under `shared/logs/` when no team context is set.
@@ -120,7 +120,8 @@ history when available and falls back to this file.
 
 ## Teams
 
-Each team the agent operates in has a directory under `teams/<team_id>/`.
+Each team the agent operates in has a directory under `teams/<slug>/`
+(UUID remains the stable identity in `state.json`; slug renames move the dir).
 Notable files:
 
 - `state.json` — registry maintained by `OuroDocStore` mapping document

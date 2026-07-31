@@ -7,7 +7,13 @@ the MODE section owns initiative policy, and stacking both made the two pull
 opposite ways on casual messages.
 """
 
+from __future__ import annotations
+
 import re
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from .tools.observation_policy import ObservationPolicy
 
 # smolagents renders the ToolCallingAgent system prompt through Jinja. Ouro
 # overrides that template with a fully literal prompt (tools are passed natively
@@ -78,6 +84,7 @@ def build_tool_calling_system_prompt(
     conversational: bool = False,
     include_work_directive: bool | None = None,
     include_mechanics: bool = True,
+    observation_policy: Optional["ObservationPolicy"] = None,
 ) -> str:
     """Compose the full system prompt used by ToolCallingAgent instances.
 
@@ -86,6 +93,8 @@ def build_tool_calling_system_prompt(
     analysis-only subagents opt out without pretending to be chat agents.
     ``include_mechanics`` lets tightly-scoped subagents use their own complete
     system prompt without the generic work-agent framing above it.
+    ``observation_policy`` adds a short note with the inline tool-result budget
+    so agents can size ``head``/``tail``/``sed``/``rg`` reads accordingly.
     """
 
     if include_work_directive is None:
@@ -96,7 +105,11 @@ def build_tool_calling_system_prompt(
         base_parts.append(_WORK_DIRECTIVE)
     if include_mechanics:
         base_parts.append(_MECHANICS)
-    base = "\n".join(base_parts)
+    if observation_policy is not None:
+        from .tools.observation_policy import format_observation_budget_hint
+
+        base_parts.append(format_observation_budget_hint(observation_policy))
+    base = "\n\n".join(base_parts)
     extra = extra_instructions.strip()
     if not extra:
         result = base

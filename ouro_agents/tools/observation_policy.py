@@ -13,7 +13,7 @@ import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +25,51 @@ SPILL_PATH_RE = re.compile(
 )
 RUN_COMPACT_MARKER = "[older observation folded to save context"
 
+# Tools whose results are intentional context (skill bodies, etc.) and should
+# never be replaced with a head/tail stub.
+DEFAULT_EXEMPT_TOOLS: tuple[str, ...] = ("load_skill",)
+
 
 @dataclass(frozen=True)
 class ObservationPolicy:
     """In-memory policy knobs (mirrors ObservationPolicyConfig)."""
 
-    max_inline_chars: int = 6_000
-    head_chars: int = 1_200
-    tail_chars: int = 800
-    max_step_chars: int = 12_000
-    run_compact_ceiling: int = 80_000
+    max_inline_chars: int = 40_000
+    head_chars: int = 3_000
+    tail_chars: int = 1_500
+    max_step_chars: int = 40_000
+    run_compact_ceiling: int = 200_000
     keep_recent_steps: int = 3
-    excerpt_chars: int = 800
+    excerpt_chars: int = 3_000
+    exempt_tools: tuple[str, ...] = DEFAULT_EXEMPT_TOOLS
+
+
+def _normalize_exempt_tools(tools: Sequence[str] | None) -> tuple[str, ...]:
+    if not tools:
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in tools:
+        key = str(name or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return tuple(out)
+
+
+def is_exempt_tool(tool_name: str, policy: ObservationPolicy) -> bool:
+    """Return True when this tool's results should stay fully inline."""
+    name = str(tool_name or "").strip()
+    if not name:
+        return False
+    exempt = set(policy.exempt_tools)
+    if name in exempt:
+        return True
+    # Bare name match for qualified MCP-style names if ever listed that way.
+    if ":" in name and name.split(":", 1)[-1] in exempt:
+        return True
+    return False
 
 
 _spill_seq = 0
@@ -62,12 +95,33 @@ def _pick_extension(text: str) -> str:
     return ".txt"
 
 
+def format_observation_budget_hint(policy: ObservationPolicy) -> str:
+    """Short system-prompt note so the agent can size shell/file reads."""
+    lines = [
+        "Tool-result size budget:",
+        f"- Results over {policy.max_inline_chars:,} characters are spilled to "
+        f"`scratch/tool-outputs/` and replaced with a head/tail stub "
+        f"({policy.head_chars:,} + {policy.tail_chars:,} chars kept inline).",
+        f"- When you need more from a spill file (or any large file), keep the "
+        f"follow-up tool output under {policy.max_inline_chars:,} characters — "
+        "use `head`/`tail`, a bounded `sed -n` range, or `rg` with a line/byte "
+        "window. Do not `cat` the whole spill file.",
+    ]
+    if policy.exempt_tools:
+        names = ", ".join(f"`{n}`" for n in policy.exempt_tools)
+        lines.append(
+            f"- Exempt from spilling (always fully inline): {names}."
+        )
+    return "\n".join(lines)
+
+
 def build_spill_stub(
     *,
     relative_path: str,
     text: str,
     head_chars: int,
     tail_chars: int,
+    max_inline_chars: int,
 ) -> str:
     """Build the inline observation stub that points at a spilled file."""
     total = len(text)
@@ -84,7 +138,8 @@ def build_spill_stub(
 
     return (
         f"{SPILL_MARKER_PREFIX} {total:,} chars → {relative_path}]\n"
-        f"{showing}. Re-read the file (or sed/rg it) if you need more.\n\n"
+        f"{showing}. Inline limit is {max_inline_chars:,} chars — keep follow-up "
+        "reads under that (head/tail, bounded sed/rg); do not cat the whole file.\n\n"
         f"--- head ---\n{body}"
     )
 
@@ -113,6 +168,7 @@ def spill_and_stub(
         text=text,
         head_chars=policy.head_chars,
         tail_chars=policy.tail_chars,
+        max_inline_chars=policy.max_inline_chars,
     )
     logger.info(
         "Spilled tool '%s' output: %d chars → %s (stub %d chars)",
@@ -134,9 +190,14 @@ def maybe_spill_and_stub(
 ) -> str:
     """Spill when over ``max_inline_chars``; otherwise return ``text`` unchanged.
 
+    Exempt tools (see ``policy.exempt_tools``) always stay fully inline — their
+    payloads are intentional context (e.g. skill bodies from ``load_skill``).
+
     If ``workspace`` is missing, fall back to a head/tail stub without a file
     (still bounds what enters memory).
     """
+    if is_exempt_tool(tool_name, policy):
+        return text
     if len(text) <= policy.max_inline_chars:
         return text
     if workspace is None:
@@ -151,6 +212,7 @@ def maybe_spill_and_stub(
             text=text,
             head_chars=policy.head_chars,
             tail_chars=policy.tail_chars,
+            max_inline_chars=policy.max_inline_chars,
         )
     return spill_and_stub(
         text,
@@ -170,6 +232,7 @@ def fold_observation_excerpt(
     observations: str,
     *,
     excerpt_chars: int,
+    max_inline_chars: int,
 ) -> str:
     """Reduce an old step's observations for one-shot compact; keep spill paths."""
     text = observations or ""
@@ -183,8 +246,9 @@ def fold_observation_excerpt(
         path_lines = "\nSpill files: " + ", ".join(unique)
     return (
         f"{excerpt}\n\n{RUN_COMPACT_MARKER}: "
-        f"{len(text):,} chars originally; re-read spill files or re-run the tool "
-        f"if full output is needed again]{path_lines}"
+        f"{len(text):,} chars originally; re-read spill files under the "
+        f"{max_inline_chars:,}-char inline limit (head/tail/bounded sed/rg), "
+        f"or re-run the tool if full output is needed again]{path_lines}"
     )
 
 
@@ -196,22 +260,55 @@ def enforce_step_budget(
     run_id: str,
     policy: ObservationPolicy,
 ) -> str:
-    """If a combined step observation exceeds ``max_step_chars``, spill it."""
+    """If a combined step observation exceeds ``max_step_chars``, spill it.
+
+    When the blob is labeled with per-call headers, spill oversized non-exempt
+    sections individually so attribution (and exempt skill bodies) survive.
+    """
     if not observations or len(observations) <= policy.max_step_chars:
         return observations
-    return maybe_spill_and_stub(
-        observations,
-        tool_name=tool_name or "step",
-        workspace=workspace,
-        run_id=run_id,
-        policy=policy,
+
+    from ..utils.tool_observations import (
+        format_tool_result_header,
+        split_labeled_observation_sections,
     )
+
+    sections = split_labeled_observation_sections(observations)
+    if not sections:
+        return maybe_spill_and_stub(
+            observations,
+            tool_name=tool_name or "step",
+            workspace=workspace,
+            run_id=run_id,
+            policy=policy,
+        )
+
+    rebuilt: list[str] = []
+    for name, call_id, body in sections:
+        header = format_tool_result_header(name, call_id or "unknown")
+        if is_exempt_tool(name, policy) or len(body) <= policy.max_inline_chars:
+            rebuilt.append(f"{header}\n{body}" if body else header)
+            continue
+        stub = maybe_spill_and_stub(
+            body,
+            tool_name=name or tool_name or "step",
+            workspace=workspace,
+            run_id=run_id,
+            policy=policy,
+        )
+        rebuilt.append(f"{header}\n{stub}" if stub else header)
+    return "\n".join(rebuilt)
 
 
 def to_observation_policy(config) -> ObservationPolicy:
     """Build an ``ObservationPolicy`` from config (or defaults)."""
     if config is None:
         return ObservationPolicy()
+    exempt = getattr(config, "exempt_tools", None)
+    if exempt is None:
+        exempt_tools = DEFAULT_EXEMPT_TOOLS
+    else:
+        exempt_tools = _normalize_exempt_tools(exempt)
     return ObservationPolicy(
         max_inline_chars=int(config.max_inline_chars),
         head_chars=int(config.head_chars),
@@ -220,4 +317,5 @@ def to_observation_policy(config) -> ObservationPolicy:
         run_compact_ceiling=int(config.run_compact_ceiling),
         keep_recent_steps=int(config.keep_recent_steps),
         excerpt_chars=int(config.excerpt_chars),
+        exempt_tools=exempt_tools,
     )

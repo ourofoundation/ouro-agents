@@ -29,6 +29,7 @@ from .observation_policy import (
     RUN_COMPACT_MARKER,
     enforce_step_budget,
     fold_observation_excerpt,
+    is_exempt_tool,
     maybe_spill_and_stub,
 )
 
@@ -1121,7 +1122,9 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
             ):
                 continue
             step.observations = fold_observation_excerpt(
-                observations, excerpt_chars=policy.excerpt_chars
+                observations,
+                excerpt_chars=policy.excerpt_chars,
+                max_inline_chars=policy.max_inline_chars,
             )
             folded += 1
 
@@ -1253,29 +1256,58 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         result belongs to which call — e.g. a successful ``create_quest`` buried
         under inspection output. Prefix each observation with a stable header
         before the parent concatenates them.
+
+        Also stores a per-call result map on the ActionStep so chat persistence
+        can attribute results even if a later step-budget spill rewrites the
+        combined observation string.
         """
         self._raise_if_cancelled()
         parallel = bool(
             chat_message.tool_calls and len(chat_message.tool_calls) > 1
         )
+        from ..utils.tool_observations import (
+            format_tool_result_header,
+            set_step_tool_results,
+            strip_tool_result_header,
+        )
+
+        per_call: dict[str, str] = {}
         for output in super().process_tool_calls(chat_message, memory_step):
             self._raise_if_cancelled()
             if (
-                parallel
-                and getattr(output, "observation", None) is not None
+                getattr(output, "observation", None) is not None
                 and getattr(output, "tool_call", None) is not None
             ):
                 name = output.tool_call.name or "tool"
                 call_id = output.id or output.tool_call.id or ""
-                header = f"=== Tool result: {name} (id={call_id}) ==="
-                body = output.observation
-                if not str(body).startswith("=== Tool result:"):
-                    output.observation = f"{header}\n{body}"
+                body = str(output.observation)
+                if parallel and not body.startswith("=== Tool result:"):
+                    output.observation = (
+                        f"{format_tool_result_header(name, call_id)}\n{body}"
+                    )
+                if call_id:
+                    per_call[str(call_id)] = strip_tool_result_header(
+                        str(output.observation)
+                    )
             yield output
+
+        if per_call:
+            set_step_tool_results(memory_step, per_call)
+
         # Bound the combined step observation before it is treated as committed
         # history (parallel tools can still sum past per-call spill limits).
+        # Skip when every tool in the step is exempt — e.g. a large load_skill
+        # batch is intentional context and must stay fully inline.
         observations = getattr(memory_step, "observations", None)
         if observations:
+            from ..utils.tool_observations import tool_call_name
+
+            step_tools = getattr(memory_step, "tool_calls", None) or []
+            names = [tool_call_name(tc) for tc in step_tools]
+            if names and all(
+                is_exempt_tool(name, self._observation_policy) for name in names
+            ):
+                return
             capped = enforce_step_budget(
                 observations,
                 tool_name="step",

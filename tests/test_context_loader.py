@@ -2,6 +2,7 @@ from pathlib import Path
 
 from ouro_agents.memory.context_loader import (
     _find_entity_files,
+    build_cross_team_recent_activity,
     build_cross_team_task_index,
     build_memory_index,
     load_entity_files,
@@ -102,6 +103,52 @@ def test_build_cross_team_task_index_lists_active_tasks(tmp_path: Path):
     assert "done.md" not in index
 
 
+def test_build_cross_team_recent_activity_tails_logs(tmp_path: Path):
+    team_a = "01954d5f-fcea-7970-b8d8-b68879df9d7f"
+    team_b = "019538e2-dd84-7c0b-b340-b2c519fbe730"
+    nil = "00000000-0000-0000-0000-000000000000"
+    period = "2026-W31"
+
+    def _team(tid: str, slug: str, body: str) -> None:
+        import json
+
+        d = tmp_path / "teams" / slug
+        d.mkdir(parents=True)
+        (d / "state.json").write_text(
+            json.dumps({"team": {"id": tid, "name": slug, "slug": slug}, "docs": {}})
+        )
+        (d / "logs").mkdir()
+        (d / "logs" / f"{period}.md").write_text(body)
+
+    _team(
+        team_a,
+        "materials-science",
+        "# W31\n\n## early\n" + ("old line\n" * 80) + "## 2026-07-31\nSent Sandip De cold email.\n",
+    )
+    _team(team_b, "machine-learning", "# ML W31\n\nFollowed up Arroyave and Kleinke.\n")
+    _team(nil, "all", "# All team should be skipped\n")
+
+    digest = build_cross_team_recent_activity(
+        tmp_path,
+        period=period,
+        team_labels={team_a: "materials-science", team_b: "machine-learning"},
+        max_tokens=400,
+        max_tokens_per_team=120,
+    )
+
+    assert "Recent activity across teams" in digest
+    assert "materials-science" in digest
+    assert "machine-learning" in digest
+    assert "Sandip De" in digest
+    assert "Arroyave" in digest
+    assert "All team should be skipped" not in digest
+    assert "teams/materials-science/logs/2026-W31.md" in digest
+
+
+def test_build_cross_team_recent_activity_empty_workspace(tmp_path: Path):
+    assert build_cross_team_recent_activity(tmp_path, period="2026-W31") == ""
+
+
 def test_resolve_readable_context_path_rejects_traversal(tmp_path: Path):
     _write(tmp_path / "protected" / "memory" / "tasks" / "ok.md", "# ok\n")
     assert (
@@ -111,6 +158,13 @@ def test_resolve_readable_context_path_rejects_traversal(tmp_path: Path):
     assert resolve_readable_context_path(tmp_path, "memory/tasks/ok.md") is not None
     assert resolve_readable_context_path(tmp_path, "../etc/passwd") is None
     assert resolve_readable_context_path(tmp_path, "secrets/key.txt") is None
+
+
+def test_resolve_readable_context_path_allows_team_logs(tmp_path: Path):
+    team = "team-a"
+    rel = f"teams/{team}/logs/2026-W31.md"
+    _write(tmp_path / rel, "# Log\n\nSent email today.\n")
+    assert resolve_readable_context_path(tmp_path, rel) is not None
 
 
 def test_read_context_paths_reads_allowed_files(tmp_path: Path):
@@ -123,4 +177,14 @@ def test_read_context_paths_reads_allowed_files(tmp_path: Path):
     )
 
     assert "Next: follow up Khosla." in text
-    assert "not readable" in text
+    assert "outside allowed memory roots" in text
+
+
+def test_read_context_paths_reads_team_logs(tmp_path: Path):
+    team = "team-a"
+    rel = f"teams/{team}/logs/2026-W31.md"
+    _write(tmp_path / rel, "# W31\n\nCold email to Sandip De.\n")
+
+    text = read_context_paths(tmp_path, [rel])
+
+    assert "Cold email to Sandip De." in text

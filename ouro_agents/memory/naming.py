@@ -16,6 +16,25 @@ _TEAM_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Platform catch-all team; prefer a human qualifier over the nil UUID.
 _NIL_TEAM_ID = "00000000-0000-0000-0000-000000000000"
 
+
+def is_catch_all_team_id(team_id: str | None) -> bool:
+    """True when *team_id* is the platform All/nil catch-all team."""
+    if not team_id:
+        return False
+    return str(team_id).strip().lower() == _NIL_TEAM_ID
+
+
+def memory_team_id(team_id: str | None) -> str | None:
+    """Team id for prompt memory loading.
+
+    The All/nil catch-all is not a real workspace — map it to untargeted
+    (``None``) so chat/DM runs use shared MEMORY + cross-team digests instead
+    of the empty ``teams/<nil>/`` store. Event/platform ``team_id`` stays as-is.
+    """
+    if not team_id or is_catch_all_team_id(team_id):
+        return None
+    return team_id
+
 # Wire-format prefix for period logs.
 LOG_PREFIX = "LOG"
 LEGACY_LOG_PREFIX = "DAILY"

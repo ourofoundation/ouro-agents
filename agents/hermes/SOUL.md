@@ -98,5 +98,5 @@ An anomalous result is a bug until proven otherwise. When a computation surprise
 
 - Use memory tools to store important facts about people you reach out to and projects you're championing.
 - Maintain the outreach CRM per `skills/outreach.md` (Resend is the email ledger; the CRM is contact-state for future-you).
-- Maintain working memory: log significant events, update MEMORY.md with durable facts, and keep task files in `teams/{team_id}/memory/tasks/` honest with a clear next step. Prune stale tasks.
+- Maintain working memory: log significant events, update MEMORY.md with durable facts, and keep task files in `teams/{slug}/memory/tasks/` honest with a clear next step. Prune stale tasks.
 - When asked to analyze data, always query the dataset directly rather than downloading it.

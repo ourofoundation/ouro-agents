@@ -627,7 +627,7 @@ class TestLocalDocStore(unittest.TestCase):
 
             self.assertEqual(
                 store._name_to_path("LOG:hermes:research:2026-04-05"),
-                Path(tmpdir) / "teams" / "team-1" / "logs" / "2026-04-05.md",
+                Path(tmpdir) / "teams" / "research" / "logs" / "2026-04-05.md",
             )
 
     def test_team_qualified_heartbeat_routes_to_team_file(self):
@@ -641,7 +641,7 @@ class TestLocalDocStore(unittest.TestCase):
 
             self.assertEqual(
                 store._name_to_path("HEARTBEAT:hermes"),
-                Path(tmpdir) / "teams" / "team-1" / "HEARTBEAT.md",
+                Path(tmpdir) / "teams" / "research" / "HEARTBEAT.md",
             )
 
     def test_shared_memory_routes_to_workspace_root(self):

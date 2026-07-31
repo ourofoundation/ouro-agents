@@ -56,7 +56,9 @@ class PlanningCursor(BaseModel):
 
 
 def _cursor_path(workspace: Path, team_id: str) -> Path:
-    return workspace / "teams" / team_id / "planning.json"
+    from ..memory.team_paths import team_workspace_dir
+
+    return team_workspace_dir(workspace, team_id) / "planning.json"
 
 
 def load_cursor(workspace: Path, team_id: str) -> PlanningCursor:
@@ -935,6 +937,24 @@ async def run_planning_run(
             "run, prefer the explicit goal."
         ),
     )
+    standing_context = ""
+    controller_manager = getattr(agent, "_controller_questions", None)
+    standing_fn = getattr(controller_manager, "standing_decisions_context", None)
+    if callable(standing_fn):
+        try:
+            standing_context = standing_fn() or ""
+        except Exception:
+            logger.debug(
+                "Failed to load standing controller decisions", exc_info=True
+            )
+    if standing_context:
+        standing_context = (
+            f"{standing_context}\n"
+            "Settled controller decisions bind this plan: do not scope items "
+            "that revisit or contradict them. Do not plan work that pre-empts "
+            "a pending decision."
+        )
+
     activity_context = build_recent_activity_context(agent, team_id)
     history_context = build_quest_history_context(agent)
     outcome_context = build_outcome_evidence_context(agent)
@@ -943,6 +963,7 @@ async def run_planning_run(
         part
         for part in (
             guidance_context,
+            standing_context,
             history_context,
             outcome_context,
             direction_context,

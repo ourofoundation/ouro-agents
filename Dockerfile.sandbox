@@ -21,7 +21,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         scipy \
         spglib \
         requests \
-        modal
+        modal \
+        exa_py
 
 # Thin layer: bump this pin without rebuilding the stack above.
 RUN python -m pip install --no-cache-dir "ouro-py>=0.11.4"

@@ -66,15 +66,15 @@ def test_subagent_step_updates_existing_run():
     observer.on_progress(
         ProgressEvent(
             "subagent_step",
-            "research: using tavily_search",
-            detail={"name": "research", "run_id": "run-1", "tool": "tavily_search"},
+            "research: using web_search_exa",
+            detail={"name": "research", "run_id": "run-1", "tool": "web_search_exa"},
         )
     )
 
     publisher.emit_subagent_step.assert_called_once()
     kwargs = publisher.emit_subagent_step.call_args.kwargs
     assert kwargs["message_id"] == "msg-1"
-    assert kwargs["detail"] == "tavily_search"
+    assert kwargs["detail"] == "web_search_exa"
     publisher.emit_activity.assert_not_called()
 
 

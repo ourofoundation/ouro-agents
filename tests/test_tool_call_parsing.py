@@ -1072,6 +1072,7 @@ class TestRunObservationCompaction(unittest.TestCase):
             run_compact_ceiling=5_000,
             keep_recent_steps=2,
             excerpt_chars=100,
+            max_inline_chars=5_000,
         )
         steps = self._make_steps(5, 2_000)
         steps[0].observations = spill_header + ("y" * 3_000)
@@ -1084,6 +1085,7 @@ class TestRunObservationCompaction(unittest.TestCase):
             "scratch/tool-outputs/run/0016-run_shell.txt",
             steps[0].observations,
         )
+        self.assertIn("5,000-char inline limit", steps[0].observations)
 
 
 class TestObservationSpill(unittest.TestCase):
@@ -1113,6 +1115,8 @@ class TestObservationSpill(unittest.TestCase):
             )
             self.assertIn(SPILL_MARKER_PREFIX, stub)
             self.assertIn("scratch/tool-outputs/test-run/", stub)
+            self.assertIn("Inline limit is 100 chars", stub)
+            self.assertIn("do not cat the whole file", stub)
             self.assertLess(len(stub), len(text))
             # Full payload on disk
             spill_files = list(Path(tmp).joinpath("scratch/tool-outputs/test-run").glob("*"))
@@ -1135,6 +1139,46 @@ class TestObservationSpill(unittest.TestCase):
             policy=policy,
         )
         self.assertEqual(out, text)
+
+    def test_exempt_tools_never_spill(self):
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            SPILL_MARKER_PREFIX,
+            maybe_spill_and_stub,
+        )
+
+        policy = ObservationPolicy(
+            max_inline_chars=100,
+            exempt_tools=("load_skill",),
+        )
+        text = "SKILL BODY " + ("x" * 5_000)
+        out = maybe_spill_and_stub(
+            text,
+            tool_name="load_skill",
+            workspace=None,
+            run_id="r",
+            policy=policy,
+        )
+        self.assertEqual(out, text)
+        self.assertNotIn(SPILL_MARKER_PREFIX, out)
+
+    def test_empty_exempt_list_spills_skills(self):
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            SPILL_MARKER_PREFIX,
+            maybe_spill_and_stub,
+        )
+
+        policy = ObservationPolicy(max_inline_chars=100, exempt_tools=())
+        text = "SKILL BODY " + ("x" * 5_000)
+        out = maybe_spill_and_stub(
+            text,
+            tool_name="load_skill",
+            workspace=None,
+            run_id="r",
+            policy=policy,
+        )
+        self.assertIn(SPILL_MARKER_PREFIX, out)
 
     def test_step_budget_spills_combined(self):
         import tempfile
@@ -1167,6 +1211,44 @@ class TestObservationSpill(unittest.TestCase):
             self.assertEqual(len(spill_files), 1)
             self.assertEqual(spill_files[0].read_text(), combined)
 
+    def test_labeled_step_budget_preserves_sections(self):
+        import tempfile
+        from pathlib import Path
+
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            SPILL_MARKER_PREFIX,
+            enforce_step_budget,
+        )
+
+        policy = ObservationPolicy(
+            max_inline_chars=50,
+            max_step_chars=80,
+            head_chars=15,
+            tail_chars=10,
+            exempt_tools=("load_skill",),
+        )
+        skill_body = "SKILL-" + ("s" * 200)
+        shell_body = "SHELL-" + ("x" * 200)
+        labeled = (
+            "=== Tool result: load_skill (id=call_skill) ===\n"
+            f"{skill_body}\n"
+            "=== Tool result: run_shell (id=call_shell) ===\n"
+            f"{shell_body}"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = enforce_step_budget(
+                labeled,
+                tool_name="step",
+                workspace=Path(tmp),
+                run_id="r",
+                policy=policy,
+            )
+            self.assertIn("=== Tool result: load_skill (id=call_skill) ===", out)
+            self.assertIn(skill_body, out)  # exempt stays full
+            self.assertIn("=== Tool result: run_shell (id=call_shell) ===", out)
+            self.assertIn(SPILL_MARKER_PREFIX, out)
+            self.assertNotIn(shell_body, out)  # oversized non-exempt spilled
 
 
 class TestParallelObservationLabeling(unittest.TestCase):
@@ -1187,6 +1269,7 @@ class TestParallelObservationLabeling(unittest.TestCase):
         from smolagents.memory import ActionStep, Timing
 
         from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+        from ouro_agents.utils.tool_observations import get_step_tool_results
 
         @tool
         def alpha() -> str:
@@ -1229,6 +1312,9 @@ class TestParallelObservationLabeling(unittest.TestCase):
         self.assertIn("beta-result", by_id["call_b"])
         self.assertIn("=== Tool result: alpha (id=call_a) ===", memory_step.observations)
         self.assertIn("=== Tool result: beta (id=call_b) ===", memory_step.observations)
+        stored = get_step_tool_results(memory_step)
+        self.assertEqual(stored["call_a"], "alpha-result")
+        self.assertEqual(stored["call_b"], "beta-result")
 
     def test_single_call_is_unlabeled(self):
         from smolagents import tool

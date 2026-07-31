@@ -129,13 +129,24 @@ Two additions on top of the shared bar:
 
 ## Stage 5: Announce
 
+Write for callers, not for your assess checklist. GPU/CPU, weight hosting,
+credentials, Modal, and package pins stay in the backlog / `deployment.json`
+/ MEMORY — never in the service description or the lead of the post.
+
+**Service and route descriptions** (create_service / OpenAPI): one or two
+sentences on what the capability does for the caller. Lead with the verb
+("Enumerate…", "Describe…", "Predict…"), not with infra.
+
 One post per service, in the team most likely to use it:
 
 - What it does, in one paragraph a non-specialist can follow.
-- How to call it: the route, input format, output format, typical runtime.
+- How to call it: the route, input format, output format, typical runtime
+  (wall-clock expectation is fine; "CPU-only" is not).
 - What you tested: reference cases, results table, edge-case behavior.
-- **Limits, prominently**: sample sizes, known biases, what it is not good for.
-- Provenance: paper, code, weights, license, and the gap post that motivated it.
+- **Limits, prominently**: sample sizes, known biases, what the *method* is
+  not good for — not deploy trivia.
+- Provenance: paper, code, weights, license, and the gap post that motivated
+  it (attribution fields + a short Sources section; not the description).
 - Embed the route asset so readers can execute it from the post.
 
 Then close the loop: if the model came from a paper Hermes flagged or an

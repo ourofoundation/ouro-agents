@@ -109,7 +109,7 @@ SEARCH = SubAgentProfile(
     allowed_tools=["memory_recall"],
     allowed_servers=["search"],
     can_load_mcp_tools=True,
-    preload_tools=["search:tavily_search"],
+    preload_tools=["search:web_search_exa"],
     delegatable=True,
     max_steps=4,
     default_return_mode="full_text",
@@ -132,7 +132,7 @@ RESEARCH = SubAgentProfile(
     allowed_tools=["memory_recall"],
     allowed_servers=["search"],
     can_load_mcp_tools=True,
-    preload_tools=["search:tavily_search"],
+    preload_tools=["search:web_search_exa", "search:web_fetch_exa"],
     delegatable=True,
     max_steps=8,
     needs_python_tool=True,
@@ -162,29 +162,37 @@ PLANNER = SubAgentProfile(
 EXECUTOR = SubAgentProfile(
     name="executor",
     description=(
-        "Execute a focused sub-task using MCP tools. Has access to MCP tools and "
-        "memory. Use for self-contained actions you want off your main context."
+        "Side-branch worker with the same tools as the main agent (MCP, "
+        "run_python/run_shell, memory, load_skill). Use for a focused sub-goal "
+        "you want off the main context — inspect files, build/deploy, platform "
+        "actions, or multi-step work — then return a compact handoff."
     ),
     system_prompt=EXECUTOR_PROMPT,
-    allowed_tools=["memory_recall"],
+    allowed_tools=["memory_recall", "memory_status", "read_context", "load_skill"],
     can_load_mcp_tools=True,
     preload_tools=["ouro:create_post"],
     delegatable=True,
-    max_steps=8,
-    can_delegate_to=["writer"],
-    skills=["ouro", "ouro_markdown", "asset_output"],
+    max_steps=12,
+    needs_python_tool=True,
+    skills=["ouro", "ouro_markdown", "asset_output", "filesystem"],
 )
 
 WRITER = SubAgentProfile(
     name="writer",
     description=(
-        "Draft polished, high-value posts and text documents from goals, notes, "
-        "and context. Saves the draft as an Ouro post and returns a brief handoff."
+        "Publish polished long-form posts from supplied notes and goals. "
+        "Not for research, file inspection, code, or deploy — pass the source "
+        "material in the task (or asset_refs) and get back a post handoff."
     ),
     system_prompt=WRITER_PROMPT,
-    allowed_tools=[],
+    allowed_tools=["memory_recall"],
+    allowed_servers=["ouro"],
     can_load_mcp_tools=True,
-    preload_tools=["ouro:create_post"],
+    preload_tools=[
+        "ouro:create_post",
+        "ouro:update_post",
+        "ouro:get_asset",
+    ],
     delegatable=True,
     max_steps=5,
     skills=["ouro", "ouro_markdown", "asset_output"],

@@ -106,8 +106,9 @@ def serve():
 
     web_app = FastAPI(
         title="<Model Name>",
-        summary="<One-line summary>",
-        description="<Longer description>",
+        summary="<One-line summary of what callers get>",
+        # Caller-facing: what it does / I/O. Not GPU, weights, credentials, or deploy notes.
+        description="<Longer capability description for users>",
         version="1.0.0",
     )
     web_app.openapi = get_custom_openapi(web_app, get_openapi)
@@ -251,7 +252,8 @@ def _send_webhook_notification(webhook_url, webhook_token, action_id, route_id, 
 
 @app.cls(image=webapp_image)
 class WebApp:
-    web_app = FastAPI(title="<Model Name>", summary="<Summary>", version="1.0.0")
+    # Caller-facing title/summary — capability, not GPU/weights/creds.
+    web_app = FastAPI(title="<Model Name>", summary="<What callers get>", version="1.0.0")
 
     @modal.enter()
     def setup(self):

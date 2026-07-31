@@ -40,7 +40,12 @@ from .provider_reasoning import first_party_provider_slug
 from .display import OuroDisplay, create_logger, get_display
 from .memory import create_memory_backend
 from .memory import DocStore
-from .memory.naming import current_period_heading, period_key, store_rhythm
+from .memory.naming import (
+    current_period_heading,
+    memory_team_id,
+    period_key,
+    store_rhythm,
+)
 from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
     store_reflection_memories,
@@ -243,8 +248,16 @@ class OuroAgent:
         self._team_doc_stores: dict[str, DocStore] = {}
 
         from .memory.log_prefix_migration import migrate_log_prefix_workspace
+        from .memory.team_paths import migrate_workspace_team_dirs
 
         migrate_log_prefix_workspace(self._workspace)
+        moves = migrate_workspace_team_dirs(self._workspace)
+        if moves:
+            logger.info(
+                "Migrated %d team dir(s) to slug names: %s",
+                len(moves),
+                ", ".join(moves),
+            )
 
         self.doc_store: DocStore = CompositeDocStore(
             local=LocalDocStore(
@@ -726,10 +739,19 @@ class OuroAgent:
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
     ) -> dict[str, str]:
-        """Load the common prompt context shared by main and subagent runs."""
-        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
+        """Load the common prompt context shared by main and subagent runs.
+
+        Catch-all All/nil ``team_id`` is remapped to untargeted for memory
+        loading only; callers keep the original id for provenance.
+        """
+        scope_team_id = memory_team_id(team_id)
+        active_doc_store = self._resolve_doc_store(
+            team_id=scope_team_id, doc_store=doc_store
+        )
         working_memory_parts = [
-            self._load_working_memory(team_id=team_id, doc_store=active_doc_store)
+            self._load_working_memory(
+                team_id=scope_team_id, doc_store=active_doc_store
+            )
         ]
         if include_scheduled_tasks:
             working_memory_parts.append(self._load_scheduled_task_awareness())
@@ -744,7 +766,7 @@ class OuroAgent:
             )
         notes_name = f"NOTES:{self.config.agent.name}"
         notes_text = active_doc_store.read(notes_name)
-        if not notes_text and not team_id:
+        if not notes_text and not scope_team_id:
             notes_text = self.notes
 
         plans_index_text = self._own_quests_index()
@@ -757,6 +779,29 @@ class OuroAgent:
             "user_model": user_model_text,
             "plans_index": plans_index_text,
         }
+
+    def _cross_team_recent_activity_digest(self) -> str:
+        """Compact tails of current period logs across teams for chat status."""
+        from .memory.context_loader import build_cross_team_recent_activity
+
+        labels: dict[str, str] = {}
+        registry = getattr(self, "team_registry", None)
+        if registry is not None:
+            get_team = getattr(registry, "get_team", None)
+            for tid in sorted(registry.team_ids()):
+                team = get_team(tid) if callable(get_team) else None
+                labels[tid] = (
+                    getattr(team, "slug", None)
+                    or getattr(team, "name", None)
+                    or tid[:8]
+                )
+        rhythm = getattr(self.config.memory, "rhythm", None) or "weekly"
+        return build_cross_team_recent_activity(
+            self.config.agent.workspace,
+            period=period_key(rhythm),
+            team_labels=labels,
+            rhythm=rhythm,
+        )
 
     _OWN_QUESTS_INDEX_TTL_SECS = 300
 
@@ -1250,6 +1295,16 @@ class OuroAgent:
         team_info = self.team_registry.get_team(team_id)
         team_slug = team_info.slug if team_info else None
         team_name = team_info.name if team_info else None
+
+        from .memory.team_paths import ensure_team_dir
+
+        team_dir = ensure_team_dir(
+            self._workspace,
+            team_id,
+            team_slug=team_slug,
+            team_name=team_name,
+        )
+
         local = LocalDocStore(
             self._workspace,
             agent_name=agent_cfg.name,
@@ -1270,7 +1325,7 @@ class OuroAgent:
             org_id=agent_cfg.org_id,
             team_id=team_id,
             client=client if client is not None else self._get_ouro_client(),
-            registry_path=self._workspace / "teams" / team_id / "state.json",
+            registry_path=team_dir / "state.json",
             team_slug=team_slug,
             team_name=team_name,
             rhythm=self.config.memory.rhythm,
@@ -1327,8 +1382,24 @@ class OuroAgent:
         except Exception as e:
             logger.warning("Failed to refresh platform context at startup: %s", e)
 
-    @staticmethod
-    def _patch_tool_inputs(mcp_tool) -> None:
+    # OpenAI tool schemas reject regex lookaround; Zod email patterns use it.
+    _SCHEMA_LOOKAROUND_RE = re.compile(r"\(\?[=!<]")
+
+    @classmethod
+    def _strip_unsupported_schema_patterns(cls, node) -> None:
+        """Drop ``pattern`` values that use lookaround (unsupported by OpenAI)."""
+        if isinstance(node, dict):
+            pattern = node.get("pattern")
+            if isinstance(pattern, str) and cls._SCHEMA_LOOKAROUND_RE.search(pattern):
+                node.pop("pattern", None)
+            for value in node.values():
+                cls._strip_unsupported_schema_patterns(value)
+        elif isinstance(node, list):
+            for item in node:
+                cls._strip_unsupported_schema_patterns(item)
+
+    @classmethod
+    def _patch_tool_inputs(cls, mcp_tool) -> None:
         """Fix mcpadapt's schema conversion for nullable/optional MCP params.
 
         mcpadapt doesn't translate anyOf: [{type: X}, {type: null}] into
@@ -1339,8 +1410,14 @@ class OuroAgent:
         valid array arguments.  We collapse non-null ``anyOf`` types into
         ``type`` (string or list) and remove ``anyOf`` so smolagents'
         schema helpers don't crash on entries missing a ``type`` key.
+
+        Also strips regex lookaround from nested ``pattern`` fields (e.g. Zod
+        ``z.email()`` via resend-mcp), which OpenAI rejects as invalid_json_schema.
         """
-        for schema in getattr(mcp_tool, "inputs", {}).values():
+        inputs = getattr(mcp_tool, "inputs", {}) or {}
+        cls._strip_unsupported_schema_patterns(inputs)
+
+        for schema in inputs.values():
             any_of = schema.get("anyOf", [])
             if not any_of:
                 if "default" in schema:
@@ -1644,9 +1721,9 @@ class OuroAgent:
         elif not profile.allows_capability(Capability.MEMORY_WRITE):
             memory_tools = [t for t in memory_tools if t.name != "remember"]
 
-        # Heartbeat ticks get path-confined read_context so the shared
-        # context snapshot (task/memory index) is actionable.
-        if profile.name == "heartbeat":
+        # Heartbeat and chat get path-confined read_context so indexes /
+        # recent-activity digests are actionable (period logs, tasks, memory).
+        if profile.name in ("heartbeat", "chat"):
             from .memory.context_loader import make_read_context_tool
 
             memory_tools = list(memory_tools) + [
@@ -1962,7 +2039,10 @@ class OuroAgent:
             else ""
         )
 
-        active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
+        scope_team_id = memory_team_id(team_id)
+        active_doc_store = self._resolve_doc_store(
+            team_id=scope_team_id, doc_store=doc_store
+        )
         shared_context = self._load_shared_prompt_context(
             user_id=user_id,
             include_scheduled_tasks=profile.load_scheduled_tasks,
@@ -1970,6 +2050,12 @@ class OuroAgent:
             doc_store=active_doc_store,
         )
         working_memory = shared_context["working_memory"]
+        if profile.conversational:
+            activity = self._cross_team_recent_activity_digest()
+            if activity:
+                working_memory = (
+                    f"{working_memory}\n\n{activity}" if working_memory else activity
+                )
         user_model_text = shared_context["user_model"]
 
         from .memory.context_loader import load_entity_context
@@ -1980,7 +2066,7 @@ class OuroAgent:
             task=task,
             doc_store=active_doc_store,
             agent_name=self.config.agent.name,
-            team_id=team_id,
+            team_id=scope_team_id,
         )
         plans_index_text = ""
         if include_plans_index:
@@ -2024,6 +2110,14 @@ class OuroAgent:
             subagent_directory = ""
 
         framing = mode_framing_override or profile.framing
+        if (
+            profile.conversational
+            and user_id
+            and user_id in (self.config.security.resolved_controller_ids or [])
+        ):
+            from .modes.framing import CHAT_CONTROLLER_STEERING
+
+            framing = f"{framing}\n\n{CHAT_CONTROLLER_STEERING}"
         if (
             self.config.ask_controller.enabled
             and self.config.security.resolved_controller_ids
@@ -3099,7 +3193,9 @@ class OuroAgent:
                     self._utility_model_id(),
                     role="utility",
                 )
-                record = run_compaction_locked(
+                # Do not name this `record` — that shadows the RunRecord param
+                # and blows up later when compaction returns None.
+                compaction = run_compaction_locked(
                     self._workspace,
                     conversation_id,
                     all_turns,
@@ -3108,8 +3204,8 @@ class OuroAgent:
                     keep_recent=compaction_cfg.keep_recent_turns,
                     model_id=self._utility_model_id(),
                 )
-                if record is not None:
-                    built = build_injectable_history(all_turns, compaction=record)
+                if compaction is not None:
+                    built = build_injectable_history(all_turns, compaction=compaction)
                     history_turns = built.injected_turns
                     history_summary = built.summary
                     history_compacted = True
@@ -3119,7 +3215,7 @@ class OuroAgent:
                 emit_progress(
                     observer,
                     "compacting_history",
-                    "history compacted" if record else "compaction skipped",
+                    "history compacted" if compaction else "compaction skipped",
                     state="complete",
                 )
 
@@ -3172,6 +3268,7 @@ class OuroAgent:
 
         from .tools.observation_policy import to_observation_policy
 
+        obs_policy = to_observation_policy(self.config.observations)
         agent = _SanitizedToolCallingAgent(
             tools=all_tools,
             model=model,
@@ -3179,7 +3276,7 @@ class OuroAgent:
             stream_outputs=bool(observer),
             step_callbacks=step_callbacks,
             logger=create_logger(display=display),
-            observation_policy=to_observation_policy(self.config.observations),
+            observation_policy=obs_policy,
             workspace=self._workspace,
             run_id=run_id,
             cancellation_token=token,
@@ -3199,6 +3296,7 @@ class OuroAgent:
         agent.prompt_templates["system_prompt"] = build_tool_calling_system_prompt(
             system_prompt,
             conversational=profile.conversational,
+            observation_policy=obs_policy,
         )
 
         if debug_markdown_path:

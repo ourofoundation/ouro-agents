@@ -792,10 +792,11 @@ class LocalDocStore:
     - ``SOUL`` → ``{workspace}/SOUL.md`` (always at workspace root)
     - ``SHARED:memory`` → ``{workspace}/MEMORY.md`` (cross-team shared notes,
       always at workspace root regardless of team scope)
-    - With ``team_id`` set:
-        - ``MEMORY`` → ``teams/{team_id}/MEMORY.md``
-        - ``LOG:*:*:{period}`` → ``teams/{team_id}/logs/{period}.md`` (legacy ``daily/`` read fallback)
-        - ``HEARTBEAT``/``NOTES`` → ``teams/{team_id}/{prefix}.md``
+    - With ``team_id`` set (on-disk leaf is the team slug when known; UUID is
+      identity only — see ``memory.team_paths``):
+        - ``MEMORY`` → ``teams/{slug}/MEMORY.md``
+        - ``LOG:*:*:{period}`` → ``teams/{slug}/logs/{period}.md`` (legacy ``daily/`` read fallback)
+        - ``HEARTBEAT``/``NOTES`` → ``teams/{slug}/{prefix}.md``
     - Without ``team_id``:
         - ``HEARTBEAT``/``NOTES`` → workspace root
         - ``MEMORY`` → ``shared/memory/MEMORY.md``
@@ -821,7 +822,19 @@ class LocalDocStore:
             team_name=team_name,
             team_id=team_id,
         )
+        self._team_name = team_name
         self.rhythm = rhythm
+
+    def _team_dir(self) -> Path:
+        from .team_paths import team_workspace_dir
+
+        assert self.team_id
+        return team_workspace_dir(
+            self._workspace,
+            self.team_id,
+            team_slug=self.team_slug or None,
+            team_name=self._team_name,
+        )
 
     def memory_name(self, agent_name: str | None = None) -> str:
         """Canonical MEMORY name for this store's scope."""
@@ -843,7 +856,7 @@ class LocalDocStore:
     def _log_storage_dirs(self) -> list[Path]:
         """Canonical ``logs/`` dir first, then legacy ``daily/`` for reads."""
         if self.team_id:
-            team_dir = self._workspace / "teams" / self.team_id
+            team_dir = self._team_dir()
             return [team_dir / "logs", team_dir / "daily"]
         return [
             self._workspace / "shared" / "logs",
@@ -877,7 +890,7 @@ class LocalDocStore:
             return self._workspace / f"SHARED_{safe}.md"
 
         if self.team_id:
-            team_dir = self._workspace / "teams" / self.team_id
+            team_dir = self._team_dir()
             if prefix == "MEMORY":
                 return team_dir / "MEMORY.md"
             if prefix == LOG_PREFIX and len(parts) >= 3:

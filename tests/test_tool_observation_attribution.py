@@ -78,7 +78,50 @@ class TestAttributeObservationResults(unittest.TestCase):
         ]
         results = attribute_observation_results(calls, "combined")
         self.assertEqual(results[0], "combined")
-        self.assertIn("first tool call", results[1])
+        self.assertIn("parallel step", results[1])
+
+    def test_per_call_map_wins_over_unlabeled_blob(self):
+        calls = [
+            {"id": "call_1", "name": "load_skill", "arguments": {}},
+            {"id": "call_2", "name": "load_tool", "arguments": {}},
+        ]
+        results = attribute_observation_results(
+            calls,
+            "combined unlabeled blob",
+            per_call={
+                "call_1": "## Skill body",
+                "call_2": '[{"status": "loaded", "call_as": "search_assets"}]',
+            },
+        )
+        self.assertEqual(results[0], "## Skill body")
+        self.assertIn("search_assets", results[1])
+        self.assertNotIn("combined unlabeled", results[1])
+
+    def test_extract_payloads_uses_step_side_channel(self):
+        from ouro_agents.utils.tool_observations import set_step_tool_results
+
+        step = ActionStep(
+            step_number=1,
+            timing=Timing(start_time=0.0, end_time=0.0),
+            tool_calls=[
+                ToolCall(name="load_skill", arguments={}, id="call_skill"),
+                ToolCall(name="load_tool", arguments={}, id="call_tools"),
+            ],
+            # Simulate a step-level spill that destroyed labels.
+            observations="[tool output spilled: 90,000 chars → scratch/x.txt]",
+        )
+        set_step_tool_results(
+            step,
+            {
+                "call_skill": "## Skill: deploying-services\nfull body",
+                "call_tools": '[{"status": "loaded", "call_as": "create_service"}]',
+            },
+        )
+        payloads = extract_tool_call_payloads(step)
+        self.assertEqual(payloads[0]["result"], "## Skill: deploying-services\nfull body")
+        self.assertIn("create_service", payloads[1]["result"])
+        self.assertNotIn("tool output spilled", payloads[1]["result"])
+        self.assertNotIn("parallel step", payloads[1]["result"])
 
 
 class TestExtractToolCallPayloads(unittest.TestCase):
@@ -136,6 +179,27 @@ class TestExtractToolSummary(unittest.TestCase):
         self.assertEqual(summary[0]["result"], "find-out")
         self.assertIn("## Skill: coils", summary[1]["result"])
         self.assertNotEqual(summary[0]["result"], summary[1]["result"])
+
+
+class TestChatToolResultTruncation(unittest.TestCase):
+    def test_oversized_list_envelope_stays_valid_json(self):
+        import json
+
+        from ouro_agents.utils import message_persistence as mp
+
+        results = [
+            {"id": str(i), "name": "x" * 2000, "description": "y" * 2000}
+            for i in range(50)
+        ]
+        payload = json.dumps({"results": results, "total": 50, "hasMore": False})
+        self.assertGreater(len(payload), mp._MAX_CHAT_TOOL_RESULT_CHARS)
+
+        out = mp._truncate_tool_result(payload)
+        parsed = json.loads(out)
+        self.assertEqual(parsed["original_result_count"], 50)
+        self.assertEqual(parsed["total"], 50)
+        self.assertTrue(parsed.get("truncated"))
+        self.assertNotIn("... [truncated:", out)
 
 
 if __name__ == "__main__":

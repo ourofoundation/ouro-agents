@@ -16,7 +16,7 @@ into top-level `PlanningConfig` at load): `enabled`, `model`, `cadence`,
 ## Local state: one cursor per team
 
 The only local planning state is a tiny cursor at
-`workspace/teams/<team_id>/planning.json`:
+`workspace/teams/<slug>/planning.json`:
 
 ```json
 {
