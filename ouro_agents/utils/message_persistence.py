@@ -91,6 +91,75 @@ def _slim_list_envelope_for_chat(obs: str) -> str | None:
     return json.dumps(slim, default=str)
 
 
+def _slim_markdown_list_for_chat(obs: str) -> str | None:
+    """Keep header + first N bullets when MCP list tools return markdown.
+
+    Markdown list tools emit a header (``Found N …``) plus ``- `` bullets and
+    optional ``##`` section headings. Cap bullets so chat persistence stays
+    under the size budget without a mid-line cut.
+    """
+    stripped = obs.lstrip()
+    if not stripped or stripped[0] in "{[":
+        return None
+    # Heuristic: list-shaped markdown from ouro-mcp.
+    if not (
+        stripped.startswith("Found ")
+        or stripped.startswith("No ")
+        or stripped.startswith("Comments on ")
+        or stripped.startswith("Connections for ")
+        or "## " in stripped[:200]
+    ):
+        return None
+
+    lines = obs.splitlines()
+    header_lines: list[str] = []
+    body_lines: list[str] = []
+    bullet_count = 0
+    truncated = False
+
+    for line in lines:
+        is_bullet = line.startswith("- ")
+        is_section = line.startswith("## ")
+        if not body_lines and not is_bullet and not is_section:
+            header_lines.append(line)
+            continue
+        if is_bullet:
+            if bullet_count >= _CHAT_LIST_RESULT_CAP:
+                truncated = True
+                continue
+            bullet_count += 1
+            body_lines.append(line)
+            continue
+        # Keep continuation/body indent lines and section headers for kept bullets.
+        if truncated and is_section:
+            # Skip remaining sections once we've hit the cap.
+            continue
+        if truncated and line.startswith("  "):
+            continue
+        if truncated:
+            continue
+        body_lines.append(line)
+
+    if not truncated and len(obs) <= _MAX_CHAT_TOOL_RESULT_CHARS:
+        return None
+
+    parts = header_lines + body_lines
+    if truncated:
+        parts.append(
+            f"… [truncated: showing first {_CHAT_LIST_RESULT_CAP} bullets]"
+        )
+    slim = "\n".join(parts)
+    if len(slim) > _MAX_CHAT_TOOL_RESULT_CHARS:
+        # Still too big — cut at a line boundary.
+        budget = _MAX_CHAT_TOOL_RESULT_CHARS - 40
+        cut = slim[:budget]
+        last_nl = cut.rfind("\n")
+        if last_nl > budget // 2:
+            cut = cut[:last_nl]
+        slim = cut + "\n… [truncated]"
+    return slim
+
+
 def _truncate_tool_result(obs: str) -> str:
     if len(obs) <= _MAX_CHAT_TOOL_RESULT_CHARS:
         return obs
@@ -115,6 +184,10 @@ def _truncate_tool_result(obs: str) -> str:
                 return meta_json
         except (json.JSONDecodeError, TypeError):
             pass
+
+    md_slim = _slim_markdown_list_for_chat(obs)
+    if md_slim is not None:
+        return md_slim
 
     return (
         obs[:_MAX_CHAT_TOOL_RESULT_CHARS]

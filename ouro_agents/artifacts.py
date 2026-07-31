@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -321,6 +322,115 @@ def fetch_asset_content(
     return "\n\n".join(parts)
 
 
+def _parse_comment_bullet(line: str) -> dict[str, Any] | None:
+    """Parse one markdown comment bullet from ``get_comments``.
+
+    Expected shape::
+
+        - **@author** — id: `uuid` — 2026-07-01T12:00:00+00:00 — replies: 2
+          comment text…
+    """
+    if not line.startswith("- "):
+        return None
+    content = line[2:]
+    author_match = re.match(r"\*\*@?([^*]+)\*\*", content)
+    if not author_match:
+        return None
+    author = author_match.group(1).lstrip("@")
+    id_match = re.search(r"id:\s*`([^`]+)`", content)
+    replies_match = re.search(r"replies:\s*(\d+)", content)
+    created = ""
+    for part in content.split(" — "):
+        part = part.strip()
+        if part.startswith(("id:", "replies:", "by @")):
+            continue
+        if part.startswith("(") and part.endswith(")"):
+            continue
+        if "T" in part and (
+            part.endswith("Z") or "+" in part or part.count("-") >= 2
+        ):
+            created = part
+            break
+    return {
+        "author": author,
+        "id": id_match.group(1) if id_match else "",
+        "created_at": created,
+        "reply_count": int(replies_match.group(1)) if replies_match else 0,
+        "text": "",
+        "username": author,
+    }
+
+
+def _parse_get_comments_markdown(raw: str) -> dict[str, Any]:
+    """Parse markdown ``get_comments`` output into ``{results, parent?}``."""
+    lines = raw.splitlines()
+    parent: dict[str, Any] | None = None
+    results: list[dict[str, Any]] = []
+    section: str | None = None
+    pending_bullet: dict[str, Any] | None = None
+    pending_body: list[str] = []
+
+    def flush() -> None:
+        nonlocal pending_bullet, pending_body, parent
+        if pending_bullet is None:
+            return
+        if pending_body:
+            pending_bullet["text"] = " ".join(pending_body).strip()
+        if section == "parent":
+            pending_bullet["username"] = pending_bullet.get("author", "unknown")
+            parent = pending_bullet
+        else:
+            results.append(pending_bullet)
+        pending_bullet = None
+        pending_body = []
+
+    for line in lines:
+        if line.startswith("## Parent"):
+            flush()
+            section = "parent"
+            continue
+        if line.startswith("## Comments"):
+            flush()
+            section = "comments"
+            continue
+        if line.startswith("- "):
+            flush()
+            pending_bullet = _parse_comment_bullet(line) or {
+                "author": "unknown",
+                "text": "",
+                "id": "",
+                "created_at": "",
+                "reply_count": 0,
+                "username": "unknown",
+            }
+            continue
+        if line.startswith("  ") and pending_bullet is not None:
+            pending_body.append(line.strip())
+            continue
+    flush()
+    out: dict[str, Any] = {"results": results}
+    if parent:
+        out["parent"] = parent
+    return out
+
+
+def _load_get_comments_payload(raw: Any) -> dict[str, Any]:
+    """Accept JSON (legacy) or markdown (current) ``get_comments`` output."""
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {"results": []}
+    text = raw.strip()
+    if text.startswith("{") or text.startswith("["):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return _parse_get_comments_markdown(raw)
+
+
 def _fetch_comment_thread(
     deferred_tools: dict,
     parent_ids: list[str],
@@ -344,7 +454,7 @@ def _fetch_comment_thread(
     for parent_id in parent_ids:
         try:
             raw = get_comments(parent_id=parent_id)
-            data = json.loads(raw) if isinstance(raw, str) else raw
+            data = _load_get_comments_payload(raw)
         except Exception as e:
             logger.warning("Failed to fetch comments for %s: %s", parent_id, e)
             continue
@@ -358,7 +468,7 @@ def _fetch_comment_thread(
         if include_parent and isinstance(parent, dict):
             parent_text = str(parent.get("text") or "").strip()
             if parent_text:
-                parent_author = parent.get("username", "unknown")
+                parent_author = parent.get("username", parent.get("author", "unknown"))
                 parent_cid = parent.get("id", "")
                 parent_entry = f"- **@{parent_author}**: {parent_text}"
                 if parent_cid:
@@ -372,7 +482,7 @@ def _fetch_comment_thread(
 
         for comment in results:
             author = comment.get("author", "unknown")
-            text = comment.get("text", "").strip()
+            text = str(comment.get("text") or "").strip()
             created = comment.get("created_at", "")
             cid = comment.get("id", "")
             reply_count = comment.get("reply_count", 0)

@@ -201,6 +201,26 @@ class TestChatToolResultTruncation(unittest.TestCase):
         self.assertTrue(parsed.get("truncated"))
         self.assertNotIn("... [truncated:", out)
 
+    def test_oversized_markdown_list_keeps_header_and_bullets(self):
+        from ouro_agents.utils import message_persistence as mp
+
+        bullets = [
+            f"- **Item {i}** — id: `{i}` — " + ("x" * 1500)
+            for i in range(40)
+        ]
+        payload = (
+            "Found 40 assets (showing 40)\n\n" + "\n".join(bullets)
+        )
+        self.assertGreater(len(payload), mp._MAX_CHAT_TOOL_RESULT_CHARS)
+
+        out = mp._truncate_tool_result(payload)
+        self.assertTrue(out.startswith("Found 40 assets"))
+        self.assertIn("- **Item 0**", out)
+        self.assertIn("… [truncated", out)
+        self.assertLessEqual(len(out), mp._MAX_CHAT_TOOL_RESULT_CHARS + 80)
+        # Should not keep all 40 bullets.
+        self.assertNotIn("- **Item 39**", out)
+
 
 if __name__ == "__main__":
     unittest.main()
