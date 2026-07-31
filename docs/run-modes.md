@@ -33,22 +33,22 @@ Each value maps to a built-in `ModeProfile`.
 | `memory_tool_filter` | Optional whitelist of memory tool names (e.g. `["memory_recall"]`). |
 | `lightweight` | Skips most heavy context-loading branches in `_build_system_prompt`. |
 | `skip_post_reflection` | Don't run the `reflector` subagent after the main loop. |
-| `load_conversation_state` | Inject conversation summary into the prompt. |
+| `conversational` | Chat-style history injection and framing (plain task messages, no work directive). |
 | `load_scheduled_tasks` | Inject a scheduled-task summary block. |
 | `append_conversation_turns` | Persist user/assistant turns to disk after the run. |
-| `update_conversation_state` | Re-summarize and save the per-conversation state file. |
 
 ## Built-in profiles
 
 ### `chat`
 Interactive, conversation-aware. Used both by the local `ouro-agents chat`
-CLI and by webhook chat events (`new-message`, `new-conversation`). Loads
-conversation state, preloads no tools (everything stays one `load_tool`
-away — most chat turns need zero tools), uses `tool_choice="auto"` so the
-model can reply to casual messages without a forced tool call. The
-trivial-message regex still fast-paths greetings; post-run reflection still
-runs in the background and never delays the reply. Uses the mid model tier
-when configured (falls back to strong). Default `max_steps=20`.
+CLI and by webhook chat events (`new-message`, `new-conversation`). Marks
+`conversational=True` so prior turns are injected as history, preloads no
+tools (everything stays one `load_tool` away — most chat turns need zero
+tools), uses `tool_choice="auto"` so the model can reply to casual
+messages without a forced tool call. The trivial-message regex still
+fast-paths greetings; post-run reflection still runs in the background
+and never delays the reply. Uses the mid model tier when configured
+(falls back to strong). Default `max_steps=20`.
 
 Delivery is the observer's job, not the mode's: for webhook events the
 server's `ServerAgentObserver` posts the final assistant message back to the

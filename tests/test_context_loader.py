@@ -1,5 +1,4 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 from ouro_agents.memory.context_loader import (
     _find_entity_files,
@@ -22,17 +21,17 @@ def test_find_entity_files_matches_frontmatter_alias(tmp_path: Path):
         "---\ndescription: Acme Corp background\naliases: [acme-corporation]\n---\n\n# Acme\n\nDetails.\n",
     )
 
-    matched = _find_entity_files(tmp_path, ["Acme Corporation"])
+    matched = _find_entity_files(tmp_path, "Looking at Acme Corporation today")
 
     assert len(matched) == 1
-    assert matched[0][0] == "Acme Corporation"
+    assert matched[0][0] == "acme"
     assert matched[0][1].name == "acme.md"
 
 
 def test_find_entity_files_still_matches_by_stem(tmp_path: Path):
     _write(tmp_path / "protected" / "memory" / "entities" / "modal-app.md", "# Modal app\n")
 
-    matched = _find_entity_files(tmp_path, ["Modal App"])
+    matched = _find_entity_files(tmp_path, "Check the Modal App notes")
 
     assert [path.name for _, path in matched] == ["modal-app.md"]
 
@@ -42,9 +41,8 @@ def test_load_entity_files_uses_alias_match(tmp_path: Path):
         tmp_path / "protected" / "memory" / "entities" / "acme.md",
         "---\naliases: [acme-corp]\n---\n\n# Acme\n\nKey account.\n",
     )
-    state = SimpleNamespace(key_entities=["Acme Corp"])
 
-    text = load_entity_files(tmp_path, state)
+    text = load_entity_files(tmp_path, haystack="Acme Corp")
 
     assert "Key account." in text
 

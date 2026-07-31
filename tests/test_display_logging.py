@@ -2,7 +2,14 @@ from io import StringIO
 
 from rich.console import Console
 
-from ouro_agents.display import THEME, OuroDisplay, OuroLogger, Verbosity
+from ouro_agents.display import (
+    THEME,
+    OuroDisplay,
+    OuroLogger,
+    Verbosity,
+    _NonBlockingSafeStream,
+    _reasoning_for_display,
+)
 from smolagents.monitoring import LogLevel
 
 
@@ -55,6 +62,61 @@ def test_off_logger_hides_records_labeled_off():
     logger = OuroLogger(level=LogLevel.OFF, display=display)
     logger.log("private reasoning", level=LogLevel.OFF)
     assert buffer.getvalue() == ""
+
+
+def test_reasoning_display_drops_encrypted_blobs():
+    visible = "Thinking about next steps"
+    encrypted = (
+        visible
+        + '\n{"type": "reasoning.encrypted", "data": "gAAAAA...", '
+        + '"format": "openai-responses-v1"}'
+    )
+    assert _reasoning_for_display(encrypted) == visible
+    assert _reasoning_for_display(
+        '{"type": "reasoning.encrypted", "data": "gAAAAA"}'
+    ) == ""
+
+
+def test_reasoning_display_truncates_long_text():
+    long = "x" * 5000
+    out = _reasoning_for_display(long)
+    assert out.endswith("… [truncated]")
+    assert len(out) < 5000
+
+
+def test_safe_stream_swallows_blocking_io():
+    class _Blocking:
+        encoding = "utf-8"
+
+        def write(self, data):
+            raise BlockingIOError(11, "write could not complete without blocking")
+
+        def flush(self):
+            raise BlockingIOError(11, "write could not complete without blocking")
+
+        def isatty(self):
+            return False
+
+    stream = _NonBlockingSafeStream(_Blocking())
+    assert stream.write("hello") == 5
+    stream.flush()
+
+
+def test_display_print_survives_blocking_console():
+    class _BoomConsole:
+        def print(self, *args, **kwargs):
+            raise BlockingIOError(11, "write could not complete without blocking")
+
+        def rule(self, *args, **kwargs):
+            raise BlockingIOError(11, "write could not complete without blocking")
+
+    display = OuroDisplay(verbosity=Verbosity.NORMAL)
+    display.console = _BoomConsole()
+    # Must not raise — this is what was killing chat under PM2.
+    display.blank()
+    display.error("boom")
+    display.reasoning('hello\n{"type": "reasoning.encrypted", "data": "gAAAA"}')
+    display.rule("title")
 
 
 def test_subagent_step_is_spinner_only():

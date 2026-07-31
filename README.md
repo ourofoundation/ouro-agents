@@ -16,7 +16,7 @@ heartbeats, and a multi-cycle planning loop tied to Ouro quests.
   Custom profiles can be dropped into `workspace/subagents/`.
 - **Three-layer memory** — vector memory (mem0 + Chroma) for curated
   facts, working memory (`MEMORY.md` and daily logs) maintained by the
-  agent itself, and conversation state for chat continuity.
+  agent itself, and conversation history for chat continuity.
 - **Doc store** — local markdown mirrored to Ouro posts, scoped per-team.
 - **Planning loop** — generates plan cycles tied to Ouro quests, drives
   them across heartbeats, incorporates comment feedback through review
@@ -131,7 +131,7 @@ workspace/
 ├── SOUL.md           # required: identity, values, operating rules
 ├── NOTES.md          # optional: ambient notes
 ├── MEMORY.md         # curated cross-team memory
-├── conversations/    # per-conversation state and turns
+├── conversations/    # per-conversation transcripts ({id}.jsonl)
 ├── shared/logs/      # period logs (daily/weekly/biweekly)
 ├── teams/<id>/       # team memory, logs/, plans, doc registry
 ├── memory/           # mem0 + Chroma store (opaque)

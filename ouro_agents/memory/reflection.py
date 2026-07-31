@@ -1,8 +1,7 @@
-"""Turn-based reflection for curated memory storage.
+"""Post-run reflection for curated memory storage.
 
-Instead of storing every turn pair in mem0 (noisy), reflection runs when the
-conversation state tracker surfaces a new key moment. That makes the state
-update the salience detector and keeps reflection tied to meaningful change.
+Reflection extracts durable facts and daily-log entries from a completed run
+and stores them through validation.
 """
 
 import logging
@@ -11,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 
 from ..subagents.reflector import ReflectionResult, normalize_daily_log_entry
-from .conversation_state import ConversationState
 from .model import to_metadata
 from .naming import log_entry_timestamp, period_key, period_log_title, store_rhythm
 from .validator import MemoryRunContext, validate_memory_candidates
@@ -81,68 +79,6 @@ def validated_daily_log_entries(
         seen.add(key)
         entries.append(key)
     return entries
-
-
-# Reflect at least every N user turns even when no key moment fires, so
-# quiet-but-substantive conversations still get their facts curated into
-# long-term memory. Key moments still trigger reflection immediately.
-REFLECTION_TURN_INTERVAL = 6
-
-
-def should_reflect(
-    conversation_state: Optional[ConversationState],
-    last_reflected_turn: int = 0,
-    *,
-    has_new_key_moment: bool = True,
-    turn_interval: int = REFLECTION_TURN_INTERVAL,
-) -> bool:
-    """Return True when this turn warrants reflection.
-
-    A new key moment reflects immediately (provided the turn hasn't already
-    been reflected). Without one, reflection still runs once ``turn_interval``
-    user turns have passed since the last reflection.
-    """
-    if not conversation_state:
-        return False
-    if conversation_state.turn_count < 1:
-        return False
-    if conversation_state.turn_count <= last_reflected_turn:
-        return False
-    if has_new_key_moment:
-        return True
-    return conversation_state.turn_count - last_reflected_turn >= turn_interval
-
-
-def _load_reflected_turn(conversations_dir: Path, conversation_id: str) -> int:
-    """Load the turn count at which the last reflection occurred."""
-    marker = conversations_dir / f"{conversation_id}.reflected"
-    if not marker.exists():
-        return 0
-    try:
-        content = marker.read_text().strip()
-        return int(content) if content else 0
-    except (ValueError, OSError):
-        return 0
-
-
-def _save_reflected_turn(
-    conversations_dir: Path, conversation_id: str, turn_count: int
-) -> None:
-    """Record the turn count at which reflection occurred."""
-    marker = conversations_dir / f"{conversation_id}.reflected"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(str(turn_count))
-
-
-def record_reflection_turn(
-    conversations_dir: Path, conversation_id: str, turn_count: int
-) -> None:
-    """Mark reflection as attempted at this user-turn count.
-
-    Called before running the reflector so a failed attempt does not retrigger
-    on every subsequent run until another interval of turns has passed.
-    """
-    _save_reflected_turn(conversations_dir, conversation_id, turn_count)
 
 
 # Hard cap on stored memories per reflection. The reflector prompt asks for
@@ -348,22 +284,6 @@ def store_reflection_memories(
     return stored
 
 
-def should_reflect_for_conversation(
-    conversations_dir: Path,
-    conversation_id: str,
-    conversation_state: Optional[ConversationState],
-    *,
-    has_new_key_moment: bool = True,
-) -> bool:
-    """Full check: load last reflected turn and apply the reflection policy."""
-    last_turn = _load_reflected_turn(conversations_dir, conversation_id)
-    return should_reflect(
-        conversation_state,
-        last_turn,
-        has_new_key_moment=has_new_key_moment,
-    )
-
-
 def apply_reflection(
     result: ReflectionResult,
     memory_backend,
@@ -372,7 +292,6 @@ def apply_reflection(
     conversation_id: str,
     workspace: Path,
     conversations_dir: Path,
-    conversation_state: Optional[ConversationState] = None,
     doc_store=None,
     team_id: Optional[str] = None,
     available_team_ids: Optional[set[str]] = None,
@@ -428,6 +347,3 @@ def apply_reflection(
             agent_name=agent_id,
         )
         logger.info("Reflection logged: %s", entry[:80])
-
-    turn_count = conversation_state.turn_count if conversation_state else 0
-    _save_reflected_turn(conversations_dir, conversation_id, turn_count)

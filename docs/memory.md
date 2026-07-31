@@ -6,8 +6,9 @@
    stored in mem0 (default backend) on top of a Chroma vector store.
 2. **Working memory** — `MEMORY.md`, daily logs, entity files, plan files
    on disk, mirrored to Ouro as posts via the **doc store**.
-3. **Conversation memory** — a per-conversation state file plus the recent
-   user/assistant turns, replayed into the smolagents memory in chat mode.
+3. **Conversation history** — recent user/assistant turns (from the platform
+   or `workspace/conversations/{id}.jsonl`), replayed into the smolagents
+   memory in chat mode.
 
 This page focuses on how those layers cooperate. Backend implementation
 details live in `ouro_agents/memory/`.
@@ -111,9 +112,9 @@ local-only without crashing.
 
 Entity files (`memory/entities/*.md`) and task files (`memory/tasks/*.md`)
 carry YAML frontmatter with a `description` and optional `aliases` list.
-The context loader matches conversation key entities against file stems
-and aliases, and injects a one-line-per-file index
-(`build_memory_index`) into every run so unmatched files stay
+The context loader matches file stems and aliases against recent
+conversation text and the current task, and injects a one-line-per-file
+index (`build_memory_index`) into every run so unmatched files stay
 discoverable through the agent's file tools.
 
 The `_sync_workspace_docs` helper does a bidirectional sync at startup so
@@ -135,26 +136,25 @@ Names are scoped by team and agent:
 - `SHARED:memory` — used internally to read the root `MEMORY.md` from a
   team-scoped run.
 
-## Conversation memory
+## Conversation history
 
-Per-conversation state lives under `workspace/conversations/<id>/`:
+Per-conversation transcripts live at
+`workspace/conversations/{id}.jsonl` — an append-only record of
+user/assistant turns with optional `tool_summary` payloads. Chat mode
+prefers live turns from the platform when available and falls back to
+this file.
 
-- `state.json` — a `ConversationState` object (current topic, turn count,
-  open questions, recent decisions, etc.). Used by the `chat` mode.
-- `turns.jsonl` — raw user/assistant turns, optionally with a structured
-  `tool_summary`.
-
-In chat mode the runner injects the last 8 turns (built into smolagents
-`ActionStep`s) into the agent's memory at run time so the model sees them
-as real history rather than as paraphrased prompt context.
+In chat mode the runner injects conversation history (built into
+smolagents `ActionStep`s / `PlainTaskStep`s) into the agent's memory at
+run time so the model sees prior turns as real history rather than as
+paraphrased prompt context.
 
 ## Memory tools available to the agent
 
 Built by `make_memory_tools` (`memory/tools.py`):
 
 - `memory_recall(query, ...)` — semantic search with filters for category,
-  subject, asset, team, and time window. Always available. In chat, recall
-  expands the query with the current `ConversationState`.
+  subject, asset, team, and time window. Always available.
 - `remember(memories=[...])` — write one or more durable semantic memories
   in a single call. Exposed in any mode that grants `Capability.MEMORY_WRITE`;
   reflection remains the safety net.

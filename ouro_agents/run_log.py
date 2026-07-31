@@ -173,6 +173,59 @@ class RunRecord:
 
 
 @dataclass
+class ChatTurnRecord:
+    """Per-turn chat context accounting for one chat run.
+
+    Chat quality work (history policy, compaction thresholds, cache behavior)
+    is untunable without knowing what actually went into each turn's prompt and
+    what came back. One row per chat turn records the history that was injected,
+    the estimated size of each prompt section, and the provider's cache accounting.
+    """
+
+    run_id: str
+    conversation_id: str = ""
+    agent_name: str = ""
+    trigger_turn_id: Optional[str] = None
+    model: str = ""
+
+    # History accounting
+    turns_fetched: int = 0
+    turns_injected: int = 0
+    history_steps: int = 0
+    history_covers_conversation: bool = True
+    dropped_oldest_turns: int = 0
+
+    # Estimated prompt composition (chars // CHARS_PER_TOKEN)
+    est_system_tokens: int = 0
+    est_dynamic_tokens: int = 0
+    est_history_tokens: int = 0
+    est_task_tokens: int = 0
+    est_prompt_tokens: int = 0
+
+    # Actual provider accounting for the whole run
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+    output_tokens: int = 0
+    num_api_calls: int = 0
+    cost_usd: Optional[float] = None
+
+    # Compaction
+    compacted: bool = False
+    compaction_reason: Optional[str] = None
+
+    duration_s: Optional[float] = None
+    created_at: str = field(default_factory=_utc_now_iso)
+
+    @property
+    def cache_hit_ratio(self) -> float:
+        """Share of input tokens served from the prompt cache."""
+        if self.input_tokens <= 0:
+            return 0.0
+        return self.cached_input_tokens / self.input_tokens
+
+
+@dataclass
 class ControllerQuestionRecord:
     """A controller question that may outlive the run which asked it."""
 
@@ -346,6 +399,34 @@ CREATE TABLE IF NOT EXISTS action_gate_observations (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS chat_turns (
+    run_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    agent_name TEXT,
+    trigger_turn_id TEXT,
+    model TEXT,
+    turns_fetched INTEGER,
+    turns_injected INTEGER,
+    history_steps INTEGER,
+    history_covers_conversation INTEGER,
+    dropped_oldest_turns INTEGER,
+    est_system_tokens INTEGER,
+    est_dynamic_tokens INTEGER,
+    est_history_tokens INTEGER,
+    est_task_tokens INTEGER,
+    est_prompt_tokens INTEGER,
+    input_tokens INTEGER,
+    cached_input_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    output_tokens INTEGER,
+    num_api_calls INTEGER,
+    cost_usd REAL,
+    compacted INTEGER,
+    compaction_reason TEXT,
+    duration_s REAL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_mode ON runs(mode);
 CREATE INDEX IF NOT EXISTS idx_runs_conversation_id ON runs(conversation_id);
@@ -359,7 +440,37 @@ CREATE INDEX IF NOT EXISTS idx_controller_questions_origin_run
     ON controller_questions(origin_run_id);
 CREATE INDEX IF NOT EXISTS idx_action_gate_observations_run
     ON action_gate_observations(run_id);
+CREATE INDEX IF NOT EXISTS idx_chat_turns_conversation
+    ON chat_turns(conversation_id, created_at);
 """
+
+_CHAT_TURN_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "conversation_id",
+    "agent_name",
+    "trigger_turn_id",
+    "model",
+    "turns_fetched",
+    "turns_injected",
+    "history_steps",
+    "history_covers_conversation",
+    "dropped_oldest_turns",
+    "est_system_tokens",
+    "est_dynamic_tokens",
+    "est_history_tokens",
+    "est_task_tokens",
+    "est_prompt_tokens",
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_tokens",
+    "output_tokens",
+    "num_api_calls",
+    "cost_usd",
+    "compacted",
+    "compaction_reason",
+    "duration_s",
+    "created_at",
+)
 
 
 class RunLogStore:
@@ -405,6 +516,15 @@ class RunLogStore:
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("PRAGMA synchronous=NORMAL;")
             conn.executescript(_SCHEMA)
+            # chat_turns is new telemetry; drop+recreate if an earlier schema
+            # still has the removed goals/topic columns.
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(chat_turns)").fetchall()
+            }
+            if "goals_before_json" in cols:
+                conn.execute("DROP TABLE chat_turns")
+                conn.executescript(_SCHEMA)
             conn.commit()
         conn.row_factory = sqlite3.Row
         self._conn = conn
@@ -563,6 +683,133 @@ class RunLogStore:
                 self._conn.commit()
         except Exception:
             logger.warning("Failed to record action-gate observation", exc_info=True)
+
+    # ---- chat turn telemetry ---------------------------------------------
+
+    def record_chat_turn(self, record: ChatTurnRecord) -> None:
+        """Persist one chat turn's context accounting. Never raises."""
+        if not self.enabled or self._conn is None or self.readonly:
+            return
+        values = {
+            "run_id": record.run_id,
+            "conversation_id": record.conversation_id,
+            "agent_name": record.agent_name,
+            "trigger_turn_id": record.trigger_turn_id,
+            "model": record.model,
+            "turns_fetched": record.turns_fetched,
+            "turns_injected": record.turns_injected,
+            "history_steps": record.history_steps,
+            "history_covers_conversation": int(record.history_covers_conversation),
+            "dropped_oldest_turns": record.dropped_oldest_turns,
+            "est_system_tokens": record.est_system_tokens,
+            "est_dynamic_tokens": record.est_dynamic_tokens,
+            "est_history_tokens": record.est_history_tokens,
+            "est_task_tokens": record.est_task_tokens,
+            "est_prompt_tokens": record.est_prompt_tokens,
+            "input_tokens": record.input_tokens,
+            "cached_input_tokens": record.cached_input_tokens,
+            "cache_write_tokens": record.cache_write_tokens,
+            "output_tokens": record.output_tokens,
+            "num_api_calls": record.num_api_calls,
+            "cost_usd": record.cost_usd,
+            "compacted": int(record.compacted),
+            "compaction_reason": record.compaction_reason,
+            "duration_s": record.duration_s,
+            "created_at": record.created_at,
+        }
+        cols = ", ".join(_CHAT_TURN_COLUMNS)
+        placeholders = ", ".join(f":{c}" for c in _CHAT_TURN_COLUMNS)
+        try:
+            with self._lock:
+                self._conn.execute(
+                    f"INSERT OR REPLACE INTO chat_turns ({cols}) "
+                    f"VALUES ({placeholders})",
+                    values,
+                )
+                self._conn.commit()
+        except Exception:
+            logger.warning("Failed to record chat turn", exc_info=True)
+
+    def update_chat_turn_usage(self, record: ChatTurnRecord) -> None:
+        """Fill provider usage onto an already-inserted chat turn row.
+
+        Usage is only known after the run, while the row is inserted before it
+        so cancelled and errored turns are still measured.
+        """
+        if not self.enabled or self._conn is None or self.readonly:
+            return
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    UPDATE chat_turns SET
+                        input_tokens = ?, cached_input_tokens = ?,
+                        cache_write_tokens = ?, output_tokens = ?,
+                        num_api_calls = ?, cost_usd = ?, duration_s = ?,
+                        model = COALESCE(NULLIF(?, ''), model),
+                        compacted = ?, compaction_reason = ?
+                    WHERE run_id = ?
+                    """,
+                    (
+                        record.input_tokens,
+                        record.cached_input_tokens,
+                        record.cache_write_tokens,
+                        record.output_tokens,
+                        record.num_api_calls,
+                        record.cost_usd,
+                        record.duration_s,
+                        record.model,
+                        int(record.compacted),
+                        record.compaction_reason,
+                        record.run_id,
+                    ),
+                )
+                self._conn.commit()
+        except Exception:
+            logger.warning("Failed to update chat turn usage", exc_info=True)
+
+    def query_chat_turns(
+        self,
+        *,
+        conversation_id: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 100,
+        newest_first: bool = True,
+    ) -> list[dict]:
+        """Return chat turn rows for analysis of history/cache behavior."""
+        if not self.enabled or self._conn is None:
+            return []
+        where: list[str] = []
+        params: list[Any] = []
+        if conversation_id:
+            where.append("conversation_id = ?")
+            params.append(conversation_id)
+        if since:
+            where.append("created_at >= ?")
+            params.append(since)
+        sql = "SELECT * FROM chat_turns"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY created_at " + ("DESC" if newest_first else "ASC")
+        sql += " LIMIT ?"
+        params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item["history_covers_conversation"] = bool(
+                item.get("history_covers_conversation")
+            )
+            item["compacted"] = bool(item.get("compacted"))
+            input_tokens = item.get("input_tokens") or 0
+            item["cache_hit_ratio"] = (
+                (item.get("cached_input_tokens") or 0) / input_tokens
+                if input_tokens
+                else 0.0
+            )
+            out.append(item)
+        return out
 
     def get_controller_question(self, question_id: str) -> Optional[dict]:
         if not self.enabled or self._conn is None:

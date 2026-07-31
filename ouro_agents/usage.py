@@ -1,7 +1,6 @@
 """Token and cost tracking for OpenRouter-powered agent runs."""
 
 import functools
-import json
 import logging
 import uuid
 from dataclasses import dataclass
@@ -850,14 +849,17 @@ def _normalize_reasoning_value(value: Any) -> str:
         parts = [_normalize_reasoning_value(item) for item in value]
         return "\n".join(part for part in parts if part).strip()
     if isinstance(value, dict):
+        # Encrypted OpenAI/OpenRouter reasoning blobs have no human-readable
+        # text. Dumping them via json.dumps floods PM2 stderr and can
+        # BlockingIOError the live agent run.
+        rtype = value.get("type")
+        if isinstance(rtype, str) and "encrypted" in rtype.lower():
+            return ""
         for key in ("text", "reasoning", "summary", "content", "value"):
             text = _normalize_reasoning_value(value.get(key))
             if text:
                 return text
-        try:
-            return json.dumps(value, ensure_ascii=False)
-        except TypeError:
-            return str(value).strip()
+        return ""
     return str(value).strip()
 
 

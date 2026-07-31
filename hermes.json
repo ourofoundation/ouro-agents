@@ -97,7 +97,7 @@
     },
     "heartbeat": {
       "enabled": true,
-      "every": "30m",
+      "every": "1h",
       "max_steps": 40,
       "active_hours": {
         "start": "09:00",

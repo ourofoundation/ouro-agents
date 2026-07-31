@@ -35,11 +35,13 @@ HEARTBEAT_SUBAGENT_RULES = (
     "Follow the strategist brief. Use `delegate` for exploration and heavy tool work; "
     "keep quest lifecycle updates and one-shot comments on this heartbeat.\n\n"
     "**MUST delegate:** routine web/current-info lookup → `search`, "
-    "multi-source research with a publishable writeup → `research`, "
+    "multi-source research that warrants a written draft → `research`, "
     "long-form writing → `writer`, focused MCP sub-tasks → `executor`, "
     "SDK/batch workflows → `developer`.\n"
     "**MUST NOT:** call search MCP tools directly, invent a second plan, "
     "or republish an asset a subagent already created.\n"
+    "`research` writes a local draft only — if the findings should be public, "
+    "you publish the post yourself from that draft.\n"
     "Default `return_mode` is summary_only. Prefer the returned `link` / `asset_id` "
     "over pasting full bodies."
 )
@@ -85,11 +87,13 @@ SUBAGENT_RULES = (
     "long-form writing → `writer`, SDK/batch workflows → `developer`, "
     "focused self-contained sub-tasks → `executor`.\n"
     "**Handle yourself:** simple questions, single tool calls, chat replies — "
-    "but prefer `search` over spinning up `research` for one fact, since research publishes a post.\n\n"
-    "Subagents save output as Ouro assets and return JSON with `asset_id`, `name`, `description`, "
-    "and a ready-to-use `link`. The asset is already created and published — **do NOT create or "
+    "but prefer `search` over spinning up `research` for one fact, since research writes a full draft.\n\n"
+    "`research` and `search` do not publish Ouro assets — research saves a local draft path "
+    "and summary; you decide whether to post. "
+    "`writer` / `executor` / `developer` may return JSON with `asset_id`, `name`, `description`, "
+    "and a ready-to-use `link`. When an asset is already created and published — **do NOT create or "
     "publish another asset for the same work, and do NOT paste the subagent's full body into your reply.** "
-    "Surface the result by embedding or linking the returned `asset_id` (use the provided `link`). "
+    "Surface that result by embedding or linking the returned `asset_id` (use the provided `link`). "
     "Call `get_asset(asset_id)` only when you genuinely need the full content."
 )
 
@@ -103,7 +107,6 @@ SECTION_PRIORITY = {
     "user_model": 5,
     "output": 6,
     "notes": 7,
-    "conversation_state": 8,
     "plans_index": 9,
     "entity_context": 10,
     "conversation": 11,
@@ -135,12 +138,11 @@ _TRIMMABLE_SECTIONS = [
     "user_model",
     "notes",
     "conversation",
-    "conversation_state",
 ]
 
 # Sections ordered most-recent-last: trimming keeps the tail (recent content)
 # instead of the head. Everything else keeps the head.
-_TRIM_KEEP_TAIL = {"conversation", "conversation_state"}
+_TRIM_KEEP_TAIL = {"conversation"}
 
 
 def _trim_section(text: str, max_chars: int, *, keep_tail: bool) -> str:
@@ -221,7 +223,6 @@ def build_shared_prompt_sections(
     platform_context: str = "",
     user_model: str = "",
     working_memory: str = "",
-    conversation_state: str = "",
     plans_index: str = "",
     workspace_root: str = "",
 ) -> dict[str, str]:
@@ -239,11 +240,6 @@ def build_shared_prompt_sections(
 
     if notes:
         sections["notes"] = f"## DEPLOYMENT CONTEXT (NOTES)\n{notes}"
-
-    if conversation_state:
-        sections["conversation_state"] = (
-            f"## CONVERSATION STATE\n{conversation_state}"
-        )
 
     if plans_index:
         sections["plans_index"] = f"## PLAN QUEST INDEX\n{plans_index}"
@@ -271,7 +267,6 @@ def build_shared_prompt_sections(
 _DYNAMIC_SECTIONS = {
     "current_datetime",
     "conversation_id",
-    "conversation_state",
     "plans_index",
     "entity_context",
     "working_memory",
@@ -288,7 +283,6 @@ def build_prompt(
     skill_directory: str = "",
     working_memory: str = "",
     conversation_context: str = "",
-    conversation_state: str = "",
     user_model: str = "",
     entity_context: str = "",
     deferred_tool_directory: str = "",
@@ -314,7 +308,6 @@ def build_prompt(
         platform_context=platform_context,
         user_model=user_model,
         working_memory=working_memory,
-        conversation_state=conversation_state,
         plans_index=plans_index,
         workspace_root=workspace_root,
     )

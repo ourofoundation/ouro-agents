@@ -114,7 +114,7 @@ ouro-agents runs stats --since 24h         # cost/tokens/failures by mode
 
 When `expose_to_agent` is true, the agent gets two read-only tools so it can
 query its **own** history — distinct from curated vector memory (facts) and
-conversation state (continuity):
+conversation history (continuity):
 
 - **`recall_runs(query, mode, status, scope, limit)`** — search past runs and
   return compact summaries (task/result previews, status, tokens, tools used).

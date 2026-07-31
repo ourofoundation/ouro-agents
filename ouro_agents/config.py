@@ -266,6 +266,29 @@ class PromptCachingConfig(BaseModel):
     ttl: Literal["5m", "1h"] = "5m"
 
 
+class ChatCompactionConfig(BaseModel):
+    """Watermark-anchored chat history compaction.
+
+    Soft compaction runs after a successful reply (background). Hard compaction
+    runs synchronously before a reply when the estimated prompt would exceed
+    ``hard_fraction`` of ``context_tokens``.
+    """
+
+    enabled: bool = True
+    # Assumed model context window for threshold math (estimate-based).
+    context_tokens: int = Field(default=100_000, ge=8_000)
+    soft_fraction: float = Field(default=0.60, ge=0.1, le=0.95)
+    hard_fraction: float = Field(default=0.85, ge=0.2, le=0.98)
+    # Verbatim turns kept out of a soft/hard fold so the tail stays hot.
+    keep_recent_turns: int = Field(default=8, ge=0, le=64)
+
+    @model_validator(mode="after")
+    def _soft_before_hard(self) -> "ChatCompactionConfig":
+        if self.soft_fraction >= self.hard_fraction:
+            raise ValueError("chat_compaction.soft_fraction must be < hard_fraction")
+        return self
+
+
 class HeartbeatConfig(BaseModel):
     enabled: bool = True
     every: str = "30m"
@@ -912,6 +935,7 @@ class OuroAgentsConfig(BaseSettings):
     # https://openrouter.ai/docs/features/provider-routing.
     openrouter_provider: Optional[Dict[str, Any]] = None
     prompt_caching: PromptCachingConfig = Field(default_factory=PromptCachingConfig)
+    chat_compaction: ChatCompactionConfig = Field(default_factory=ChatCompactionConfig)
     heartbeat: HeartbeatConfig
     mcp_servers: List[MCPServerConfig]
     memory: MemoryConfig

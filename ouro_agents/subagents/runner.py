@@ -356,7 +356,6 @@ def _build_chain_delegate(
             model=ctx.model,
             compactor_model=ctx.compactor_model,
             user_id=ctx.user_id,
-            conversation_state=ctx.conversation_state,
             conversation_id=ctx.conversation_id,
             run_id=ctx.run_id,
             soul=ctx.soul,
@@ -461,9 +460,6 @@ def _format_task_context(
         platform_context=ctx.platform_context,
         user_model=ctx.user_model,
         working_memory=ctx.working_memory,
-        conversation_state=(
-            ctx.conversation_state.format_for_prompt() if ctx.conversation_state else ""
-        ),
         plans_index=ctx.plans_index,
         workspace_root=(
             ctx.sandbox_config.agent_facing_root(ctx.workspace)
@@ -477,7 +473,6 @@ def _format_task_context(
         "platform_context",
         "user_model",
         "notes",
-        "conversation_state",
         "plans_index",
         "working_memory",
         "workspace_layout",
@@ -561,7 +556,6 @@ def _run_agent(
             memory_categories=ctx.memory_scopes,
             conversation_id=ctx.conversation_id,
             run_id=ctx.run_id,
-            conversation_state=ctx.conversation_state,
             search_limit=getattr(ctx.memory_config, "search_limit", 5),
             max_retrieval_tokens=getattr(ctx.memory_config, "max_retrieval_tokens", 4000),
             min_signal_score=getattr(ctx.memory_config, "min_signal_score", 0.35),
@@ -609,8 +603,8 @@ def _run_agent(
         tools.append(load_tool)
 
     # Preload MCP tools specified by the profile. Resolve from the full
-    # unfiltered deferred map so an explicitly listed tool (e.g. ouro:create_post
-    # on a search-scoped research profile) is not dropped by allowed_servers.
+    # unfiltered deferred map so an explicitly listed tool outside
+    # allowed_servers is not dropped (e.g. ouro tools on writer/executor).
     preloaded_tools, preloaded_raw_names, found_names = resolve_preload_tools(
         profile.preload_tools,
         primary=ctx.deferred_tools,

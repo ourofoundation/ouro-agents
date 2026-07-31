@@ -23,6 +23,17 @@ INTERRUPTED_REPLY_PREFIX = (
     "Treat the request as not fully answered.]"
 )
 
+UNANSWERED_USER_MARKER = (
+    "[No assistant reply was recorded for this user message "
+    "(failed, interrupted, or superseded before a response). "
+    "Treat the request as not answered.]"
+)
+
+EMPTY_ASSISTANT_REPLY_MARKER = (
+    "[The assistant turn produced no reply text "
+    "(failed or empty response). Treat the request as not answered.]"
+)
+
 
 def conversation_file(workspace: Path, conversation_id: str) -> Path:
     conversations_dir = workspace / "conversations"
@@ -302,6 +313,7 @@ def messages_to_turns(
                     "role": "user",
                     "content": str(_message_attr(message, "text", "")).strip(),
                     "timestamp": _message_attr(message, "created_at"),
+                    "turn_id": turn_id,
                 }
             )
             continue
@@ -313,12 +325,15 @@ def messages_to_turns(
         if reply is None:
             continue
 
+        reply_meta = _message_metadata(reply)
         turns.append(
             {
                 "role": "assistant",
                 "content": str(_message_attr(reply, "text", "")).strip(),
                 "timestamp": _message_attr(reply, "created_at"),
+                "turn_id": turn_id,
                 "tool_summary": _tool_summary_from_group(group),
+                "interrupted": bool(reply_meta.get("interrupted")),
             }
         )
 
@@ -508,9 +523,9 @@ def format_conversation_turns(
 HISTORY_WINDOW_MIN = 8
 HISTORY_WINDOW_STEP = 8
 
-# Upper bound on turns fetched for windowing. Beyond this the anchor
-# saturates and the window degrades to sliding — acceptable for very long
-# conversations, where older context lives in the conversation summary.
+# Upper bound on turns fetched for injection. Beyond this, watermark
+# compaction (chat_compaction) should already have folded older turns into
+# an internal continuity summary — the fetch window is the verbatim tail.
 HISTORY_FETCH_LIMIT = 64
 
 
@@ -523,14 +538,65 @@ def select_history_window(turns: list[dict]) -> list[dict]:
     return turns[anchor:]
 
 
-def build_history_steps(turns: list[dict]) -> list:
+def _assistant_history_output(assistant_turn: dict) -> str:
+    """Build the model_output string for an assistant history step."""
+    assistant_content = str(assistant_turn.get("content") or "").strip()
+    tool_summary = assistant_turn.get("tool_summary")
+    interrupted = bool(assistant_turn.get("interrupted"))
+
+    if not assistant_content:
+        if interrupted:
+            assistant_content = INTERRUPTED_REPLY_PREFIX
+        else:
+            assistant_content = EMPTY_ASSISTANT_REPLY_MARKER
+
+    model_output = assistant_content
+    if tool_summary:
+        tool_lines = [compress_tool_call(tc) for tc in tool_summary]
+        tool_lines = [tl for tl in tool_lines if tl]
+        if tool_lines:
+            model_output = (
+                "Tools used:\n"
+                + "\n".join(tool_lines)
+                + "\n\n"
+                + assistant_content
+            )
+    return model_output
+
+
+def build_history_steps(turns: list[dict], *, summary: str = "") -> list:
     """Convert JSONL conversation turns into smolagents memory steps.
 
     Pairs user/assistant turns into TaskStep + ActionStep sequences so the
     model sees proper structured conversation history instead of a text blob.
+
+    Unanswered user turns (no following assistant reply) get an explicit
+    marker step so silence is not misread as an answered gap.
+
+    When ``summary`` is set (from watermark compaction), it is injected as a
+    leading synthetic exchange before the verbatim tail.
     """
     _DUMMY_TIMING = Timing(start_time=0.0, end_time=0.0)
     steps: list = []
+
+    if summary and summary.strip():
+        steps.append(
+            PlainTaskStep(
+                task=(
+                    "[Internal continuity summary of earlier turns in this "
+                    "conversation — not a user message.]"
+                )
+            )
+        )
+        steps.append(
+            ActionStep(
+                step_number=len(steps),
+                timing=_DUMMY_TIMING,
+                model_output=summary.strip(),
+                is_final_answer=True,
+            )
+        )
+
     i = 0
     while i < len(turns):
         turn = turns[i]
@@ -540,38 +606,31 @@ def build_history_steps(turns: list[dict]) -> list:
         if role == "user":
             steps.append(PlainTaskStep(task=content))
             if i + 1 < len(turns) and turns[i + 1].get("role") == "assistant":
-                assistant_turn = turns[i + 1]
-                assistant_content = assistant_turn.get("content", "")
-                tool_summary = assistant_turn.get("tool_summary")
-
-                model_output = assistant_content
-                if tool_summary:
-                    tool_lines = [compress_tool_call(tc) for tc in tool_summary]
-                    tool_lines = [tl for tl in tool_lines if tl]
-                    if tool_lines:
-                        model_output = (
-                            "Tools used:\n"
-                            + "\n".join(tool_lines)
-                            + "\n\n"
-                            + assistant_content
-                        )
-
                 steps.append(
                     ActionStep(
                         step_number=len(steps),
                         timing=_DUMMY_TIMING,
-                        model_output=model_output,
+                        model_output=_assistant_history_output(turns[i + 1]),
                         is_final_answer=True,
                     )
                 )
                 i += 2
                 continue
+            # Unpaired user turn — failed / interrupted / superseded with no reply.
+            steps.append(
+                ActionStep(
+                    step_number=len(steps),
+                    timing=_DUMMY_TIMING,
+                    model_output=UNANSWERED_USER_MARKER,
+                    is_final_answer=True,
+                )
+            )
         elif role == "assistant":
             steps.append(
                 ActionStep(
                     step_number=len(steps),
                     timing=_DUMMY_TIMING,
-                    model_output=content,
+                    model_output=_assistant_history_output(turn),
                     is_final_answer=True,
                 )
             )

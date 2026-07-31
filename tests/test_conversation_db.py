@@ -71,11 +71,13 @@ def test_messages_to_turns_pairs_user_and_agent_final():
             "role": "user",
             "content": "Hello there",
             "timestamp": "2026-06-11T10:00:00Z",
+            "turn_id": user_turn_id,
         },
         {
             "role": "assistant",
             "content": "Here are three widgets.",
             "timestamp": "2026-06-11T10:00:03Z",
+            "turn_id": agent_turn_id,
             "tool_summary": [
                 {
                     "tool": "search_assets",
@@ -83,6 +85,7 @@ def test_messages_to_turns_pairs_user_and_agent_final():
                     "result": "3 results",
                 }
             ],
+            "interrupted": False,
         },
     ]
 
@@ -147,12 +150,15 @@ def test_messages_to_turns_prefers_interrupted_reply_and_excludes_trigger_turn()
             "role": "user",
             "content": "Earlier question",
             "timestamp": "2026-06-11T09:00:00Z",
+            "turn_id": "turn-user-old",
         },
         {
             "role": "assistant",
             "content": "Earlier answer",
             "timestamp": "2026-06-11T09:00:01Z",
+            "turn_id": "turn-agent-old",
             "tool_summary": None,
+            "interrupted": False,
         },
         {
             "role": "assistant",
@@ -161,7 +167,9 @@ def test_messages_to_turns_prefers_interrupted_reply_and_excludes_trigger_turn()
                 "Your reply up to the cut-off:\nPartial answer"
             ),
             "timestamp": "2026-06-11T10:00:02Z",
+            "turn_id": agent_turn_id,
             "tool_summary": None,
+            "interrupted": True,
         },
     ]
 

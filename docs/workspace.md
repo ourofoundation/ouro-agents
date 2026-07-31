@@ -22,9 +22,7 @@ workspace/
 │   │   ├── last_dream_period        # dream-cycle rollover marker (rhythm)
 │   │   └── .log_prefix_v1           # migration marker (DAILY→LOG rename)
 │   └── memory/                  # mem0 + Chroma store (do not edit)
-├── conversations/<id>/
-│   ├── state.json               # ConversationState
-│   └── turns.jsonl              # raw user/assistant turns
+├── conversations/{id}.jsonl     # per-conversation user/assistant turns
 ├── debug-runs/                  # ouro-agents run --debug-md output
 ├── skills/                      # workspace skill overrides
 ├── subagents/                   # custom SubAgentProfile files (json/yaml)
@@ -115,12 +113,10 @@ run log (`runs.db`) they make a complete chronological record. See
 
 ## Conversations
 
-Per-conversation directory under `conversations/<conversation_id>/`:
-
-- `state.json` — `ConversationState` (current topic, turn count, open
-  questions, recent decisions). Maintained for the `chat` mode.
-- `turns.jsonl` — append-only record of user/assistant turns with
-  optional `tool_summary` payloads.
+Each conversation has an append-only transcript at
+`conversations/{conversation_id}.jsonl` — user/assistant turns with
+optional `tool_summary` payloads. Chat mode prefers live platform
+history when available and falls back to this file.
 
 ## Teams
 

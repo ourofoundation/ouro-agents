@@ -6,9 +6,11 @@ inspired by Claude Code: muted colors, thin rules, compact step indicators.
 
 from __future__ import annotations
 
+import errno
 import re
+import sys
 from enum import IntEnum
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -39,6 +41,94 @@ THEME = Theme(
 )
 
 RULE_CHAR = "─"
+# Cap console reasoning dumps so a single step cannot fill the PM2 pipe.
+_MAX_REASONING_DISPLAY_CHARS = 4_000
+
+
+class _NonBlockingSafeStream:
+    """Wrap a stream so pipe-buffer pressure cannot crash the process.
+
+    Under PM2 (and some other redirected-stderr setups) stderr is non-blocking.
+    Rich writes large chunks; when the pipe buffer is full, ``write()`` raises
+    ``BlockingIOError`` / ``EAGAIN``. That used to abort the entire agent run —
+    including live chat. Prefer dropping output over killing the request.
+    """
+
+    def __init__(self, stream: Any):
+        self._stream = stream
+
+    def write(self, data: Any) -> int:
+        try:
+            return self._stream.write(data)
+        except BlockingIOError:
+            return _stream_write_len(data)
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return _stream_write_len(data)
+            raise
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        except BlockingIOError:
+            return
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return
+            raise
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    def isatty(self) -> bool:
+        try:
+            return bool(self._stream.isatty())
+        except Exception:
+            return False
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._stream, "encoding", None) or "utf-8"
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+def _stream_write_len(data: Any) -> int:
+    if isinstance(data, (bytes, bytearray)):
+        return len(data)
+    if isinstance(data, str):
+        return len(data)
+    return 0
+
+
+def _safe_console(*, file: Any | None = None) -> Console:
+    stream = file if file is not None else _NonBlockingSafeStream(sys.stderr)
+    return Console(
+        theme=THEME,
+        highlight=False,
+        file=stream,
+    )
+
+
+def _reasoning_for_display(message: str) -> str:
+    """Strip encrypted provider blobs and bound length for terminal/logs."""
+    text = (message or "").strip()
+    if not text:
+        return ""
+    if "reasoning.encrypted" in text or '"type": "reasoning.encrypted"' in text:
+        kept: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if "reasoning.encrypted" in stripped or stripped.startswith("gAAAAA"):
+                continue
+            kept.append(line)
+        text = "\n".join(kept).strip()
+    if not text:
+        return ""
+    if len(text) > _MAX_REASONING_DISPLAY_CHARS:
+        return text[:_MAX_REASONING_DISPLAY_CHARS] + "… [truncated]"
+    return text
 
 
 class Verbosity(IntEnum):
@@ -76,60 +166,78 @@ class OuroDisplay:
             | None
         ) = None
         self._active_tool: str | None = None
-        self.console = Console(
-            theme=THEME,
-            highlight=False,
-            stderr=True,
-        )
+        self.console = _safe_console()
+
+    def _print(self, *args: Any, **kwargs: Any) -> None:
+        """Print via Rich, never raising on a full non-blocking stderr pipe."""
+        try:
+            self.console.print(*args, **kwargs)
+        except BlockingIOError:
+            return
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return
+            raise
 
     def rule(self, title: str = "") -> None:
-        if title:
-            self.console.rule(
-                f"[ouro.muted]{title}[/]",
-                characters=RULE_CHAR,
-                style="ouro.rule",
-            )
-        else:
-            self.console.rule(characters=RULE_CHAR, style="ouro.rule")
+        try:
+            if title:
+                self.console.rule(
+                    f"[ouro.muted]{title}[/]",
+                    characters=RULE_CHAR,
+                    style="ouro.rule",
+                )
+            else:
+                self.console.rule(characters=RULE_CHAR, style="ouro.rule")
+        except BlockingIOError:
+            return
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return
+            raise
 
     def blank(self) -> None:
-        self.console.print()
+        self._print()
 
     def header(self, title: str, subtitle: str = "") -> None:
         self.blank()
-        self.console.print(f"[ouro.bold]{title}[/]")
+        self._print(f"[ouro.bold]{title}[/]")
         if subtitle:
-            self.console.print(f"[ouro.muted]{subtitle}[/]")
+            self._print(f"[ouro.muted]{subtitle}[/]")
         self.rule()
         self.blank()
 
     def info(self, message: str) -> None:
-        self.console.print(f"[ouro.muted]{escape(message)}[/]")
+        self._print(f"[ouro.muted]{escape(message)}[/]")
 
     def success(self, message: str) -> None:
-        self.console.print(f"[ouro.success]{escape(message)}[/]")
+        self._print(f"[ouro.success]{escape(message)}[/]")
 
     def error(self, message: str) -> None:
-        self.console.print(f"[ouro.error]{escape(message)}[/]")
+        self._print(f"[ouro.error]{escape(message)}[/]")
 
     def step(self, message: str) -> None:
         if self.verbosity >= Verbosity.NORMAL:
-            self.console.print(f"[ouro.step]> {escape(message)}[/]")
+            self._print(f"[ouro.step]> {escape(message)}[/]")
 
     def thought(self, message: str) -> None:
         if self.verbosity >= Verbosity.NORMAL:
-            self.console.print(f"[ouro.thought]Thought: {escape(message)}[/]")
+            self._print(f"[ouro.thought]Thought: {escape(message)}[/]")
 
     def reasoning(self, message: str) -> None:
-        if self.verbosity >= Verbosity.NORMAL:
-            self.console.print(f"[ouro.thought]Reasoning: {escape(message)}[/]")
+        if self.verbosity < Verbosity.NORMAL:
+            return
+        text = _reasoning_for_display(message)
+        if not text:
+            return
+        self._print(f"[ouro.thought]Reasoning: {escape(text)}[/]")
 
     def begin_tool_call(self, tool_name: str, args: str = "") -> None:
         if self.verbosity < Verbosity.NORMAL:
             return
         self._active_tool = tool_name
         args_suffix = f"[ouro.dim]({escape(args)})[/]" if args else ""
-        self.console.print(
+        self._print(
             f"[ouro.step]>[/] [ouro.tool]{escape(tool_name)}[/]{args_suffix}"
         )
 
@@ -138,7 +246,7 @@ class OuroDisplay:
             return
         mark = "✗" if failed else "✓"
         style = "ouro.error" if failed else "ouro.success"
-        self.console.print(f"[{style}]{mark}[/] [ouro.tool]{escape(tool_name)}[/]")
+        self._print(f"[{style}]{mark}[/] [ouro.tool]{escape(tool_name)}[/]")
         if self._active_tool == tool_name:
             self._active_tool = None
 
@@ -149,9 +257,9 @@ class OuroDisplay:
         """Render tool observation/result in muted gray."""
         if self.verbosity < Verbosity.NORMAL:
             return
-        self.console.print("  [ouro.dim]Observation:[/]")
+        self._print("  [ouro.dim]Observation:[/]")
         for line in text.splitlines() or [""]:
-            self.console.print(f"  [ouro.dim]{escape(line)}[/]")
+            self._print(f"  [ouro.dim]{escape(line)}[/]")
 
     def _log_tool_call(self, raw: str) -> None:
         """Parse smolagents' 'Calling tool:' text into our compact format."""
@@ -191,7 +299,7 @@ class OuroDisplay:
             parts.append(f"out {output_tokens:,}")
         if cost_usd is not None:
             parts.append(f"${cost_usd:.6f}")
-        self.console.print(f"  [ouro.dim]{' | '.join(parts)}[/]")
+        self._print(f"  [ouro.dim]{' | '.join(parts)}[/]")
 
     @staticmethod
     def _run_usage_detail_parts(usage: RunUsage) -> list[str]:
@@ -416,7 +524,7 @@ class OuroDisplay:
     def markdown(self, text: str) -> None:
         """Render markdown content with proper formatting (headers, bold, lists, code, etc.)."""
         md = Markdown(text, code_theme="monokai")
-        self.console.print(md)
+        self._print(md)
 
     def response(self, text: str) -> None:
         self.blank()
@@ -430,7 +538,7 @@ class OuroDisplay:
             word_wrap=True,
             padding=(0, 2),
         )
-        self.console.print(syntax)
+        self._print(syntax)
 
     def prompt(self, prompt_text: str = "you") -> str:
         try:
@@ -440,19 +548,19 @@ class OuroDisplay:
 
     def chat_header(self, conversation_id: str) -> None:
         self.header("ouro-agents", f"conversation {conversation_id}")
-        self.console.print("[ouro.dim]commands: /exit /quit /new /conversation <id>[/]")
+        self._print("[ouro.dim]commands: /exit /quit /new /conversation <id>[/]")
         self.blank()
 
     def chat_response(self, text: str) -> None:
         self.blank()
-        self.console.print(f"[ouro.bold]agent[/]")
+        self._print(f"[ouro.bold]agent[/]")
         self.markdown(text)
         self.blank()
         self.flush_pending_run_summary()
 
     def run_header(self, task: str) -> None:
         self.header("ouro-agents run")
-        self.console.print(f"[ouro.dim]task:[/] {escape(task)}")
+        self._print(f"[ouro.dim]task:[/] {escape(task)}")
         self.blank()
 
     def run_result(self, result: str) -> None:
@@ -594,7 +702,14 @@ class OuroLogger(AgentLogger):
                     self._last_tool_name = None
                     return
 
-        self.console.print(*args, **kwargs)
+        try:
+            self.console.print(*args, **kwargs)
+        except BlockingIOError:
+            return
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return
+            raise
 
     def log_error(self, error_message: str) -> None:
         self._display.error(error_message)

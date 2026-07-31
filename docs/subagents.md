@@ -33,7 +33,7 @@ Defined in `ouro_agents/subagents/profiles.py`. Key fields:
 | Name | Delegatable | What it does |
 |------|-------------|--------------|
 | `reflector` | no | Curates long-term memory after a run or every N turns in chat. |
-| `research` | yes | Investigates a topic via `tavily_search`, posts the writeup to Ouro. |
+| `research` | yes | Investigates a topic via `tavily_search`, saves a local doc for the main agent to read. |
 | `planner` | yes | Returns a short numbered execution plan. |
 | `executor` | yes | Runs a focused sub-task with MCP tools. |
 | `writer` | yes | Drafts polished posts; saves them to Ouro. |
@@ -114,9 +114,11 @@ Notable parameters:
 - `subagent` — must match a delegatable profile name.
 - `task` — a self-contained brief; subagents do not see the main thread.
 - `asset_refs` — Ouro asset UUIDs passed as input context.
-- `return_mode` — `summary_only` (default), `full_text`, or `auto`. The
-  subagent always saves its full output as an Ouro asset; the return mode
-  controls how much of that comes back to the main agent's context.
+- `return_mode` — `summary_only` (default), `full_text`, or `auto`. Controls
+  how much of the subagent output comes back to the main agent's context.
+  Publishing subagents (`writer`, `executor`, `developer`) may also return an
+  `asset_id` when they created an Ouro asset; `research` returns a local draft
+  path/summary instead.
 
 A list with one task runs sequentially. A list with multiple tasks runs in
 parallel via a thread pool (max 4 workers). Each output is a JSON dict
@@ -144,6 +146,5 @@ and any internal multi-subagent flows.
 
 A subagent can delegate to others listed in its `can_delegate_to`. The
 runner injects a `delegate`-equivalent tool into the inner loop with the
-allowed names. This lets, for example, `research` hand a finished
-investigation to `writer` for a polished publication, without bouncing
-back through the main agent.
+allowed names. This lets, for example, `executor` hand polished writing
+to `writer` without bouncing back through the main agent.

@@ -66,13 +66,11 @@ class ModeProfile(BaseModel):
     conversational: bool = False
     lightweight: bool = False
     skip_post_reflection: bool = False
-    load_conversation_state: bool = False
     load_scheduled_tasks: bool = False
     include_chat_conversation_id: bool = False
 
     # Conversation turn persistence
     append_conversation_turns: bool = True
-    update_conversation_state: bool = False
 
     # Conversation-id annotation style (None = don't add)
     conversation_id_annotation: Optional[str] = None
@@ -119,10 +117,8 @@ CHAT = ModeProfile(
     max_steps=20,
     excluded_tools=CHAT_EXCLUDED_TOOLS,
     conversational=True,
-    load_conversation_state=True,
     include_chat_conversation_id=True,
     append_conversation_turns=False,
-    update_conversation_state=True,
     conversation_id_annotation="this conversation's history and memory",
 )
 

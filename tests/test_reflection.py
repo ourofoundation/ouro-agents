@@ -60,9 +60,6 @@ build_run_reflection_task = _reflector_module.build_run_reflection_task
 REFLECTOR_PROMPT = _reflector_module.REFLECTOR_PROMPT
 apply_reflection = _reflection_module.apply_reflection
 store_reflection_memories = _reflection_module.store_reflection_memories
-record_reflection_turn = _reflection_module.record_reflection_turn
-should_reflect = _reflection_module.should_reflect
-should_reflect_for_conversation = _reflection_module.should_reflect_for_conversation
 validated_daily_log_entries = _reflection_module.validated_daily_log_entries
 
 
@@ -95,116 +92,6 @@ class _FakeMemoryBackend:
 
     def delete(self, memory_id):
         self.deleted.append(memory_id)
-
-
-class _ConversationState:
-    def __init__(self, turn_count):
-        self.turn_count = turn_count
-
-
-class TestConversationTurnCount(unittest.TestCase):
-    def test_update_state_increments_once_per_exchange(self):
-        conversation_state_spec = importlib.util.spec_from_file_location(
-            "ouro_agents.memory.conversation_state",
-            Path(__file__).resolve().parents[1]
-            / "ouro_agents"
-            / "memory"
-            / "conversation_state.py",
-        )
-        conversation_state_module = importlib.util.module_from_spec(
-            conversation_state_spec
-        )
-        assert conversation_state_spec and conversation_state_spec.loader
-        conversation_state_spec.loader.exec_module(conversation_state_module)
-
-        ConversationState = conversation_state_module.ConversationState
-        update_state = conversation_state_module.update_state
-
-        class _Model:
-            def __call__(self, _messages):
-                return types.SimpleNamespace(
-                    content=(
-                        '{"current_topic": "topic", "active_goals": [], '
-                        '"decisions_made": [], "open_questions": [], '
-                        '"key_entities": [], "key_moments": [], '
-                        '"conversation_summary": "summary", "turn_count": 99}'
-                    )
-                )
-
-        previous = ConversationState(turn_count=4)
-        updated = update_state(previous, "hello", "hi there", _Model())
-        self.assertEqual(updated.turn_count, 5)
-
-
-class TestShouldReflect(unittest.TestCase):
-    def test_reflects_when_current_key_moment_turn_not_marked(self):
-        state = _ConversationState(turn_count=5)
-        self.assertFalse(should_reflect(state, last_reflected_turn=5))
-        self.assertTrue(should_reflect(state, last_reflected_turn=4))
-
-    def test_skips_empty_or_initial_state(self):
-        state = _ConversationState(turn_count=9)
-        self.assertFalse(should_reflect(None, last_reflected_turn=0))
-        self.assertFalse(should_reflect(_ConversationState(turn_count=0), last_reflected_turn=0))
-        self.assertTrue(should_reflect(state, last_reflected_turn=8))
-
-    def test_should_reflect_for_conversation_reads_marker(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            conversations_dir = Path(tmpdir)
-            conversation_id = "conv-1"
-            record_reflection_turn(conversations_dir, conversation_id, 5)
-            self.assertFalse(
-                should_reflect_for_conversation(
-                    conversations_dir,
-                    conversation_id,
-                    _ConversationState(turn_count=5),
-                )
-            )
-            self.assertTrue(
-                should_reflect_for_conversation(
-                    conversations_dir,
-                    conversation_id,
-                    _ConversationState(turn_count=6),
-                )
-            )
-
-
-class TestReflectionCadence(unittest.TestCase):
-    def test_no_key_moment_waits_for_turn_interval(self):
-        # Below the cadence interval: no reflection without a key moment.
-        self.assertFalse(
-            should_reflect(
-                _ConversationState(turn_count=5),
-                last_reflected_turn=0,
-                has_new_key_moment=False,
-            )
-        )
-        # At the interval, reflection fires even without a key moment.
-        self.assertTrue(
-            should_reflect(
-                _ConversationState(turn_count=6),
-                last_reflected_turn=0,
-                has_new_key_moment=False,
-            )
-        )
-
-    def test_key_moment_reflects_immediately(self):
-        self.assertTrue(
-            should_reflect(
-                _ConversationState(turn_count=2),
-                last_reflected_turn=1,
-                has_new_key_moment=True,
-            )
-        )
-
-    def test_already_reflected_turn_never_re_reflects(self):
-        self.assertFalse(
-            should_reflect(
-                _ConversationState(turn_count=5),
-                last_reflected_turn=5,
-                has_new_key_moment=True,
-            )
-        )
 
 
 class TestReflectionParsing(unittest.TestCase):
@@ -520,7 +407,7 @@ class TestReflectionParsing(unittest.TestCase):
 
 
 class TestApplyReflection(unittest.TestCase):
-    def test_valid_reflection_stores_fact_and_marks_turn(self):
+    def test_valid_reflection_stores_fact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             conversations_dir = workspace / "conversations"
@@ -545,16 +432,11 @@ class TestApplyReflection(unittest.TestCase):
                 conversation_id="conv-1",
                 workspace=workspace,
                 conversations_dir=conversations_dir,
-                conversation_state=_ConversationState(turn_count=12),
             )
 
             self.assertEqual(len(backend.items), 1)
             self.assertEqual(backend.items[0]["text"], "User prefers concise updates.")
             self.assertIs(backend.items[0]["infer"], False)
-            self.assertEqual(
-                (conversations_dir / "conv-1.reflected").read_text(),
-                "12",
-            )
 
     def test_valid_reflection_preserves_team_id_on_memory_writes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -582,7 +464,6 @@ class TestApplyReflection(unittest.TestCase):
                 conversation_id="conv-1",
                 workspace=workspace,
                 conversations_dir=conversations_dir,
-                conversation_state=_ConversationState(turn_count=5),
                 team_id="team-42",
             )
 
@@ -665,7 +546,6 @@ class TestApplyReflection(unittest.TestCase):
                 conversation_id="conv-1",
                 workspace=workspace,
                 conversations_dir=conversations_dir,
-                conversation_state=_ConversationState(turn_count=3),
             )
 
             self.assertEqual(backend.items[0]["metadata"]["category"], "direction")

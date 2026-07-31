@@ -125,23 +125,26 @@ RESEARCH = SubAgentProfile(
     name="research",
     description=(
         "Investigate a topic using web search. Runs multiple queries, "
-        "cross-references sources, and saves a full research post on Ouro."
+        "cross-references sources, and saves a local research draft for the "
+        "main agent to publish. Does not create Ouro posts."
     ),
     system_prompt=RESEARCH_PROMPT,
     allowed_tools=["memory_recall"],
     allowed_servers=["search"],
     can_load_mcp_tools=True,
-    preload_tools=["search:tavily_search", "ouro:create_post"],
+    preload_tools=["search:tavily_search"],
     delegatable=True,
     max_steps=8,
-    can_delegate_to=["writer"],
-    skills=["ouro", "ouro_markdown", "asset_output"],
+    needs_python_tool=True,
+    skills=["filesystem"],
+    include_asset_placement=False,
     shared_context_sections=[
         "current_datetime",
         "soul",
         "platform_context",
         "notes",
         "working_memory",
+        "workspace_layout",
     ],
 )
 

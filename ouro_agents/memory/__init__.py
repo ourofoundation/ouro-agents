@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, List, Optional, Protocol
+from typing import Any, List, Optional, Protocol
 
 from pydantic import BaseModel, Field
 
 from .model import MemoryItem
 from .ouro_docs import DocStore
-
-if TYPE_CHECKING:
-    from .conversation_state import ConversationState
 
 
 __all__ = [
@@ -17,7 +14,6 @@ __all__ = [
     "MemoryResult",
     "MemoryBackend",
     "MemoryItem",
-    "expand_query",
     "create_memory_backend",
 ]
 
@@ -115,17 +111,6 @@ class MemoryBackend(Protocol):
     def reset_usage(self) -> None: ...
 
     def usage_ledger(self) -> list[tuple[str, Any]]: ...
-
-
-def expand_query(task: str, state: ConversationState) -> str:
-    """Build a conversation-aware memory search query."""
-    parts: list[str] = []
-    if state.current_topic:
-        parts.append(state.current_topic)
-    if state.active_goals:
-        parts.append("; ".join(state.active_goals))
-    parts.append(task)
-    return " ".join(parts)
 
 
 def create_memory_backend(config, usage_tracker=None) -> MemoryBackend:

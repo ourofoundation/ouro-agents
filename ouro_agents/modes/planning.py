@@ -300,6 +300,19 @@ def format_quests_index_for_prompt(quests: list[dict[str, Any]]) -> str:
     )
 
 
+def format_quests_index_pointer(quests: list[dict[str, Any]]) -> str:
+    """One-line pointer for chat — avoid dumping quest titles that steer the thread."""
+    n = sum(1 for q in quests if str(q.get("id") or "").strip())
+    if n == 0:
+        return ""
+    noun = "quest" if n == 1 else "quests"
+    return (
+        f"{n} active plan {noun} on the platform. "
+        "Use `search_assets` / `list_quest_items` / `get_asset` when you need plan details — "
+        "do not treat the mere existence of plans as this conversation's goal."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Quest lifecycle helpers
 # ---------------------------------------------------------------------------

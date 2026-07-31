@@ -3,7 +3,7 @@
 These read the SQLite run log (``runs.db``) so the agent can answer questions
 like "have I done this before?", "what did my last heartbeat do?", or "did I
 just fail at this?" from what *actually* happened — distinct from curated
-vector memory (facts) and conversation state (continuity).
+vector memory (facts) and conversation history (continuity).
 
 Privacy: queries are scoped to the current run's context. The configured
 ``run_log.agent_default_scope`` sets the maximum breadth; the agent may narrow

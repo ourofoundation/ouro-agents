@@ -17,6 +17,7 @@ from ouro_agents.usage import (
     RunUsage,
     UsageTracker,
     _ensure_usage_present,
+    _normalize_reasoning_value,
     _wrap_stream,
     record_usage_from_response,
     residual_main_usage,
@@ -492,6 +493,27 @@ class TestMirroredUsageTracking(unittest.TestCase):
         self.assertEqual(residual.input_tokens, 0)
         self.assertEqual(residual.output_tokens, 0)
         self.assertEqual(residual.total_tokens, 0)
+
+
+class TestNormalizeVisibleReasoning(unittest.TestCase):
+    def test_skips_encrypted_reasoning_details(self):
+        value = [
+            {"type": "reasoning.text", "text": "hello"},
+            {
+                "type": "reasoning.encrypted",
+                "data": "gAAAAA...",
+                "format": "openai-responses-v1",
+            },
+        ]
+        self.assertEqual(_normalize_reasoning_value(value), "hello")
+
+    def test_opaque_dicts_without_text_are_empty(self):
+        self.assertEqual(
+            _normalize_reasoning_value(
+                {"type": "reasoning.encrypted", "data": "gAAAAA"}
+            ),
+            "",
+        )
 
 
 if __name__ == "__main__":

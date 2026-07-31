@@ -4,8 +4,7 @@ history windows, working-memory dedup, and conversation-tool exclusion."""
 import unittest
 
 from ouro_agents.agent import _dedup_bullet_lines
-from ouro_agents.memory.conversation_state import ConversationState
-from ouro_agents.modes.profiles import CHAT
+from ouro_agents.modes.profiles import CHAT, ModeProfile
 from ouro_agents.soul import build_prompt
 from ouro_agents.tools.agent_base import PlainTaskStep
 from ouro_agents.usage import inject_cache_control
@@ -89,20 +88,13 @@ class TestWorkingMemoryDedup(unittest.TestCase):
         self.assertEqual(deduped.count("- a"), 1)
 
 
-class TestConversationStateSummary(unittest.TestCase):
-    def _state(self) -> ConversationState:
-        return ConversationState(
-            current_topic="testing",
-            conversation_summary="We discussed many things.",
-        )
-
-    def test_summary_included_by_default(self):
-        self.assertIn("Conversation so far", self._state().format_for_prompt())
-
-    def test_summary_omitted_when_history_is_verbatim(self):
-        rendered = self._state().format_for_prompt(include_summary=False)
-        self.assertNotIn("Conversation so far", rendered)
-        self.assertIn("Topic: testing", rendered)
+class TestChatHistoryGate(unittest.TestCase):
+    def test_chat_history_gate_is_conversational(self):
+        self.assertTrue(CHAT.conversational)
+        self.assertFalse(hasattr(CHAT, "load_conversation_state"))
+        self.assertFalse(hasattr(CHAT, "update_conversation_state"))
+        self.assertNotIn("load_conversation_state", ModeProfile.model_fields)
+        self.assertNotIn("update_conversation_state", ModeProfile.model_fields)
 
 
 class TestChatToolExclusion(unittest.TestCase):

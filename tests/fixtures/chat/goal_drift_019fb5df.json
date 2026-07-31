@@ -1,0 +1,81 @@
+{
+  "turns": [
+    {
+      "index": 0,
+      "user": "Hey!",
+      "assistant": "Hey Matt! Apollo here. What would you like to work on?",
+      "run_id": "019fb5df-b5c3-761e-916c-9fc39dfa93ac",
+      "started_at": "2026-07-31T01:52:44.995483+00:00"
+    },
+    {
+      "index": 1,
+      "user": "What's on your plate rest of today and tomorrow?",
+      "assistant": "At the moment, I\u2019m mostly on standby rather than running a new build.\n\n**Rest of today**\n- Keep the service/build backlog and workspace organized.\n- Be available for any pipeline direction or urgent validation request.\n- Avoid starting another broad experiment while the Cu\u2082Sb / superconductivity validation work is still the main thread.\n\n**Tomorrow**\n- Prioritize the **quantitative validation gate for Cu\u2082Sb** if you want that work advanced.\n- Otherwise, support the **GGen Heusler/Tc calibration** or the pending **BEE-NET / ternary-superconductor** pipeline, depending on which evidence is most useful.\n- Re-test or document any existing route issues before treating surprising outputs as scientific findings.\n\nSo the short version: **no independently committed execution block yet; my next useful action is whichever of the Cu\u2082Sb gate, GGen calibration, or BEE-NET pipeline you want prioritized.**",
+      "run_id": "019fb5e1-01a3-7da4-bb9a-272a8d800ccc",
+      "started_at": "2026-07-31T01:54:09.955534+00:00"
+    },
+    {
+      "index": 2,
+      "user": "What to do some research on what we could add to Ouro next?",
+      "assistant": "I researched this and published a scouting report:\n\n[Candidate Deployable Models for Ouro: 2026 Scouting Report](post:019fb5ea-138c-74fc-85e4-d2a404ae3065)\n\n### My recommended priority order\n\n1. **MACE-MH-1** \u2014 highest-impact next addition  \n   A multi-head foundation force field covering inorganic crystals, molecules, surfaces, and potentially battery materials. Ouro already supports MACE for relaxation, but this would be a broader, separately exposed property/force-field capability. It could replace or complement the unreliable NequIP path.\n\n2. **Walrus** \u2014 best clean, novel capability  \n   MIT-licensed continuum-physics foundation model for dynamics, turbulence, transport, and related physical systems. It would expand Ouro beyond crystal-property prediction into physics simulation and serve the physics, thermoelectrics, free-energy, and superconductors teams.\n\n3. **MIST** \u2014 practical chemistry addition  \n   A family of SMILES transformers with many fine-tuned molecular-property tasks. The smaller model should be relatively straightforward to host and would be useful for electrolyte and molecular screening.\n\n4. **Cellpose 3** \u2014 safest microscopy service  \n   Mature, permissively licensed image restoration and segmentation. A simple image-in \u2192 mask/statistics-out route would give the microscopy team an immediately useful capability with lower deployment risk.\n\n5. **EMSeek** \u2014 high-upside but needs more diligence  \n   Agentic electron-microscopy analysis could be transformative, but its code maturity, model dependencies, and licensing need verification before committing.\n\n### My recommendation\n\n**Start with MACE-MH-1**, but only after a short feasibility gate confirms:\n\n- the exact checkpoint and hosted-inference license;\n- whether it is materially different from Ouro\u2019s existing MACE relaxation route;\n- GPU memory/runtime on a few known crystal and molecular controls;\n- reference accuracy against existing Orb, MACE, and CHGNet outputs.\n\nIf licensing or checkpoint availability is ambiguous, **Walrus should be the fallback**: it has the clearest license story and adds a capability Ouro does not currently appear to have.\n\nI have **not started a build yet**. The report is a candidate screen, not a claim that every cited model is deployment-ready; licenses, weights, and existing-route overlap need to be checked before committing.",
+      "run_id": "019fb5e7-2f96-7765-986b-5077fc59b39e",
+      "started_at": "2026-07-31T02:00:54.934161+00:00"
+    },
+    {
+      "index": 3,
+      "user": "Ok, not a bad start! Can we keep looking?",
+      "assistant": "Absolutely \u2014 I kept looking and published an addendum with **10 additional candidates**, deliberately excluding the first report\u2019s MACE-MH-1, Walrus, MIST, Cellpose 3, and EMSeek.\n\n[Scouting Addendum: Additional Deployable Models for Ouro (July 2026)](post:019fb5fc-8154-74fd-875c-bde49c796bc8)\n\n### Strongest new candidates\n\n1. **CHGNet** \u2014 best immediate fit  \n   A charge-informed universal potential that also predicts per-atom magnetic moments, energies, forces, and stresses. It directly addresses Ouro\u2019s documented weakness on magnetic and antiferromagnetic materials. MIT-licensed and relatively straightforward to wrap via ASE.\n\n2. **PET-MAD** \u2014 fastest low-risk win  \n   A compact universal potential, with an XS version that can run on CPU. Useful as an always-available baseline for quick screening and molecular/low-dimensional systems.\n\n3. **eSEN-30M-OAM** \u2014 potential accuracy upgrade  \n   A smooth equivariant potential aimed at high-accuracy crystal stability and property prediction. The main blocker is verifying the checkpoint\u2019s license separately from the Apache-licensed code.\n\n4. **SevenNet-Nano** \u2014 strong cross-domain option  \n   A lightweight variant of a broad universal potential, potentially a good balance between accuracy, chemistry coverage, and deployment cost.\n\n5. **MACE-POLAR-1** \u2014 most distinctive but highest diligence  \n   Adds explicit long-range electrostatics, charges, dipoles, and response to external fields. It could open electrolyte, molecular-crystal, and polarizable-material workflows, but its Academic Software License needs clarification before hosted deployment.\n\n### Other candidates worth tracking\n\n- **NEP89** \u2014 GPU-native, extreme-scale molecular dynamics.\n- **GRACE-2L-OAM** \u2014 efficient alloy modeling, relevant to magnets and thermoelectrics.\n- **DPA-3** \u2014 multi-fidelity deep potentials.\n- **UMA** \u2014 broad catalysis and molecular coverage, but access may require approval.\n- **OrbMol** \u2014 molecular systems, metal complexes, electrolytes, and charge/spin-conditioned inference.\n\n### My revised recommendation\n\nIf the goal is **highest value with minimal deployment risk**, I\u2019d now investigate:\n\n1. **CHGNet**\n2. **PET-MAD XS**\n3. **SevenNet-Nano**\n\nThat combination would give Ouro magnetic-property prediction, a CPU-accessible MLIP baseline, and broader cross-domain materials coverage without immediately committing to the licensing or infrastructure complexity of MACE-POLAR-1, NEP89, or UMA.\n\nOne caution: the addendum is still a **scouting document**, not a deployment approval. The next responsible step is a short feasibility gate checking actual checkpoint downloads, licenses, dependency versions, and reference-case accuracy.",
+      "run_id": "019fb5f9-bcb7-79f2-aa35-fb6307c67a84",
+      "started_at": "2026-07-31T02:21:10.711225+00:00"
+    },
+    {
+      "index": 4,
+      "user": "Please, not more MLIPs",
+      "assistant": "",
+      "run_id": "019fb5fd-6da7-72b9-b444-26328cc236e5",
+      "started_at": "2026-07-31T02:25:12.615544+00:00"
+    },
+    {
+      "index": 5,
+      "user": "Hear that?",
+      "assistant": "",
+      "run_id": "019fb600-060b-7705-9a45-17e6de61d73e",
+      "started_at": "2026-07-31T02:28:02.699210+00:00"
+    },
+    {
+      "index": 6,
+      "user": "Hello?",
+      "assistant": "Loud and clear: **no more MLIPs** in the Ouro scouting pipeline unless you explicitly ask for them.\n\nI\u2019ve recorded that preference. Future research will focus on genuinely different capabilities\u2014e.g. microscopy, chemistry, experimental-data analysis, physics simulation, scientific agents, workflow automation, and validation tools.",
+      "run_id": "019fb608-38df-77a2-8520-3d5a9af8af7f",
+      "started_at": "2026-07-31T02:36:59.999695+00:00"
+    },
+    {
+      "index": 7,
+      "user": "I mean in our research right now.",
+      "assistant": "Ah\u2014got it. You meant **our active scientific research**, not continued scouting for Ouro additions. I misunderstood.\n\nThe current research plate is:\n\n1. **Cu\u2082Sb quantitative validation gate** \u2014 highest priority. Verify the structure/input pipeline, run the required controls, quantify the claim, and determine whether it is ready to report.\n2. **GGen Heusler/Tc calibration** \u2014 next priority, using the 10+3 anchor set to establish whether the predictions are calibrated enough to trust.\n3. **BEE-NET ternary-superconductor pipeline** \u2014 currently on hold pending validation evidence; don\u2019t advance the discovery claim until the model and controls are sound.\n4. **Maintenance/documentation** \u2014 preserve the lessons from the Laves-phase and MLIP failures so we don\u2019t repeat those validation mistakes.\n\nSo for the rest of today and tomorrow, I\u2019d focus on **finishing the Cu\u2082Sb gate first**, then move to **GGen calibration** if the gate is clean. No more MLIP scouting or new Ouro-model research unless you explicitly redirect me.",
+      "run_id": "019fb608-c278-7e6c-8d5e-83b4023e6765",
+      "started_at": "2026-07-31T02:37:35.224542+00:00"
+    },
+    {
+      "index": 8,
+      "user": "Summarize this chat.",
+      "assistant": "### Chat summary\n\n- You asked what was on my plate for the rest of today and tomorrow.\n- I identified the current research priorities as:\n  1. **Cu\u2082Sb quantitative validation gate** \u2014 highest priority.\n  2. **GGen Heusler/Tc calibration** \u2014 next priority.\n  3. **BEE-NET ternary-superconductor pipeline** \u2014 on hold pending validation.\n- You then asked about researching what Ouro could add next.\n- I published two Ouro scouting reports:\n  - [Candidate Deployable Models for Ouro: 2026 Scouting Report](post:019fb5ea-138c-74fc-85e4-d2a404ae3065)\n  - [Scouting Addendum: Additional Deployable Models for Ouro](post:019fb5fc-8154-74fd-875c-bde49c796bc8)\n- Those reports focused heavily on MLIPs, including MACE-MH-1, CHGNet, PET-MAD, and SevenNet.\n- You clarified that you **do not want more MLIP research**.\n- I initially interpreted that as a general standing preference about Ouro scouting, then you clarified that you meant **in our current scientific research**.\n- The corrected understanding is:\n  - Stop pursuing MLIP-related work in the active research program.\n  - Focus on the **Cu\u2082Sb validation gate**, then **GGen calibration**.\n  - Keep **BEE-NET** paused until its validation status is resolved.\n  - Do not start new model scouting or unrelated experiments unless you redirect me.",
+      "run_id": "019fb60a-ac42-7865-ba9b-0a4245fb4640",
+      "started_at": "2026-07-31T02:39:40.610462+00:00"
+    },
+    {
+      "index": 9,
+      "user": "Lets keep researching. Don't post about it unless I ask.",
+      "assistant": "",
+      "run_id": "019fb60b-2f76-704e-88de-817307a9901a",
+      "started_at": "2026-07-31T02:40:14.198866+00:00"
+    },
+    {
+      "index": 10,
+      "user": "Do you not remember that I'm asking you to look for new services to add to Ouro?",
+      "assistant": "Yes\u2014I remember now. You asked me to **keep researching potential new services to add to Ouro**, not to stop that work.\n\nThe correct interpretation is:\n\n- **Active scientific research:** no more MLIPs.\n- **Ouro service scouting:** continue looking for useful, deployable services\u2014preferably non-MLIP capabilities unless there is a compelling reason otherwise.\n- **Publishing:** do **not** create or post scouting reports unless you explicitly ask.\n\nI conflated the two threads. I\u2019ll keep the service search going privately and report findings here first.",
+      "run_id": "019fb60d-1ea6-7fd3-a222-fcbefc1fc939",
+      "started_at": "2026-07-31T02:42:20.966076+00:00"
+    }
+  ]
+}

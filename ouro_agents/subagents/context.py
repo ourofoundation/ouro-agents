@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 if TYPE_CHECKING:
     from ..config import MemoryConfig, SandboxConfig
     from ..memory import MemoryBackend
-    from ..memory.conversation_state import ConversationState
     from ..security.policy import Capability
     from .profiles import SubAgentProfile
 
@@ -103,7 +102,6 @@ class SubAgentContext:
     compactor_model: Any = None
 
     user_id: Optional[str] = None
-    conversation_state: Optional["ConversationState"] = None
     conversation_id: Optional[str] = None
     run_id: str = ""
 

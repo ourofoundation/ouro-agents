@@ -63,12 +63,13 @@ in the usage tracker.
   briefing.
 
 Cache hits depend on byte-identical static prompts, so changes to soul /
-notes / skills naturally bust the cache; conversation state and recent
-memory don't. The per-conversation id lives in the dynamic context (not
-the static `MODE` section) so the system-prompt prefix is shared across
-all conversations — otherwise every chat would have a unique prefix and
-never hit cache. Tool definitions are part of the cached prefix too, so
-runs that preload different tool sets won't share a cache entry.
+notes / skills naturally bust the cache; conversation history and recent
+memory live in the dynamic / task side and don't. The per-conversation id
+lives in the dynamic context (not the static `MODE` section) so the
+system-prompt prefix is shared across all conversations — otherwise every
+chat would have a unique prefix and never hit cache. Tool definitions are
+part of the cached prefix too, so runs that preload different tool sets
+won't share a cache entry.
 
 ## Reasoning
 

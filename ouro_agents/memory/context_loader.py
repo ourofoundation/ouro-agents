@@ -1,19 +1,19 @@
 """Active context loader for entity files, task files, and recent daily logs.
 
-Automatically detects and loads relevant workspace files based on conversation
-state and the current request, so the agent doesn't have to manually read them.
+Automatically detects and loads relevant workspace files based on the current
+request text, so the agent doesn't have to manually read them.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 import yaml
 
 from ..constants import CHARS_PER_TOKEN
-from .conversation_state import ConversationState
 from .naming import period_key_offset, store_rhythm
 
 if TYPE_CHECKING:
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 MAX_ENTITY_CONTEXT_TOKENS = 4000
 MAX_TASK_CONTEXT_TOKENS = 2000
 MAX_INDEX_FILES_PER_KIND = 30
+_WORD_RE = re.compile(r"[a-z0-9]+")
 
 
 def _slugify(name: str) -> str:
@@ -67,53 +68,73 @@ def _file_slugs(path: Path, meta: dict) -> list[str]:
     return slugs
 
 
+def _slug_in_text(slug: str, text_lower: str) -> bool:
+    """True when slug or its space-form appears in text_lower."""
+    if not slug:
+        return False
+    if slug in text_lower:
+        return True
+    spaced = slug.replace("-", " ").replace("_", " ")
+    return bool(spaced) and spaced in text_lower
+
+
+def _haystack_run_slugs(text_lower: str, *, max_words: int = 6) -> set[str]:
+    """Slugified forms of contiguous word-runs in *text_lower*."""
+    words = _WORD_RE.findall(text_lower)
+    runs: set[str] = set()
+    for i in range(len(words)):
+        parts: list[str] = []
+        for j in range(i, min(i + max_words, len(words))):
+            parts.append(words[j])
+            runs.add("-".join(parts))
+    return runs
+
+
 def _find_entity_files(
     workspace: Path,
-    key_entities: list[str],
+    haystack: str,
     team_id: str | None = None,
 ) -> list[tuple[str, Path]]:
-    """Match key_entities to files in memory/entities/ by stem or alias.
+    """Match entity files whose slug or aliases appear in *haystack*.
 
-    Returns (entity_name, path) tuples preserving the original entity names.
+    Returns (display_name, path) tuples deduplicated by path.
     """
     entities_dir = _team_memory_dir(workspace, team_id, "entities")
-    if not entities_dir.exists():
+    if not entities_dir.exists() or not haystack.strip():
         return []
 
-    available: dict[str, Path] = {}
-    for path in sorted(entities_dir.glob("*.md")):
-        for slug in _file_slugs(path, _file_frontmatter(path)):
-            available.setdefault(slug, path)
+    text_lower = haystack.lower()
+    run_slugs = _haystack_run_slugs(text_lower)
     matched: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
 
-    for entity in key_entities:
-        slug = _slugify(entity)
-        if slug in available:
-            matched.append((entity, available[slug]))
+    for path in sorted(entities_dir.glob("*.md")):
+        slugs = _file_slugs(path, _file_frontmatter(path))
+        if not any(_slug_in_text(slug, text_lower) or slug in run_slugs for slug in slugs):
             continue
-        for file_slug, path in available.items():
-            if slug in file_slug or file_slug in slug:
-                matched.append((entity, path))
-                break
+        if path in seen:
+            continue
+        seen.add(path)
+        matched.append((path.stem, path))
 
     return matched
 
 
 def load_entity_files(
     workspace: Path,
-    conversation_state: Optional[ConversationState] = None,
+    haystack: str = "",
     max_tokens: int = 4000,
     team_id: str | None = None,
 ) -> str:
-    """Load entity files matching conversation key_entities into a formatted string.
+    """Load entity files whose names appear in *haystack* into a formatted string.
 
     Shared implementation used by the system prompt entity context, the
     context_loader subagent pipeline, and the reflector pipeline.
     """
-    if not conversation_state or not conversation_state.key_entities:
+    if not haystack.strip():
         return ""
 
-    matched = _find_entity_files(workspace, conversation_state.key_entities, team_id)
+    matched = _find_entity_files(workspace, haystack, team_id)
     if not matched:
         return ""
 
@@ -150,9 +171,9 @@ def _file_description(path: Path, meta: dict) -> str:
 def build_memory_index(workspace: Path, team_id: str | None = None) -> str:
     """One line per entity/task file so the agent knows what memory files exist.
 
-    Injected into the prompt alongside entity context: only files matching the
-    conversation's key entities are auto-loaded, so this index is how the agent
-    discovers the rest (readable with its file tools).
+    Injected into the prompt alongside entity context: only files whose names
+    appear in the current request text are auto-loaded, so this index is how
+    the agent discovers the rest (readable with its file tools).
     """
     sections: list[str] = []
     for leaf, label in (("entities", "Entity files"), ("tasks", "Task files")):
@@ -231,7 +252,7 @@ def _load_recent_daily_context(
 
 def load_entity_context(
     workspace: Path,
-    conversation_state: Optional[ConversationState] = None,
+    haystack: str = "",
     task: str = "",
     doc_store: Optional["DocStore"] = None,
     agent_name: str = "",
@@ -245,10 +266,10 @@ def load_entity_context(
     sections: list[str] = []
     total_tokens = 0
 
-    # 1. Entity files matching conversation key_entities (always local)
+    # 1. Entity files matching haystack text (always local)
     entity_text = load_entity_files(
         workspace,
-        conversation_state,
+        haystack or task,
         max_tokens=MAX_ENTITY_CONTEXT_TOKENS,
         team_id=team_id,
     )

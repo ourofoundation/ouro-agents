@@ -781,6 +781,35 @@ class ServerAgentObserver(AgentObserver):
         )
 
 
+def _supersede_prior_chat_runs(
+    conversation_id: str,
+    new_token: RunCancellationToken,
+    *,
+    reason: str = "superseded by newer message",
+) -> int:
+    """Cancel in-flight chat runs for ``conversation_id`` before a new one starts.
+
+    Returns the number of tokens cancelled. A second user message must not race
+    an earlier reply for the same conversation — only an explicit interrupt (or
+    this supersede path) cancels chat runs.
+    """
+    cancelled = 0
+    prior = active_chat_tokens.get(conversation_id)
+    if prior is not None and prior is not new_token and not prior.cancelled:
+        prior.cancel(reason)
+        cancelled += 1
+    if agent_instance is not None:
+        for reg_token in agent_instance._active_runs.tokens_for_conversation(
+            conversation_id
+        ):
+            if reg_token is new_token or reg_token.cancelled:
+                continue
+            reg_token.cancel(reason)
+            cancelled += 1
+    active_chat_tokens[conversation_id] = new_token
+    return cancelled
+
+
 async def _run_event_task(event_run: EventRunContext) -> None:
     if not agent_instance:
         logger.warning("Skipping event run because the agent is not initialized")
@@ -838,7 +867,10 @@ async def _run_event_task(event_run: EventRunContext) -> None:
     cancellation_token = RunCancellationToken()
     conversation_id = event_run.conversation_id
     if conversation_id and is_chat_event(event_run.event_type):
-        active_chat_tokens[conversation_id] = cancellation_token
+        # New message supersedes any in-flight chat for this conversation —
+        # otherwise two runs can both reply. Explicit interrupt still works
+        # the same path. Persist interrupted markers via RunCancelled handlers.
+        _supersede_prior_chat_runs(conversation_id, cancellation_token)
 
     try:
         terminal_progress.start()

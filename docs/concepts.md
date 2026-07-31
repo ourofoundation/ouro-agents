@@ -32,7 +32,7 @@ Built-in modes (see [`run-modes.md`](./run-modes.md)):
 
 | Mode | What triggers it | Notes |
 |------|------------------|-------|
-| `chat` | `ouro-agents chat` or webhook from Ouro chat | Loads conversation state, keeps post-reflection. Webhook replies are posted automatically. |
+| `chat` | `ouro-agents chat` or webhook from Ouro chat | Injects conversation history, keeps post-reflection. Webhook replies are posted automatically. |
 | `autonomous` | `ouro-agents run "..."` | Runs post-reflection. |
 | `heartbeat` | Scheduler tick | One strong run (decide + execute); Ouro MCP only; search via subagents; semantic memory gated by tick summary. |
 | `plan` | `ouro-agents plan` or scheduler | Generates a plan cycle. |
@@ -68,9 +68,9 @@ Multiple delegations in one tool call run in parallel automatically.
 2. **Working memory** (`MEMORY.md`, daily logs) — markdown the agent
    maintains itself. Gets injected into every system prompt. Mirrored to
    Ouro as posts via the **doc store**.
-3. **Conversation state & turns** — per-conversation summary plus recent
-   user/assistant turns; chat mode injects the last few turns directly into
-   the smolagents memory so the model sees them verbatim.
+3. **Conversation history** — recent user/assistant turns from the
+   platform or `conversations/{id}.jsonl`; chat mode injects them
+   directly into the smolagents memory so the model sees them verbatim.
 
 A periodic **consolidation** job promotes high-signal vector memories into
 `MEMORY.md`. The **refinement** runner separately drains a typed
@@ -152,7 +152,7 @@ event → server                                 # FastAPI handle_event
       → smolagents ToolCallingAgent loop
         ├─ memory_recall, load_skill, load_tool, run_python, delegate, …
         └─ MCP tools (ouro:create_post, etc.)
-      → append conversation turn, update conversation state
+      → append conversation turn (when the profile persists turns)
       → background: post-run reflector subagent
       → log usage breakdown to display
 ```

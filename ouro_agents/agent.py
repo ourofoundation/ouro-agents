@@ -39,12 +39,6 @@ from .controller_questions import ControllerQuestionManager, ControllerReplyReso
 from .provider_reasoning import first_party_provider_slug
 from .display import OuroDisplay, create_logger, get_display
 from .memory import create_memory_backend
-from .memory.conversation_state import (
-    ConversationState,
-    load_state,
-    save_state,
-    update_state,
-)
 from .memory import DocStore
 from .memory.naming import current_period_heading, period_key, store_rhythm
 from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
@@ -72,7 +66,19 @@ from .run_context import (
     bind_run_context,
     get_run_context,
 )
-from .run_log import RunLogStore, RunRecord
+from .chat_telemetry import (
+    apply_usage as apply_chat_turn_usage,
+    build_chat_turn_record,
+    format_chat_turn,
+)
+from .chat_compaction import (
+    build_injectable_history,
+    estimate_chat_prompt_tokens,
+    load_compaction,
+    run_compaction_locked,
+    should_compact,
+)
+from .run_log import ChatTurnRecord, RunLogStore, RunRecord
 from .security.policy import Capability, CapabilityEnvelope
 from .security.tool_capabilities import (
     filter_deferred_by_servers,
@@ -128,7 +134,6 @@ from .utils.conversation import (
     format_conversation_turns,
     load_conversation_turns,
     resolve_conversation_turns,
-    select_history_window,
 )
 from .utils.debug import (
     append_run_debug_markdown_trace,
@@ -755,25 +760,36 @@ class OuroAgent:
 
     _OWN_QUESTS_INDEX_TTL_SECS = 300
 
-    def _own_quests_index(self) -> str:
-        """Short prompt index of the agent's own quests, cached briefly.
-
-        The platform is the source of truth for plans; this index just gives
-        the model quest ids to look up. A small TTL cache keeps chat runs from
-        hitting the search API on every turn.
-        """
+    def _own_quests_cached(self) -> list:
+        """Agent's own quests, cached briefly to avoid per-turn search hits."""
         import time
 
-        cached = getattr(self, "_own_quests_index_cache", None)
+        cached = getattr(self, "_own_quests_list_cache", None)
         now = time.monotonic()
         if cached and now - cached[0] < self._OWN_QUESTS_INDEX_TTL_SECS:
             return cached[1]
 
-        from .modes.planning import format_quests_index_for_prompt, search_own_quests
+        from .modes.planning import search_own_quests
 
-        text = format_quests_index_for_prompt(search_own_quests(self, limit=10))
-        self._own_quests_index_cache = (now, text)
-        return text
+        quests = search_own_quests(self, limit=10)
+        self._own_quests_list_cache = (now, quests)
+        return quests
+
+    def _own_quests_index(self, *, pointer: bool = False) -> str:
+        """Short prompt index of the agent's own quests.
+
+        Chat uses a one-line pointer so quest titles do not steer the thread;
+        other modes get the full id list.
+        """
+        from .modes.planning import (
+            format_quests_index_for_prompt,
+            format_quests_index_pointer,
+        )
+
+        quests = self._own_quests_cached()
+        if pointer:
+            return format_quests_index_pointer(quests)
+        return format_quests_index_for_prompt(quests)
 
     def _is_anthropic_model(self, model_id: str) -> bool:
         return model_id.startswith("anthropic/")
@@ -1144,6 +1160,54 @@ class OuroAgent:
             logger.warning("Conversation summarization failed: %s", e)
             return f"({len(turns)} earlier messages about: {blob[:200]}...)"
 
+    def _maybe_soft_compact_chat(
+        self,
+        *,
+        conversation_id: str,
+        all_turns: list[dict],
+        history_turns: list[dict],
+        history_summary: str,
+        system_prompt: str,
+        dynamic_context: str,
+        task: str,
+    ) -> None:
+        """Background soft compaction when a chat turn sat near the soft budget."""
+        cfg = self.config.chat_compaction
+        if not cfg.enabled:
+            return
+        est = estimate_chat_prompt_tokens(
+            system_prompt=system_prompt,
+            dynamic_context=dynamic_context,
+            task=task,
+            injected_turns=history_turns,
+            summary=history_summary,
+        )
+        level = should_compact(
+            est,
+            context_tokens=cfg.context_tokens,
+            soft_fraction=cfg.soft_fraction,
+            hard_fraction=cfg.hard_fraction,
+        )
+        if level is None:
+            return
+        # Soft path only here — hard already ran synchronously before the reply.
+        if level == "hard":
+            # Still over after the reply's history shape; fold again with keep_recent.
+            reason = "hard-post"
+        else:
+            reason = "soft"
+
+        utility = self._build_model(self._utility_model_id(), role="utility")
+        run_compaction_locked(
+            self._workspace,
+            conversation_id,
+            all_turns,
+            utility,
+            reason=reason,
+            keep_recent=cfg.keep_recent_turns,
+            model_id=self._utility_model_id(),
+        )
+
     def _init_doc_store(self) -> None:
         """Initialize or refresh per-team OuroDocStore instances.
 
@@ -1513,7 +1577,6 @@ class OuroAgent:
         user_id: Optional[str] = None,
         allowed_servers: Optional[list[str]] = None,
         preload_tools: Optional[list[str]] = None,
-        conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         run_id: str = "",
         team_id: Optional[str] = None,
@@ -1571,7 +1634,6 @@ class OuroAgent:
             available_team_ids=self._available_memory_team_ids(team_id),
             available_teams=self._available_memory_teams(team_id),
             enable_remember=profile.allows_capability(Capability.MEMORY_WRITE),
-            conversation_state=conversation_state,
             search_limit=self.config.memory.search_limit,
             max_retrieval_tokens=self.config.memory.max_retrieval_tokens,
             min_signal_score=self.config.memory.min_signal_score,
@@ -1698,7 +1760,6 @@ class OuroAgent:
             result = agent_self._run_subagent(
                 profile,
                 task,
-                conversation_state=conversation_state,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 run_id=run_id,
@@ -1858,34 +1919,30 @@ class OuroAgent:
         conversation_id: Optional[str],
         deferred_tool_directory: str,
         user_id: Optional[str] = None,
-        conversation_state: Optional[ConversationState] = None,
         mode_framing_override: str = "",
         preloaded_tool_names: Optional[list[str]] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
         trigger_turn_id: Optional[str] = None,
-        history_covers_conversation: bool = True,
         include_plans_index: bool = True,
+        entity_haystack: str = "",
     ) -> tuple[str, str]:
         """Build the system prompt and dynamic context.
 
         Returns (system_prompt, dynamic_context) where dynamic_context should
         be prepended to the task message for prompt-cache-friendly layout.
 
-        ``history_covers_conversation`` is False when the verbatim history
-        window injected into agent memory omits older turns; only then does
-        the conversation-state summary add information the model can't see.
-
         ``include_plans_index`` is False for quest_work heartbeats (the inbox
         already is the actionable plan surface).
         """
         conversation_context = ""
-        conversation_state_text = ""
-        if profile.load_conversation_state and conversation_state:
-            conversation_state_text = conversation_state.format_for_prompt(
-                include_summary=not history_covers_conversation
-            )
-        elif conversation_id and not profile.lightweight:
+        # Conversational modes inject history as structured memory steps;
+        # non-chat modes with a conversation_id get a text summary instead.
+        if (
+            conversation_id
+            and not profile.lightweight
+            and not profile.conversational
+        ):
             turns = self._resolve_conversation_turns(
                 conversation_id,
                 limit=24,
@@ -1919,15 +1976,17 @@ class OuroAgent:
 
         entity_context_text = load_entity_context(
             self.config.agent.workspace,
-            conversation_state=conversation_state,
+            haystack=entity_haystack or task,
             task=task,
             doc_store=active_doc_store,
             agent_name=self.config.agent.name,
             team_id=team_id,
         )
-        plans_index_text = (
-            shared_context["plans_index"] if include_plans_index else ""
-        )
+        plans_index_text = ""
+        if include_plans_index:
+            plans_index_text = self._own_quests_index(
+                pointer=bool(profile.conversational)
+            )
 
         delegatable_profiles = self.delegatable_profiles
         # Heartbeat is lightweight but still needs a compact directory so it
@@ -1991,7 +2050,6 @@ class OuroAgent:
             skill_directory=skill_directory,
             working_memory=working_memory,
             conversation_context=conversation_context,
-            conversation_state=conversation_state_text,
             user_model=user_model_text,
             entity_context=entity_context_text,
             deferred_tool_directory=deferred_tool_directory,
@@ -2080,7 +2138,6 @@ class OuroAgent:
         profile,
         model,
         task: str = "",
-        conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         run_id: str = "",
@@ -2122,7 +2179,6 @@ class OuroAgent:
             model=model,
             compactor_model=compactor_model,
             user_id=user_id,
-            conversation_state=conversation_state,
             conversation_id=conversation_id,
             deferred_tools=self._deferred_tools,
             deferred_index=self._deferred_index,
@@ -2225,7 +2281,6 @@ class OuroAgent:
         self,
         profile,
         task: str,
-        conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         run_id: str = "",
@@ -2257,7 +2312,6 @@ class OuroAgent:
             effective_profile,
             model,
             task=task,
-            conversation_state=conversation_state,
             conversation_id=conversation_id,
             user_id=user_id,
             run_id=run_id,
@@ -2275,7 +2329,6 @@ class OuroAgent:
     def _run_subagents_parallel(
         self,
         tasks: list[tuple],
-        conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         run_id: str = "",
@@ -2315,7 +2368,6 @@ class OuroAgent:
                 effective_profile,
                 model,
                 task=task_str,
-                conversation_state=conversation_state,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 run_id=run_id,
@@ -2347,7 +2399,6 @@ class OuroAgent:
     def _run_reflection(
         self,
         task: str,
-        conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         user_id: Optional[str] = None,
         run_id: str = "",
@@ -2380,7 +2431,6 @@ class OuroAgent:
         result = self._run_subagent(
             REFLECTOR,
             task,
-            conversation_state=conversation_state,
             conversation_id=conversation_id,
             user_id=user_id,
             run_id=run_id,
@@ -2447,7 +2497,6 @@ class OuroAgent:
         event_type: Optional[str] = None,
         team_id: Optional[str] = None,
         doc_store: Optional[DocStore] = None,
-        conversation_state: Optional[ConversationState] = None,
         conversation_id: Optional[str] = None,
         memory_notes: Optional[list[str]] = None,
         *,
@@ -2478,7 +2527,6 @@ class OuroAgent:
         try:
             reflection = self._run_reflection(
                 reflection_task,
-                conversation_state=conversation_state,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 run_id=run_id,
@@ -2918,12 +2966,6 @@ class OuroAgent:
         if mode_preloads:
             preload_tools = list(dict.fromkeys((preload_tools or []) + mode_preloads))
 
-        # --- Conversation state ---
-        conv_state: Optional[ConversationState] = None
-        if profile.load_conversation_state and conversation_id:
-            conversations_dir = self.config.agent.workspace / "conversations"
-            conv_state = load_state(conversations_dir, conversation_id)
-
         # --- Trivial message fast path (regex only, no LLM) ---
         is_trivial = is_trivial_message(task)
 
@@ -2951,7 +2993,6 @@ class OuroAgent:
             user_id=user_id,
             allowed_servers=allowed_servers,
             preload_tools=preload_tools,
-            conversation_state=conv_state,
             conversation_id=conversation_id,
             run_id=run_id,
             team_id=team_id,
@@ -2970,20 +3011,38 @@ class OuroAgent:
             state="complete",
         )
 
-        # Resolve the verbatim history window up front: the prompt builder
-        # needs to know whether it covers the whole conversation (to decide
-        # if the state summary adds anything), and the same turns are injected
-        # as structured memory steps below.
+        # Conversational runs inject verbatim history as structured memory
+        # steps. Append-only until a watermark compaction folds older turns
+        # into an internal continuity summary (see chat_compaction).
         history_turns: list[dict] = []
-        history_covers_conversation = True
-        if profile.load_conversation_state and conversation_id:
+        all_turns: list[dict] = []
+        history_summary = ""
+        history_compacted = False
+        history_compaction_reason: Optional[str] = None
+        if profile.conversational and conversation_id:
             all_turns = self._resolve_conversation_turns(
                 conversation_id,
                 limit=HISTORY_FETCH_LIMIT,
                 trigger_turn_id=trigger_turn_id,
             )
-            history_turns = select_history_window(all_turns)
-            history_covers_conversation = len(history_turns) == len(all_turns)
+            compaction_cfg = self.config.chat_compaction
+            prior_compaction = (
+                load_compaction(self._workspace, conversation_id)
+                if compaction_cfg.enabled
+                else None
+            )
+            built = build_injectable_history(all_turns, compaction=prior_compaction)
+            history_turns = built.injected_turns
+            history_summary = built.summary
+            history_compacted = built.compacted
+            history_compaction_reason = built.compaction_reason
+
+        # Build haystack for entity-file matching: recent history + current task.
+        entity_haystack_parts = [
+            str(t.get("content", "")) for t in history_turns[-12:]
+        ]
+        entity_haystack_parts.append(task)
+        entity_haystack = "\n".join(p for p in entity_haystack_parts if p)
 
         # Build system prompt (static, cacheable) + dynamic context (per-turn).
         emit_progress(observer, "building_prompt", "assembling context")
@@ -2997,16 +3056,68 @@ class OuroAgent:
             conversation_id=conversation_id,
             deferred_tool_directory=deferred_tool_directory,
             user_id=user_id,
-            conversation_state=conv_state,
             mode_framing_override=mode_framing_override,
             preloaded_tool_names=preloaded_names,
             team_id=team_id,
             doc_store=active_doc_store,
             trigger_turn_id=trigger_turn_id,
-            history_covers_conversation=history_covers_conversation,
             include_plans_index=effective_include_plans,
+            entity_haystack=entity_haystack,
         )
         emit_progress(observer, "building_prompt", "prompt ready", state="complete")
+
+        # Hard compaction backstop (chat only): if the assembled prompt would
+        # exceed the hard fraction of context, fold older turns now so the
+        # reply can fit. Soft compaction runs after the reply instead.
+        if (
+            profile.conversational
+            and conversation_id
+            and self.config.chat_compaction.enabled
+            and all_turns
+        ):
+            compaction_cfg = self.config.chat_compaction
+            est_prompt = estimate_chat_prompt_tokens(
+                system_prompt=system_prompt,
+                dynamic_context=dynamic_context,
+                task=task,
+                injected_turns=history_turns,
+                summary=history_summary,
+            )
+            level = should_compact(
+                est_prompt,
+                context_tokens=compaction_cfg.context_tokens,
+                soft_fraction=compaction_cfg.soft_fraction,
+                hard_fraction=compaction_cfg.hard_fraction,
+            )
+            if level == "hard":
+                emit_progress(observer, "compacting_history", "compacting chat history")
+                utility = self._build_model(
+                    self._utility_model_id(),
+                    role="utility",
+                )
+                record = run_compaction_locked(
+                    self._workspace,
+                    conversation_id,
+                    all_turns,
+                    utility,
+                    reason="hard",
+                    keep_recent=compaction_cfg.keep_recent_turns,
+                    model_id=self._utility_model_id(),
+                )
+                if record is not None:
+                    built = build_injectable_history(all_turns, compaction=record)
+                    history_turns = built.injected_turns
+                    history_summary = built.summary
+                    history_compacted = True
+                    history_compaction_reason = "hard"
+                    # Rebuild dynamic context is unnecessary — summary lives in
+                    # history steps, not the dynamic prompt. Re-estimate only.
+                emit_progress(
+                    observer,
+                    "compacting_history",
+                    "history compacted" if record else "compaction skipped",
+                    state="complete",
+                )
 
         # Assemble the effective task: dynamic context + prefetched data + request
         context_parts: list[str] = []
@@ -3101,20 +3212,51 @@ class OuroAgent:
                 logger.warning("Failed to write debug markdown preamble: %s", e)
 
         # In chat mode, inject recent turns as structured steps so the model
-        # sees user/assistant pairs verbatim.
+        # sees user/assistant pairs verbatim (plus an optional continuity
+        # summary when a watermark compaction is active).
         has_history = False
-        if history_turns:
-            history_steps = build_history_steps(history_turns)
+        if history_turns or history_summary:
+            history_steps = build_history_steps(
+                history_turns, summary=history_summary
+            )
             agent.memory.steps.extend(history_steps)
             has_history = True
             logger.info(
-                "Injected %d history steps from %d recent turns for conversation %s",
+                "Injected %d history steps from %d turns"
+                "%s for conversation %s",
                 len(history_steps),
                 len(history_turns),
+                " (+compaction summary)" if history_summary else "",
                 conversation_id,
             )
 
         use_reset = not has_history
+
+        # Measure what actually went into this turn's prompt so history policy
+        # and compaction thresholds can be tuned against real cache and token
+        # behavior. The row is inserted before the run and updated with usage
+        # afterwards, so cancelled and errored turns are still measured.
+        chat_turn: Optional[ChatTurnRecord] = None
+        if mode == RunMode.CHAT and conversation_id:
+            try:
+                chat_turn = build_chat_turn_record(
+                    run_id=run_id,
+                    conversation_id=conversation_id,
+                    agent_name=self.config.agent.name,
+                    trigger_turn_id=trigger_turn_id,
+                    model=record.model,
+                    all_turns=all_turns,
+                    injected_turns=history_turns,
+                    history_steps=len(agent.memory.steps),
+                    system_prompt=agent.prompt_templates["system_prompt"],
+                    dynamic_context=dynamic_context,
+                    task=task,
+                    compacted=history_compacted,
+                    compaction_reason=history_compaction_reason,
+                )
+                self._run_log.record_chat_turn(chat_turn)
+            except Exception:
+                logger.debug("Failed to measure chat turn", exc_info=True)
 
         # Overlap title generation with the agent run so the first reply is
         # not blocked on naming. Title uses the user message only; we await
@@ -3351,31 +3493,38 @@ class OuroAgent:
                     event_type=event_type,
                     team_id=team_id,
                     doc_store=active_doc_store,
-                    conversation_state=conv_state,
                     conversation_id=conversation_id,
                     memory_notes=memory_notes,
                     store_semantic=store_semantic,
                 )
 
-            if profile.update_conversation_state and conversation_id:
+            # Soft chat compaction: after a successful reply, if the prompt was
+            # near the soft threshold, fold older turns into an internal
+            # continuity summary so the next turns stay under budget without
+            # sliding-window cache busts.
+            if (
+                mode == RunMode.CHAT
+                and conversation_id
+                and self.config.chat_compaction.enabled
+                and all_turns
+                and not token.cancelled
+            ):
                 try:
-                    state_model = self._build_model(
-                        self._utility_model_id(),
-                        role="utility",
+                    self._maybe_soft_compact_chat(
+                        conversation_id=conversation_id,
+                        all_turns=all_turns,
+                        history_turns=history_turns,
+                        history_summary=history_summary,
+                        system_prompt=system_prompt,
+                        dynamic_context=dynamic_context,
+                        task=task,
                     )
-                    new_conv_state = update_state(
-                        conv_state, task, str(result), state_model
-                    )
-                    conversations_dir = self.config.agent.workspace / "conversations"
-                    save_state(conversations_dir, conversation_id, new_conv_state)
-                    logger.info(
-                        "Updated conversation state for %s: topic=%s, turn=%d",
+                except Exception:
+                    logger.warning(
+                        "Soft chat compaction failed for %s",
                         conversation_id,
-                        new_conv_state.current_topic,
-                        new_conv_state.turn_count,
+                        exc_info=True,
                     )
-                except Exception as e:
-                    logger.warning("Failed to update conversation state: %s", e)
 
         def _run_post_run_background() -> None:
             try:
@@ -3421,6 +3570,12 @@ class OuroAgent:
             subagent_ledger=ledger,
             memory_ledger=memory_ledger,
         )
+
+        if chat_turn is not None:
+            chat_turn.duration_s = max(0.0, time.monotonic() - run_started_at)
+            apply_chat_turn_usage(chat_turn, usage)
+            self._run_log.update_chat_turn_usage(chat_turn)
+            logger.info(format_chat_turn(chat_turn))
 
         # Populate the run record's usage now that it's computed for display;
         # the wrapper's finally block snapshots steps and writes the record.

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from smolagents import tool
 
-from . import MemoryBackend, expand_query
+from . import MemoryBackend
 from .model import to_metadata
 from .naming import period_key, store_rhythm
 from .relevance import memory_signal_score
@@ -138,7 +138,6 @@ def make_memory_tools(
     available_team_ids: Optional[set[str]] = None,
     available_teams: Optional[list[dict]] = None,
     enable_remember: bool = False,
-    conversation_state: Any = None,
     search_limit: int = 5,
     max_retrieval_tokens: int = 4000,
     min_signal_score: float = 0.35,
@@ -257,11 +256,7 @@ def make_memory_tools(
                     "since",
                 ]
             )
-            search_query = (
-                expand_query(query, conversation_state)
-                if conversation_state is not None
-                else query
-            )
+            search_query = query
             results = []
             if run_mode.startswith("chat") and not explicit_filters:
                 if user_id:

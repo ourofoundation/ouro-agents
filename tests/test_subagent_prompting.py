@@ -73,7 +73,6 @@ def test_build_shared_prompt_sections_formats_core_sections():
         platform_context="You are @athena.",
         user_model="Prefers concise updates.",
         working_memory="Recent anchor post: Day 9.",
-        conversation_state="Current topic: Iran-US conflict",
         plans_index="- PLAN:athena:2026-04-06",
     )
 
@@ -82,7 +81,7 @@ def test_build_shared_prompt_sections_formats_core_sections():
     assert sections["platform_context"] == "## PLATFORM CONTEXT\nYou are @athena."
     assert sections["user_model"] == "## USER CONTEXT\nPrefers concise updates."
     assert sections["working_memory"] == "## WORKING MEMORY\nRecent anchor post: Day 9."
-    assert sections["conversation_state"] == "## CONVERSATION STATE\nCurrent topic: Iran-US conflict"
+    assert "conversation_state" not in sections
     assert sections["plans_index"] == "## PLAN QUEST INDEX\n- PLAN:athena:2026-04-06"
 
 
@@ -157,10 +156,12 @@ def test_quest_work_framing_includes_mechanics_open_ended_does_not():
 
 def test_chat_framing_treats_status_questions_as_conversation():
     assert "what are you up to?" in CHAT_FRAMING
-    assert "not a request to start research" in CHAT_FRAMING
-    assert "Subagents are available" in CHAT_FRAMING
+    assert "not a request to" in CHAT_FRAMING
+    assert "start research" in CHAT_FRAMING
+    assert "Subagents" in CHAT_FRAMING
     assert "explicitly asks for substantial work" in CHAT_FRAMING
     assert "Only perform side-effecting platform actions" in CHAT_FRAMING
+    assert "commit-and-continue" in CHAT_FRAMING
 
 
 def test_always_loaded_platform_skills_are_injected_for_all_main_modes(tmp_path):
@@ -215,6 +216,19 @@ def test_search_profile_is_cheap_non_publishing():
     assert SEARCH.max_steps <= 4
 
 
+def test_research_profile_writes_local_draft_only():
+    assert RESEARCH.delegatable is True
+    assert RESEARCH.allowed_servers == ["search"]
+    assert "ouro:create_post" not in RESEARCH.preload_tools
+    assert RESEARCH.include_asset_placement is False
+    assert RESEARCH.needs_python_tool is True
+    assert RESEARCH.can_delegate_to == []
+    assert "filesystem" in RESEARCH.skills
+    assert "ouro" not in RESEARCH.skills
+    assert "asset_output" not in RESEARCH.skills
+    assert "Never create posts" in RESEARCH.system_prompt
+
+
 def test_search_profile_is_exported_from_package():
     from ouro_agents import subagents as subagents_pkg
 
@@ -223,7 +237,7 @@ def test_search_profile_is_exported_from_package():
 
 
 def test_platform_subagents_receive_ouro_asset_semantics():
-    for profile in (RESEARCH, EXECUTOR, WRITER, DEVELOPER):
+    for profile in (EXECUTOR, WRITER, DEVELOPER):
         assert "ouro" in profile.skills
         bodies = resolve_skills(profile.skills)
         joined = "\n\n".join(bodies)
