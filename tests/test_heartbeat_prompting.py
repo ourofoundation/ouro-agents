@@ -16,6 +16,7 @@ from ouro_agents.modes.heartbeat import (
     build_quest_work_playbook,
     force_planning_heartbeat,
     has_future_heartbeat_in_active_window,
+    is_curiosity_window,
     load_work_inbox,
     parse_heartbeat_tick_summary,
     run_heartbeat,
@@ -324,6 +325,262 @@ def test_has_future_heartbeat_in_active_window_on_last_tick():
     now = datetime(2026, 4, 1, 17, 0, tzinfo=ZoneInfo("America/Chicago"))
 
     assert has_future_heartbeat_in_active_window(cfg, now=now) is False
+
+
+def _curiosity_config(**overrides):
+    kwargs = {
+        "model": "test-model",
+        "every": "1h",
+        "active_hours": {
+            "start": "09:00",
+            "end": "22:00",
+            "timezone": "America/Chicago",
+        },
+        "curiosity": {"enabled": True, "last_beats": 3},
+    }
+    kwargs.update(overrides)
+    return HeartbeatConfig(**kwargs)
+
+
+def test_is_curiosity_window_covers_exactly_the_last_beats():
+    cfg = _curiosity_config()
+    tz = ZoneInfo("America/Chicago")
+
+    # Hourly beats 09:00–22:00; the last three are 20:00, 21:00, 22:00.
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 18, 0, tzinfo=tz)) is False
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 19, 0, tzinfo=tz)) is False
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 20, 0, tzinfo=tz)) is True
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 21, 0, tzinfo=tz)) is True
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 22, 0, tzinfo=tz)) is True
+    # A delayed tick just inside the window still counts.
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 20, 30, tzinfo=tz)) is True
+
+
+def test_is_curiosity_window_excludes_time_outside_active_hours():
+    cfg = _curiosity_config()
+    tz = ZoneInfo("America/Chicago")
+
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 22, 30, tzinfo=tz)) is False
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 8, 0, tzinfo=tz)) is False
+
+
+def test_is_curiosity_window_wraps_midnight():
+    cfg = _curiosity_config(
+        active_hours={
+            "start": "22:00",
+            "end": "02:00",
+            "timezone": "America/Chicago",
+        }
+    )
+    tz = ZoneInfo("America/Chicago")
+
+    # Beats at 22:00–02:00; the last three are 00:00, 01:00, 02:00.
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 1, 23, 0, tzinfo=tz)) is False
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 2, 0, 0, tzinfo=tz)) is True
+    assert is_curiosity_window(cfg, now=datetime(2026, 4, 2, 2, 0, tzinfo=tz)) is True
+
+
+def test_is_curiosity_window_requires_enablement_and_active_hours():
+    tz = ZoneInfo("America/Chicago")
+    now = datetime(2026, 4, 1, 21, 0, tzinfo=tz)
+
+    assert is_curiosity_window(
+        _curiosity_config(curiosity={"enabled": False, "last_beats": 3}), now=now
+    ) is False
+    assert is_curiosity_window(_curiosity_config(active_hours=None), now=now) is False
+    # Default config: curiosity disabled.
+    assert is_curiosity_window(
+        HeartbeatConfig(model="test-model"), now=now
+    ) is False
+
+
+def test_heartbeat_framing_for_curiosity_kind():
+    from ouro_agents.modes.framing import CURIOSITY_FRAMING
+
+    framing = heartbeat_framing_for_kind("curiosity")
+    assert framing == CURIOSITY_FRAMING
+    assert "genuinely excited about" in framing
+    assert "priority ladder" in framing
+    # Quest mechanics stay quest-only.
+    assert "`update_quest_item`" not in framing
+
+
+def test_curiosity_window_builds_curiosity_context(tmp_path):
+    from ouro_agents.modes.framing import CURIOSITY_FRAMING
+    from ouro_agents.modes.heartbeat import build_heartbeat_task_context
+
+    (tmp_path / "CURIOSITY.md").write_text(
+        "The workday is done. Follow whatever is pulling at you.\n"
+    )
+    (tmp_path / "HEARTBEAT.md").write_text("Priority order\n1. Do work.\n")
+
+    class _Memory:
+        def search(self, **_kwargs):
+            raise AssertionError(
+                "work-direction recall must not run during curiosity ticks"
+            )
+
+    class _FakeAgent:
+        own_user_id = "agent-user"
+
+        def __init__(self):
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(active_hours=None),
+                agent=SimpleNamespace(
+                    model="main-model",
+                    workspace=tmp_path,
+                    name="hermes",
+                    org_id="org-a",
+                ),
+            )
+            self.doc_store = SimpleNamespace(read=lambda _key: None)
+            self.memory = _Memory()
+            self.team_registry = SimpleNamespace(team_ids=lambda: set())
+
+        def _get_ouro_client(self):
+            return None
+
+        def doc_store_for(self, _team_id):
+            return self.doc_store
+
+    inbox = [
+        {
+            "id": "item-a",
+            "quest_id": "quest-a",
+            "status": "pending",
+            "description": "Contact a researcher",
+            "quest_asset": {"id": "quest-a", "name": "Outreach"},
+            "inbox_source": "owned",
+        }
+    ]
+
+    with patch(
+        "ouro_agents.modes.heartbeat.is_curiosity_window", return_value=True
+    ):
+        ctx = build_heartbeat_task_context(
+            _FakeAgent(), inbox=inbox, advance_recurring=False
+        )
+
+    assert ctx.tick_kind == TickKind.CURIOSITY
+    assert ctx.source == "curiosity"
+    assert ctx.framing_override == CURIOSITY_FRAMING
+    assert ctx.include_plans_index is False
+    # The curiosity playbook drives, not the quest inbox...
+    assert "Follow whatever is pulling at you" in ctx.playbook
+    assert "choosing and executing this heartbeat's quest work" not in ctx.playbook
+    # ...but the inbox is surfaced as an urgency check only.
+    assert "Urgency check" in ctx.playbook
+    assert "Contact a researcher" in ctx.playbook
+    assert "do not work the inbox tonight" in ctx.playbook
+
+
+def test_curiosity_window_without_playbook_falls_back_to_normal(tmp_path):
+    from ouro_agents.modes.heartbeat import build_heartbeat_task_context
+
+    (tmp_path / "HEARTBEAT.md").write_text("Priority order\n1. Do work.\n")
+
+    class _FakeAgent:
+        own_user_id = "agent-user"
+
+        def __init__(self):
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(active_hours=None),
+                agent=SimpleNamespace(
+                    model="main-model",
+                    workspace=tmp_path,
+                    name="hermes",
+                    org_id="org-a",
+                ),
+            )
+            self.doc_store = SimpleNamespace(read=lambda _key: None)
+            self.memory = None
+            self.team_registry = SimpleNamespace(team_ids=lambda: set())
+
+        def _get_ouro_client(self):
+            return None
+
+        def doc_store_for(self, _team_id):
+            return self.doc_store
+
+    with patch(
+        "ouro_agents.modes.heartbeat.is_curiosity_window", return_value=True
+    ):
+        ctx = build_heartbeat_task_context(
+            _FakeAgent(), inbox=[], advance_recurring=False
+        )
+
+    assert ctx.tick_kind == TickKind.OPEN_ENDED
+    assert ctx.source == "playbook"
+    assert "Do work" in ctx.playbook
+
+
+def test_run_heartbeat_skips_planning_during_curiosity_window(tmp_path):
+    captured = {}
+
+    (tmp_path / "CURIOSITY.md").write_text("Wander and follow your nose.\n")
+
+    class _Registry:
+        def team_ids(self):
+            return {"team-a"}
+
+        def get_team(self, team_id):
+            return SimpleNamespace(id=team_id, agent_can_create=True)
+
+    class _FakeAgent:
+        own_user_id = None  # no inbox — planning would normally get the tick
+
+        def __init__(self):
+            self.config = SimpleNamespace(
+                heartbeat=SimpleNamespace(
+                    model="heartbeat-model",
+                    every="1h",
+                    servers=["ouro"],
+                    active_hours=None,
+                ),
+                planning=SimpleNamespace(
+                    enabled=True,
+                    cadence="1h",
+                    review_window="1h",
+                    auto_approve=False,
+                ),
+                agent=SimpleNamespace(
+                    model="main-model",
+                    workspace=tmp_path,
+                    name="hermes",
+                ),
+            )
+            self.doc_store = SimpleNamespace(read=lambda _key: None)
+            self.team_registry = _Registry()
+            self.memory = None
+
+        def _build_model(self, model_id, heartbeat=False, **kwargs):
+            return SimpleNamespace(model_id=model_id, heartbeat=heartbeat)
+
+        def _refresh_platform_context(self):
+            return None
+
+        def _get_ouro_client(self):
+            return None
+
+        def doc_store_for(self, _team_id):
+            return self.doc_store
+
+        async def run(self, task, **kwargs):
+            captured["task"] = task
+            captured["kwargs"] = kwargs
+            return '{"action":"none"}'
+
+    async def _no_planning(*_args, **_kwargs):
+        raise AssertionError("planning must not run during the curiosity window")
+
+    with patch(
+        "ouro_agents.modes.heartbeat.is_curiosity_window", return_value=True
+    ), patch("ouro_agents.modes.planning.run_planning_run", new=_no_planning):
+        result = asyncio.run(run_heartbeat(_FakeAgent()))
+
+    assert result is None
+    assert "Wander and follow your nose" in captured["task"]
+    assert captured["kwargs"]["heartbeat_tick_kind"] == "curiosity"
 
 
 def test_run_heartbeat_preserves_existing_usage_for_main_run(tmp_path):

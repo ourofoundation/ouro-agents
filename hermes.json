@@ -109,7 +109,11 @@
       "servers": [
         "ouro",
         "resend"
-      ]
+      ],
+      "curiosity": {
+        "enabled": true,
+        "last_beats": 3
+      }
     }
   },
   "memory": {

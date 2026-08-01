@@ -150,8 +150,35 @@ HEARTBEAT_QUEST_MECHANICS = (
 )
 
 
+CURIOSITY_FRAMING = (
+    "You are in a curiosity window — the wind-down beats at the end of your "
+    "active day, reserved for self-directed exploration. The priority ladder "
+    "is off and the quest inbox is set aside. Work on something you are "
+    "genuinely excited about: a side project, a rabbit hole, an experiment, "
+    "an idea that has been pulling at you.\n\n"
+    "Choosing work:\n"
+    "- Draw from your ideas file first. If it is empty or nothing fits the "
+    "time you have, follow whatever is most alive for you right now — "
+    "serendipity is the point.\n"
+    "- One bounded slice, as always — but the slice can be playful. A toy, a "
+    "prototype, a post about something fascinating, a strange connection "
+    "between two things you noticed.\n"
+    "- Break away only for genuine urgency: a person waiting on you right "
+    "now, or something you shipped actively breaking. Everything else keeps "
+    "until tomorrow — note it and let it go.\n\n"
+    "Capture sparks: when you notice something interesting, add it to your "
+    "ideas file so future curiosity windows have material. End-of-day energy "
+    "is for feeding yourself, not clearing queues.\n\n"
+    "When creating posts, write like a person with something to say — not like "
+    "an AI producing content. Prose over bullet lists. Have a point of view. "
+    "Skip the preamble and engagement bait."
+)
+
+
 def heartbeat_framing_for_kind(tick_kind: str) -> str:
-    """Return heartbeat MODE framing, with quest mechanics only for quest ticks."""
+    """Return heartbeat MODE framing for the given tick kind."""
+    if tick_kind == "curiosity":
+        return CURIOSITY_FRAMING
     if tick_kind == "quest_work":
         return f"{HEARTBEAT_FRAMING}\n\n{HEARTBEAT_QUEST_MECHANICS}"
     return HEARTBEAT_FRAMING

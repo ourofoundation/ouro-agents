@@ -80,6 +80,17 @@ When `heartbeat.active_hours.start` is set, the heartbeat trigger anchors
 its schedule to the configured start minute so daily ticks don't drift
 across days. Without active hours it uses a plain `IntervalTrigger`.
 
+## Curiosity window
+
+When `heartbeat.curiosity.enabled` is set, the final
+`heartbeat.curiosity.last_beats` beats of each active window run as
+curiosity ticks: the quest inbox and priority ladder are set aside (the
+inbox is surfaced only as an urgency check), planning runs are suppressed,
+and the agent works from its `CURIOSITY.md` playbook — self-directed
+exploration and side projects. With hourly beats ending at 22:00 and
+`last_beats: 3`, the 20:00, 21:00, and 22:00 ticks are curiosity ticks.
+Requires `active_hours`; disabled by default.
+
 ## HTTP introspection
 
 `GET /tasks` returns the list of tasks (system + user) for monitoring

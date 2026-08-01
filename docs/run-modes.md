@@ -67,8 +67,13 @@ provided. Uses the mid model tier when configured (falls back to strong).
 Scheduler-driven mode. Restricted to the `ouro` MCP server (search is
 delegated to subagents). One mid-model run owns the whole tick: it
 decides and executes one bounded slice, delegating heavy work to cheap
-subagents. Tick kind (`quest_work` vs `open_ended`) is chosen
-deterministically before the LLM call and gates context/framing. The final
+subagents. Tick kind (`quest_work` vs `open_ended` vs `curiosity`) is
+chosen deterministically before the LLM call and gates context/framing.
+`curiosity` ticks fire when the clock falls in the curiosity window — the
+final `heartbeat.curiosity.last_beats` beats of the active window — and
+run the agent's `CURIOSITY.md` playbook instead of the quest inbox /
+priority ladder (planning runs are also suppressed during the window).
+The final
 tick-summary JSON carries `action` / `worth_remembering` / `memory_notes`
 for run-log columns and memory gating. Default `max_steps=40`. Used inside
 the heartbeat loop in `modes/heartbeat.py`.

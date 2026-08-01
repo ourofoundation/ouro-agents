@@ -42,6 +42,7 @@ class TickKind(str, Enum):
 
     QUEST_WORK = "quest_work"
     OPEN_ENDED = "open_ended"
+    CURIOSITY = "curiosity"
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +157,63 @@ def has_future_heartbeat_in_active_window(
     return remaining_secs >= interval_secs
 
 
+def is_curiosity_window(
+    config: HeartbeatConfig,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Return True when the current tick falls in the wind-down curiosity window.
+
+    The window covers the final ``curiosity.last_beats`` beats of the active
+    window: with hourly beats ending at 22:00 and ``last_beats=3``, the ticks
+    at 20:00, 21:00, and 22:00 are curiosity ticks. Ticks outside active hours
+    are never curiosity ticks.
+    """
+    curiosity = getattr(config, "curiosity", None)
+    if curiosity is None or not getattr(curiosity, "enabled", False):
+        return False
+    if not config.active_hours:
+        return False
+
+    start_str = config.active_hours.get("start")
+    end_str = config.active_hours.get("end")
+    tz_str = config.active_hours.get("timezone")
+    if not start_str or not end_str:
+        return False
+
+    interval_secs = heartbeat_interval_seconds(config)
+    if not interval_secs:
+        return False
+
+    try:
+        import zoneinfo
+
+        tz = zoneinfo.ZoneInfo(tz_str) if tz_str else None
+    except (ImportError, KeyError):
+        logger.warning("Invalid timezone %s, skipping curiosity window", tz_str)
+        return False
+
+    current = now or datetime.now(timezone.utc)
+    current = current.astimezone(tz) if tz else current.astimezone()
+
+    start = datetime.strptime(start_str, "%H:%M").time()
+    end = datetime.strptime(end_str, "%H:%M").time()
+
+    current_time = current.time()
+    if start <= end:
+        if not (start <= current_time <= end):
+            return False
+    elif not (current_time >= start or current_time <= end):
+        return False
+
+    end_dt = datetime.combine(current.date(), end, tzinfo=current.tzinfo)
+    if start > end and current.time() >= start:
+        end_dt = end_dt + timedelta(days=1)
+
+    remaining_secs = (end_dt - current).total_seconds()
+    last_beats = max(1, int(getattr(curiosity, "last_beats", 3)))
+    return 0 <= remaining_secs < last_beats * interval_secs
+
+
 def format_active_period_status(config: HeartbeatConfig) -> str:
     """One-line summary for logging: configured window (if any) and whether now is inside it."""
     if not config.active_hours:
@@ -179,19 +237,21 @@ def format_active_period_status(config: HeartbeatConfig) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _load_playbook(agent: "OuroAgent", heartbeat_doc_store) -> str | None:
-    """Load the heartbeat playbook: team doc store → global doc store → local file."""
+def _load_playbook(
+    agent: "OuroAgent", heartbeat_doc_store, doc_name: str = "HEARTBEAT"
+) -> str | None:
+    """Load a playbook doc: team doc store → global doc store → local file."""
     playbook = None
     if heartbeat_doc_store:
         playbook = (
-            heartbeat_doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
+            heartbeat_doc_store.read(f"{doc_name}:{agent.config.agent.name}") or None
         )
     if not playbook and heartbeat_doc_store is not agent.doc_store and agent.doc_store:
-        playbook = agent.doc_store.read(f"HEARTBEAT:{agent.config.agent.name}") or None
+        playbook = agent.doc_store.read(f"{doc_name}:{agent.config.agent.name}") or None
     if not playbook:
-        heartbeat_path = agent.config.agent.workspace / "HEARTBEAT.md"
-        if heartbeat_path.exists():
-            playbook = heartbeat_path.read_text()
+        playbook_path = agent.config.agent.workspace / f"{doc_name}.md"
+        if playbook_path.exists():
+            playbook = playbook_path.read_text()
     return playbook
 
 
@@ -1181,7 +1241,7 @@ def _append_shared_context_snapshot(
         task_index = build_memory_index(
             agent.config.agent.workspace, team_id=team_id
         )
-    elif tick_kind == TickKind.OPEN_ENDED:
+    elif tick_kind in (TickKind.OPEN_ENDED, TickKind.CURIOSITY):
         labels: dict[str, str] = {}
         registry = getattr(agent, "team_registry", None)
         if registry is not None:
@@ -1249,6 +1309,28 @@ def _append_notification_inbox(
     return playbook, preload_tools
 
 
+def _build_curiosity_playbook(playbook: str, inbox: list[dict[str, Any]]) -> str:
+    """Compose the curiosity tick playbook with an urgency-only inbox check."""
+    if not inbox:
+        return playbook
+    lines = []
+    for item in inbox[:3]:
+        description = str(item.get("description") or "").strip()
+        if description:
+            lines.append(f"- {description}")
+    section = (
+        "## Urgency check (then set work aside)\n"
+        f"The quest inbox still has {len(inbox)} actionable item(s). This is "
+        "your curiosity window: break away only for something genuinely urgent "
+        "— a person waiting on your reply right now, or something you shipped "
+        "actively breaking. Everything else keeps until tomorrow; do not work "
+        "the inbox tonight."
+    )
+    if lines:
+        section += "\n\nTop of the inbox, for the urgency check only:\n" + "\n".join(lines)
+    return f"{playbook}\n\n{section}"
+
+
 def build_heartbeat_task_context(
     agent: "OuroAgent",
     *,
@@ -1271,7 +1353,22 @@ def build_heartbeat_task_context(
     preload_tools: list[str] = []
     tick_kind = TickKind.OPEN_ENDED
 
-    if items:
+    # Curiosity window: the wind-down beats at the end of the active day are
+    # reserved for self-directed exploration. The quest inbox is set aside
+    # (surfaced only as an urgency check) and CURIOSITY.md drives the tick.
+    if is_curiosity_window(agent.config.heartbeat):
+        curiosity_playbook = _load_playbook(agent, doc_store, doc_name="CURIOSITY")
+        if curiosity_playbook:
+            tick_kind = TickKind.CURIOSITY
+            playbook = _build_curiosity_playbook(curiosity_playbook, items)
+            source = "curiosity"
+        else:
+            logger.info(
+                "Curiosity window active but no CURIOSITY playbook found; "
+                "falling back to normal heartbeat behavior"
+            )
+
+    if playbook is None and items:
         tick_kind = TickKind.QUEST_WORK
         if advance_recurring:
             _advance_due_recurring_items(agent, items)
@@ -1325,7 +1422,11 @@ def build_heartbeat_task_context(
     if health_note:
         playbook = f"{playbook}\n\n## Memory Maintenance Health\n{health_note}"
 
-    direction_context = _load_work_direction_context(agent, team_id)
+    # Work-direction recall steers focus toward current priorities; curiosity
+    # ticks are deliberately self-directed, so it would defeat their purpose.
+    direction_context = ""
+    if tick_kind != TickKind.CURIOSITY:
+        direction_context = _load_work_direction_context(agent, team_id)
     if direction_context:
         playbook = (
             f"{playbook}\n\n## Current Work Direction\n{direction_context}\n\n"
@@ -1500,7 +1601,11 @@ async def _run_heartbeat_impl(agent: OuroAgent) -> Optional[str]:
                     if _planning_team_is_writable(agent, tid)
                     and planning_due(load_cursor(workspace, tid), planning_cfg.cadence)
                 ]
-                if due_teams and not has_future_heartbeat_in_active_window(
+                if due_teams and is_curiosity_window(agent.config.heartbeat):
+                    logger.info(
+                        "Skipping planning: curiosity window (wind-down beats)"
+                    )
+                elif due_teams and not has_future_heartbeat_in_active_window(
                     agent.config.heartbeat
                 ):
                     logger.info(

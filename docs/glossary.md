@@ -81,6 +81,13 @@ The daily window during which heartbeats actually run
 (`heartbeat.active_hours = {start, end, timezone}`). Outside this window
 the scheduler still fires but the run skips itself with a status string.
 
+### Curiosity window
+The wind-down beats at the end of each active window
+(`heartbeat.curiosity = {enabled, last_beats}`). The final `last_beats`
+heartbeats of the day run as `curiosity` ticks driven by the agent's
+`CURIOSITY.md` playbook: self-directed exploration and side projects
+instead of the quest inbox and priority ladder.
+
 ### Refinement
 The LLM-driven cleanup of workspace docs that drains a typed change-set
 queue (`ChangeKind.CORRECTION`, `GUIDANCE_UPDATED`, `ASSET_UPDATED`).

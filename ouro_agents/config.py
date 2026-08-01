@@ -313,11 +313,24 @@ class ObservationPolicyConfig(BaseModel):
     exempt_tools: List[str] = Field(default_factory=lambda: ["load_skill"])
 
 
+class CuriosityConfig(BaseModel):
+    """Wind-down beats reserved for self-directed exploration.
+
+    When enabled, the final ``last_beats`` heartbeats of each active window
+    run as curiosity ticks: the priority ladder and quest inbox are set aside
+    and the agent works from its CURIOSITY.md playbook instead.
+    """
+
+    enabled: bool = False
+    last_beats: int = Field(default=3, ge=1)
+
+
 class HeartbeatConfig(BaseModel):
     enabled: bool = True
     every: str = "30m"
     model: str
     active_hours: Optional[Dict[str, str]] = None
+    curiosity: CuriosityConfig = Field(default_factory=CuriosityConfig)
     # MCP servers the main heartbeat may load. Search access belongs to the
     # ``search`` / ``research`` subagents, so the default is Ouro only.
     servers: List[str] = Field(default_factory=lambda: ["ouro"])
@@ -786,6 +799,7 @@ _HEARTBEAT_SECTION_KEYS = {
     "proactive",  # legacy; migrated to ``servers`` at load time
     "reasoning",
     "openrouter_provider",
+    "curiosity",
 }
 
 
