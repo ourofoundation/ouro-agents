@@ -221,7 +221,7 @@ class AgentScheduler:
             self._register_dream(config.memory)
         self._scheduler.start()
         task_count = len(self.store.load())
-        logger.info(
+        logger.debug(
             "Scheduler started: %d user task(s), heartbeat=%s, dream=%s",
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
@@ -236,6 +236,12 @@ class AgentScheduler:
         if self._scheduler.running:
             self._scheduler.shutdown(wait=False)
             logger.info("Scheduler stopped")
+
+    def next_run_times(self) -> dict[str, datetime]:
+        """Job id → next fire time for registered jobs (empty before start)."""
+        if not self._scheduler.running:
+            return {}
+        return {job.id: job.next_run_time for job in self._scheduler.get_jobs()}
 
     # -- CRUD ----------------------------------------------------------------
 
@@ -300,7 +306,7 @@ class AgentScheduler:
             misfire_grace_time=300,
             replace_existing=True,
         )
-        logger.info("Registered scheduled task: %s (%s)", task.name, task.schedule)
+        logger.debug("Registered scheduled task: %s (%s)", task.name, task.schedule)
 
     def _register_heartbeat(self, heartbeat_config) -> None:
         from apscheduler.triggers.cron import CronTrigger
@@ -365,8 +371,8 @@ class AgentScheduler:
         
         next_run = job.next_run_time if hasattr(job, "next_run_time") else None
         next_run_str = next_run.strftime("%Y-%m-%d %H:%M:%S %Z") if next_run else "unknown"
-        
-        logger.info(
+
+        logger.debug(
             "Registered heartbeat: every %s; %s; next_run=%s",
             heartbeat_config.every,
             format_active_period_status(heartbeat_config),
@@ -410,7 +416,7 @@ class AgentScheduler:
             misfire_grace_time=600,
             replace_existing=True,
         )
-        logger.info(
+        logger.debug(
             "Registered dream cycle: rhythm=%s, daily tick at %s",
             memory_config.rhythm,
             memory_config.dream_time,

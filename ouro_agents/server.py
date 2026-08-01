@@ -36,6 +36,7 @@ from .security.policy import (
     actor_role_for,
     resolve_envelope,
 )
+from .startup import print_startup_summary
 from .utils.conversation import INTERRUPTED_REPLY_PREFIX
 from .utils.message_persistence import (
     extract_tool_call_payloads,
@@ -130,13 +131,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             api_key=ouro_env.get("OURO_API_KEY"),
             base_url=ouro_env.get("OURO_BASE_URL") or ouro_env.get("OURO_BACKEND_URL"),
         )
-    logger.info("Reply publisher config: %s", reply_publisher.describe_config())
+    logger.debug("Reply publisher config: %s", reply_publisher.describe_config())
     reply_publisher.ensure_ready()
-    logger.info(
-        "Reply publisher ready: %s as %s",
-        reply_publisher.client.base_url,
-        getattr(reply_publisher.client.user, "email", "unknown"),
+    platform = (
+        f"{reply_publisher.client.base_url} as "
+        f"{getattr(reply_publisher.client.user, 'email', 'unknown')}"
     )
+    logger.debug("Reply publisher ready: %s", platform)
 
     app.add_api_route(config.server.webhook_path, handle_event, methods=["POST"])
 
@@ -148,13 +149,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         mount_prefix = getattr(router, "ouro_mount_prefix", "/routes")
         app.include_router(router, prefix=mount_prefix)
-        logger.info(
+        logger.debug(
             "Agent routes mounted at %s (public_base_url=%s)",
             mount_prefix,
             config.server.public_base_url,
         )
 
     await agent_instance.scheduler.start(agent_instance)
+    print_startup_summary(config, agent_instance.scheduler, platform=platform)
 
     try:
         yield

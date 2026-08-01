@@ -199,6 +199,10 @@ class OuroDisplay:
     def blank(self) -> None:
         self._print()
 
+    def render(self, renderable: Any) -> None:
+        """Print an arbitrary Rich renderable (tables, grids), pipe-safe."""
+        self._print(renderable)
+
     def header(self, title: str, subtitle: str = "") -> None:
         self.blank()
         self._print(f"[ouro.bold]{title}[/]")

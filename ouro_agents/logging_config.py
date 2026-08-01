@@ -70,7 +70,9 @@ def uvicorn_log_config() -> dict[str, Any]:
         },
         "loggers": {
             "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
-            "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
+            # Startup chatter ("Uvicorn running on…", "Application startup complete")
+            # is superseded by the startup summary; real problems log at WARNING+.
+            "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
             "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
             # APScheduler is chatty at INFO (job add/start); we log our own scheduler lines.
             "apscheduler": {"handlers": ["default"], "level": "WARNING", "propagate": False},
