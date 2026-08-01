@@ -297,6 +297,83 @@ class TestModelProviderOverrides(unittest.TestCase):
         reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
         self.assertEqual(reasoning, {"effort": "medium"})
 
+    def test_gpt56_defaults_reasoning_context_to_all_turns(self):
+        from ouro_agents.config import ReasoningConfig
+
+        agent = self._make_agent()
+        agent.config.agent.reasoning = ReasoningConfig(effort="medium")
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-5.6-sol")
+
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(
+            reasoning, {"effort": "medium", "context": "all_turns"}
+        )
+
+    def test_gpt56_explicit_reasoning_context_and_mode_win(self):
+        from ouro_agents.config import ReasoningConfig
+
+        agent = self._make_agent()
+        agent.config.agent.reasoning = ReasoningConfig(
+            effort="high",
+            context="current_turn",
+            mode="pro",
+        )
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-5.6-terra")
+
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(
+            reasoning,
+            {
+                "effort": "high",
+                "context": "current_turn",
+                "mode": "pro",
+            },
+        )
+
+    def test_pre_gpt56_strips_reasoning_context_and_mode(self):
+        from ouro_agents.config import ReasoningConfig
+
+        agent = self._make_agent()
+        agent.config.agent.reasoning = ReasoningConfig(
+            effort="medium",
+            context="all_turns",
+            mode="pro",
+        )
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-5.4")
+
+        reasoning = tracked_model.call_args.kwargs["extra_body"]["reasoning"]
+        self.assertEqual(reasoning, {"effort": "medium"})
+
+    def test_supports_openai_reasoning_context_helper(self):
+        from ouro_agents.config import supports_openai_reasoning_context
+
+        self.assertTrue(supports_openai_reasoning_context("openai/gpt-5.6-sol"))
+        self.assertTrue(supports_openai_reasoning_context("openai/gpt-5.6-luna-pro"))
+        self.assertTrue(supports_openai_reasoning_context("openai/gpt-6"))
+        self.assertFalse(supports_openai_reasoning_context("openai/gpt-5.4"))
+        self.assertFalse(supports_openai_reasoning_context("openai/gpt-5"))
+        self.assertFalse(supports_openai_reasoning_context("openai/o3"))
+        self.assertFalse(supports_openai_reasoning_context("anthropic/claude-sonnet-4.6"))
+        self.assertFalse(supports_openai_reasoning_context(None))
+
     def test_minimax_routes_request_reasoning_split(self):
         # MiniMax leaks tool-call tokens into content when its thinking shares
         # the content channel; reasoning_split keeps the channels separate.

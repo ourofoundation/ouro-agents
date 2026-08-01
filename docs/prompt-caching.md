@@ -82,17 +82,21 @@ request:
     "effort": "medium",
     "max_tokens": null,
     "exclude": false,
-    "enabled": null
+    "enabled": null,
+    "context": null,
+    "mode": null
   }
 }
 ```
 
 | Field | Notes |
 |-------|-------|
-| `effort` | `xhigh`, `high`, `medium`, `low`, `minimal`, `none`. |
+| `effort` | `xhigh`, `high`, `medium`, `low`, `minimal`, `none`, `max`. |
 | `max_tokens` | Provider-dependent cap on reasoning tokens. |
 | `exclude` | Don't return reasoning content to the client. |
 | `enabled` | Some providers gate reasoning behind this. |
+| `context` | GPT-5.6+ only: `auto`, `all_turns`, or `current_turn`. When unset on GPT-5.6+, defaults to `all_turns` so tool loops that echo `reasoning_details` can continue prior chain-of-thought. |
+| `mode` | GPT-5.6+ only: `standard` or `pro` (reroutes to the matching `*-pro` model). |
 
 ### Layered overrides
 

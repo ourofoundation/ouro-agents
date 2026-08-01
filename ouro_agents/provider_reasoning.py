@@ -8,10 +8,28 @@ on later assistant messages, especially in tool-use loops.
 from __future__ import annotations
 
 import contextvars
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 REASONING_MESSAGE_FIELDS = ("reasoning_details", "reasoning", "reasoning_content")
+
+# OpenAI's Responses API returns **one** reasoning item per turn with a single
+# ``encrypted_content`` string. OpenRouter's chat-completions adapter maps that
+# to ``reasoning_details`` as roughly:
+#   [{type: reasoning.summary, ...}, {type: reasoning.encrypted, data, ...}]
+# i.e. a handful of entries — see OpenRouter + Vercel AI Gateway docs.
+#
+# Bug we see in production: non-streaming GPT-5 responses sometimes arrive with
+# thousands of distinct ``reasoning.encrypted`` crumbs (unique indexes / rs_*
+# ids sharing one prefix, ~1KB each). Replaying them hits OpenAI's Responses
+# ``input`` array max (16384) → ``array_above_max_length``. Truncating that
+# sequence is also wrong (docs: do not rearrange/modify reasoning blocks).
+# When the payload is clearly malformed, drop encrypted crumbs and keep
+# summaries/text so the turn can continue.
+MAX_ENCRYPTED_REASONING_DETAILS = 8
 
 # Formats whose ``reasoning_details`` blocks OpenRouter (or the upstream provider)
 # can actually re-attach on the next turn. ``"unknown"`` is what we get when an
@@ -109,6 +127,106 @@ def jsonable_provider_value(value: Any) -> Any:
     return value
 
 
+def _is_encrypted_reasoning_detail(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    rtype = entry.get("type")
+    return isinstance(rtype, str) and "encrypted" in rtype.lower()
+
+
+def _merge_detail_pair(existing: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Merge two same-(type, index) fragments (streaming deltas)."""
+    merged = dict(existing)
+    for key, value in new.items():
+        if value is None:
+            continue
+        if key in ("text", "summary", "data") and isinstance(value, str):
+            prev = merged.get(key)
+            if not isinstance(prev, str) or not prev:
+                merged[key] = value
+            elif value.startswith(prev):
+                # Growing snapshot delta.
+                merged[key] = value
+            elif prev.startswith(value):
+                # Stale shorter snapshot; keep existing.
+                pass
+            else:
+                merged[key] = prev + value
+            continue
+        # Prefer later non-empty metadata (signature, id, format, ...).
+        if value not in ("", [], {}):
+            merged[key] = value
+    return merged
+
+
+def merge_reasoning_details(details: Any) -> Any:
+    """Collapse streaming fragments that share ``type`` + ``index``.
+
+    Matches the langchain-openrouter fix: consecutive same-(type, index) entries
+    are one logical block split across SSE chunks. Entries without ``index`` are
+    left untouched. Distinct indexes stay distinct (legitimate multi-block turns).
+    """
+    if not isinstance(details, list) or not details:
+        return details
+
+    merged: list[Any] = []
+    # key -> position in merged
+    keyed_positions: dict[tuple[Any, Any], int] = {}
+    for entry in details:
+        if not isinstance(entry, dict):
+            merged.append(entry)
+            continue
+        index = entry.get("index")
+        rtype = entry.get("type")
+        if index is None or rtype is None:
+            merged.append(entry)
+            continue
+        key = (rtype, index)
+        pos = keyed_positions.get(key)
+        if pos is None:
+            keyed_positions[key] = len(merged)
+            merged.append(dict(entry))
+        else:
+            prev = merged[pos]
+            if isinstance(prev, dict):
+                merged[pos] = _merge_detail_pair(prev, entry)
+            else:
+                merged[pos] = dict(entry)
+    return merged
+
+
+def sanitize_reasoning_details(
+    details: Any,
+    *,
+    max_encrypted: int = MAX_ENCRYPTED_REASONING_DETAILS,
+) -> Any:
+    """Normalize provider ``reasoning_details`` for safe storage and replay.
+
+    1. Merge streaming fragments by ``(type, index)``.
+    2. If encrypted count is still pathological, drop **all** encrypted entries
+       and keep summaries/text. Do not truncate mid-sequence — OpenRouter/OpenAI
+       docs require an unmodified block sequence, and a half-cipher is useless.
+    """
+    if not isinstance(details, list) or not details:
+        return details
+
+    normalized = merge_reasoning_details(details)
+    encrypted = [e for e in normalized if _is_encrypted_reasoning_detail(e)]
+    if len(encrypted) <= max_encrypted:
+        return normalized
+
+    logger.warning(
+        "Dropping malformed reasoning.encrypted details: got %d after merge "
+        "(expected ≤ %d). OpenAI Responses uses one encrypted_content per "
+        "reasoning item; OpenRouter chat completions sometimes expands that "
+        "into thousands of crumbs that trip array_above_max_length on replay. "
+        "Keeping summaries/text only.",
+        len(encrypted),
+        max_encrypted,
+    )
+    return [e for e in normalized if not _is_encrypted_reasoning_detail(e)]
+
+
 def extract_reasoning_fields(source: Any) -> dict[str, Any]:
     """Return provider reasoning fields present on a message-like object."""
     fields: dict[str, Any] = {}
@@ -116,6 +234,13 @@ def extract_reasoning_fields(source: Any) -> dict[str, Any]:
         value = object_field(source, name)
         if value is not None:
             fields[name] = jsonable_provider_value(value)
+    details = fields.get("reasoning_details")
+    if details is not None:
+        sanitized = sanitize_reasoning_details(details)
+        if sanitized:
+            fields["reasoning_details"] = sanitized
+        else:
+            fields.pop("reasoning_details", None)
     return fields
 
 
@@ -155,12 +280,17 @@ def replayable_reasoning_fields(source: Any) -> dict[str, Any]:
     (resolved via the :data:`active_model_id` contextvar), ``format="unknown"``
     details are kept so the model's own chain-of-thought survives the tool-use
     loop. Those models must be provider-pinned so replay stays same-provider.
+
+    Details are also passed through :func:`sanitize_reasoning_details` so
+    streaming fragments are merged and OpenRouter encrypted crumb-storms are
+    dropped rather than truncated.
     """
     fields = extract_reasoning_fields(source)
     details = fields.get("reasoning_details")
     if details is not None:
         allow_unknown = model_allows_unknown_reasoning_replay(active_model_id.get())
         kept = _filter_replayable_details(details, allow_unknown=allow_unknown)
+        kept = sanitize_reasoning_details(kept) if kept else kept
         if kept:
             fields["reasoning_details"] = kept
         else:
@@ -192,6 +322,62 @@ def attach_reasoning_from_raw_response(chat_message: Any) -> None:
 
 def copy_reasoning_fields(source: Any, target: Any) -> None:
     attach_reasoning_fields(target, extract_reasoning_fields(source))
+
+
+def accumulate_stream_reasoning_delta(
+    detail_fragments: list[Any],
+    reasoning_text: str,
+    delta: Any,
+) -> str:
+    """Fold one stream ``delta`` into running reasoning state.
+
+    Returns the updated plaintext ``reasoning`` string. ``detail_fragments`` is
+    mutated in place with any ``reasoning_details`` from this chunk (merged later
+    via :func:`sanitize_reasoning_details`).
+    """
+    details = object_field(delta, "reasoning_details")
+    if isinstance(details, list) and details:
+        detail_fragments.extend(jsonable_provider_value(details))
+    elif isinstance(details, dict):
+        detail_fragments.append(jsonable_provider_value(details))
+
+    text = object_field(delta, "reasoning")
+    if text is None:
+        text = object_field(delta, "reasoning_content")
+    if not isinstance(text, str) or not text:
+        return reasoning_text
+    if not reasoning_text:
+        return text
+    if text == reasoning_text:
+        return reasoning_text
+    if text.startswith(reasoning_text):
+        return text
+    if reasoning_text.startswith(text):
+        return reasoning_text
+    return reasoning_text + text
+
+
+def finalize_stream_reasoning_fields(
+    detail_fragments: list[Any],
+    reasoning_text: str,
+) -> dict[str, Any]:
+    """Build attachable reasoning fields after a stream completes."""
+    fields: dict[str, Any] = {}
+    if detail_fragments:
+        sanitized = sanitize_reasoning_details(detail_fragments)
+        if sanitized:
+            fields["reasoning_details"] = sanitized
+    cleaned = (reasoning_text or "").strip()
+    if cleaned:
+        fields["reasoning"] = cleaned
+    return fields
+
+
+def attach_stream_reasoning_fields(chat_message: Any, fields: dict[str, Any]) -> None:
+    """Attach finalized stream reasoning onto an agglomerated ChatMessage."""
+    if not fields or chat_message is None:
+        return
+    attach_reasoning_fields(chat_message, fields)
 
 
 def apply_reasoning_fields_to_message_dict(

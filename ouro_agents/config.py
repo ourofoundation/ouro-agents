@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -16,6 +17,10 @@ from .memory.naming import Rhythm
 # OpenRouter unified `reasoning` request field (effort vs max_tokens; model-dependent).
 # ``max`` is accepted by Moonshot Kimi K3 (thinking always on; only effort it honors).
 ReasoningEffort = Literal["xhigh", "high", "medium", "low", "minimal", "none", "max"]
+# GPT-5.6+ only (OpenRouter / OpenAI). ``auto`` = model default.
+ReasoningContext = Literal["auto", "all_turns", "current_turn"]
+# GPT-5.6+ only; ``pro`` routes to the matching ``*-pro`` listing.
+ReasoningMode = Literal["standard", "pro"]
 
 
 class ReasoningConfig(BaseModel):
@@ -25,6 +30,30 @@ class ReasoningConfig(BaseModel):
     max_tokens: Optional[int] = None
     exclude: Optional[bool] = None
     enabled: Optional[bool] = None
+    # GPT-5.6+: which echoed reasoning turns the model may use.
+    context: Optional[ReasoningContext] = None
+    # GPT-5.6+: standard vs pro multi-pass reasoning.
+    mode: Optional[ReasoningMode] = None
+
+
+def supports_openai_reasoning_context(model_id: str | None) -> bool:
+    """True when OpenRouter ``reasoning.context`` / ``reasoning.mode`` apply.
+
+    OpenRouter documents these as GPT-5.6 and newer only. Older OpenAI
+    reasoning models and non-OpenAI providers should not receive the fields.
+    """
+    if not model_id or not model_id.startswith("openai/"):
+        return False
+    slug = model_id.split("/", 1)[1]
+    # gpt-5.6…, gpt-5.10…, gpt-6…, gpt-6.1… (not gpt-5, gpt-5.4, o3, …)
+    match = re.match(r"gpt-(\d+)(?:\.(\d+))?", slug)
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    if major > 5:
+        return True
+    return major == 5 and minor >= 6
 
 
 def merge_reasoning(*layers: Optional[ReasoningConfig]) -> Optional[ReasoningConfig]:

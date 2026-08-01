@@ -22,6 +22,8 @@ gets wrong:
 | Sending any email | `send-and-log` | separate `send_email` + `update_dataset` calls |
 | CRM status update only | `crm-upsert` | raw `update_dataset` upsert |
 
+`send-and-log` inspects the CRM row before sending. A row without `first_outbound_email_id` is treated as a first send even if the legacy `is_new_contact` hint is false, so pre-created `identified` rows receive the complete first-send fields.
+
 Fall back to manual `run_python` + Resend SDK only when a coil fails or does
 not cover the case (e.g. a brand-new email pattern the coil schema doesn't
 handle). When you do fall back, still follow the parent skill's idempotency,

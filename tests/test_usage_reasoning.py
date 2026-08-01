@@ -516,5 +516,273 @@ class TestNormalizeVisibleReasoning(unittest.TestCase):
         )
 
 
+class TestSanitizeReasoningDetails(unittest.TestCase):
+    """OpenAI Responses uses one encrypted_content per reasoning item. OpenRouter
+    chat completions sometimes expands that into thousands of crumbs.
+    """
+
+    def _encrypted(self, index: int, data: str | None = None) -> dict:
+        return {
+            "type": "reasoning.encrypted",
+            "data": data if data is not None else f"gAAAAA{index}",
+            "format": "openai-responses-v1",
+            "id": f"rs_sharedprefix{index:04d}extra",
+            "index": index,
+        }
+
+    def test_merge_collapses_same_type_and_index_fragments(self):
+        from ouro_agents.provider_reasoning import merge_reasoning_details
+
+        details = [
+            {
+                "type": "reasoning.summary",
+                "summary": "Step 1",
+                "format": "openai-responses-v1",
+                "index": 0,
+            },
+            {
+                "type": "reasoning.summary",
+                "summary": "Step 1: continue",
+                "format": "openai-responses-v1",
+                "index": 0,
+            },
+            self._encrypted(1, "cipher"),
+        ]
+        merged = merge_reasoning_details(details)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual(merged[0]["summary"], "Step 1: continue")
+        self.assertEqual(merged[1]["data"], "cipher")
+
+    def test_healthy_single_encrypted_preserved(self):
+        from ouro_agents.provider_reasoning import sanitize_reasoning_details
+
+        details = [
+            {
+                "type": "reasoning.summary",
+                "summary": "plan tool call",
+                "format": "openai-responses-v1",
+                "index": 0,
+            },
+            self._encrypted(1),
+        ]
+        self.assertEqual(sanitize_reasoning_details(details), details)
+
+    def test_pathological_encrypted_crumbs_dropped_summaries_kept(self):
+        from ouro_agents.provider_reasoning import sanitize_reasoning_details
+
+        details = [self._encrypted(i) for i in range(100)]
+        details.append(
+            {
+                "type": "reasoning.summary",
+                "summary": "decide next tool",
+                "format": "openai-responses-v1",
+                "index": 100,
+            }
+        )
+        sanitized = sanitize_reasoning_details(details)
+        self.assertEqual(len(sanitized), 1)
+        self.assertEqual(sanitized[0]["type"], "reasoning.summary")
+
+    def test_attach_from_raw_drops_crumb_storm(self):
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=None,
+            raw=_response(
+                choices=[
+                    _choice(
+                        message=_message(
+                            reasoning_details=[self._encrypted(i) for i in range(50)]
+                            + [
+                                {
+                                    "type": "reasoning.summary",
+                                    "summary": "ok",
+                                    "format": "openai-responses-v1",
+                                    "index": 50,
+                                }
+                            ],
+                        )
+                    )
+                ]
+            ),
+        )
+        attach_reasoning_from_raw_response(message)
+        self.assertEqual(len(message.reasoning_details), 1)
+        self.assertEqual(message.reasoning_details[0]["type"], "reasoning.summary")
+
+    def test_replayable_fields_sanitize_encrypted_openai_details(self):
+        source = _message(
+            reasoning_details=[self._encrypted(i) for i in range(40)]
+            + [
+                {
+                    "type": "reasoning.summary",
+                    "summary": "ok",
+                    "format": "openai-responses-v1",
+                    "index": 40,
+                }
+            ]
+        )
+        fields = replayable_reasoning_fields(source)
+        details = fields["reasoning_details"]
+        self.assertTrue(all(e.get("type") != "reasoning.encrypted" for e in details))
+        self.assertTrue(any(e.get("type") == "reasoning.summary" for e in details))
+
+
+class TestStreamReasoningCapture(unittest.TestCase):
+    """Chat uses generate_stream; smolagents drops reasoning_details unless we stash."""
+
+    def _encrypted(self, index: int) -> dict:
+        return {
+            "type": "reasoning.encrypted",
+            "data": f"gAAAAA{index}",
+            "format": "openai-responses-v1",
+            "id": f"rs_shared{index:04d}",
+            "index": index,
+        }
+
+    def test_accumulate_and_finalize_merges_fragments(self):
+        from ouro_agents.provider_reasoning import (
+            accumulate_stream_reasoning_delta,
+            finalize_stream_reasoning_fields,
+        )
+
+        fragments: list = []
+        text = ""
+        text = accumulate_stream_reasoning_delta(
+            fragments,
+            text,
+            _message(
+                reasoning="think",
+                reasoning_details=[
+                    {
+                        "type": "reasoning.summary",
+                        "summary": "Step",
+                        "format": "openai-responses-v1",
+                        "index": 0,
+                    }
+                ],
+            ),
+        )
+        text = accumulate_stream_reasoning_delta(
+            fragments,
+            text,
+            _message(
+                reasoning="think more",
+                reasoning_details=[
+                    {
+                        "type": "reasoning.summary",
+                        "summary": "Step 1 done",
+                        "format": "openai-responses-v1",
+                        "index": 0,
+                    },
+                    self._encrypted(1),
+                ],
+            ),
+        )
+        fields = finalize_stream_reasoning_fields(fragments, text)
+        self.assertEqual(fields["reasoning"], "think more")
+        self.assertEqual(len(fields["reasoning_details"]), 2)
+        self.assertEqual(fields["reasoning_details"][0]["summary"], "Step 1 done")
+
+    def test_finalize_drops_encrypted_crumb_storm(self):
+        from ouro_agents.provider_reasoning import finalize_stream_reasoning_fields
+
+        fragments = [self._encrypted(i) for i in range(50)]
+        fragments.append(
+            {
+                "type": "reasoning.summary",
+                "summary": "call tool",
+                "format": "openai-responses-v1",
+                "index": 50,
+            }
+        )
+        fields = finalize_stream_reasoning_fields(fragments, "plan")
+        self.assertEqual(fields["reasoning"], "plan")
+        self.assertEqual(len(fields["reasoning_details"]), 1)
+        self.assertEqual(fields["reasoning_details"][0]["type"], "reasoning.summary")
+
+    def test_generate_stream_stashes_and_consume_clears(self):
+        from unittest.mock import MagicMock, patch
+
+        from ouro_agents.usage import TrackedOpenAIModel
+
+        events = [
+            _response(
+                choices=[
+                    _choice(
+                        delta=_message(
+                            content=None,
+                            tool_calls=None,
+                            reasoning="plan next",
+                            reasoning_details=[
+                                {
+                                    "type": "reasoning.text",
+                                    "text": "plan next",
+                                    "format": "openai-responses-v1",
+                                    "index": 0,
+                                }
+                            ],
+                        ),
+                        finish_reason=None,
+                    )
+                ],
+                usage=None,
+            ),
+            _response(
+                choices=[
+                    _choice(
+                        delta=_message(content="ok", tool_calls=None),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(prompt_tokens=3, completion_tokens=1),
+            ),
+        ]
+
+        with patch("openai.OpenAI") as openai_cls:
+            openai_cls.return_value = MagicMock()
+            model = TrackedOpenAIModel(
+                model_id="test/model",
+                api_base="https://example.test/v1",
+                api_key="sk-test",
+            )
+
+        model.client.chat.completions.create = lambda **_kwargs: iter(events)
+        list(
+            model.generate_stream(
+                messages=[ChatMessage(role=MessageRole.USER, content="hi")]
+            )
+        )
+        fields = model.consume_stream_reasoning_fields()
+        self.assertEqual(fields["reasoning"], "plan next")
+        self.assertEqual(
+            fields["reasoning_details"][0]["text"],
+            "plan next",
+        )
+        self.assertEqual(model.consume_stream_reasoning_fields(), {})
+
+    def test_attach_stream_reasoning_onto_memory_step(self):
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+
+        message = ChatMessage(role=MessageRole.ASSISTANT, content="ok")
+        step = SimpleNamespace(model_output_message=message)
+        model = SimpleNamespace(
+            consume_stream_reasoning_fields=lambda: {
+                "reasoning": "hidden plan",
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.text",
+                        "text": "hidden plan",
+                        "format": "openai-responses-v1",
+                        "index": 0,
+                    }
+                ],
+            }
+        )
+        agent = SimpleNamespace(model=model)
+        SanitizedToolCallingAgent._attach_stream_reasoning(agent, step)
+        self.assertEqual(message.reasoning, "hidden plan")
+        self.assertEqual(message.reasoning_details[0]["text"], "hidden plan")
+
+
 if __name__ == "__main__":
     unittest.main()

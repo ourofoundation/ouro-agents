@@ -8,11 +8,16 @@ from typing import Any, Callable, Optional, Sequence
 
 from smolagents import OpenAIModel
 
-from .provider_reasoning import active_model_id, attach_reasoning_from_raw_response
 from .provider_errors import (
     NotifyingRetrying,
     RetryCallback,
     is_transient_provider_error,
+)
+from .provider_reasoning import (
+    accumulate_stream_reasoning_delta,
+    active_model_id,
+    attach_reasoning_from_raw_response,
+    finalize_stream_reasoning_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -584,9 +589,101 @@ class TrackedOpenAIModel(OpenAIModel):
             active_model_id.reset(token)
 
     def generate(self, *args, **kwargs):
+        self._last_stream_reasoning_fields = {}
         message = super().generate(*args, **kwargs)
         attach_reasoning_from_raw_response(message)
         return message
+
+    def consume_stream_reasoning_fields(self) -> dict[str, Any]:
+        """Return and clear reasoning captured by the last ``generate_stream``."""
+        fields = getattr(self, "_last_stream_reasoning_fields", None) or {}
+        self._last_stream_reasoning_fields = {}
+        return fields
+
+    def generate_stream(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ):
+        """Stream tokens like ``OpenAIModel``, and capture ``reasoning_details``.
+
+        Smolagents agglomerates only content/tool_calls into the final
+        ``ChatMessage``. Without this stash, chat tool-loops never replay
+        OpenRouter encrypted/summary reasoning. Call
+        :meth:`consume_stream_reasoning_fields` after agglomeration to attach.
+        """
+        from smolagents.models import (
+            ChatMessageStreamDelta,
+            ChatMessageToolCallStreamDelta,
+            TokenUsage,
+        )
+
+        self._last_stream_reasoning_fields = {}
+        detail_fragments: list[Any] = []
+        reasoning_text = ""
+
+        completion_kwargs = self._prepare_completion_kwargs(
+            messages=messages,
+            stop_sequences=stop_sequences,
+            response_format=response_format,
+            tools_to_call_from=tools_to_call_from,
+            model=self.model_id,
+            custom_role_conversions=self.custom_role_conversions,
+            convert_images_to_image_urls=True,
+            **kwargs,
+        )
+        self._apply_rate_limit()
+        try:
+            for event in self.retryer(
+                self.client.chat.completions.create,
+                **completion_kwargs,
+                stream=True,
+                stream_options={"include_usage": True},
+            ):
+                if event.choices:
+                    choice = event.choices[0]
+                    delta = getattr(choice, "delta", None)
+                    if delta is not None:
+                        reasoning_text = accumulate_stream_reasoning_delta(
+                            detail_fragments, reasoning_text, delta
+                        )
+                if event.usage:
+                    yield ChatMessageStreamDelta(
+                        content="",
+                        token_usage=TokenUsage(
+                            input_tokens=event.usage.prompt_tokens,
+                            output_tokens=event.usage.completion_tokens,
+                        ),
+                    )
+                if event.choices:
+                    choice = event.choices[0]
+                    if choice.delta:
+                        yield ChatMessageStreamDelta(
+                            content=choice.delta.content,
+                            tool_calls=[
+                                ChatMessageToolCallStreamDelta(
+                                    index=delta.index,
+                                    id=delta.id,
+                                    type=delta.type,
+                                    function=delta.function,
+                                )
+                                for delta in choice.delta.tool_calls
+                            ]
+                            if choice.delta.tool_calls
+                            else None,
+                        )
+                    else:
+                        if not getattr(choice, "finish_reason", None):
+                            raise ValueError(
+                                f"No content or tool calls in event: {event}"
+                            )
+        finally:
+            self._last_stream_reasoning_fields = finalize_stream_reasoning_fields(
+                detail_fragments, reasoning_text
+            )
 
     def create_client(self):
         client = super().create_client()

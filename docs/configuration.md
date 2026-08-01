@@ -184,10 +184,12 @@ Maps to OpenRouter's top-level `reasoning` request field on chat completions.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `effort` | `xhigh`/`high`/`medium`/`low`/`minimal`/`none` | Used by reasoning-capable models. |
+| `effort` | `xhigh`/`high`/`medium`/`low`/`minimal`/`none`/`max` | Used by reasoning-capable models. |
 | `max_tokens` | int | Cap reasoning tokens; mutually exclusive with `effort` per provider rules. |
 | `exclude` | bool | Don't return reasoning to the client. |
 | `enabled` | bool | Some providers gate reasoning behind this flag. |
+| `context` | `auto`/`all_turns`/`current_turn` | GPT-5.6+ only. Which echoed reasoning turns the model may use. When unset on GPT-5.6+, ouro-agents defaults to `all_turns` (tool-loop continuity). |
+| `mode` | `standard`/`pro` | GPT-5.6+ only. `pro` routes to the matching `*-pro` listing (deeper multi-pass reasoning). |
 
 Layered overrides:
 

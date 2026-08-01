@@ -22,7 +22,10 @@ from smolagents.models import (
 from .. import smolagents_patches as _smolagents_patches  # noqa: F401
 from ..cancellation import RunCancellationToken
 from ..display import get_display
-from ..provider_reasoning import copy_reasoning_fields
+from ..provider_reasoning import (
+    attach_stream_reasoning_fields,
+    copy_reasoning_fields,
+)
 from ..security.action_gates import observed_action_category
 from .observation_policy import (
     ObservationPolicy,
@@ -1088,10 +1091,28 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         for output in super()._step_stream(memory_step):
             self._raise_if_cancelled()
             yield output
+        self._attach_stream_reasoning(memory_step)
         self._track_reasoning_only_step(memory_step)
         self._inject_nudge_observation(memory_step)
         self._inject_step_budget_observation(memory_step)
         self._maybe_one_shot_compact_observations()
+
+    def _attach_stream_reasoning(self, memory_step: ActionStep) -> None:
+        """Attach OpenRouter reasoning_details captured during generate_stream.
+
+        Streaming agglomeration drops provider reasoning fields; without this,
+        chat tool-loops never replay encrypted/summary blocks for the next step.
+        """
+        consume = getattr(self.model, "consume_stream_reasoning_fields", None)
+        if not callable(consume):
+            return
+        fields = consume()
+        if not fields:
+            return
+        message = getattr(memory_step, "model_output_message", None)
+        if message is None:
+            return
+        attach_stream_reasoning_fields(message, fields)
 
     def _maybe_one_shot_compact_observations(self) -> None:
         """One-shot fold of old observations when cumulative size crosses a ceiling.

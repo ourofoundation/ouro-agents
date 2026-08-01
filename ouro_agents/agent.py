@@ -28,6 +28,7 @@ from .config import (
     max_completion_tokens_for_role,
     merge_openrouter_provider,
     merge_reasoning,
+    supports_openai_reasoning_context,
     tier_spec_for_role,
 )
 from .conversation_naming import (
@@ -963,12 +964,24 @@ class OuroAgent:
             if model_id.startswith("moonshotai/"):
                 # Kimi K3 has thinking always on and accepts only effort "max".
                 # Map other efforts away; keep exclude / explicit max.
+                # GPT-5.6 context/mode do not apply here.
                 exclude = r.get("exclude")
                 r = {"enabled": True}
                 if exclude is not None:
                     r["exclude"] = exclude
                 if reasoning.effort == "max":
                     r["effort"] = "max"
+            elif supports_openai_reasoning_context(model_id):
+                # GPT-5.6+: when we echo reasoning_details in tool loops, prefer
+                # all_turns so the model can continue prior chain-of-thought.
+                # Explicit config (including "auto" / "current_turn") wins.
+                if "context" not in r:
+                    r["context"] = "all_turns"
+            else:
+                # Older OpenAI / non-OpenAI providers: do not send GPT-5.6-only
+                # fields (OpenRouter documents stripping mode, but not context).
+                r.pop("context", None)
+                r.pop("mode", None)
             if r:
                 body["reasoning"] = r
 

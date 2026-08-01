@@ -38,3 +38,8 @@ ouro-agents = "ouro_agents.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
+
+[tool.pytest.ini_options]
+# Without this, a bare ``pytest`` walks the whole repo — including agent
+# scratch/conversation-state trees and ``workspace/`` — and stalls in collection.
+testpaths = ["tests"]
