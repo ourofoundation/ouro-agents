@@ -71,7 +71,9 @@ _REASONING_ONLY_NUDGE_OBSERVATION = (
     "Continue from that reasoning and end this step at an action boundary.\n\n"
     "Now do exactly one of:\n"
     "  - call the actual tool you intended, or\n"
-    "  - end the turn with a plain final message if you are done."
+    "  - end the turn with a plain final message if you are done "
+    "(preferred when your reasoning already decided the final answer / "
+    "JSON summary — do not call noop tools just to 'unlock' finishing)."
 )
 
 
@@ -1209,24 +1211,28 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
 
         if remaining == 0:
             guidance = (
-                "No steps remain after this one. Do not start new work; the run "
-                "must end now."
+                "No steps remain after this one. Do not call tools. Emit your "
+                "final assistant content now (plain text / required JSON) with "
+                "no tool calls."
             )
         elif remaining == 1:
             guidance = (
-                "This is the last available next step. Do not start a new search "
-                "or multi-tool chain; deliver your final reply, or make one decisive "
-                "tool call only if that single call completes the required output."
+                "This is the last available next step. Prefer ending with plain "
+                "final assistant content and no tool calls. Make one decisive "
+                "tool call only if that single call is still required to "
+                "complete the output; otherwise finish now."
             )
         elif remaining <= 3:
             guidance = (
-                "You are near the end. Stop broad exploration; make the next "
-                "tool call directly advance the required output, then finish."
+                "You are near the end. Stop broad exploration; either make the "
+                "next tool call that directly completes the required output, or "
+                "finish with plain assistant content and no tool calls."
             )
         else:
             guidance = (
-                "Begin converging now: prioritize your final reply or the decisive "
-                "tool call that completes the required output over further exploration."
+                "Begin converging now: prioritize your final reply (plain "
+                "content, no tool calls) or the decisive tool call that "
+                "completes the required output over further exploration."
             )
 
         observation = (

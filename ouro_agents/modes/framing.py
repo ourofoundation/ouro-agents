@@ -229,7 +229,9 @@ AUTONOMOUS_OUTPUT = (
 HEARTBEAT_OUTPUT = (
     "## OUTPUT FORMAT\n"
     "When finished (or when passing), end the turn with a final message that is "
-    "ONLY valid JSON (no markdown fences) and no tool calls:\n"
+    "ONLY valid JSON (no markdown fences) and no tool calls. Do not call any "
+    "tool after the work is done — the JSON message alone ends the tick. "
+    "Noop calls (echo, status checks) are not a substitute for finishing:\n"
     "{\n"
     '  "action": "short label of what you did, or \\"none\\" if you passed",\n'
     '  "details": "one or two sentences of what changed / why you passed",\n'

@@ -815,7 +815,7 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         self.assertIn("completed 19/20", memory_step.observations)
         self.assertIn("1 step remains", memory_step.observations)
         self.assertIn("last available next step", memory_step.observations)
-        self.assertIn("deliver your final reply", memory_step.observations)
+        self.assertIn("Prefer ending with plain final assistant content", memory_step.observations)
         self.assertNotIn("create/update/comment", memory_step.observations)
         self.assertNotIn("save the artifact", memory_step.observations)
 

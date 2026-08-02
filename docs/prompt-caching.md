@@ -135,8 +135,8 @@ This is off by default to keep the standard run summary compact.
 
 Some providers reject smolagents' default `tool_choice="required"`.
 `OuroAgent._default_tool_choice` falls back to `auto` for known
-exceptions (MiniMax, DeepSeek, and Qwen when OpenRouter reasoning/thinking
-is enabled). Add another model-id prefix in that helper if you find a new
-one. Conversational (chat) runs always use `auto` regardless of model, so
-the agent can answer a casual message without being forced into a tool
-call.
+exceptions (MiniMax, DeepSeek, Qwen, Zhipu GLM, and GPT-5.6+). Add another
+model-id prefix (or helper) in that helper if you find a new one.
+Conversational (chat) and heartbeat runs always use `auto` regardless of
+model: chat so casual replies need no tool call, heartbeat so the tick can
+end with the required plain JSON summary instead of a noop-tool finish-loop.

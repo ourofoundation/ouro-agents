@@ -1019,12 +1019,19 @@ class OuroAgent:
         *,
         reasoning: Optional[ReasoningConfig] = None,
         conversational: bool = False,
+        heartbeat: bool = False,
     ) -> Optional[str]:
         # Conversational (chat) runs must be free to answer a casual message
         # with plain content and no tool call. smolagents' default
         # `tool_choice="required"` forces a pointless tool call on every step
         # of a greeting, so chat always uses `auto`.
         if conversational:
+            return "auto"
+        # Heartbeat OUTPUT FORMAT requires a plain JSON final message with no
+        # tool calls. `required` traps interleaved-thinking models in a
+        # finish-loop (noop shell/memory calls) that can burn the full step
+        # budget — and with slow provider calls, block the next hourly tick.
+        if heartbeat:
             return "auto"
         # Some upstream providers reject smolagents' default `tool_choice="required"`:
         #   - MiniMax routes return a 400 outright.
@@ -1042,11 +1049,14 @@ class OuroAgent:
         #     endpoints found"), so we'd be forced off the canonical provider.
         #     ``auto`` works there and is healthier for an interleaved-thinking
         #     model, which should be free to finish with a plain content reply.
+        #   - GPT-5.6+ via OpenRouter: same interleaved-thinking finish path;
+        #     `required` prevents the plain-content terminal reply our modes use.
         if (
             model_id.startswith("minimax/")
             or model_id.startswith("deepseek/")
             or model_id.startswith("qwen/")
             or model_id.startswith("z-ai/")
+            or supports_openai_reasoning_context(model_id)
         ):
             return "auto"
         return None
@@ -1087,7 +1097,10 @@ class OuroAgent:
         if extra_body:
             model_kwargs["extra_body"] = extra_body
         tool_choice = self._default_tool_choice(
-            model_id, reasoning=resolved, conversational=conversational
+            model_id,
+            reasoning=resolved,
+            conversational=conversational,
+            heartbeat=heartbeat,
         )
         if tool_choice is not None:
             model_kwargs["tool_choice"] = tool_choice

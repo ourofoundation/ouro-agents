@@ -106,6 +106,33 @@ class TestModelProviderOverrides(unittest.TestCase):
             "auto",
         )
 
+    def test_heartbeat_runs_always_use_auto_tool_choice(self):
+        # Heartbeat must emit a plain JSON final message with no tool calls.
+        # tool_choice="required" traps GPT-5.6+ in a finish-loop of noop tools.
+        agent = self._make_agent()
+
+        self.assertEqual(
+            agent._default_tool_choice("openai/gpt-4.1-mini", heartbeat=True),
+            "auto",
+        )
+        self.assertEqual(
+            agent._default_tool_choice("moonshotai/kimi-k3", heartbeat=True),
+            "auto",
+        )
+
+    def test_gpt56_plus_defaults_to_auto_tool_choice(self):
+        agent = self._make_agent()
+
+        self.assertEqual(
+            agent._default_tool_choice("openai/gpt-5.6-terra"), "auto"
+        )
+        self.assertEqual(
+            agent._default_tool_choice("openai/gpt-5.6-luna"), "auto"
+        )
+        # Older OpenAI models still leave tool_choice unset (smolagents default).
+        self.assertIsNone(agent._default_tool_choice("openai/gpt-4.1-mini"))
+        self.assertIsNone(agent._default_tool_choice("openai/gpt-5.4"))
+
     def test_build_model_passes_auto_tool_choice_for_conversational(self):
         agent = self._make_agent()
 
@@ -115,6 +142,30 @@ class TestModelProviderOverrides(unittest.TestCase):
         ):
             get_display.return_value = SimpleNamespace(reasoning=None)
             agent._build_model("openai/gpt-4.1-mini", conversational=True)
+
+        self.assertEqual(tracked_model.call_args.kwargs["tool_choice"], "auto")
+
+    def test_build_model_passes_auto_tool_choice_for_heartbeat(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-4.1-mini", heartbeat=True)
+
+        self.assertEqual(tracked_model.call_args.kwargs["tool_choice"], "auto")
+
+    def test_build_model_passes_auto_tool_choice_for_gpt56(self):
+        agent = self._make_agent()
+
+        with (
+            patch("ouro_agents.agent.TrackedOpenAIModel") as tracked_model,
+            patch("ouro_agents.agent.get_display") as get_display,
+        ):
+            get_display.return_value = SimpleNamespace(reasoning=None)
+            agent._build_model("openai/gpt-5.6-terra")
 
         self.assertEqual(tracked_model.call_args.kwargs["tool_choice"], "auto")
 
