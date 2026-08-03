@@ -48,13 +48,13 @@
   },
   "models": {
     "strong": {
-      "id": "openai/gpt-5.6-terra",
+      "id": "openai/gpt-5.6-sol",
       "reasoning": {
         "effort": "high"
       }
     },
     "mid": {
-      "id": "openai/gpt-5.6-luna",
+      "id": "openai/gpt-5.6-terra",
       "reasoning": {
         "effort": "high"
       }

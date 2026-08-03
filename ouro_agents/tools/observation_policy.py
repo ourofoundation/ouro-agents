@@ -92,6 +92,15 @@ def _pick_extension(text: str) -> str:
     stripped = text.lstrip()
     if stripped.startswith("{") or stripped.startswith("["):
         return ".json"
+    # Compact MCP markdown (lists, tables, sectioned payloads).
+    first = stripped.split("\n", 1)[0] if stripped else ""
+    if (
+        first.startswith(("Found ", "No ", "#", "|", "- "))
+        or stripped.startswith(("Comments on ", "Connections for "))
+        or "| ---" in stripped[:2_000]
+        or "\n## " in stripped[:500]
+    ):
+        return ".md"
     return ".txt"
 
 

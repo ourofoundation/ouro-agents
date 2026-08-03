@@ -7,6 +7,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from fastapi import FastAPI
@@ -316,9 +317,11 @@ class TestPublishSnapshot(unittest.TestCase):
             workspace = Path(tmp)
             _write_draft(workspace, "load-context")
             ouro = MagicMock()
-            created = MagicMock()
-            created.id = "service-123"
+            # Use a real non-subscriptable object — MagicMock allows ["id"] and
+            # would hide the getattr(..., obj["id"]) eager-default bug.
+            created = SimpleNamespace(id="service-123")
             ouro.services.create.return_value = created
+            ouro.assets.search.return_value = MagicMock(data=[])
             routes_config = AgentRoutesConfig(
                 enabled=True,
                 path_prefix="/routes",
@@ -358,9 +361,7 @@ class TestPublishSnapshot(unittest.TestCase):
             workspace = Path(tmp)
             _write_draft(workspace, "load-context")
             ouro = MagicMock()
-            existing = MagicMock()
-            existing.id = "service-existing"
-            existing.name = "apollo-routes"
+            existing = SimpleNamespace(id="service-existing", name="apollo-routes")
             ouro.assets.search.return_value = MagicMock(
                 data=[existing]
             )

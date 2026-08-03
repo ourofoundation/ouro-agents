@@ -156,6 +156,20 @@ def _service_base_url(public_base_url: str | None, path_prefix: str) -> str:
     return f"{base}{prefix}"
 
 
+def _resolve_service_id(service: Any) -> str:
+    """Extract id from a Service model or dict without eager subscripting.
+
+    ``getattr(obj, "id", obj["id"])`` evaluates the default before the call, so
+    a real Service (not subscriptable) raises TypeError even when ``.id`` exists.
+    """
+    sid = getattr(service, "id", None)
+    if sid is None and isinstance(service, dict):
+        sid = service.get("id")
+    if not sid:
+        raise ValueError("service response missing id")
+    return str(sid)
+
+
 def _sync_ouro_auth(
     ouro_client: Any,
     *,
@@ -363,9 +377,7 @@ def make_publish_route_tools(
                     if adopted is not None:
                         service = adopted
                         action = "updated (adopted existing)"
-                        registry.service_id = str(
-                            getattr(service, "id", service["id"])
-                        )
+                        registry.service_id = _resolve_service_id(service)
                         save_published_registry(workspace, registry)
                     else:
                         if not org or not team:
@@ -391,9 +403,7 @@ def make_publish_route_tools(
                                 raise create_exc
                             service = adopted
                             action = "updated (adopted existing)"
-                        registry.service_id = str(
-                            getattr(service, "id", service["id"])
-                        )
+                        registry.service_id = _resolve_service_id(service)
                         save_published_registry(workspace, registry)
                         location_note = f"\n- Location: org={org} team={team}"
             except Exception as exc:  # noqa: BLE001
@@ -405,7 +415,7 @@ def make_publish_route_tools(
                     "Fix the error and call publish_route again."
                 )
 
-            service_id = registry.service_id or str(getattr(service, "id", ""))
+            service_id = registry.service_id or _resolve_service_id(service)
             serve_token = os.environ.get(routes_config.serve_token_env) or ""
             auth_note = ""
             # Sync serve token on every successful publish (idempotent upsert).

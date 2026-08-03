@@ -1122,6 +1122,40 @@ class TestObservationSpill(unittest.TestCase):
             spill_files = list(Path(tmp).joinpath("scratch/tool-outputs/test-run").glob("*"))
             self.assertEqual(len(spill_files), 1)
             self.assertEqual(spill_files[0].read_text(), text)
+            self.assertTrue(spill_files[0].name.endswith(".txt"))
+
+    def test_spill_markdown_uses_md_extension(self):
+        import tempfile
+        from pathlib import Path
+
+        from ouro_agents.tools.observation_policy import (
+            ObservationPolicy,
+            maybe_spill_and_stub,
+        )
+
+        policy = ObservationPolicy(
+            max_inline_chars=50,
+            head_chars=20,
+            tail_chars=10,
+        )
+        text = (
+            "Found 3 rows (offset=0, limit=100)\n\n"
+            "| name | value |\n| --- | --- |\n"
+            + "\n".join(f"| row-{i} | {i} |" for i in range(40))
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = maybe_spill_and_stub(
+                text,
+                tool_name="query_dataset",
+                workspace=Path(tmp),
+                run_id="md-run",
+                policy=policy,
+            )
+            spill_files = list(Path(tmp).joinpath("scratch/tool-outputs/md-run").glob("*"))
+            self.assertEqual(len(spill_files), 1)
+            self.assertTrue(spill_files[0].name.endswith(".md"))
+            self.assertEqual(spill_files[0].read_text(), text)
+            self.assertIn(".md]", stub)
 
     def test_under_inline_limit_unchanged(self):
         from ouro_agents.tools.observation_policy import (

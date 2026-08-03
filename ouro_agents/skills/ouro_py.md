@@ -149,7 +149,8 @@ ouro = get_ouro_client()
   that raises `ValueError: The truth value of a DataFrame is ambiguous`.
   Use `if rows.empty:` / `if not rows.empty:`, or
   `rows.to_dict(orient="records")` when you want list-of-dicts.
-  Prefer MCP `query_dataset` when you only need JSON rows in the agent loop.
+  Prefer MCP `query_dataset` when you only need rows in the agent loop
+  (markdown table by default).
 - For creating assets, always pass `org_id` and `team_id` from the Platform context
 - `description` params accept a plain string or a Content object
 - When creating datasets, `data` must be non-empty (at least 1 row, 1 column)

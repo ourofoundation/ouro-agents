@@ -138,7 +138,8 @@ may include `action_id` on `action` edges for follow-up with `get_action`.
 as a JSON row array (`[{"col": "val"}]`); for local files pass `data_path`
 (`.csv`, `.json`, `.jsonl`/`.ndjson`, `.parquet`). Prefer `query_dataset` over
 downloading when inspecting or analyzing rows; use `limit` and `offset` to page
-through results.
+through results. Responses are compact markdown tables by default (set
+`response_format="json"` for JSON).
   - **Reference columns**: pass `refs` on `create_dataset` (or `update_dataset`
     to promote) so columns hold Ouro object ids with a real FK — e.g.
     `{"file_id": {"kind": "asset", "asset_type": "file"}, "run_id": {"kind": "action"}}`.
