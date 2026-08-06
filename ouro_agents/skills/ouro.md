@@ -113,8 +113,9 @@ URL/query values in `params` or `query`, and Ouro asset references in
 with asset IDs as values (`input_assets={"file": "<file-id>"}`).
 Do not construct file, dataset, or post body objects by hand; Ouro resolves
 those asset IDs into the service-facing request body.
-- When reporting on an action in a markdown surface, embed the route action with
-Ouro Markdown instead of only describing it.
+- When reporting on an action in a markdown surface, reference it with Ouro
+Markdown — prefer an embed when the run is the content, or an inline
+`[label](action:<uuid>)` link when mentioning it in prose (see `ouro_markdown`).
 
 Async actions need care. If `execute_route` returns
 `{"status": "pending", "action_id": ...}`, the action is still running
@@ -136,10 +137,13 @@ may include `action_id` on `action` edges for follow-up with `get_action`.
 
 - Datasets: create with explicit `org_id`/`team_id`. For small tables pass `data`
 as a JSON row array (`[{"col": "val"}]`); for local files pass `data_path`
-(`.csv`, `.json`, `.jsonl`/`.ndjson`, `.parquet`). Prefer `query_dataset` over
-downloading when inspecting or analyzing rows; use `limit` and `offset` to page
-through results. Responses are compact markdown tables by default (set
-`response_format="json"` for JSON).
+(`.csv`, `.json`, `.jsonl`/`.ndjson`, `.parquet`). Use `query_dataset` for
+schema peeks, small samples, SQL filters, and top-N (keep responses small;
+`limit`/`offset` for paging). For bulk analysis — scoring, filtering hundreds+
+rows, or local scripts — `download_asset` (CSV) and compute locally; do not
+page large tables into chat. Responses are compact markdown tables by default
+(set `response_format="json"` for JSON). Column names are lowercase snake_case
+— use them unquoted in SQL.
   - **Reference columns**: pass `refs` on `create_dataset` (or `update_dataset`
     to promote) so columns hold Ouro object ids with a real FK — e.g.
     `{"file_id": {"kind": "asset", "asset_type": "file"}, "run_id": {"kind": "action"}}`.

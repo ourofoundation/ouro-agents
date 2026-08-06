@@ -62,14 +62,16 @@ ouro = get_ouro_client()
     Schema reads show `semantic_type: "enum"` and `enum_values`.
 - `retrieve(id)` → Dataset
 - `query(id)` → DataFrame (fetches all rows)
-- `query(id, sql)` → DataFrame (read-only SQL; use `{{table}}` as placeholder)
+- `query(id, sql)` → DataFrame (read-only SQL; use `{{table}}` as placeholder;
+  column names are lowercase snake_case — use them unquoted)
 - `query(id, limit=..., offset=..., resolve_refs=True)` → dict with `data`,
   `pagination`, and `resolved_refs` sidecar (column → id → `{kind, id, name,
   web_url, ...}`). Permission-aware; ids you can't see are omitted.
   `resolve_refs` is only for the paginated (non-SQL) path.
 - `schema(id)` → list[dict] (column definitions; check `semantic_type`,
-  `ref_kind`, `enum_values`). Fields expose both Postgres keys
+  `ref_kind`, `enum_values`). Fields expose Postgres keys
   (`column_name` / `data_type`) and aliases (`name` / `type`) — either pair works.
+  Column names are lowercase snake_case.
 - `stats(id)` → dict
 - `update(id, name=None, data=None, data_mode="append", description=None, refs=None, enum_columns=None, **kwargs)` → Dataset
   - `data_mode`: "append" | "overwrite" | "upsert"
@@ -149,8 +151,9 @@ ouro = get_ouro_client()
   that raises `ValueError: The truth value of a DataFrame is ambiguous`.
   Use `if rows.empty:` / `if not rows.empty:`, or
   `rows.to_dict(orient="records")` when you want list-of-dicts.
-  Prefer MCP `query_dataset` when you only need rows in the agent loop
-  (markdown table by default).
+  Prefer MCP `query_dataset` for peeks, small samples, and SQL top-N in the
+  agent loop (markdown table by default). For bulk analysis, download CSV via
+  MCP `download_asset` (or SDK `assets.download`) and compute locally.
 - For creating assets, always pass `org_id` and `team_id` from the Platform context
 - `description` params accept a plain string or a Content object
 - When creating datasets, `data` must be non-empty (at least 1 row, 1 column)

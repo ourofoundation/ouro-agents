@@ -26,4 +26,8 @@ def test_ouro_skill_explains_dataset_create_and_query_contract():
     assert "data_path" in skill_text
     assert ".jsonl`/`.ndjson`" in skill_text
     assert "query_dataset" in skill_text
-    assert "limit` and `offset`" in skill_text
+    assert "limit`/`offset`" in skill_text
+    assert "download_asset" in skill_text
+    assert "bulk analysis" in skill_text
+    assert "snake_case" in skill_text
+    assert "unquoted" in skill_text

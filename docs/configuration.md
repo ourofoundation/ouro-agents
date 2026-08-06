@@ -403,7 +403,10 @@ In Docker sandbox mode, `${WORKSPACE_MOUNT}` is also injected (e.g.
 `/workspace`) so MCP remaps container absolute paths onto the host root. For
 the `ouro` server, `OURO_MCP_TIMEZONE` is also injected based on
 `heartbeat.active_hours.timezone` so platform timestamps render in the
-agent's local time.
+agent's local time. `OURO_MCP_MAX_RESPONSE_SIZE` defaults to `0` (no
+server-side truncation) so observation budgeting stays in the agent; set a
+positive character count in `mcp_servers[].env` to opt into MCP's soft
+`len(response)` cap.
 
 ## `server`
 

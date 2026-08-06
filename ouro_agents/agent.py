@@ -1548,6 +1548,9 @@ class OuroAgent:
             )
             if agent_tz:
                 env.setdefault("OURO_MCP_TIMEZONE", agent_tz)
+            # Leave tool-result budgeting to the agent (message persistence /
+            # observation policy). Override in mcp_servers[].env if needed.
+            env.setdefault("OURO_MCP_MAX_RESPONSE_SIZE", "0")
         return env
 
     def _register_mcp_tools(
