@@ -83,3 +83,7 @@ This looks up the CRM row, updates `status` and `next_action` with a stand-down
 note (immutability-safe: never touches `first_outbound_*` or `date_sent`),
 and returns a confirmation. Prefer this over manual CRM upsert for any
 stand-down instruction.
+
+## Controller-handoff thread guard
+
+- `read-email-thread` must include received messages from Matt (`matt@ouro.foundation`) and Will (`will.bryan421@gmail.com`) that are linked to the contact thread through RFC `Message-ID`, `In-Reply-To`, or `References` headers. Normalized-subject matching is only a clearly labeled fallback for a message with no usable threading headers. Its `controller_reply_detected` / `send_guard` result is a hard stop: immediately stand down the CRM row and do not send a live-thread reply unless Matt, Will, or a controller explicitly directs re-entry. A contact-only inbox filter caused a duplicate calendar invite after Matt had already handled the request.
