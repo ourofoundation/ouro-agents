@@ -30,6 +30,7 @@ from ..constants import _INTERVAL_RE, clip_text, parse_json_from_llm
 from ..constants import parse_interval_seconds as parse_cadence_seconds
 from ..memory.focus import build_focus_memory_context, remember_work_direction
 from ..syncing import normalize_status, read_field
+from ..tool_preloads import PLANNING
 
 if TYPE_CHECKING:
     from ..agent import OuroAgent
@@ -983,23 +984,12 @@ async def run_planning_run(
         or "",
     )
 
-    preload = [
-        "ouro:search_assets",
-        "ouro:get_asset",
-        "ouro:get_comments",
-        "ouro:create_quest",
-        "ouro:create_quest_items",
-        "ouro:update_quest",
-        "ouro:list_quest_items",
-        "ouro:get_impact",
-    ]
-
     result = await agent.run(
         prompt,
         model_override=plan_model,
         mode=RunMode.PLAN,
         allowed_servers=servers,
-        preload_tools=preload,
+        preload_tools=list(PLANNING),
         team_id=team_id,
     )
 

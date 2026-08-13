@@ -26,6 +26,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from ..config import HeartbeatConfig
 from ..constants import parse_interval_seconds, parse_json_from_llm
 from ..memory.focus import FOCUS_MEMORY_QUERIES, build_focus_memory_context
+from ..tool_preloads import HEARTBEAT_INBOX, HEARTBEAT_NOTIFICATIONS, merge_preloads
 from .framing import heartbeat_framing_for_kind
 
 if TYPE_CHECKING:
@@ -1078,19 +1079,6 @@ def build_quest_work_playbook(items: list[dict[str, Any]]) -> str:
     )
 
 
-_INBOX_PRELOAD_TOOLS = [
-    "ouro:get_asset",
-    "ouro:list_quest_items",
-    "ouro:update_quest_item",
-    "ouro:create_quest_items",
-    "ouro:delete_quest_item",
-    "ouro:complete_quest_item",
-    "ouro:submit_quest_entry",
-    "ouro:write_comment",
-    "ouro:update_quest",
-]
-
-
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
@@ -1295,14 +1283,7 @@ def _append_notification_inbox(
         else:
             playbook = notif_inbox.section
 
-        for tool_name in (
-            "ouro:get_asset",
-            "ouro:get_comments",
-            "ouro:write_comment",
-            "ouro:read_notification",
-        ):
-            if tool_name not in preload_tools:
-                preload_tools.append(tool_name)
+        preload_tools = merge_preloads(preload_tools, HEARTBEAT_NOTIFICATIONS)
     except Exception:
         logger.warning("Failed to attach notification inbox to heartbeat", exc_info=True)
 
@@ -1377,7 +1358,7 @@ def build_heartbeat_task_context(
             doc_store = agent.doc_store_for(team_id)
         playbook = build_quest_work_playbook(items)
         source = "quest-inbox"
-        preload_tools = list(_INBOX_PRELOAD_TOOLS)
+        preload_tools = list(HEARTBEAT_INBOX)
         # Compose with the general agent heartbeat policy: inbox chooses the
         # work item; policy supplies prioritization, constraints, and closeout.
         policy = _load_playbook(agent, doc_store)

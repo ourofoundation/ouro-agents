@@ -18,9 +18,9 @@ COALESCE_MAX_INTERVAL_S = 0.05
 class OuroReplyPublisher:
     """Emit real-time activity and streaming events to Ouro over the websocket.
 
-    Websocket connections are opened lazily per-event via ``realtime_session``
-    and torn down when the context exits.  All emit helpers swallow connection
-    errors so a flaky socket never crashes the event handler.
+    The websocket is kept open for the agent process lifetime via
+    ``ensure_connected`` / ``connect_persistent``. All emit helpers swallow
+    connection errors so a flaky socket never crashes the event handler.
     """
 
     def __init__(
@@ -61,9 +61,25 @@ class OuroReplyPublisher:
     def ensure_ready(self) -> None:
         _ = self.client
 
+    def connect_persistent(self) -> None:
+        """Open the websocket at process start and leave it connected."""
+        self.ensure_ready()
+        self.client.ensure_valid_token()
+        self.client.websocket.ensure_connected()
+
+    def disconnect_persistent(self) -> None:
+        """Tear down the process-lifetime websocket on shutdown."""
+        self._flush_pending()
+        try:
+            ws = self.client.websocket
+        except Exception:
+            return
+        if ws.is_connected:
+            ws.disconnect()
+
     @contextmanager
     def realtime_session(self) -> Iterator[None]:
-        """Open a websocket for the duration of a block, refreshing the token first.
+        """Ensure the websocket is up for the duration of a block.
 
         Only falls back to a non-realtime body when *opening* the websocket
         fails. Exceptions raised by the wrapped body (e.g. model 429s) must
@@ -73,7 +89,7 @@ class OuroReplyPublisher:
         """
         self.client.ensure_valid_token()
         try:
-            session_cm = self.client.websocket.session()
+            self.client.websocket.ensure_connected()
         except Exception:
             log.warning(
                 "Websocket session failed — falling back to non-realtime",
@@ -82,22 +98,10 @@ class OuroReplyPublisher:
             yield
             return
 
-        entered = False
         try:
-            with session_cm:
-                entered = True
-                try:
-                    yield
-                finally:
-                    self._flush_pending()
-        except Exception:
-            if entered:
-                raise
-            log.warning(
-                "Websocket session failed — falling back to non-realtime",
-                exc_info=True,
-            )
             yield
+        finally:
+            self._flush_pending()
 
     def _safe_emit(self, fn, **kwargs) -> None:
         """Call an emit function, swallowing websocket errors."""
@@ -111,13 +115,15 @@ class OuroReplyPublisher:
         if pending is None:
             return
         self._pending = None
+        if not pending["content"]:
+            return
         self._safe_emit(pending["emit"], content=pending["content"], **pending["kwargs"])
 
     def _emit_coalesced(self, emit_fn, *, content: str, **kwargs) -> None:
         """Buffer a stream delta, flushing once it grows big or old enough.
 
-        Any emit for a different stream (or any non-stream emit) flushes the
-        buffer first, so event ordering on the wire is preserved.
+        The first chunk of a new stream is sent immediately so TTFT is not
+        gated on the coalesce window. Later chunks still batch.
         """
         pending = self._pending
         if pending is not None and (
@@ -126,13 +132,14 @@ class OuroReplyPublisher:
             self._flush_pending()
             pending = None
         if pending is None:
-            pending = {
+            self._safe_emit(emit_fn, content=content, **kwargs)
+            self._pending = {
                 "emit": emit_fn,
                 "kwargs": kwargs,
                 "content": "",
                 "first_at": time.monotonic(),
             }
-            self._pending = pending
+            return
         pending["content"] += content
         if (
             len(pending["content"]) >= COALESCE_MAX_CHARS

@@ -75,6 +75,11 @@ EVENT_REGISTRY = {
 Comment / mention preloads: `ouro:get_asset`, `ouro:write_comment`,
 `ouro:get_comments`. New events get a zero-config `EventSpec` by default.
 
+Payload-dependent extras are composed in `ouro_agents/tool_preloads.py`
+(`preloads_for_event`): quest comments also preload quest-manage tools, and
+a chat message with an attached asset preloads `ouro:get_asset`. Role and
+surface never add tools — they only subtract, via the capability envelope.
+
 The registry validates against `ouro.events.WEBHOOK_EVENT_TYPES` at
 import time, so a typo on a key fails fast.
 

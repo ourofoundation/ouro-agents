@@ -15,7 +15,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from ..security.policy import Capability, CapabilityEnvelope
-from ..security.tool_capabilities import capability_for_tool
+from ..tool_preloads import AUTONOMOUS_ACTION, HEARTBEAT_DEFAULT, filter_preloads
 from .framing import (
     AUTONOMOUS_FRAMING,
     AUTONOMOUS_OUTPUT,
@@ -85,12 +85,7 @@ class ModeProfile(BaseModel):
 # Built-in profiles
 # ---------------------------------------------------------------------------
 
-AUTONOMOUS_ACTION_PRELOADS = [
-    "ouro:search_assets",
-    "ouro:get_asset",
-    "ouro:execute_route",
-    "ouro:get_action",
-]
+AUTONOMOUS_ACTION_PRELOADS = list(AUTONOMOUS_ACTION)
 
 # Chat runs ARE the conversation: the host injects history and posts the
 # final reply, so platform messaging tools are pure foot-guns there
@@ -127,7 +122,7 @@ AUTONOMOUS = ModeProfile(
     framing=AUTONOMOUS_FRAMING,
     output_format=AUTONOMOUS_OUTPUT,
     max_steps=40,
-    preload_tools=AUTONOMOUS_ACTION_PRELOADS,
+    preload_tools=list(AUTONOMOUS_ACTION),
 )
 
 HEARTBEAT = ModeProfile(
@@ -136,12 +131,7 @@ HEARTBEAT = ModeProfile(
     output_format=HEARTBEAT_OUTPUT,
     # Heavy work goes to cheap delegates; keep room for decide + execute.
     max_steps=40,
-    preload_tools=[
-        "ouro:search_assets",
-        "ouro:get_asset",
-        "ouro:write_comment",
-        "ouro:create_post",
-    ],
+    preload_tools=list(HEARTBEAT_DEFAULT),
     # Main heartbeat may only load Ouro MCP tools; search belongs to subagents.
     restricted_servers=True,
     default_servers=["ouro"],
@@ -201,18 +191,6 @@ def apply_mode_override(profile: ModeProfile, override) -> ModeProfile:
     return profile
 
 
-def _filter_preload_tools(
-    preload_tools: list[str],
-    allowed_capabilities: frozenset[Capability],
-) -> list[str]:
-    filtered: list[str] = []
-    for tool_name in preload_tools:
-        capability = capability_for_tool(tool_name)
-        if capability is not None and capability in allowed_capabilities:
-            filtered.append(tool_name)
-    return filtered
-
-
 def apply_capability_envelope(
     profile: ModeProfile,
     envelope: CapabilityEnvelope,
@@ -229,7 +207,7 @@ def apply_capability_envelope(
 
     updates: dict = {
         "allowed_capabilities": frozenset(allowed),
-        "preload_tools": _filter_preload_tools(profile.preload_tools, frozenset(allowed)),
+        "preload_tools": filter_preloads(profile.preload_tools, frozenset(allowed)),
     }
 
     if Capability.DELEGATE not in allowed:

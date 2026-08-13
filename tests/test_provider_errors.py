@@ -24,7 +24,6 @@ from ouro_agents.provider_errors import (
     resolve_retry_delay,
 )
 from ouro_agents.server import (
-    ServerAgentObserver,
     _persist_provider_fail_comment,
     _persist_rate_limit_fail_message,
 )
@@ -293,34 +292,6 @@ def _event_run(**overrides) -> EventRunContext:
     return EventRunContext(**base)
 
 
-def test_rate_limit_note_not_promoted_as_final_answer():
-    publisher = MagicMock()
-    observer = ServerAgentObserver(
-        _event_run(),
-        stream_message_id="stream-1",
-        turn_id="turn-1",
-        reply_publisher=publisher,
-    )
-    observer._intermediate_messages.append(
-        {"id": "note-1", "text": RATE_LIMIT_NOTE, "msg": {}}
-    )
-    observer._intermediate_messages.append(
-        {
-            "id": "real-1",
-            "text": "Here is a real substantial intermediate reply for the user.",
-            "msg": {},
-        }
-    )
-    last = observer._last_substantial_intermediate()
-    assert last is not None
-    assert last["id"] == "real-1"
-
-    observer._intermediate_messages = [
-        {"id": "note-1", "text": RATE_LIMIT_NOTE, "msg": {}}
-    ]
-    assert observer._last_substantial_intermediate() is None
-
-
 def test_chat_retry_callback_emits_activity_and_one_note():
     """Mirror the agent wiring: activity every time, note once for long delays."""
     observer = MagicMock()
@@ -398,24 +369,21 @@ def test_realtime_session_propagates_body_errors():
     from ouro_agents.publisher import OuroReplyPublisher
 
     publisher = OuroReplyPublisher(client=MagicMock())
-    session_cm = MagicMock()
-    session_cm.__enter__ = MagicMock(return_value=None)
-    session_cm.__exit__ = MagicMock(return_value=False)
-    publisher.client.websocket.session.return_value = session_cm
+    publisher.client.websocket.ensure_connected.return_value = None
 
     with pytest.raises(RuntimeError, match="boom"):
         with publisher.realtime_session():
             raise RuntimeError("boom")
 
-    # Must not have fallen through to a second yield / generator error.
-    session_cm.__exit__.assert_called_once()
+    publisher.client.websocket.session.assert_not_called()
+    publisher.client.websocket.disconnect.assert_not_called()
 
 
 def test_realtime_session_falls_back_when_open_fails():
     from ouro_agents.publisher import OuroReplyPublisher
 
     publisher = OuroReplyPublisher(client=MagicMock())
-    publisher.client.websocket.session.side_effect = ConnectionError("down")
+    publisher.client.websocket.ensure_connected.side_effect = ConnectionError("down")
 
     ran = {"ok": False}
     with publisher.realtime_session():

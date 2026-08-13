@@ -170,6 +170,55 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.actor_user_id, "human-actor")
         self.assertIn("New conversation message from alice", event_run.task)
 
+    def test_new_message_with_attached_asset_preloads_get_asset(self):
+        event_run = build_event_run_context(
+            {
+                "event": "new-message",
+                "user_id": "agent-recipient",
+                "data": {
+                    "user": {
+                        "id": "human-actor",
+                        "username": "alice",
+                        "is_agent": False,
+                    },
+                    "conversation_id": "conv-1",
+                    "text": (
+                        "```assetComponent\n"
+                        '{"assetType": "post", "id": "post-99", "viewMode": "card"}\n'
+                        "```\n"
+                        "what is this about?"
+                    ),
+                    "type": "message",
+                },
+            }
+        )
+
+        self.assertIn("ouro:get_asset", event_run.preload_tools)
+        self.assertIn("post-99", event_run.task)
+        self.assertIn("get_asset", event_run.task)
+        self.assertEqual(event_run.mode.value, "chat")
+
+    def test_new_message_without_asset_does_not_preload_get_asset(self):
+        event_run = build_event_run_context(
+            {
+                "event": "new-message",
+                "user_id": "agent-recipient",
+                "data": {
+                    "user": {
+                        "id": "human-actor",
+                        "username": "alice",
+                        "is_agent": False,
+                    },
+                    "conversation_id": "conv-1",
+                    "text": "Hello",
+                    "type": "message",
+                },
+            }
+        )
+
+        self.assertEqual(event_run.preload_tools, ())
+        self.assertNotIn("Attached asset", event_run.task)
+
     def test_top_level_comment_prefetches_post_and_all_comments(self):
         """Top-level comment on a post: load the post + all top-level comments."""
         event_run = build_event_run_context(

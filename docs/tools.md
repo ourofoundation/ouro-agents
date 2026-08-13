@@ -153,9 +153,11 @@ MCP servers are connected at startup. Each tool is registered under a
 qualified name `<server>:<tool>` (e.g. `ouro:get_asset`). Two ways tools
 become callable inside the loop:
 
-1. **Preloads** — the mode profile (or `preload_tools` argument) lists
-   qualified names that get attached eagerly. The system prompt notes the
-   bare names so the agent can call them directly.
+1. **Preloads** — context extras (event payload, inbox, planning) plus the
+   mode profile list qualified names that get attached eagerly. The system
+   prompt notes the bare names so the agent can call them directly.
+   Role/surface capability envelopes only subtract. See
+   `ouro_agents/tool_preloads.py`.
 2. **Deferred directory** — every other tool is listed with its short
    description. The agent calls `load_tool(name)` to attach it.
 

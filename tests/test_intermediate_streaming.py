@@ -1,9 +1,9 @@
 """Tests for the intermediate content streamer + observer wiring.
 
-Covers the path that turns each non-final step's assistant content into a
-distinct conversation message — both as live websocket chunks and as a
-persisted Ouro message — so users see a chat-style timeline matching the
-work the agent actually did.
+Covers the path that turns each step's assistant content into a distinct
+conversation message — both as live websocket chunks and as a persisted
+Ouro message — so users see a chat-style timeline matching the work the
+agent actually did. The last step is the same path, persisted as turn_final.
 """
 
 import unittest
@@ -12,10 +12,7 @@ from types import SimpleNamespace
 from smolagents import ChatMessageStreamDelta
 
 from ouro_agents.observer import AgentObserver
-from ouro_agents.utils.streaming import (
-    FinalAnswerStreamer,
-    IntermediateContentStreamer,
-)
+from ouro_agents.utils.streaming import IntermediateContentStreamer
 
 
 def _content_delta(text: str) -> ChatMessageStreamDelta:
@@ -80,41 +77,16 @@ class TestIntermediateContentStreamer(unittest.TestCase):
         self.assertFalse(streamer.has_streamed)
         self.assertEqual(streamer.buffered_text, "")
 
-    def test_suppresses_after_legacy_final_answer_marker(self):
-        # When the model embeds a `<function=final_answer>` block in content,
-        # FinalAnswerStreamer extracts the answer from there. The intermediate
-        # streamer must not also emit it as commentary, or the user would see
-        # the final reply text twice (once as a commentary message, once as
-        # the streamed reply).
+    def test_streams_plain_content_that_mentions_final_answer(self):
+        # Content is the reply now; mentioning the old tool name must not hide it.
         streamer = IntermediateContentStreamer()
-
-        first = streamer.consume(_content_delta("Looking at this. "))
-        self.assertEqual(first, "Looking at this. ")
-
-        # The marker arrives mid-stream — suppression engages and nothing
-        # further is emitted, including the commentary that preceded the
-        # marker (already emitted) and the answer body that follows.
-        suppressed = streamer.consume(
-            _content_delta(
-                "<function=final_answer><parameter=answer>The answer.</parameter></function>"
-            )
-        )
-        self.assertIsNone(suppressed)
-
-        # Subsequent deltas remain suppressed for the rest of this step.
-        self.assertIsNone(streamer.consume(_content_delta("more text")))
-
-    def test_suppresses_when_streamed_answer_extracted_from_content(self):
-        # Some models stream the tool call as a JSON-ish blob inside content
-        # rather than via tool_calls. ``extract_streamed_answer_from_content``
-        # detects that format; if it returns anything, suppress.
-        streamer = IntermediateContentStreamer()
-
-        suppressed = streamer.consume(
+        chunk = streamer.consume(
             _content_delta('{"name": "final_answer", "arguments": {"answer": "Hi."}}')
         )
-        self.assertIsNone(suppressed)
-        self.assertFalse(streamer.has_streamed)
+        self.assertEqual(
+            chunk, '{"name": "final_answer", "arguments": {"answer": "Hi."}}'
+        )
+        self.assertTrue(streamer.has_streamed)
 
     def test_suppresses_narrated_calling_tools_block(self):
         # GLM (and other models) imitate smolagents' own
@@ -183,45 +155,18 @@ class TestIntermediateContentStreamer(unittest.TestCase):
         self.assertEqual("".join(chunks), "Hello world.")
 
 
-class TestFinalAnswerStreamerStillWorks(unittest.TestCase):
-    """Sanity: the existing final-answer stream behaviour is unchanged."""
-
-    def test_emits_final_answer_arg_chunks_only(self):
-        streamer = FinalAnswerStreamer()
-        # Tool call that is not final_answer: nothing emitted.
-        self.assertIsNone(
-            streamer.consume(_tool_arg_delta(name="search_assets", arguments="{")),
-        )
-
-        # Switch to the final_answer tool at a fresh index — chunks emit.
-        chunks: list[str] = []
-        for arg in ('{"answer": "', "Hello", " world", '"}'):
-            ev = _tool_arg_delta(index=1, name="final_answer", arguments=arg)
-            chunk = streamer.consume(ev)
-            if chunk:
-                chunks.append(chunk)
-
-        self.assertEqual("".join(chunks), "Hello world")
-
-
 class _RecordingObserver(AgentObserver):
     def __init__(self):
         self.intermediate_chunks: list[tuple[str, str]] = []
-        self.intermediate_ends: list[tuple[str, str]] = []
-        self.final_chunks: list[str] = []
-        self.results: list[str] = []
-
-    def on_stream_chunk(self, chunk: str) -> None:
-        self.final_chunks.append(chunk)
+        self.intermediate_ends: list[tuple[str, str, bool]] = []
 
     def on_intermediate_chunk(self, message_id: str, chunk: str) -> None:
         self.intermediate_chunks.append((message_id, chunk))
 
-    def on_intermediate_end(self, message_id: str, full_text: str) -> None:
-        self.intermediate_ends.append((message_id, full_text))
-
-    def on_result_ready(self, result_text: str) -> None:
-        self.results.append(result_text)
+    def on_intermediate_end(
+        self, message_id: str, full_text: str, turn_final: bool = False
+    ) -> None:
+        self.intermediate_ends.append((message_id, full_text, turn_final))
 
 
 class TestRunLoopFlushBehaviour(unittest.TestCase):
@@ -239,7 +184,7 @@ class TestRunLoopFlushBehaviour(unittest.TestCase):
         streamer = IntermediateContentStreamer()
         current_id: str | None = None
 
-        def flush(*, drop: bool) -> None:
+        def flush(*, turn_final: bool) -> None:
             nonlocal current_id
             if current_id is None:
                 streamer.reset()
@@ -247,9 +192,9 @@ class TestRunLoopFlushBehaviour(unittest.TestCase):
             text = streamer.flush()
             mid = current_id
             current_id = None
-            if drop or not text.strip():
+            if not text.strip():
                 return
-            observer.on_intermediate_end(mid, text)
+            observer.on_intermediate_end(mid, text, turn_final)
 
         for ev in events:
             if isinstance(ev, ChatMessageStreamDelta):
@@ -259,8 +204,8 @@ class TestRunLoopFlushBehaviour(unittest.TestCase):
                         current_id = uuid7_str()
                     observer.on_intermediate_chunk(current_id, chunk)
             elif isinstance(ev, _StepBoundary):
-                flush(drop=ev.is_final_answer)
-        flush(drop=False)
+                flush(turn_final=ev.is_final_answer)
+        flush(turn_final=False)
 
     def test_each_non_final_step_persists_with_unique_message_id(self):
         observer = _RecordingObserver()
@@ -275,7 +220,7 @@ class TestRunLoopFlushBehaviour(unittest.TestCase):
 
         # Two end events, one per step, with distinct ids.
         self.assertEqual(len(observer.intermediate_ends), 2)
-        ids = [mid for mid, _ in observer.intermediate_ends]
+        ids = [mid for mid, _, _ in observer.intermediate_ends]
         self.assertEqual(len(set(ids)), 2)
         self.assertEqual(
             observer.intermediate_ends[0][1],
@@ -285,6 +230,8 @@ class TestRunLoopFlushBehaviour(unittest.TestCase):
             observer.intermediate_ends[1][1],
             "Found three candidates — checking each.",
         )
+        self.assertFalse(observer.intermediate_ends[0][2])
+        self.assertFalse(observer.intermediate_ends[1][2])
 
         # Streamed chunks share the message id of the step they belong to.
         chunk_ids_step1 = {
@@ -296,21 +243,22 @@ class TestRunLoopFlushBehaviour(unittest.TestCase):
         self.assertEqual(chunk_ids_step1, {ids[0]})
         self.assertEqual(chunk_ids_step2, {ids[1]})
 
-    def test_final_answer_step_drops_buffered_commentary(self):
-        # The final-answer step's content is covered by on_stream_chunk +
-        # on_result_ready; we don't want a second message persisted.
+    def test_final_step_persists_content_as_turn_final(self):
         observer = _RecordingObserver()
         events = [
-            _content_delta("Wrapping this up:"),
+            _content_delta("Looking at recent quests."),
+            _StepBoundary(is_final_answer=False),
+            _content_delta("Here's the answer."),
             _StepBoundary(is_final_answer=True),
         ]
 
         self._run(events, observer=observer)
 
-        # Live streaming still happened (the user saw real-time typing)…
-        self.assertTrue(observer.intermediate_chunks)
-        # …but no separate persisted message for the final-answer step.
-        self.assertEqual(observer.intermediate_ends, [])
+        self.assertEqual(len(observer.intermediate_ends), 2)
+        self.assertEqual(observer.intermediate_ends[0][1], "Looking at recent quests.")
+        self.assertFalse(observer.intermediate_ends[0][2])
+        self.assertEqual(observer.intermediate_ends[1][1], "Here's the answer.")
+        self.assertTrue(observer.intermediate_ends[1][2])
 
     def test_step_with_no_content_persists_nothing(self):
         observer = _RecordingObserver()

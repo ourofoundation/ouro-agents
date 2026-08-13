@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ouro.events import WebhookEvent, parse_webhook_event
 
@@ -10,7 +10,11 @@ from .constants import FETCHABLE_ASSET_TYPES
 from .event_registry import (
     event_surface_for,
     surface_capability_override_for,
-    tool_preloads_for,
+)
+from .tool_preloads import (
+    attached_asset_ids,
+    attached_asset_task_hint,
+    preloads_for_event,
 )
 from .provenance import AssetProvenance
 from .security.policy import Capability, EventSurface
@@ -81,19 +85,6 @@ leave cancelled work as `in_progress`.
 - **Revises** the plan (change description, add/remove items): use \
 `update_quest` / `update_quest_item` / `create_quest_items` / \
 `delete_quest_item` as needed."""
-
-_QUEST_COMMENT_PRELOADS: List[str] = [
-    "ouro:get_asset",
-    "ouro:get_comments",
-    "ouro:write_comment",
-    "ouro:update_quest",
-    "ouro:list_quest_items",
-    "ouro:create_quest_items",
-    "ouro:update_quest_item",
-    "ouro:delete_quest_item",
-    "ouro:complete_quest_item",
-]
-
 
 def _ready_hint(preload_names: list[str]) -> str:
     if not preload_names:
@@ -399,7 +390,12 @@ def _build_event_task(
     """Build the task string, run mode, preload tools, and prefetch spec."""
     data = event.data
     event_type = event.event_type
-    preload_names = list(tool_preloads_for(event_type))
+    root_asset_type = comment_ctx.root_asset_type if comment_ctx else None
+    preload_names = list(
+        preloads_for_event(
+            event_type, root_asset_type=root_asset_type, data=data
+        )
+    )
     prefetch = PrefetchSpec()
 
     if event_type == "new-message":
@@ -410,6 +406,9 @@ def _build_event_task(
             f"New conversation message from {sender} (conversation_id: {conv}).\n\n"
             f"{content}"
         )
+        asset_hint = attached_asset_task_hint(attached_asset_ids(data))
+        if asset_hint:
+            task += f"\n\n{asset_hint}"
         hint = _ready_hint(preload_names)
         if hint:
             task += f"\n\n{hint}"
@@ -421,9 +420,6 @@ def _build_event_task(
     if event_type in {"comment", "mention"}:
         ctx = comment_ctx or CommentContext.from_event(event)
         prefetch = ctx.build_prefetch()
-        if ctx.root_asset_type == "quest":
-            # Quest comments often change item state; preload manage tools.
-            preload_names = list(_QUEST_COMMENT_PRELOADS)
         task = _default_comment_task(ctx, event_type, provenance, preload_names)
         return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch
 

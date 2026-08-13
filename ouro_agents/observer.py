@@ -23,42 +23,36 @@ class AgentObserver:
         pass
 
     def on_stream_chunk(self, chunk: str) -> None:
-        """Called when the agent streams a chunk of its final answer."""
+        """Deprecated: final text is streamed via ``on_intermediate_chunk``."""
         pass
 
     def on_result_ready(self, result_text: str) -> None:
-        """Called when the agent has completed its final answer."""
+        """Called when the agent loop has finished (after the last content step)."""
         pass
 
     def on_intermediate_chunk(self, message_id: str, chunk: str) -> None:
-        """Called when the agent streams a chunk of intermediate (commentary) content.
+        """Called when the agent streams a chunk of assistant content.
 
-        Intermediate content is the assistant text emitted alongside non-final
-        tool calls — e.g., "Looking at recent quests first." or "Found three
-        candidates." It is conceptually a separate user-visible message per
-        step, so each step has its own ``message_id``. Implementations should
-        treat ``message_id`` as a stable identifier for the message being
-        progressively streamed.
+        Every step — including the last — is a distinct user-visible message
+        with its own ``message_id``. Implementations should treat that id as
+        stable for the message being progressively streamed.
         """
         pass
 
-    def on_intermediate_end(self, message_id: str, full_text: str) -> None:
-        """Called when a step's intermediate content stream has finished.
+    def on_intermediate_end(
+        self, message_id: str, full_text: str, turn_final: bool = False
+    ) -> None:
+        """Called when a step's content stream has finished.
 
-        Fires once per step that emitted any commentary, after the step
-        completes. Use this hook to persist the full message and signal the
-        end of streaming for that ``message_id``.
+        Fires once per step that emitted any content, after the step
+        completes. ``turn_final`` is True for the last step (the user-facing
+        reply). Persist the full message and signal end of streaming for
+        ``message_id``.
         """
         pass
 
     def on_intermediate_drop(self, message_id: str) -> None:
-        """Called when streamed intermediate content should be discarded.
-
-        This happens when a step resolves as the final answer: some model
-        deltas may have already streamed over the intermediate/commentary
-        channel, but they should not remain visible once the final-answer
-        message is emitted.
-        """
+        """Deprecated: last-step content is persisted, not dropped."""
         pass
 
     def on_step_persist(self, step: dict) -> None:
@@ -113,8 +107,10 @@ class CompositeAgentObserver(AgentObserver):
     def on_intermediate_chunk(self, message_id: str, chunk: str) -> None:
         self._call("on_intermediate_chunk", message_id, chunk)
 
-    def on_intermediate_end(self, message_id: str, full_text: str) -> None:
-        self._call("on_intermediate_end", message_id, full_text)
+    def on_intermediate_end(
+        self, message_id: str, full_text: str, turn_final: bool = False
+    ) -> None:
+        self._call("on_intermediate_end", message_id, full_text, turn_final)
 
     def on_intermediate_drop(self, message_id: str) -> None:
         self._call("on_intermediate_drop", message_id)

@@ -2,7 +2,8 @@
 
 This is the single source of truth in ``ouro_agents`` for:
   - which events are "chat" events (drive realtime presence/streaming)
-  - which MCP tools to preload per event type
+  - which MCP tools to preload per event type (static lists; payload extras
+    are composed in ``tool_preloads.preloads_for_event``)
   - how to compute a pool key for debouncing/coalescing
 
 The event names themselves are imported from ``ouro.events``

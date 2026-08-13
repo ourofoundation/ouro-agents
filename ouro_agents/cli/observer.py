@@ -46,6 +46,7 @@ class TUIObserver(AgentObserver):
         self.stream_message_id = stream_message_id
         self._final_text_parts: list[str] = []
         self._intermediate_text: dict[str, list[str]] = {}
+        self._turn_final_persisted = False
         self._persist_step_cb = (
             build_persistence_step_callback(agent_client, conversation_id)
             if agent_client and conversation_id
@@ -75,7 +76,9 @@ class TUIObserver(AgentObserver):
         self._intermediate_text.setdefault(message_id, []).append(chunk)
         self.emit(TUIAgentEvent("intermediate", text=chunk, message_id=message_id))
 
-    def on_intermediate_end(self, message_id: str, full_text: str) -> None:
+    def on_intermediate_end(
+        self, message_id: str, full_text: str, turn_final: bool = False
+    ) -> None:
         text = (full_text or "".join(self._intermediate_text.get(message_id, []))).strip()
         if text and self.agent_client and self.conversation_id:
             try:
@@ -86,12 +89,19 @@ class TUIObserver(AgentObserver):
                     type="message",
                     text=content.text,
                     json=content.json,
+                    metadata={"turn_final": turn_final},
                 )
+                if turn_final:
+                    self._turn_final_persisted = True
             except Exception:
                 logger.warning("Failed to persist intermediate content", exc_info=True)
         self.emit(TUIAgentEvent("intermediate_end", text=text, message_id=message_id))
 
     def on_result_ready(self, result_text: str) -> None:
+        if self._turn_final_persisted:
+            text = result_text or "".join(self._final_text_parts)
+            self.emit(TUIAgentEvent("result", text=text, payload=None))
+            return
         text = result_text or "".join(self._final_text_parts)
         message = None
         if (

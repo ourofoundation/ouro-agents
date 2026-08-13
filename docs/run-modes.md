@@ -165,5 +165,6 @@ rather than static prompt context. Not implemented yet.
    `max_steps` / `preload_tools`.
 3. The merged profile is threaded through `_build_agent_tools` and
    `_build_system_prompt`.
-4. Explicit `preload_tools` arguments to `run()` are merged with the
-   profile's preloads (explicit takes precedence, deduped).
+4. Explicit `preload_tools` arguments to `run()` (event extras, inbox,
+   planning) are merged first-seen with the profile's preloads, then
+   filtered by the capability envelope.

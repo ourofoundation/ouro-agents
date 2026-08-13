@@ -27,7 +27,6 @@ from .provenance import resolve_event_provenance
 from .publisher import OuroReplyPublisher
 from .provider_errors import (
     RATE_LIMIT_FAIL_MESSAGE,
-    RATE_LIMIT_NOTE,
     provider_fail_reply,
 )
 from .security.policy import (
@@ -55,8 +54,6 @@ _EMPTY_FINAL_ANSWER_MARKERS = frozenset(
         "MODEL_EMPTY_RESPONSE: model returned no content and no tool calls.",
     }
 )
-# Commentary shorter than this is unlikely to be the real user-facing answer.
-_MIN_PROMOTABLE_INTERMEDIATE_CHARS = 40
 
 
 def _is_trivial_final_result(result_text: str) -> bool:
@@ -133,6 +130,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     logger.debug("Reply publisher config: %s", reply_publisher.describe_config())
     reply_publisher.ensure_ready()
+    try:
+        reply_publisher.connect_persistent()
+    except Exception:
+        logger.warning(
+            "Could not pre-connect reply websocket; will retry per event",
+            exc_info=True,
+        )
     platform = (
         f"{reply_publisher.client.base_url} as "
         f"{getattr(reply_publisher.client.user, 'email', 'unknown')}"
@@ -172,6 +176,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if agent_instance:
             agent_instance.scheduler.stop()
             agent_instance.close()
+        if reply_publisher:
+            reply_publisher.disconnect_persistent()
 
 
 app = FastAPI(title="Ouro Agents Server", lifespan=lifespan)
@@ -250,17 +256,14 @@ class ServerAgentObserver(AgentObserver):
         self.reply_publisher = reply_publisher
         self.active_activity_status: Optional[str] = None
         self.persisted_message_ref = []
-        self._streamed_final_text = ""
-
-        # Id of a final-step commentary stream flagged for drop. Held until
-        # on_result_ready instead of being discarded immediately. When the model
-        # streams its final answer as plain content (no final_answer tool
-        # stream), that "commentary" IS the answer; promoting it (persisting the
-        # answer under this same id) lets the client replace the streamed message
-        # in place. Discarding it and re-persisting under stream_message_id would
-        # make the client tear down the streamed message and mount a new one
-        # under a different id, which flashes.
-        self._deferred_drop_id: Optional[str] = None
+        # Last-step content already persisted as turn_final; on_result_ready
+        # must not create a second final message.
+        self._turn_final_id: Optional[str] = None
+        self._open_content_id: Optional[str] = None
+        self._open_content_text = ""
+        self._ttft_t0: Optional[float] = None
+        self._ttft_stages: dict[str, int] = {}
+        self._ttft_logged = False
 
         # Per-step flag: was this step's reasoning streamed live? Reset at each
         # step boundary (see on_step_persist) so every step decides afresh.
@@ -275,10 +278,26 @@ class ServerAgentObserver(AgentObserver):
         # Active subagent runs keyed by run_id (see on_progress).
         self._subagent_runs: dict[str, dict[str, object]] = {}
 
-        # Intermediate commentary rows persisted with ``turn_final: False``.
-        # If the model ends on an empty ``final_answer`` after dumping its reply
-        # into commentary, we promote the last substantial row in-place.
-        self._intermediate_messages: list[dict[str, Any]] = []
+    def mark_ttft_origin(self) -> None:
+        self._ttft_t0 = time.monotonic()
+
+    def mark_ttft(self, stage: str) -> None:
+        if self._ttft_t0 is None:
+            self._ttft_t0 = time.monotonic()
+        if stage not in self._ttft_stages:
+            self._ttft_stages[stage] = int(
+                (time.monotonic() - self._ttft_t0) * 1000
+            )
+        if stage == "first_token" and not self._ttft_logged:
+            self._ttft_logged = True
+            logger.info(
+                "ttft event=%s conv=%s ws_ready_ms=%s thinking_ms=%s first_token_ms=%s",
+                self.event_run.event_type,
+                self.event_run.conversation_id,
+                self._ttft_stages.get("ws_ready"),
+                self._ttft_stages.get("thinking"),
+                self._ttft_stages.get("first_token"),
+            )
 
     def _next_turn_seq(self) -> int:
         seq = self._next_seq
@@ -305,39 +324,23 @@ class ServerAgentObserver(AgentObserver):
             active=active,
             message=message,
         )
+        if active and status == "thinking":
+            self.mark_ttft("thinking")
 
     def _clear_activity(self) -> None:
         if self.active_activity_status:
             self.on_activity(self.active_activity_status, None, False)
 
-    def on_stream_chunk(self, chunk: str) -> None:
-        if not self.reply_publisher or not is_chat_event(self.event_run.event_type):
-            return
-        if not self.event_run.conversation_id:
-            return
-        self._clear_activity()
-        self._streamed_final_text += chunk
-
-        self.reply_publisher.emit_llm_response(
-            conversation_id=self.event_run.conversation_id,
-            content=chunk,
-            message_id=self.stream_message_id,
-            turn_id=self.turn_id,
-            seq=self._seq_for_message(self.stream_message_id),
-        )
-
     def on_intermediate_chunk(self, message_id: str, chunk: str) -> None:
-        """Stream a step's commentary chunk to the conversation websocket.
-
-        Each non-final step gets its own ``message_id`` so the client can
-        render commentary as a distinct message that arrives before the
-        final reply, matching how chat-style coding agents narrate work.
-        """
+        """Stream a step's content chunk to the conversation websocket."""
         if not self.reply_publisher or not is_chat_event(self.event_run.event_type):
             return
         if not self.event_run.conversation_id:
             return
         self._clear_activity()
+        self.mark_ttft("first_token")
+        self._open_content_id = message_id
+        self._open_content_text += chunk
         self.reply_publisher.emit_llm_response(
             conversation_id=self.event_run.conversation_id,
             content=chunk,
@@ -346,18 +349,17 @@ class ServerAgentObserver(AgentObserver):
             seq=self._seq_for_message(message_id),
         )
 
-    def on_intermediate_end(self, message_id: str, full_text: str) -> None:
-        """Persist a step's commentary message and signal end-of-stream.
-
-        ``full_text`` is the concatenation of every chunk emitted under
-        ``message_id`` during this step. Persisting at end-of-step (rather
-        than on every chunk) keeps writes proportional to the number of
-        steps instead of the number of tokens.
-        """
+    def on_intermediate_end(
+        self, message_id: str, full_text: str, turn_final: bool = False
+    ) -> None:
+        """Persist a step's content message and signal end-of-stream."""
         if not self.event_run.conversation_id or not self.reply_publisher:
             return
         text = (full_text or "").strip()
         if not text:
+            if self._open_content_id == message_id:
+                self._open_content_id = None
+                self._open_content_text = ""
             return
         msg = None
         try:
@@ -371,16 +373,19 @@ class ServerAgentObserver(AgentObserver):
                 type="message",
                 text=content.text,
                 json=content.json,
-                metadata={"turn_final": False},
+                metadata={"turn_final": turn_final},
             )
-            self._intermediate_messages.append(
-                {"id": message_id, "text": text, "msg": msg}
-            )
+            if turn_final:
+                self._turn_final_id = message_id
+                self.persisted_message_ref.append(msg)
         except Exception:
             logger.warning(
-                "Failed to persist intermediate content message",
+                "Failed to persist content message",
                 exc_info=True,
             )
+        if self._open_content_id == message_id:
+            self._open_content_id = None
+            self._open_content_text = ""
         if is_chat_event(self.event_run.event_type):
             self.reply_publisher.emit_llm_response_end(
                 conversation_id=self.event_run.conversation_id,
@@ -388,137 +393,48 @@ class ServerAgentObserver(AgentObserver):
                 message=msg,
             )
 
-    def _emit_discard(self, message_id: str) -> None:
-        if not self.reply_publisher or not self.event_run.conversation_id:
+    def discard_pending_intermediate(self) -> None:
+        """End an in-flight content stream without discarding it (cancel/error)."""
+        if self._open_content_id is None or not self.reply_publisher:
+            return
+        if not self.event_run.conversation_id:
             return
         self.reply_publisher.emit_llm_response_end(
             conversation_id=self.event_run.conversation_id,
-            message_id=message_id,
-            message={
-                "id": message_id,
-                "user_id": str(self.reply_publisher.client.user.id),
-                "discarded": True,
-            },
+            message_id=self._open_content_id,
+            message=None,
         )
-
-    def on_intermediate_drop(self, message_id: str) -> None:
-        if (
-            not self.reply_publisher
-            or not self.event_run.conversation_id
-            or not is_chat_event(self.event_run.event_type)
-        ):
-            return
-        # Defer the discard until on_result_ready, which decides whether to
-        # promote this streamed message to the final answer (persist in place)
-        # or genuinely discard it (when a separate final answer was streamed).
-        self._deferred_drop_id = message_id
-
-    def discard_pending_intermediate(self) -> None:
-        """Flush a deferred drop without promotion (used on error/cancel)."""
-        if self._deferred_drop_id is not None:
-            self._emit_discard(self._deferred_drop_id)
-            self._deferred_drop_id = None
-
-    def _last_substantial_intermediate(self) -> Optional[dict[str, Any]]:
-        for entry in reversed(self._intermediate_messages):
-            text = str(entry.get("text", "")).strip()
-            # Rate-limit status notes are not answers — never promote them.
-            if text == RATE_LIMIT_NOTE:
-                continue
-            if len(text) >= _MIN_PROMOTABLE_INTERMEDIATE_CHARS:
-                return entry
-        return None
-
-    def _promote_intermediate_to_final(self, entry: dict[str, Any]) -> Optional[dict]:
-        if not self.event_run.conversation_id or not self.reply_publisher:
-            return None
-        message_id = str(entry["id"])
-        existing = entry.get("msg")
-        if not isinstance(existing, dict):
-            return None
-        try:
-            ouro = self.reply_publisher.client
-            updated_metadata = {**(existing.get("metadata") or {}), "turn_final": True}
-            updated = Messages(ouro).update(
-                self.event_run.conversation_id,
-                message_id,
-                metadata=updated_metadata,
-            )
-            promoted = updated if isinstance(updated, dict) else {
-                **existing,
-                "metadata": updated_metadata,
-            }
-            logger.info(
-                "Promoted intermediate message %s to turn_final after trivial final_answer",
-                message_id,
-            )
-            return promoted
-        except Exception:
-            logger.warning(
-                "Failed to promote intermediate message %s to turn_final",
-                message_id,
-                exc_info=True,
-            )
-            return None
+        self._open_content_id = None
 
     def on_result_ready(self, result_text: str) -> None:
-        msg = None
+        if self._turn_final_id is not None:
+            return
+
         result_text = (result_text or "").strip()
-        if not result_text and self._streamed_final_text.strip():
-            result_text = self._streamed_final_text.strip()
-
-        has_real_result = bool(result_text) and not _is_trivial_final_result(result_text)
-
-        # Decide what id the final message is persisted/emitted under. When the
-        # model streamed its answer as plain content (no on_stream_chunk), the
-        # commentary message flagged for drop IS the answer: promote it by
-        # persisting under that same id so the client replaces the streamed
-        # message in place (no flash). Otherwise, a real final answer was
-        # streamed separately — discard the redundant commentary now.
-        final_message_id = self.stream_message_id
-        if self._deferred_drop_id is not None:
-            if has_real_result and not self._streamed_final_text.strip():
-                final_message_id = self._deferred_drop_id
-            else:
-                self._emit_discard(self._deferred_drop_id)
-            self._deferred_drop_id = None
-
+        has_real_result = bool(result_text) and not _is_trivial_final_result(
+            result_text
+        )
+        msg = None
         if self.event_run.conversation_id and self.reply_publisher and has_real_result:
             ouro = self.reply_publisher.client
             content = content_from_markdown(ouro, result_text)
             msg = Messages(ouro).create(
                 self.event_run.conversation_id,
-                id=final_message_id,
+                id=self.stream_message_id,
                 turn_id=self.turn_id,
-                seq=self._seq_for_message(final_message_id),
+                seq=self._seq_for_message(self.stream_message_id),
                 type="message",
                 text=content.text,
                 json=content.json,
                 metadata={"turn_final": True},
             )
+            self._turn_final_id = self.stream_message_id
             self.persisted_message_ref.append(msg)
-        elif not has_real_result:
-            intermediate = self._last_substantial_intermediate()
-            if intermediate is not None:
-                promoted = self._promote_intermediate_to_final(intermediate)
-                if promoted is not None:
-                    msg = promoted
-                    final_message_id = str(intermediate["id"])
-                    self.persisted_message_ref.append(promoted)
 
         if self.reply_publisher and is_chat_event(self.event_run.event_type):
-            if (
-                self.stream_message_id != final_message_id
-                and self._streamed_final_text.strip()
-            ):
-                self.reply_publisher.emit_llm_response_end(
-                    conversation_id=self.event_run.conversation_id,
-                    message_id=self.stream_message_id,
-                    message=None,
-                )
             self.reply_publisher.emit_llm_response_end(
                 conversation_id=self.event_run.conversation_id,
-                message_id=final_message_id,
+                message_id=self.stream_message_id,
                 message=msg,
             )
 
@@ -639,6 +555,7 @@ class ServerAgentObserver(AgentObserver):
         reasoning_seq = self._seq_for_message(self._reasoning_message_id)
         self._has_streamed_reasoning = True
         self._clear_activity()
+        self.mark_ttft("first_token")
         self.reply_publisher.emit_reasoning(
             conversation_id=self.event_run.conversation_id,
             content=content,
@@ -859,6 +776,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
     server_observer = ServerAgentObserver(
         event_run, stream_message_id, turn_id, reply_publisher
     )
+    server_observer.mark_ttft_origin()
     terminal_progress = TerminalRunProgress(
         event_run,
         get_display(),
@@ -881,6 +799,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
             if reply_publisher and is_chat_event(event_run.event_type)
             else nullcontext()
         ):
+            server_observer.mark_ttft("ws_ready")
             observer.on_activity("thinking", "Thinking about it...", True)
 
             result = await agent_instance.run(
@@ -925,7 +844,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
             event_run,
             turn_id=turn_id,
             message_id=stream_message_id,
-            partial_reply=server_observer._streamed_final_text,
+            partial_reply=server_observer._open_content_text,
             seq=server_observer._seq_for_message(stream_message_id),
         )
         if reply_publisher and is_chat_event(event_run.event_type):

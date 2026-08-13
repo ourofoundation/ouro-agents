@@ -91,6 +91,7 @@ from .security.tool_capabilities import (
     filter_deferred_excluding,
     filter_deferred_tools,
 )
+from .tool_preloads import filter_preloads, merge_preloads
 from .skills import get_skill_directory, load_startup_skills
 from .soul import build_prompt
 from .subagents.context import SubAgentUsage
@@ -145,7 +146,7 @@ from .utils.debug import (
     append_run_debug_markdown_trace,
     write_run_debug_markdown_preamble,
 )
-from .utils.streaming import FinalAnswerStreamer, IntermediateContentStreamer
+from .utils.streaming import IntermediateContentStreamer
 from .uuid_v7 import uuid7_str
 
 if TYPE_CHECKING:
@@ -3086,12 +3087,10 @@ class OuroAgent:
         _patched_retry_callback: bool,
         _original_retry_callback,
     ) -> str:
-        # Merge profile preload tools with any explicit preload_tools.
-        # Use dict.fromkeys for stable, first-seen dedup so order is
-        # deterministic across runs (explicit preloads take precedence).
-        mode_preloads = list(profile.preload_tools)
-        if mode_preloads:
-            preload_tools = list(dict.fromkeys((preload_tools or []) + mode_preloads))
+        # Context extras (event/inbox/planning) first, then mode defaults.
+        # The envelope subtracts anything this role/surface cannot use.
+        preload_tools = merge_preloads(preload_tools, profile.preload_tools)
+        preload_tools = filter_preloads(preload_tools, profile.allowed_capabilities)
 
         # --- Trivial message fast path (regex only, no LLM) ---
         is_trivial = is_trivial_message(task)
@@ -3416,7 +3415,6 @@ class OuroAgent:
         if observer:
             try:
                 final_result = None
-                streamer = FinalAnswerStreamer()
                 intermediate_streamer = IntermediateContentStreamer()
                 current_intermediate_message_id: str | None = None
                 # Guards against double tool persistence: smolagents re-yields the
@@ -3424,14 +3422,11 @@ class OuroAgent:
                 # we must not emit/persist that step's tools twice.
                 last_persisted_step: object | None = None
 
-                def _flush_intermediate(*, drop: bool = False) -> None:
-                    """Close out the current step's commentary stream, if any.
+                def _flush_intermediate(*, turn_final: bool = False) -> None:
+                    """Close out the current step's content stream, if any.
 
-                    Called on every step boundary. When ``drop`` is True the
-                    buffered text is discarded instead of persisted (used when a
-                    step ends with no real content — typically the final-answer
-                    step whose only "content" is the answer itself, streamed
-                    separately via on_stream_chunk).
+                    Called on every step boundary. The last step (``turn_final``)
+                    is the user-facing reply; earlier steps are narration.
                     """
                     nonlocal current_intermediate_message_id
                     if current_intermediate_message_id is None:
@@ -3440,19 +3435,12 @@ class OuroAgent:
                     full_text = intermediate_streamer.flush()
                     msg_id = current_intermediate_message_id
                     current_intermediate_message_id = None
-                    if drop:
-                        try:
-                            observer.on_intermediate_drop(msg_id)
-                        except Exception:
-                            logger.warning(
-                                "observer.on_intermediate_drop failed",
-                                exc_info=True,
-                            )
-                        return
                     if not full_text.strip():
                         return
                     try:
-                        observer.on_intermediate_end(msg_id, full_text)
+                        observer.on_intermediate_end(
+                            msg_id, full_text, turn_final
+                        )
                     except Exception:
                         logger.warning(
                             "observer.on_intermediate_end failed",
@@ -3461,9 +3449,6 @@ class OuroAgent:
 
                 for event in agent.run(effective_task, stream=True, reset=use_reset):
                     if isinstance(event, ChatMessageStreamDelta):
-                        chunk = streamer.consume(event)
-                        if chunk:
-                            observer.on_stream_chunk(chunk)
                         inter_chunk = intermediate_streamer.consume(event)
                         if inter_chunk:
                             if current_intermediate_message_id is None:
@@ -3478,17 +3463,14 @@ class OuroAgent:
                                     exc_info=True,
                                 )
                     elif isinstance(event, ActionStep):
-                        # Step boundary. First flush this step's streamed
-                        # commentary (persist it + signal end-of-stream) unless
-                        # the step ended on a final_answer (in which case the
-                        # final-answer stream is already covering the user-
-                        # facing reply via on_stream_chunk + on_result_ready).
-                        # Flushing before tool persistence below guarantees the
-                        # commentary message is ordered ahead of this step's
-                        # tools, matching the chronological order in which the
-                        # model produced them.
+                        # Flush this step's streamed content before persisting
+                        # tools so commentary is ordered ahead of the calls it
+                        # introduced. ``is_final_answer`` marks the last step
+                        # (plain content, not a user-facing tool).
                         _flush_intermediate(
-                            drop=bool(getattr(event, "is_final_answer", False))
+                            turn_final=bool(
+                                getattr(event, "is_final_answer", False)
+                            )
                         )
                         # Now emit/persist this step's tool calls. Done here
                         # (rather than as a smolagents step_callback) so tools
