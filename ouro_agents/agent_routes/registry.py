@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 PUBLISHED_DIRNAME = "published_routes"
 REGISTRY_FILENAME = "registry.json"
-CANDIDATES_FILENAME = "candidates.json"
 
 
 def published_routes_root(workspace: Path | str) -> Path:
@@ -31,10 +30,6 @@ def published_routes_root(workspace: Path | str) -> Path:
 
 def registry_path(workspace: Path | str) -> Path:
     return published_routes_root(workspace) / REGISTRY_FILENAME
-
-
-def candidates_path(workspace: Path | str) -> Path:
-    return published_routes_root(workspace) / CANDIDATES_FILENAME
 
 
 class PublishedRouteEntry(BaseModel):

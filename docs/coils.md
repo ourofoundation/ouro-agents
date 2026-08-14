@@ -70,11 +70,8 @@ provisioning runs as the agent user through the normal API.
 | `coils/<name>/handler.py` | Draft coil handler (agent-writable) |
 | `protected/published_routes/registry.json` | Published registry (host-writable) |
 | `protected/published_routes/<name>/vN/` | Immutable snapshots |
-| `protected/published_routes/candidates.json` | Dream miner state |
-| `skills/coil-candidates.md` | Dream-written suggestions |
+| `skills/coil-candidates.md` | Agent-maintained list of jobs worth coiling |
 
-## Dream mining
-
-When `agent_routes` and `run_log` are enabled, the dream cycle mines repeated
-tool-call n-grams and writes `skills/coil-candidates.md`. See the
-`coils` skill for authoring.
+Agents jot candidates themselves in `skills/coil-candidates.md` when they
+notice a repeatable *job* (not a repeated tool name). See the `coils` skill
+for the quality bar and templates. Nothing auto-writes that file.

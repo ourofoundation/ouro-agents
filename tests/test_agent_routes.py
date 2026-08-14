@@ -13,12 +13,6 @@ from unittest.mock import MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ouro_agents.agent_routes.candidates import (
-    EXCLUDED_TOOLS,
-    filter_new_candidates,
-    mark_candidates_suggested,
-    mine_route_candidates,
-)
 from ouro_agents.agent_routes.executor import execute_agent_route
 from ouro_agents.agent_routes.http import (
     AgentRoutesServer,
@@ -714,95 +708,6 @@ class TestHttpRouter(unittest.TestCase):
                 self.assertEqual(r.status_code, 503)
             finally:
                 server.close()
-
-
-class FakeRunLog:
-    enabled = True
-
-    def __init__(self, runs: list[dict], steps: dict[str, list[dict]]):
-        self._runs = runs
-        self._steps = steps
-
-    def query_runs(self, **kwargs):
-        status = kwargs.get("status")
-        out = self._runs
-        if status:
-            out = [r for r in out if r.get("status") == status]
-        return out
-
-    def get_run_steps(self, run_id: str):
-        return self._steps.get(run_id, [])
-
-
-class TestCandidateMining(unittest.TestCase):
-    def _steps(self, calls: list[list[tuple[str, dict]]]) -> list[dict]:
-        steps = []
-        for idx, step_calls in enumerate(calls):
-            steps.append(
-                {
-                    "step_index": idx,
-                    "tool_calls_json": json.dumps(
-                        [{"name": n, "args": a} for n, a in step_calls]
-                    ),
-                }
-            )
-        return steps
-
-    def test_detects_pattern_across_runs(self):
-        seq = [
-            [("search_assets", {"q": "a"})],
-            [("get_asset", {"id": "1"})],
-            [("get_comments", {"id": "1"})],
-        ]
-        runs = [
-            {"run_id": "r1", "status": "success", "started_at": "2026-01-01"},
-            {"run_id": "r2", "status": "success", "started_at": "2026-01-02"},
-            {"run_id": "r3", "status": "success", "started_at": "2026-01-03"},
-        ]
-        steps = {
-            "r1": self._steps(seq),
-            "r2": self._steps(seq),
-            "r3": self._steps(seq),
-        }
-        cands = mine_route_candidates(FakeRunLog(runs, steps), min_runs=3)
-        keys = [c.key for c in cands]
-        self.assertIn("search_assets -> get_asset -> get_comments", keys)
-
-    def test_dedupes_within_run_and_excludes_framework(self):
-        # Same 3-gram twice in one run, plus framework tools — still one run.
-        calls = [
-            [("load_skill", {})],
-            [("search_assets", {})],
-            [("get_asset", {})],
-            [("get_comments", {})],
-            [("memory_recall", {})],
-            [("search_assets", {})],
-            [("get_asset", {})],
-            [("get_comments", {})],
-        ]
-        runs = [{"run_id": "r1", "status": "success", "started_at": "2026-01-01"}]
-        cands = mine_route_candidates(
-            FakeRunLog(runs, {"r1": self._steps(calls)}),
-            min_runs=1,
-            max_len=3,
-        )
-        match = [c for c in cands if c.key == "search_assets -> get_asset -> get_comments"]
-        self.assertEqual(len(match), 1)
-        self.assertEqual(match[0].run_count, 1)
-        for tool in EXCLUDED_TOOLS:
-            self.assertTrue(all(tool not in c.signature for c in cands))
-
-    def test_suppresses_previously_suggested(self):
-        with TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            seq = ["search_assets", "get_asset", "get_comments"]
-            from ouro_agents.agent_routes.candidates import RouteCandidate
-
-            cand = RouteCandidate(signature=seq, run_count=3)
-            mark_candidates_suggested(workspace, [cand])
-            fresh, known = filter_new_candidates(workspace, [cand])
-            self.assertEqual(fresh, [])
-            self.assertEqual(len(known), 1)
 
 
 class TestConfigDefault(unittest.TestCase):

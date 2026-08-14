@@ -375,7 +375,10 @@ def build_prompt(
             "a sequence of Ouro calls you have done before, check this index "
             "and prefer `run_coil(name, params)`. Author new coils under "
             "coils/<name>/ (load the `coils` skill); publish with "
-            "`publish_route` to serve one as a live Ouro route.\n\n"
+            "`publish_route` to serve one as a live Ouro route. When you "
+            "notice a job you'd run the same way again, jot it in "
+            "skills/coil-candidates.md — a named workflow, not a repeated "
+            "tool name. Load `coils` for the format.\n\n"
             f"{coil_directory}"
         )
 

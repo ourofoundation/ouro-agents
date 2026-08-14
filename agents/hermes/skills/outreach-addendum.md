@@ -87,3 +87,24 @@ stand-down instruction.
 ## Controller-handoff thread guard
 
 - `read-email-thread` must include received messages from Matt (`matt@ouro.foundation`) and Will (`will.bryan421@gmail.com`) that are linked to the contact thread through RFC `Message-ID`, `In-Reply-To`, or `References` headers. Normalized-subject matching is only a clearly labeled fallback for a message with no usable threading headers. Its `controller_reply_detected` / `send_guard` result is a hard stop: immediately stand down the CRM row and do not send a live-thread reply unless Matt, Will, or a controller explicitly directs re-entry. A contact-only inbox filter caused a duplicate calendar invite after Matt had already handled the request.
+
+## Verification-first outreach coil: gate0-verify
+
+For verification-first outreach cycles (deep-read a partner paper, verify its
+quantitative claims on-platform, then email the authors with receipts), the
+verification workflow is packaged as coil `gate0-verify` (published as the
+"Gate 0: verify a magnet claim from a CIF" route on hermes-routes, route asset
+77d39906-fbea-4a19-aa1e-347f5dec70ee). One call per claim: sanity card v4.1
+(embedded in the handler so the published snapshot is self-contained), then the
+prediction route matching the claimed property (ALIGNN magmom for
+magnetic_ground_state; Curie route for curie_temperature), then a
+pre-registered agree/disagree/rejected-input receipt with known limits.
+
+    run_coil("gate0-verify", {"cif_asset_id": "<file-uuid>",
+        "claim_property": "magnetic_ground_state", "fm_threshold_ub_per_fu": 0.5,
+        "claim_id": "C2", "system_id": "...", "claimed_value": "..."})
+
+Required: `cif_asset_id`. Use `tc_target_K`/`tc_tolerance_K` for Tc claims.
+Sanity FAIL returns rejected-input without executing routes; route failures are
+reported as errors, never filled in. Negative control for regression:
+file 8ba460e9-327d-4c54-a540-31f12c602006 (must be rejected-input).

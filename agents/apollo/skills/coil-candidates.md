@@ -1,37 +1,27 @@
 ---
-description: Repeated tool-call sequences that are candidates for coils
+description: Jobs worth turning into coils — you maintain this list
 load: stub
 ---
 
 # Coil candidates
 
-These tool-call sequences showed up across multiple successful runs.
-Consider authoring a coil for any that you still do frequently —
-load the `coils` skill for the contract and templates.
+You own this file. Nothing auto-writes it. Add an entry when you notice a
+**job** you would run the same way again. Prune when you author the coil or
+realize it was a one-off. Keep the list short.
 
-## list_messages -> get_asset -> get_asset
+A candidate is a named workflow with a stable purpose. Repeated searches,
+polling, and calling the same tool on different IDs are not candidates.
+Load the `coils` skill for the contract and templates.
 
-- **Annotated:** `list_messages (ouro.conversations.list_messages) -> get_asset (ouro.assets.retrieve) -> get_asset (ouro.assets.retrieve)`
-- **Runs:** 3
-- **First seen:** 2026-08-03T18:00:05.915248+00:00
-- **Last seen:** 2026-08-03T20:00:06.731748+00:00
-- **Example args (truncated):**
-```json
-[
-  {
-    "conversation_id": "019fc85d-6438-73b3-8433-561c1632ad04",
-    "limit": 50,
-    "before": "2026-08-03T17:16:20.677263+00:00"
-  },
-  {
-    "id": "019fbda0-dd02-7766-9f0f-6b781837f0b7",
-    "detail": "full"
-  },
-  {
-    "id": "019f62e0-a53e-71aa-90fe-52a741ec1387",
-    "detail": "full"
-  }
-]
-```
+## Template
 
-Suggested `mined_from` for coil.json: `["list_messages", "get_asset", "get_asset"]`
+### short-name
+
+- **Job:** one sentence — what this does and when you need it
+- **Steps:** the sequence; mark what varies vs what's fixed
+- **Why a coil:** errors avoided, invariants enforced, or steps you keep redoing
+- **Seen:** date you noticed it
+
+## Candidates
+
+(none yet)

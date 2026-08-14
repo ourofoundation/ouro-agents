@@ -74,7 +74,9 @@ Put your own files here:
 - `cifs/` — optional structure library; otherwise keep CIFs under the project.
 - `skills/` — your domain playbooks (markdown with YAML frontmatter). For
   skills **you** authored, edit in place when you adopt a new coil so
-  heartbeats prefer `run_coil` (see the `coils` skill). For **human-authored**
+  heartbeats prefer `run_coil` (see the `coils` skill). Maintain
+  `skills/coil-candidates.md` yourself when you notice a repeatable job;
+  nothing auto-writes it. For **human-authored**
   operational skills (e.g. `outreach`), do **not** edit or overwrite them —
   write `skills/<name>-addendum.md` with `extends: <name>` in the
   frontmatter instead. The addendum loads whenever the parent loads, and

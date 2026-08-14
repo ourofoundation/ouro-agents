@@ -48,13 +48,13 @@
   },
   "models": {
     "strong": {
-      "id": "meta/muse-spark-1.2",
+      "id": "moonshotai/kimi-k3",
       "reasoning": {
         "effort": "high"
       }
     },
     "mid": {
-      "id": "meta/muse-spark-1.2",
+      "id": "z-ai/glm-5.2",
       "reasoning": {
         "effort": "high"
       }
@@ -88,7 +88,7 @@
   },
   "modes": {
     "planning": {
-      "enabled": true,
+      "enabled": false,
       "max_steps": 20,
       "cadence": "6h",
       "min_heartbeats": 4,
@@ -98,7 +98,7 @@
       "backlog_limit": 8
     },
     "heartbeat": {
-      "enabled": true,
+      "enabled": false,
       "every": "1h",
       "max_steps": 40,
       "active_hours": {

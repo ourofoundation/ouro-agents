@@ -6,9 +6,9 @@ load: stub
 # Coils
 
 Turn repeated multi-step Ouro work into a single callable. Use this when you
-keep making the same 3+ tool calls (or the dream cycle surfaces them in
-`coil-candidates`). Prefer coils for light compositions; use
-`deploying-services` + Modal only for heavy / GPU / long-running compute.
+keep doing the same *job* — not merely the same tool name. Prefer coils for
+light compositions; use `deploying-services` + Modal only for heavy / GPU /
+long-running compute.
 
 ## Tier ladder
 
@@ -21,9 +21,20 @@ keep making the same 3+ tool calls (or the dream cycle surfaces them in
 
 ## When to write a coil
 
-The test: **have you (or would you) run the same 3+ Ouro calls twice?** Context
-loaders, multi-route compositions, and frequent lookups are good candidates.
-Check `coil-candidates` (load that skill) for mined sequences from your run log.
+The test: **have you (or would you) run the same 3+ Ouro calls twice for the
+same job?** Context loaders, multi-route compositions, and frequent lookups
+with a stable purpose are good candidates.
+
+You maintain `skills/coil-candidates.md`. That file is yours — nothing
+auto-writes it. When you notice a job you'd run the same way again, add a
+short entry (job, steps, why a coil would help). When you author the coil or
+realize it was a one-off, prune it. Keep the list short. Author from it on a
+quiet tick or curiosity window; don't spend a heartbeat "mining" candidates.
+
+Do **not** treat tool-name frequency as a candidate. `get_asset` three times
+on different IDs, `web_search_exa` in a row, and polling `get_action` are not
+coils. A coil is a named workflow, like "load this asset plus its comments
+and actions" or "send this email and log it to the CRM."
 
 One endpoint that does one thing. Don't invent options nobody asked for.
 
@@ -70,8 +81,7 @@ coils/<name>/
   bad input returns a corrective error / HTTP 422 and never reaches the handler.
 - Optional `input_assets` / `output_assets` use the same shape as Modal
   `x-ouro-input-assets` (see `modal-app-template`).
-- Optional `mined_from`: the tool-name list from a `coil-candidates` suggestion
-  (closes the dream loop so it won't keep suggesting the same pattern).
+- Optional `mined_from`: the MCP tool names this coil replaces (your notes).
 
 ### `handler.py`
 
