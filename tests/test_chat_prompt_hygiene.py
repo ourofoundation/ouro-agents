@@ -89,6 +89,23 @@ class TestWorkingMemoryDedup(unittest.TestCase):
 
 
 class TestCatchAllMemoryScope(unittest.TestCase):
+    def test_resolve_doc_store_remaps_nil_to_root(self):
+        from unittest.mock import MagicMock
+
+        from ouro_agents.agent import OuroAgent
+
+        root_store = MagicMock()
+        agent = OuroAgent.__new__(OuroAgent)
+        agent.doc_store = root_store
+        agent.doc_store_for = MagicMock()
+
+        resolved = agent._resolve_doc_store(
+            team_id="00000000-0000-0000-0000-000000000000"
+        )
+
+        self.assertIs(resolved, root_store)
+        agent.doc_store_for.assert_not_called()
+
     def test_load_shared_prompt_context_remaps_nil_to_root(self):
         from types import SimpleNamespace
         from unittest.mock import MagicMock

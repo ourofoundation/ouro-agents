@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -265,21 +266,26 @@ def load_entity_context(
     Returns a formatted string for injection into the system prompt, or empty
     string if nothing relevant is found.
     """
+    started = time.perf_counter()
+    timings: dict[str, float] = {}
     sections: list[str] = []
     total_tokens = 0
 
     # 1. Entity files matching haystack text (always local)
+    stage_started = time.perf_counter()
     entity_text = load_entity_files(
         workspace,
         haystack or task,
         max_tokens=MAX_ENTITY_CONTEXT_TOKENS,
         team_id=team_id,
     )
+    timings["entities_ms"] = (time.perf_counter() - stage_started) * 1000
     if entity_text:
         sections.append(entity_text)
         total_tokens += len(entity_text) // CHARS_PER_TOKEN
 
     # 2. Active task files (always local)
+    stage_started = time.perf_counter()
     task_budget_used = 0
     task_files = _find_active_task_files(workspace, team_id=team_id)
     if task_files:
@@ -296,21 +302,33 @@ def load_entity_context(
                 total_tokens += tokens
         if task_parts:
             sections.append("### Active Tasks\n" + "\n\n".join(task_parts))
+    timings["tasks_ms"] = (time.perf_counter() - stage_started) * 1000
 
     # 3. Yesterday's daily log for continuity (doc_store if available)
+    stage_started = time.perf_counter()
     daily_context = _load_recent_daily_context(
         workspace, doc_store=doc_store, agent_name=agent_name,
     )
+    timings["daily_log_ms"] = (time.perf_counter() - stage_started) * 1000
     if daily_context:
         sections.append(daily_context)
         total_tokens += len(daily_context) // CHARS_PER_TOKEN
 
     # 4. Index of all memory files so unmatched ones remain discoverable
+    stage_started = time.perf_counter()
     index = build_memory_index(workspace, team_id=team_id)
+    timings["memory_index_ms"] = (time.perf_counter() - stage_started) * 1000
     if index:
         sections.append(index)
         total_tokens += len(index) // CHARS_PER_TOKEN
 
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "Entity context timing: team=%s total_ms=%.1f %s",
+        team_id or "shared",
+        elapsed_ms,
+        " ".join(f"{name}={ms:.1f}" for name, ms in timings.items()),
+    )
     if not sections:
         return ""
 

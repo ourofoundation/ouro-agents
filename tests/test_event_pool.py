@@ -51,6 +51,23 @@ def _event(
     )
 
 
+def _thread_event(
+    text: str,
+    *,
+    event_type: str = "comment",
+    thread_id: str = "thread-1",
+    source_id: str = "comment-1",
+) -> EventRunContext:
+    return _event(
+        event_type,
+        conversation_id=None,
+        root_asset_id="post-1",
+        thread_parent_id=thread_id,
+        source_id=source_id,
+        text=text,
+    )
+
+
 class TestEventPool(unittest.TestCase):
     def test_pool_key_and_non_poolable_events(self):
         async def dispatch(event_run: EventRunContext) -> None:
@@ -59,10 +76,10 @@ class TestEventPool(unittest.TestCase):
         dispatched: list[EventRunContext] = []
         pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
 
-        self.assertEqual(
-            pool.pool_key(_event("new-message", conversation_id="conv-1")),
-            "conversation:conv-1",
+        self.assertIsNone(
+            pool.pool_key(_event("new-message", conversation_id="conv-1"))
         )
+        self.assertFalse(pool.is_poolable(_event("new-message")))
         self.assertEqual(
             pool.pool_key(
                 _event(
@@ -150,10 +167,10 @@ class TestEventPool(unittest.TestCase):
             async def dispatch(event_run: EventRunContext) -> None:
                 dispatched.append(event_run)
 
-            pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
-            await pool.submit(_event(text="first"))
+            pool = EventPool(_config(comment=_timing()), dispatch)
+            await pool.submit(_thread_event("first", source_id="comment-1"))
             await asyncio.sleep(0.005)
-            await pool.submit(_event(text="second"))
+            await pool.submit(_thread_event("second", source_id="comment-2"))
             await asyncio.sleep(0.04)
             await pool.stop()
             return dispatched
@@ -181,9 +198,9 @@ class TestEventPool(unittest.TestCase):
             async def dispatch(event_run: EventRunContext) -> None:
                 dispatched.append(event_run)
 
-            pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
-            await pool.submit(_event(conversation_id="conv-1", text="one"))
-            await pool.submit(_event(conversation_id="conv-2", text="two"))
+            pool = EventPool(_config(comment=_timing()), dispatch)
+            await pool.submit(_thread_event("one", thread_id="thread-1"))
+            await pool.submit(_thread_event("two", thread_id="thread-2"))
             await asyncio.sleep(0.03)
             await pool.stop()
             return dispatched
@@ -205,11 +222,11 @@ class TestEventPool(unittest.TestCase):
                     first_started.set()
                     await release_first.wait()
 
-            pool = EventPool(_config(**{"new-message": _timing()}), dispatch)
-            await pool.submit(_event(text="first"))
+            pool = EventPool(_config(comment=_timing()), dispatch)
+            await pool.submit(_thread_event("first", source_id="comment-1"))
             await first_started.wait()
 
-            await pool.submit(_event(text="second"))
+            await pool.submit(_thread_event("second", source_id="comment-2"))
             await asyncio.sleep(0.04)
             self.assertEqual(dispatched, ["first"])
 
@@ -232,13 +249,20 @@ class TestEventPool(unittest.TestCase):
             pool = EventPool(
                 _config(
                     **{
-                        "new-message": _timing(0.005),
+                        "mention": _timing(0.005),
                         "comment": _timing(0.03),
                     }
                 ),
                 dispatch,
             )
-            await pool.submit(_event("new-message", text="chat"))
+            await pool.submit(
+                _thread_event(
+                    "mention",
+                    event_type="mention",
+                    thread_id="mention-thread",
+                    source_id="mention-1",
+                )
+            )
             await pool.submit(
                 _event(
                     "comment",
@@ -255,7 +279,7 @@ class TestEventPool(unittest.TestCase):
 
         dispatched = asyncio.run(exercise())
 
-        self.assertEqual(dispatched, ["new-message", "comment"])
+        self.assertEqual(dispatched, ["mention", "comment"])
 
     def test_pooled_context_updates_feedback_text_for_plan_feedback(self):
         pooled = build_pooled_event_run(

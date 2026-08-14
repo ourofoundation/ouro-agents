@@ -201,11 +201,7 @@ class TestConfigModeOverrides(unittest.TestCase):
         config = self._load_config(_base_config())
 
         self.assertTrue(config.event_pooling.enabled)
-        self.assertFalse(config.event_pooling.events["new-message"].enabled)
-        self.assertEqual(
-            config.event_pooling.events["new-message"].settle_seconds,
-            2.0,
-        )
+        self.assertNotIn("new-message", config.event_pooling.events)
         self.assertEqual(config.event_pooling.events["comment"].settle_seconds, 20.0)
         self.assertEqual(config.event_pooling.events["mention"].max_wait_seconds, 90.0)
         self.assertNotIn("unknown-event", config.event_pooling.events)
@@ -243,7 +239,7 @@ class TestConfigModeOverrides(unittest.TestCase):
         data["event_pooling"] = {
             "enabled": True,
             "events": {
-                "new-message": {
+                "mention": {
                     "enabled": True,
                     "settle_seconds": 1,
                     "jitter_seconds": 2,
@@ -261,13 +257,12 @@ class TestConfigModeOverrides(unittest.TestCase):
         config = self._load_config(data)
 
         self.assertEqual(
-            config.event_pooling.events["new-message"].settle_seconds,
+            config.event_pooling.events["mention"].settle_seconds,
             1.0,
         )
-        self.assertEqual(config.event_pooling.events["new-message"].jitter_seconds, 2.0)
-        self.assertEqual(config.event_pooling.events["new-message"].max_wait_seconds, 3.0)
+        self.assertEqual(config.event_pooling.events["mention"].jitter_seconds, 2.0)
+        self.assertEqual(config.event_pooling.events["mention"].max_wait_seconds, 3.0)
         self.assertFalse(config.event_pooling.events["comment"].enabled)
-        self.assertEqual(config.event_pooling.events["mention"].settle_seconds, 20.0)
 
     def test_loads_env_file_declared_in_config(self):
         with TemporaryDirectory() as tmpdir:

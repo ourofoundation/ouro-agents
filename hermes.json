@@ -133,9 +133,6 @@
   "event_pooling": {
     "enabled": true,
     "events": {
-      "new-message": {
-        "enabled": false
-      },
       "comment": {
         "enabled": true,
         "settle_seconds": 20,

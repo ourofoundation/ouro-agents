@@ -117,8 +117,8 @@ See [Planning](./planning.md).
 The FastAPI server accepts Ouro webhook events at `server.webhook_path`.
 Events are:
 
-- **Pooled** when the same conversation/comment burst would otherwise
-  trigger several runs (configurable per event in `event_pooling`).
+- **Pooled** when the same comment/mention burst would otherwise trigger
+  several runs (configurable per event in `event_pooling`). Chat starts immediately.
 - **Routed** to specialized paths:
   - `asset.deleted` → deterministic cleanup (no LLM).
   - Chat events → realtime activity + streaming reply.

@@ -653,8 +653,10 @@ class OuroAgent:
     ) -> DocStore:
         if doc_store is not None:
             return doc_store
-        if team_id:
-            return self.doc_store_for(team_id)
+        # The platform's catch-all team is provenance, not a memory namespace.
+        scope_team_id = memory_team_id(team_id)
+        if scope_team_id:
+            return self.doc_store_for(scope_team_id)
         return self.doc_store
 
     def _load_working_memory(
@@ -746,10 +748,17 @@ class OuroAgent:
         Catch-all All/nil ``team_id`` is remapped to untargeted for memory
         loading only; callers keep the original id for provenance.
         """
+        started = time.perf_counter()
+        timings: dict[str, float] = {}
+
+        stage_started = time.perf_counter()
         scope_team_id = memory_team_id(team_id)
         active_doc_store = self._resolve_doc_store(
             team_id=scope_team_id, doc_store=doc_store
         )
+        timings["doc_store_ms"] = (time.perf_counter() - stage_started) * 1000
+
+        stage_started = time.perf_counter()
         working_memory_parts = [
             self._load_working_memory(
                 team_id=scope_team_id, doc_store=active_doc_store
@@ -758,25 +767,46 @@ class OuroAgent:
         if include_scheduled_tasks:
             working_memory_parts.append(self._load_scheduled_task_awareness())
         working_memory = "\n\n".join(part for part in working_memory_parts if part)
+        timings["working_memory_ms"] = (time.perf_counter() - stage_started) * 1000
 
         user_model_text = ""
+        stage_started = time.perf_counter()
         if user_id:
             from .memory.user_model import strip_empty_sections
 
             user_model_text = strip_empty_sections(
                 active_doc_store.read(f"USER:{user_id}")
             )
+        timings["user_model_ms"] = (time.perf_counter() - stage_started) * 1000
+
+        stage_started = time.perf_counter()
         notes_name = f"NOTES:{self.config.agent.name}"
         notes_text = active_doc_store.read(notes_name)
         if not notes_text and not scope_team_id:
             notes_text = self.notes
+        timings["notes_ms"] = (time.perf_counter() - stage_started) * 1000
 
+        stage_started = time.perf_counter()
         plans_index_text = self._own_quests_index()
+        timings["plans_index_ms"] = (time.perf_counter() - stage_started) * 1000
+
+        stage_started = time.perf_counter()
+        platform_context = self._load_platform_context()
+        timings["platform_context_ms"] = (
+            time.perf_counter() - stage_started
+        ) * 1000
+
+        logger.info(
+            "Shared prompt context timing: team=%s total_ms=%.1f %s",
+            scope_team_id or "shared",
+            (time.perf_counter() - started) * 1000,
+            " ".join(f"{name}={ms:.1f}" for name, ms in timings.items()),
+        )
 
         return {
             "soul": self.soul,
             "notes": notes_text,
-            "platform_context": self._load_platform_context(),
+            "platform_context": platform_context,
             "working_memory": working_memory,
             "user_model": user_model_text,
             "plans_index": plans_index_text,
@@ -2042,9 +2072,13 @@ class OuroAgent:
         ``include_plans_index`` is False for quest_work heartbeats (the inbox
         already is the actionable plan surface).
         """
+        prompt_started = time.perf_counter()
+        prompt_timings: dict[str, float] = {}
+
         conversation_context = ""
         # Conversational modes inject history as structured memory steps;
         # non-chat modes with a conversation_id get a text summary instead.
+        stage_started = time.perf_counter()
         if (
             conversation_id
             and not profile.lightweight
@@ -2058,6 +2092,9 @@ class OuroAgent:
             conversation_context = format_conversation_turns(
                 turns, summarize_fn=self._summarize_turns
             )
+        prompt_timings["conversation_context_ms"] = (
+            time.perf_counter() - stage_started
+        ) * 1000
 
         skills_text = self.skills
         # Heartbeat is lightweight but still has load_skill available; keep a
@@ -2070,26 +2107,39 @@ class OuroAgent:
         )
 
         scope_team_id = memory_team_id(team_id)
+        stage_started = time.perf_counter()
         active_doc_store = self._resolve_doc_store(
             team_id=scope_team_id, doc_store=doc_store
         )
+        prompt_timings["doc_store_ms"] = (time.perf_counter() - stage_started) * 1000
+
+        stage_started = time.perf_counter()
         shared_context = self._load_shared_prompt_context(
             user_id=user_id,
             include_scheduled_tasks=profile.load_scheduled_tasks,
             team_id=team_id,
             doc_store=active_doc_store,
         )
+        prompt_timings["shared_context_ms"] = (
+            time.perf_counter() - stage_started
+        ) * 1000
+
         working_memory = shared_context["working_memory"]
+        stage_started = time.perf_counter()
         if profile.conversational:
             activity = self._cross_team_recent_activity_digest()
             if activity:
                 working_memory = (
                     f"{working_memory}\n\n{activity}" if working_memory else activity
                 )
+        prompt_timings["recent_activity_ms"] = (
+            time.perf_counter() - stage_started
+        ) * 1000
         user_model_text = shared_context["user_model"]
 
         from .memory.context_loader import load_entity_context
 
+        stage_started = time.perf_counter()
         entity_context_text = load_entity_context(
             self.config.agent.workspace,
             haystack=entity_haystack or task,
@@ -2098,12 +2148,21 @@ class OuroAgent:
             agent_name=self.config.agent.name,
             team_id=scope_team_id,
         )
+        prompt_timings["entity_context_ms"] = (
+            time.perf_counter() - stage_started
+        ) * 1000
+
         plans_index_text = ""
+        stage_started = time.perf_counter()
         if include_plans_index:
             plans_index_text = self._own_quests_index(
                 pointer=bool(profile.conversational)
             )
+        prompt_timings["plans_index_ms"] = (
+            time.perf_counter() - stage_started
+        ) * 1000
 
+        stage_started = time.perf_counter()
         delegatable_profiles = self.delegatable_profiles
         # Heartbeat is lightweight but still needs a compact directory so it
         # knows when to delegate search/research. Decouple ``lightweight``
@@ -2165,8 +2224,12 @@ class OuroAgent:
             from .tools.agent_route_tools import build_coil_directory
 
             coil_directory = build_coil_directory(self.config.agent.workspace)
+        prompt_timings["directories_ms"] = (
+            time.perf_counter() - stage_started
+        ) * 1000
 
-        return build_prompt(
+        stage_started = time.perf_counter()
+        result = build_prompt(
             soul=shared_context["soul"],
             notes=shared_context["notes"],
             skills=skills_text,
@@ -2190,6 +2253,16 @@ class OuroAgent:
                 self._workspace
             ),
         )
+        prompt_timings["assemble_ms"] = (time.perf_counter() - stage_started) * 1000
+        total_ms = (time.perf_counter() - prompt_started) * 1000
+        logger.info(
+            "Prompt build timing: mode=%s team=%s total_ms=%.1f %s",
+            profile.name,
+            scope_team_id or "shared",
+            total_ms,
+            " ".join(f"{name}={ms:.1f}" for name, ms in prompt_timings.items()),
+        )
+        return result
 
     def resolve_controller_reply(
         self,
@@ -3087,6 +3160,9 @@ class OuroAgent:
         _patched_retry_callback: bool,
         _original_retry_callback,
     ) -> str:
+        pre_model_started = time.perf_counter()
+        pre_model_timings: dict[str, float] = {}
+
         # Context extras (event/inbox/planning) first, then mode defaults.
         # The envelope subtracts anything this role/surface cannot use.
         preload_tools = merge_preloads(preload_tools, profile.preload_tools)
@@ -3108,6 +3184,7 @@ class OuroAgent:
         # --- Build tools ---
 
         emit_progress(observer, "building_tools", "loading available tools")
+        stage_started = time.perf_counter()
         (
             all_tools,
             deferred_tool_directory,
@@ -3130,6 +3207,7 @@ class OuroAgent:
         )
         if extra_tools:
             all_tools.extend(extra_tools)
+        pre_model_timings["tools_ms"] = (time.perf_counter() - stage_started) * 1000
         emit_progress(
             observer,
             "building_tools",
@@ -3145,6 +3223,7 @@ class OuroAgent:
         history_summary = ""
         history_compacted = False
         history_compaction_reason: Optional[str] = None
+        stage_started = time.perf_counter()
         if profile.conversational and conversation_id:
             all_turns = self._resolve_conversation_turns(
                 conversation_id,
@@ -3162,6 +3241,7 @@ class OuroAgent:
             history_summary = built.summary
             history_compacted = built.compacted
             history_compaction_reason = built.compaction_reason
+        pre_model_timings["history_ms"] = (time.perf_counter() - stage_started) * 1000
 
         # Build haystack for entity-file matching: recent history + current task.
         entity_haystack_parts = [
@@ -3176,6 +3256,7 @@ class OuroAgent:
         effective_include_plans = (
             include_plans_index if is_heartbeat else True
         )
+        stage_started = time.perf_counter()
         system_prompt, dynamic_context = self._build_system_prompt(
             task=task,
             profile=profile,
@@ -3190,7 +3271,9 @@ class OuroAgent:
             include_plans_index=effective_include_plans,
             entity_haystack=entity_haystack,
         )
+        pre_model_timings["prompt_ms"] = (time.perf_counter() - stage_started) * 1000
         emit_progress(observer, "building_prompt", "prompt ready", state="complete")
+        post_prompt_started = time.perf_counter()
 
         # Hard compaction backstop (chat only): if the assembled prompt would
         # exceed the hard fraction of context, fold older turns now so the
@@ -3407,6 +3490,15 @@ class OuroAgent:
                 )
 
         token.raise_if_cancelled()
+        pre_model_timings["post_prompt_ms"] = (
+            time.perf_counter() - post_prompt_started
+        ) * 1000
+        logger.info(
+            "Pre-model timing: mode=%s total_ms=%.1f %s",
+            mode.value,
+            (time.perf_counter() - pre_model_started) * 1000,
+            " ".join(f"{name}={ms:.1f}" for name, ms in pre_model_timings.items()),
+        )
         emit_progress(
             observer,
             "running_agent",

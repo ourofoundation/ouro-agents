@@ -52,12 +52,6 @@ class EventSpec:
 # ---------------------------------------------------------------------------
 
 
-def _conversation_pool_key(event: "EventRunContext") -> Optional[str]:
-    if not event.conversation_id:
-        return None
-    return f"conversation:{event.conversation_id}"
-
-
 def _thread_pool_key(event: "EventRunContext") -> Optional[str]:
     if _is_top_level_asset_comment(event):
         thread_id = event.source_id or event.reply_parent_id
@@ -109,7 +103,6 @@ EVENT_REGISTRY: dict[str, EventSpec] = {
     "new-message": EventSpec(
         is_chat=True,
         surface=EventSurface.DIRECT_CHAT,
-        pool_key_fn=_conversation_pool_key,
     ),
     "new-conversation": EventSpec(is_chat=True, surface=EventSurface.DIRECT_CHAT),
     # Cleanup events: handled synchronously by the cleanup module before the

@@ -66,7 +66,7 @@ is the default; planned / quest work stays primary.
 EVENT_REGISTRY = {
   "comment":          EventSpec(tool_preloads=COMMENT_PRELOADS, pool_key_fn=_thread_pool_key),
   "mention":          EventSpec(tool_preloads=COMMENT_PRELOADS, pool_key_fn=_thread_pool_key),
-  "new-message":      EventSpec(is_chat=True, pool_key_fn=_conversation_pool_key),
+  "new-message":      EventSpec(is_chat=True),
   "new-conversation": EventSpec(is_chat=True),
   "asset.deleted":    EventSpec(),  # handled by cleanup, no preloads, no pooling
 }
@@ -105,10 +105,8 @@ Every webhook is parsed into an `EventRunContext`
 
 ## Pool keys and debouncing
 
-Each event spec carries a `pool_key_fn`. Two strategies ship today:
+Poolable event specs carry a `pool_key_fn`:
 
-- `_conversation_pool_key` — keys on conversation id (available if chat
-  pooling is re-enabled; off by default for reply latency).
 - `_thread_pool_key` — keys on the thread (or root asset) id so a flurry
   of comments on the same post is handled once.
 
