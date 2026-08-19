@@ -524,12 +524,11 @@ class AgentScheduler:
         self.store.update(task_id, last_run_status="running")
         conversation_id = f"scheduled-{task.id}"
 
-        # Inject learnings from previous runs into the prompt
-        from .refinement import format_learnings_for_prompt
-
-        effective_prompt = task.prompt + format_learnings_for_prompt(task.learnings)
-
         try:
+            from .task_learnings import format_learnings_for_prompt
+
+            effective_prompt = task.prompt + format_learnings_for_prompt(task.learnings)
+
             logger.info(
                 "Running scheduled task '%s' (run #%d)...",
                 task.name,
@@ -589,7 +588,7 @@ class AgentScheduler:
             return
 
         try:
-            from .refinement import apply_learnings, refine
+            from .task_learnings import apply_learnings, refine
 
             conversations_dir = self._agent.config.agent.workspace / "conversations"
             conversation_id = f"scheduled-{task.id}"

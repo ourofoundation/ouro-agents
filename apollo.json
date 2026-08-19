@@ -99,7 +99,7 @@
       "auto_approve": false
     },
     "heartbeat": {
-      "enabled": true,
+      "enabled": false,
       "every": "1h",
       "max_steps": 40,
       "active_hours": {

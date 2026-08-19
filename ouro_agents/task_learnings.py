@@ -1,8 +1,9 @@
-"""Post-run refinement: learn from each execution to improve the next one.
+"""Post-run learnings for recurring scheduled tasks.
 
-A reusable pattern for any repeated agent task. After a run completes, a
-cheap LLM call reviews the conversation log and produces actionable
-learnings — things to do differently, skip, or remember next time.
+Distinct from ``ouro_agents.refinement`` (the dream change-set queue).
+After a scheduled task runs, a cheap LLM call reviews the conversation
+log and produces actionable learnings — things to do differently, skip,
+or remember next time.
 
 Learnings accumulate over runs so the agent gets progressively better at
 a recurring task without the user having to re-explain things.
