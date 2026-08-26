@@ -22,6 +22,18 @@ gets wrong:
 | Sending any email | `send-and-log` | separate `send_email` + `update_dataset` calls |
 | CRM status update only | `crm-upsert` | raw `update_dataset` upsert |
 
+**Release status (2026-08-23): both `send-and-log` and `crm-upsert` are repaired
+and release-checked.** The earlier avoid-until-repaired guidance (broken
+`{{table}}` SQL in send-and-log; write-once stripping in crm-upsert) is retired.
+The release checkpoint ran both coils through synthetic first-send, follow-up,
+and reply transactions in no-send mode and diffed every CRM mutation against the
+manual fallback documented in the parent skill: 9/9 mock-adapter cases and 3/3
+live read-only dry-run cases passed, with write-once fields byte-identical
+through every later transaction, `follow_up_sent` always a lowercase string,
+both controller CCs on every send, and deterministic idempotency keys. The
+`dry_run: true` path is a zero-side-effect preview. If a coil ever fails again,
+fall back to the manual procedure below and record the failure mode here.
+
 `send-and-log` inspects the CRM row before sending. A row without `first_outbound_email_id` is treated as a first send even if the legacy `is_new_contact` hint is false, so pre-created `identified` rows receive the complete first-send fields.
 
 Fall back to manual `run_python` + Resend SDK only when a coil fails or does
@@ -56,13 +68,16 @@ CC, and immutability rules exactly.
 
 ## Researcher outreach strategy scars
 
-- Read external papers, run predictions on their systems, and publish the
-  comparison as genuine value before drafting outreach emails to the authors.
-- Prefer content-driven inbound over pure cold email: read a recent
-  high-impact paper, run fresh analysis using Ouro routes (property
-  prediction, hull energy, structure relaxation), post the findings publicly,
-  then reach out with the new angle. Forward-looking analytical posts
-  outperform documentation of past research.
+- Content-driven outreach outperforms pure cold email, but the artifact
+  budget is one tick and one quick route run. One quoted number with a
+  link beats a multi-day verification quest. If the quick check isn't done in one tick, send the email on the
+  strength of specific reading alone, or pick a different target.
+- Do not build experiment matrices, protocol notes, deposit templates, or
+  multi-claim verification quests for people who have not replied once.
+  That is over-investment in silence, not thoroughness. Deep verification
+  happens only when a controller or collaborator explicitly asks for it.
+- Forward-looking analytical posts outperform documentation of past
+  research.
 - When pivoting outreach strategy, target computational scientists and ML
   researchers who have published relevant open-source work, inviting them for
   collaboration on defined tasks.
@@ -89,6 +104,10 @@ stand-down instruction.
 - `read-email-thread` must include received messages from Matt (`matt@ouro.foundation`) and Will (`will.bryan421@gmail.com`) that are linked to the contact thread through RFC `Message-ID`, `In-Reply-To`, or `References` headers. Normalized-subject matching is only a clearly labeled fallback for a message with no usable threading headers. Its `controller_reply_detected` / `send_guard` result is a hard stop: immediately stand down the CRM row and do not send a live-thread reply unless Matt, Will, or a controller explicitly directs re-entry. A contact-only inbox filter caused a duplicate calendar invite after Matt had already handled the request.
 
 ## Verification-first outreach coil: gate0-verify
+
+Subject to the one-tick / one-route-run artifact budget above: a single
+`gate0-verify` call fits that budget; anything beyond it (rebuilds,
+follow-up routes, convergence checks) does not.
 
 For verification-first outreach cycles (deep-read a partner paper, verify its
 quantitative claims on-platform, then email the authors with receipts), the
