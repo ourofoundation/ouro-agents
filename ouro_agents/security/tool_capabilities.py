@@ -49,6 +49,7 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:delete_quest_item": Capability.MANAGE_QUEST,
     "ouro:submit_quest_entry": Capability.MANAGE_QUEST,
     "ouro:list_quest_entries": Capability.READ_PLATFORM,
+    "ouro:list_quest_leaderboard": Capability.READ_PLATFORM,
     "ouro:review_quest_entry": Capability.MANAGE_QUEST,
     # Comments / conversations
     "ouro:get_comments": Capability.READ_PLATFORM,

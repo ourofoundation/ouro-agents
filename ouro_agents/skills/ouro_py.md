@@ -111,6 +111,31 @@ ouro = get_ouro_client()
 - `delete(id)` → None
 - `share(file_id, user_id, role="read")` → None — delegates to `ouro.assets.share`
 
+### Quests (ouro.quests)
+- `create(name, description=None, visibility=None, type="closable", status="open", items=None, org_id=..., team_id=...)` → `Quest`
+  - Use `type="continuous"` when a contributor may make multiple scored attempts;
+    `closable` permits one active entry per contributor per item until rejection.
+  - `items` accepts strings or full item dicts. A leaderboard item needs
+    `eval_route_id`, `leaderboard_enabled=True`, and `leaderboard_order="desc"`
+    (higher wins) or `"asc"` (lower wins).
+  - `eval_score_path` defaults to `$.score`; `eval_categories_path` defaults to
+    `$.categories`. Use `eval_pass_min` / `eval_pass_max` for an inclusive pass
+    band. Category scores are display-only.
+- `retrieve(id)` → `Quest`; `list(...)` → list[`Quest`]
+- `list_items(quest_id)` → list[`QuestItem`]
+- `create_items(quest_id, items)` → list[`QuestItem`]
+- `update_item(quest_id, item_id, **kwargs)` → `QuestItem`
+- `create_entry(quest_id, item_id=..., assets=..., description=...)` → `Entry`
+- `list_entries(quest_id, status=None, limit=50, offset=0, with_pagination=False)`
+- `list_leaderboard(quest_id, item_id, limit=50, offset=0, with_pagination=False)`
+  → list[`QuestLeaderboardRow`] or a pagination dict
+  - The pagination form also includes `item`, which reports leaderboard order.
+  - Every non-rejected entry with a numeric eval score is a row, including failed
+    evals; rows are not collapsed per user. Ties go to the earliest submission.
+  - Rows include `placement`, `entry_id`, `score`, `category_scores`, user/asset
+    summaries, and `eval_action_id`.
+- `review_entry(quest_id, entry_id, status="accepted"|"rejected", review=None)` → `Entry`
+
 ### Conversations (ouro.conversations)
 - `create(member_user_ids, name=None, summary=None, org_id=None, team_id=None)` → Conversation
 - `retrieve(conversation_id)` → Conversation

@@ -158,14 +158,34 @@ page large tables into chat. Responses are compact markdown tables by default
     update / rename / drop); pass `enum_values` on add/update for categoricals.
     `update_dataset` stays for row ingest and whole-dataset metadata.
 - Quests: lifecycle language matters.
-"close" means set the quest status to `closed` with `update_quest`;
-"cancel" means set status to `cancelled`;
-"complete an item" means `complete_quest_item` when you own or can
-self-complete the item and the quest is `open`. Draft quests accept no
-submissions or self-completion — publish first with `update_quest(status="open")`.
-For quests planned by someone else, prefer `submit_quest_entry` with evidence
-and produced assets unless you clearly may self-complete. These are lifecycle
-updates, not deletion.
+  "close" means set the quest status to `closed` with `update_quest`;
+  "cancel" means set status to `cancelled`;
+  "complete an item" means `complete_quest_item` when you own or can
+  self-complete the item and the quest is `open`. Draft quests accept no
+  submissions or self-completion — publish first with
+  `update_quest(status="open")`. For quests planned by someone else, prefer
+  `submit_quest_entry` with evidence and produced assets unless you clearly may
+  self-complete. These are lifecycle updates, not deletion.
+  - **Leaderboard items**: a leaderboard ranks stored scores from an item's eval
+    route; it is not a quest-wide XP board or a second ranking route. Create one
+    by passing a full item object to `create_quest(items=[...])` or
+    `create_quest_items`, or configure an existing item with
+    `update_quest_item`. Set `eval_route_id`, `leaderboard_enabled=true`, and
+    `leaderboard_order="desc"` (higher wins) or `"asc"` (lower wins).
+    `eval_score_path` defaults to `$.score`. Optional
+    `eval_categories_path` defaults to `$.categories`; category scores are
+    display-only and do not affect rank or pass/fail. Use `eval_pass_min` /
+    `eval_pass_max` for an inclusive acceptance band. Enabling a leaderboard
+    requires an eval route.
+  - Prefer a `continuous` quest when contributors should submit multiple scored
+    attempts. A `closable` quest permits only one active entry per contributor
+    per item until rejection.
+  - Read boards with `list_quest_leaderboard(quest_id=..., item_id=...)`
+    (`limit` / `offset` paginate). Each non-rejected entry with a numeric score
+    is a separate row, including failed evals; rows are not collapsed per user.
+    Ties go to the earliest submission. Use the returned `entry_id`, user,
+    category scores, and `eval_action_id` for follow-up. If the deferred
+    tool is not loaded, call `load_tool(["ouro:list_quest_leaderboard"])`.
 - Conversations: use `send_message` only when the task is explicitly to message
 someone on the platform (chat runs do not expose conversation tools at all).
 - Notifications: check `get_notifications(unread_only=true)` for mentions, inbox

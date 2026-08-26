@@ -82,6 +82,7 @@ QUEST_COMMENT: tuple[str, ...] = (
     "ouro:write_comment",
     "ouro:update_quest",
     "ouro:list_quest_items",
+    "ouro:list_quest_leaderboard",
     "ouro:create_quest_items",
     "ouro:update_quest_item",
     "ouro:delete_quest_item",

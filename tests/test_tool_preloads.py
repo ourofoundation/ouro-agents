@@ -73,6 +73,7 @@ def test_quest_comment_uses_manage_set():
     assert names == QUEST_COMMENT
     assert "ouro:update_quest_item" in names
     assert "ouro:complete_quest_item" in names
+    assert "ouro:list_quest_leaderboard" in names
 
 
 def test_attached_asset_on_comment_does_not_duplicate_get_asset():
