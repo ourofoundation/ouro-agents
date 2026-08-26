@@ -79,7 +79,8 @@ Shipping with the package today:
 | Name | Purpose |
 |------|---------|
 | `ouro` | Core Ouro platform conventions (orgs, teams, asset types). |
-| `ouro_markdown` | Extended markdown features Ouro renders (mentions, asset embeds, action links, math). |
+| `ouro_markdown` | Extended markdown features Ouro renders (mentions, asset embeds, action links, math, mermaid, inline SVG). |
+| `figures` | When to use mermaid, SVG, or a dataset view instead of raster plots. |
 | `ouro_py` | Quickstart for the Ouro Python SDK. |
 | `python` | Sandbox python-tool conventions. |
 | `filesystem` | Workspace file conventions. |

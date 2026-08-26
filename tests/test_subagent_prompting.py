@@ -186,6 +186,8 @@ def test_always_loaded_platform_skills_are_injected_for_all_main_modes(tmp_path)
     startup_skills = load_startup_skills(config)
     assert "# Ouro Platform" in startup_skills
     assert "## Ouro Markdown Syntax" in startup_skills
+    assert "```mermaid" in startup_skills
+    assert "# Figures" not in startup_skills
 
     for profile in (CHAT, HEARTBEAT, PLAN):
         system_prompt, _dynamic_context = build_prompt(
@@ -264,10 +266,26 @@ def test_writer_profile_is_ouro_only_prose_specialist():
 def test_platform_subagents_receive_ouro_asset_semantics():
     for profile in (EXECUTOR, WRITER, DEVELOPER):
         assert "ouro" in profile.skills
+        assert "figures" in profile.skills
         bodies = resolve_skills(profile.skills)
         joined = "\n\n".join(bodies)
         assert "# Ouro Platform" in joined
         assert '"close" means set the quest status to `closed` with `update_quest`' in joined
+        assert "# Figures" in joined
+
+
+def test_figures_skill_prefers_source_formats_over_raster():
+    figures = resolve_skill("figures")
+    markdown = resolve_skill("ouro_markdown")
+    assert figures is not None
+    assert markdown is not None
+    assert "```mermaid" in markdown
+    assert "<svg" in markdown
+    assert "load the `figures` skill" in markdown
+    assert "Mermaid" in figures
+    assert "Dataset view" in figures
+    assert "format=\"svg\"" in figures
+    assert "mermaid-cli" in figures
 
 
 def test_skill_docs_use_load_tool_list_syntax():

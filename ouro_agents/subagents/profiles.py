@@ -174,7 +174,7 @@ EXECUTOR = SubAgentProfile(
     delegatable=True,
     max_steps=12,
     needs_python_tool=True,
-    skills=["ouro", "ouro_markdown", "asset_output", "filesystem"],
+    skills=["ouro", "ouro_markdown", "figures", "asset_output", "filesystem"],
 )
 
 WRITER = SubAgentProfile(
@@ -195,7 +195,7 @@ WRITER = SubAgentProfile(
     ],
     delegatable=True,
     max_steps=5,
-    skills=["ouro", "ouro_markdown", "asset_output"],
+    skills=["ouro", "ouro_markdown", "figures", "asset_output"],
 )
 
 DEVELOPER = SubAgentProfile(
@@ -212,7 +212,7 @@ DEVELOPER = SubAgentProfile(
     delegatable=True,
     max_steps=24,
     needs_python_tool=True,
-    skills=["ouro", "ouro_py", "ouro_markdown", "asset_output"],
+    skills=["ouro", "ouro_py", "ouro_markdown", "figures", "asset_output"],
 )
 
 # All built-in profiles
