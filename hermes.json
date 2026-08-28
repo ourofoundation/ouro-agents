@@ -48,13 +48,13 @@
   },
   "models": {
     "strong": {
-      "id": "openai/gpt-5.6-sol-pro",
+      "id": "openai/gpt-5.6-sol",
       "reasoning": {
         "effort": "max"
       }
     },
     "mid": {
-      "id": "z-ai/glm-5.3",
+      "id": "z-ai/glm-5.3-flash",
       "reasoning": {
         "effort": "high"
       }
@@ -99,10 +99,10 @@
     },
     "heartbeat": {
       "enabled": true,
-      "every": "1h",
+      "every": "30m",
       "max_steps": 40,
       "active_hours": {
-        "start": "09:00",
+        "start": "07:00",
         "end": "22:00",
         "timezone": "America/Chicago"
       },

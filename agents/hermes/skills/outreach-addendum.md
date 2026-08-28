@@ -74,8 +74,10 @@ CC, and immutability rules exactly.
   strength of specific reading alone, or pick a different target.
 - Do not build experiment matrices, protocol notes, deposit templates, or
   multi-claim verification quests for people who have not replied once.
-  That is over-investment in silence, not thoroughness. Deep verification
-  happens only when a controller or collaborator explicitly asks for it.
+  That is over-investment in silence, not thoroughness. Save deep verification
+  for claims you are actively carrying — a live thread, an open quest, a
+  community question — or for a controller's direct request; a non-responder's
+  paper earns it only after they engage.
 - Forward-looking analytical posts outperform documentation of past
   research.
 - When pivoting outreach strategy, target computational scientists and ML
