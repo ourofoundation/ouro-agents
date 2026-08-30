@@ -766,6 +766,12 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         self.assertIn("completed 15/20", memory_step.observations)
         self.assertIn("5 steps remain", memory_step.observations)
         self.assertIn("Begin converging now", memory_step.observations)
+        self.assertIn("Do not use destructive compression", memory_step.observations)
+        self.assertIn(
+            "do not delegate an already-owned critical path",
+            memory_step.observations,
+        )
+        self.assertIn("exact resumable handoff", memory_step.observations)
 
     def test_final_answer_hidden_from_model_tool_schemas(self):
         from smolagents import tool

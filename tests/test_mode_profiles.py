@@ -31,6 +31,12 @@ def test_chat_mode_preloads_nothing():
     assert resolve_mode_profile(RunMode.CHAT).preload_tools == []
 
 
+def test_chat_hides_scheduler_tools_but_scheduled_run_mode_keeps_them():
+    assert CHAT.include_scheduler_tools is False
+    # Scheduled tasks execute in autonomous mode.
+    assert AUTONOMOUS.include_scheduler_tools is True
+
+
 def test_chat_mode_is_conversational_and_work_modes_are_not():
     assert CHAT.conversational is True
     assert AUTONOMOUS.conversational is False

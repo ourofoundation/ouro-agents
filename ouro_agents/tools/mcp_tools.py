@@ -3,9 +3,9 @@
 import json
 import logging
 import re
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
-from smolagents import tool
+from smolagents import Tool, tool
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +13,44 @@ logger = logging.getLogger(__name__)
 # Strips a leading bold label like "**Purpose:**" that some MCP servers prepend
 # to every tool description, so the directory leads with actual meaning.
 _TOOL_DESC_LABEL_RE = re.compile(r"^\*\*[^*]+:\*\*\s*")
+_CALLABLE_NAME_RE = re.compile(r"\W")
+
+
+class _AliasedTool(Tool):
+    """Expose one tool under a different model-callable name."""
+
+    skip_forward_signature_validation = True
+
+    def __init__(self, target: Tool, name: str):
+        self._target = target
+        self.name = name
+        self.description = target.description
+        self.inputs = target.inputs
+        self.output_type = target.output_type
+        self.output_schema = getattr(target, "output_schema", None)
+        super().__init__()
+
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        return self._target(*args, **kwargs)
+
+
+def _callable_namespace(value: str) -> str:
+    """Turn an MCP server name into a valid callable-name component."""
+    normalized = _CALLABLE_NAME_RE.sub("_", value)
+    if normalized and normalized[0].isdigit():
+        normalized = f"_{normalized}"
+    return normalized or "mcp"
+
+
+def _collision_safe_alias(item: dict, occupied: set[str]) -> str:
+    """Return a stable server-qualified alias not present in *occupied*."""
+    base = f"{_callable_namespace(item['server'])}__{item['raw_name']}"
+    alias = base
+    suffix = 2
+    while alias in occupied:
+        alias = f"{base}_{suffix}"
+        suffix += 1
+    return alias
 
 
 def short_tool_description(description: str, max_chars: int = 110) -> str:
@@ -122,6 +160,7 @@ def make_load_tool(
     )
     server_descriptions = server_descriptions or {}
     servers = {item["server"] for item in deferred_index}
+    loaded_tools: dict[str, tuple[str, Tool]] = {}
 
     def _expand_server(server: str) -> dict:
         items = [it for it in deferred_index if it["server"] == server]
@@ -165,14 +204,32 @@ def make_load_tool(
             return {"error": f"Tool '{resolved_name}' not available."}
 
         raw_name = item["raw_name"]
+        call_as = raw_name
 
         running_agent = agent_ref.get("agent")
         if running_agent is not None:
-            running_agent.tools[raw_name] = target
+            managed_agents = getattr(running_agent, "managed_agents", {})
+            occupied = set(running_agent.tools)
+            occupied.update(managed_agents)
+            loaded = loaded_tools.get(resolved_name)
+            if loaded is not None:
+                call_as, callable_tool = loaded
+            elif (
+                running_agent.tools.get(raw_name) is target
+                and raw_name not in managed_agents
+            ):
+                callable_tool = target
+            elif raw_name not in occupied:
+                callable_tool = target
+            else:
+                call_as = _collision_safe_alias(item, occupied)
+                callable_tool = _AliasedTool(target, call_as)
+            running_agent.tools[call_as] = callable_tool
+            loaded_tools[resolved_name] = (call_as, callable_tool)
 
         return {
             "status": "loaded",
-            "call_as": raw_name,
+            "call_as": call_as,
             "description": item["description"],
             "inputs": item["inputs"],
             # "output_type": item["output_type"], # probably not needed

@@ -1234,12 +1234,19 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
                 "content, no tool calls) or the decisive tool call that "
                 "completes the required output over further exploration."
             )
+        safeguard = (
+            "Do not use destructive compression (delete/recreate, broad "
+            "overwrite, or skipped validation) to save steps, and do not "
+            "delegate an already-owned critical path. If completion will not "
+            "fit, give an exact resumable handoff with stable identifiers, "
+            "completed actions, current state, and the next action."
+        )
 
         observation = (
             "[runtime] Step budget: completed "
             f"{step_number}/{max_steps}; {remaining} step"
             f"{'' if remaining == 1 else 's'} "
-            f"{'remains' if remaining == 1 else 'remain'}. {guidance}"
+            f"{'remains' if remaining == 1 else 'remain'}. {guidance} {safeguard}"
         )
         existing = getattr(memory_step, "observations", None) or ""
         if observation in existing:

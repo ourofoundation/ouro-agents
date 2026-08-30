@@ -1846,7 +1846,8 @@ class OuroAgent:
         )
         scheduler_tools = (
             make_scheduler_tools(self.scheduler, team_id=team_id)
-            if not profile.restricted_servers
+            if profile.include_scheduler_tools
+            and not profile.restricted_servers
             and profile.allows_capability(Capability.SCHEDULE)
             else []
         )

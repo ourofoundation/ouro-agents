@@ -52,6 +52,7 @@ class ModeProfile(BaseModel):
     # Deferred MCP tools removed from this mode entirely (directory + load_tool)
     excluded_tools: list[str] = Field(default_factory=list)
     allow_delegation: bool = True
+    include_scheduler_tools: bool = True
     # None means no capability envelope has been applied; otherwise this set
     # is the authoritative upper bound for tools exposed by the profile.
     allowed_capabilities: frozenset[Capability] | None = None
@@ -111,6 +112,7 @@ CHAT = ModeProfile(
     output_format=CHAT_OUTPUT,
     max_steps=20,
     excluded_tools=CHAT_EXCLUDED_TOOLS,
+    include_scheduler_tools=False,
     conversational=True,
     include_chat_conversation_id=True,
     append_conversation_turns=False,

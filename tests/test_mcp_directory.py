@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from smolagents import tool
 from smolagents.models import get_tool_json_schema
 
 from ouro_agents.memory.tools import make_memory_tools
@@ -106,6 +107,90 @@ def test_load_tool_still_loads_a_qualified_tool():
     assert result["status"] == "loaded"
     assert result["call_as"] == "send_email"
     assert agent.tools["send_email"] is target
+
+
+def test_load_tool_uses_callable_alias_when_native_name_collides():
+    @tool
+    def native_update_quest_item() -> str:
+        """Native implementation."""
+        return "native"
+
+    native_update_quest_item.name = "update_quest_item"
+
+    @tool
+    def deferred_update_quest_item() -> str:
+        """Deferred MCP implementation."""
+        return "mcp"
+
+    deferred_update_quest_item.name = "update_quest_item"
+
+    class FakeAgent:
+        def __init__(self):
+            self.tools = {"update_quest_item": native_update_quest_item}
+
+    agent = FakeAgent()
+    load_tool = make_load_tool(
+        {"ouro:update_quest_item": deferred_update_quest_item},
+        [
+            {
+                "tool": "ouro:update_quest_item",
+                "server": "ouro",
+                "raw_name": "update_quest_item",
+                "description": "Update a quest item.",
+                "inputs": {},
+                "output_type": "string",
+            }
+        ],
+        {"agent": agent},
+    )
+
+    result = json.loads(load_tool(["ouro:update_quest_item"]))
+    alias = result["call_as"]
+    loaded = agent.tools[alias]
+
+    assert alias == "ouro__update_quest_item"
+    assert agent.tools["update_quest_item"] is native_update_quest_item
+    assert loaded.name == alias
+    assert get_tool_json_schema(loaded)["function"]["name"] == alias
+    assert agent.tools[alias]() == "mcp"
+    assert json.loads(load_tool(["ouro:update_quest_item"]))["call_as"] == alias
+
+
+def test_load_tool_alias_avoids_secondary_collision():
+    @tool
+    def deferred_tool() -> str:
+        """Deferred MCP implementation."""
+        return "mcp"
+
+    deferred_tool.name = "shared_name"
+
+    class FakeAgent:
+        def __init__(self):
+            self.tools = {
+                "shared_name": object(),
+                "my_server__shared_name": object(),
+            }
+
+    agent = FakeAgent()
+    load_tool = make_load_tool(
+        {"my-server:shared_name": deferred_tool},
+        [
+            {
+                "tool": "my-server:shared_name",
+                "server": "my-server",
+                "raw_name": "shared_name",
+                "description": "A shared tool.",
+                "inputs": {},
+                "output_type": "string",
+            }
+        ],
+        {"agent": agent},
+    )
+
+    result = json.loads(load_tool(["my-server:shared_name"]))
+
+    assert result["call_as"] == "my_server__shared_name_2"
+    assert agent.tools[result["call_as"]].name == result["call_as"]
 
 
 def _array_items(tool, param: str) -> dict:

@@ -361,6 +361,15 @@ class TestAgentModelResolution(unittest.TestCase):
 
 
 class TestHermesConfigLoads(unittest.TestCase):
+    def test_hermes_chat_step_budget_is_40(self):
+        path = Path(__file__).resolve().parents[1] / "hermes.json"
+        if not path.exists():
+            self.skipTest("hermes.json not present")
+
+        config = OuroAgentsConfig.load_from_file(path)
+
+        self.assertEqual(config.modes.profiles["chat"].max_steps, 40)
+
     def test_hermes_json_loads_with_tiers(self):
         path = Path(__file__).resolve().parents[1] / "hermes.json"
         if not path.exists():

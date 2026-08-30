@@ -87,6 +87,9 @@
     }
   },
   "modes": {
+    "chat": {
+      "max_steps": 40
+    },
     "planning": {
       "enabled": true,
       "max_steps": 20,

@@ -25,3 +25,6 @@ Load the `coils` skill for the contract and templates.
 ## Candidates
 
 (none yet)
+
+## 2026-08-28: corrected-structure re-run pipeline (kitaev retraction follow-through)
+Sequence: rebuild CIF from literature params -> local validation (formula, SG, min-pair gate) -> create_file upload to team -> relax route (Orb v3, fixed protocol) -> append results comment with file+action links -> CRM/status updates. Ran end-to-end on 3 cobaltates in one tick; will repeat for BaCo2AsO4_2 next tick and for any future input-corruption correction. Coil name idea: `structure-correct-rerun`. Params: compound spec (lattice+sites OR cod_id+idealization), relax route settings, target post/comment ids, team ids.
