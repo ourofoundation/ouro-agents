@@ -95,7 +95,12 @@ class PlainTaskStep(TaskStep):
         return [ChatMessage(role=MessageRole.USER, content=content)]
 
 
-_NULL_STRINGS = {"null", "None", "none", "undefined"}
+# String stand-ins for JSON null. Weaker models emit "null"/"None"; GPT-5.x
+# often fills every optional and spells the null branch as "/null".
+_NULL_STRINGS = frozenset({"null", "none", "undefined", "/null"})
+# Never a legitimate string value — safe to drop even on string fields.
+# Leave "null"/"none" alone on strings so query="null" still searches.
+_UNAMBIGUOUS_NULL_STRINGS = frozenset({"/null", "undefined"})
 
 _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _FUNCTION_RE = re.compile(r"<function=([^>]+)>", re.DOTALL)
@@ -183,6 +188,32 @@ def _make_tool_call(
             arguments=arguments,
         ),
     )
+
+
+def _is_nullable_null_sentinel(value, expected_type) -> bool:
+    """True when a nullable tool arg is a model stand-in for JSON null."""
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return False
+    token = value.strip().lower()
+    if token in _UNAMBIGUOUS_NULL_STRINGS:
+        return True
+    return token in _NULL_STRINGS and expected_type != "string"
+
+
+def _omit_nullable_sentinels(arguments: dict, inputs: dict) -> dict:
+    """Drop omitted-optional sentinels so they never reach the tool."""
+    cleaned = {}
+    for key, value in arguments.items():
+        schema = inputs.get(key)
+        if not schema or not schema.get("nullable", False):
+            cleaned[key] = value
+            continue
+        if _is_nullable_null_sentinel(value, schema.get("type", "any")):
+            continue
+        cleaned[key] = value
+    return cleaned
 
 
 def _format_recovered_thought(value) -> str:
@@ -988,9 +1019,9 @@ def _copy_step_reasoning_to_messages(memory_step, messages: list[ChatMessage]) -
 class SanitizedToolCallingAgent(ToolCallingAgent):
     """ToolCallingAgent with automatic null cleanup and tool-call fallbacks.
 
-    LLMs (especially smaller ones) frequently emit the literal string "null"
-    for optional parameters instead of omitting them.  smolagents' validation
-    then rejects the value with a type-mismatch error, burning steps.
+    LLMs frequently emit a string sentinel ("null", "/null") for optional
+    parameters instead of omitting them or sending JSON null. smolagents'
+    validation then rejects the value with a type-mismatch error, burning steps.
 
     Models routed through OpenRouter may also emit XML-style tool calls
     (e.g. <tool_call><function=name>...) or narrated "Calling tools:" blocks
@@ -1358,25 +1389,7 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
             available_tools = {**self.tools, **self.managed_agents}
             tool_obj = available_tools.get(tool_name)
             if tool_obj and hasattr(tool_obj, "inputs"):
-                cleaned = {}
-                for key, value in arguments.items():
-                    if key not in tool_obj.inputs:
-                        cleaned[key] = value
-                        continue
-                    schema = tool_obj.inputs[key]
-                    is_nullable = schema.get("nullable", False)
-                    expected_type = schema.get("type", "any")
-                    if (
-                        is_nullable
-                        and isinstance(value, str)
-                        and value in _NULL_STRINGS
-                        and expected_type != "string"
-                    ):
-                        continue
-                    if is_nullable and value is None:
-                        continue
-                    cleaned[key] = value
-                arguments = cleaned
+                arguments = _omit_nullable_sentinels(arguments, tool_obj.inputs)
         if self._action_gate_mode == "observe":
             category = observed_action_category(str(tool_name))
             if category is not None:
