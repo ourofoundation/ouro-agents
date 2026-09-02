@@ -42,6 +42,7 @@ handle). When you do fall back, still follow the parent skill's idempotency,
 CC, and immutability rules exactly.
 
 ## CRM scars
+- **send-and-log continuation path does not update `status`** (verified by dry-run 2026-08-30): for a CRM row that already has `first_outbound_*` from a bounced prior send, the coil classifies the resend as a continuation and its CRM write touches only last-outbound fields, leaving a `drafted` row `drafted` after a successful send. For bounce-repair first sends, use the manual path and include `status='sent'` in the upsert, or run the coil with `dry_run: true` first and check `first_send_detected`.
 
 - `ouro.datasets.query(...)` returns a pandas DataFrame, not a list of dicts.
   Use `df.iterrows()` and column access, never `.get()` on a dict.
@@ -129,3 +130,13 @@ Required: `cif_asset_id`. Use `tc_target_K`/`tc_tolerance_K` for Tc claims.
 Sanity FAIL returns rejected-input without executing routes; route failures are
 reported as errors, never filled in. Negative control for regression:
 file 8ba460e9-327d-4c54-a540-31f12c602006 (must be rejected-input).
+
+## Attachments (scar, 2026-08-31)
+
+`send-and-log` has no attachment input: any email that must carry a file (CIFs, PDFs) goes through the manual Resend SDK path in `run_python`. Rules that still bind: deterministic idempotency key, CC Matt + Will, thread headers (`In-Reply-To`/`References`), immediate CRM upsert. On resend-py 2.x the idempotency key is NOT a kwarg on `Emails.send`; pass `options={"idempotency_key": "..."}` as the second argument. If the CRM row's status lagged behind reality (e.g. a reply arrived while the row still read `sent`), triage queues will not surface it — the start-of-tick Resend inbox sweep (`list_received_emails`) is what catches those.
+
+## Stale send-ready drafts (scar, 2026-08-31)
+
+A send-ready draft file is not evidence of send-state. On 2026-08-31 a "refresh" of `drafts/sanvito_cold.md` re-marked it send-ready for 09-01 while the email had actually gone out 2026-08-29 12:32 UTC (Resend 0045f029, delivered, CRM row correctly `sent`). The CRM was right and the draft was wrong; only the file was corrupt, and the planned 09-01 send would have been a duplicate. Before ANY staged send: query Resend history for the recipient address (the draft header never counts), and check the CRM row's `first_outbound_at`. Conversely, the send step must always mark the draft file SENT in place at send time, so the file can never drift from reality. Also: when a canonical draft is refreshed, derived send-path artifacts (e.g. a flattened JSON payload in scratch/) must be regenerated from it or deleted, or they will silently carry the old body.
+
+- `send-and-log` builds its own idempotency key trigger suffix and may normalize a caller-supplied `followup-<first_msg_id>` suffix to `first`. The key stays deterministic under the coil's scheme, so retries stay safe, but if you rely on the exact key format for cross-referencing, read the key from the coil's return value, not from your own input.

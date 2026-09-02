@@ -46,3 +46,24 @@ Hard-won failure modes for CIF/structure work. Each entry: what went wrong, and 
 - A route returning `status: success` is not the same as a physical result. Validate the moment, not just the exit code.
 
 - TB2J-route corruption scar (2026-08-30): a corrupted bond table can be degree-preserving — per-site bond degrees matched the true lattice exactly (90/93) while 220/456 R-vectors were wrong. Degree checks do NOT validate topology; test each (i,j,R) key against a bond table enumerated from the CIF. Corollary: the (pair, distance, J) multiset survived intact, so distance-shell class matching is a valid J-reattachment strategy when keys are corrupt.
+
+## 2026-08-31 — deCIFer control scars
+- pymatgen `XRDCalculator.get_pattern` defaults to `two_theta_range=(0,90)`; with Cu Kα that silently truncates a powder pattern at q≈5.77 Å⁻¹. A "validated 10/10 peaks" control built this way is missing everything above that q and is invalid as a full-pattern known answer. Always pass an explicit range (or a wavelength that covers the grid) and assert the expected reflection count.
+- `Structure(Lattice.cubic(a), ["Na","Cl"], [[0,0,0],[0.5,0.5,0.5]])` builds CsCl, not rock salt. Rock salt needs the fcc basis — use `Structure.from_spacegroup("Fm-3m", ...)`. Check for extinct reflections ((100),(110) must be absent in rock salt) before trusting intensities.
+
+## 2026-09-01 — audit-side artifacts can impersonate a malformed input (Mn16Ge3Bi13 Ge-arm)
+- A topology audit BLOCKED a good TB2J Jij on three "evidences", all audit-side: (1) the route's
+  R vectors live in its internal Amm2 cell setting while the reference CIF is a P1 hexagonal
+  setting of the same cell, so (atom, R, distance) key comparison fails wholesale (6230/6896
+  phantom mismatches); (2) the audit's hand-built lattice produced an "impossible 0.41 A Mn-Mn
+  pair" — pymatgen AND ASE both parse the same CIF to a physical 2.7452 A; (3) route element
+  labels are cosmetic mislabels (known parent-file defect), not evidence of a wrong structure.
+- Checks that would have caught it: (1) before declaring a CIF malformed, cross-parse with two
+  independent parsers (pymatgen + ASE) — one parser agreeing with your hand-built lattice is not
+  confirmation; (2) when index mapping is plausible but R-keyed distances mismatch, suspect a
+  cell-setting mismatch and rerun the audit convention-independently: per-site sorted
+  bond-distance multisets (this gave 6896/6896 exact matches); (3) pin the input lineage from
+  the action record (`input_assets` on the producing action) before hypothesizing "the route ran
+  on a different structure version". The wrong BLOCKED call sat on the public record for a day
+  and understated the verification status of a published MC Tc.
+- For 2D materials structure work, use the Materials Project bulk CIF as the authoritative source instead of GGen-generated structures. Verify the space group before proceeding, since GGen may produce an incorrect polytype or stacking configuration.
