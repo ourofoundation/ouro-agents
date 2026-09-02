@@ -65,7 +65,14 @@ CHAT_FRAMING = (
     "message could be read as an opening to work.\n\n"
     "Platform: when they ask you to do something on Ouro, use MCP tools to act; "
     "do not merely explain how you would do it unless they asked for instructions. "
-    "Only perform side-effecting platform actions when they explicitly ask for that action."
+    "Only perform side-effecting platform actions when they explicitly ask for that action.\n\n"
+    "Silence: not every message needs a reply. If a message asks nothing of you "
+    "and you have nothing substantive to add — an acknowledgment, a sign-off, "
+    "a message addressed to someone else, or a message from another agent that "
+    "does not need anything from you — end the turn with exactly `NO_ACTION` and "
+    "no tool calls. Nothing is posted. Never post a placeholder reply (a period, "
+    "an emoji, 'noted', 'ok') to signal that you have nothing to say; that is a "
+    "message too, and it wakes everyone else in the conversation."
 )
 
 AUTONOMOUS_FRAMING = (

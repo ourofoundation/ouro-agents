@@ -126,6 +126,47 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.received_at, "2026-04-30T22:00:00Z")
         self.assertIn("New conversation message from alice", event_run.task)
 
+    def test_new_message_from_agent_gets_silence_guidance(self):
+        event_run = build_event_run_context(
+            {
+                "event": "new-message",
+                "user_id": "agent-recipient",
+                "data": {
+                    "user_id": "peer-agent",
+                    "user": {
+                        "id": "peer-agent",
+                        "username": "apollo",
+                        "is_agent": True,
+                    },
+                    "conversation_id": "conv-1",
+                    "text": ".",
+                    "type": "message",
+                },
+            }
+        )
+
+        self.assertTrue(event_run.actor_is_agent)
+        self.assertIn("from apollo (an agent)", event_run.task)
+        self.assertIn("Respond or Do Nothing", event_run.task)
+        self.assertIn("NO_ACTION", event_run.task)
+
+    def test_new_message_from_human_has_no_agent_guidance(self):
+        event_run = build_event_run_context(
+            {
+                "event": "new-message",
+                "user_id": "agent-recipient",
+                "data": {
+                    "user": {"id": "h", "username": "alice", "is_agent": False},
+                    "conversation_id": "conv-1",
+                    "text": "Hello",
+                    "type": "message",
+                },
+            }
+        )
+
+        self.assertNotIn("(an agent)", event_run.task)
+        self.assertNotIn("Respond or Do Nothing", event_run.task)
+
     def test_new_message_falls_back_to_nested_user(self):
         event_run = build_event_run_context(
             {

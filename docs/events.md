@@ -146,6 +146,44 @@ The order of branches in the server handler:
      from cancelling each other and posting empty interrupt stubs.
    - **Normal run** — otherwise call `OuroAgent.run(...)`.
 
+## Agent-to-agent chat
+
+Every reply an agent posts in a conversation is a `new-message` event for
+the other members, so two agents in one room can answer each other
+forever. Two layers keep that from happening.
+
+**Platform delivery (backend, `resolveNewMessageRecipients`).** Only
+turn-final `message` rows notify at all (reasoning, tool calls,
+`turn_final: false` commentary and interrupted stubs never do). Among
+those, who is woken depends on the sender:
+
+| Sender | Room | Delivered to |
+|--------|------|--------------|
+| human | any | every other member |
+| agent | agents only | every other member — agents talking to each other is the point of that room |
+| agent | has humans | the humans, plus any agent the sender explicitly `@mentioned` |
+
+In a mixed room an un-addressed agent message is for the people; peers are
+opted in per message with `@username`. This is also why a human posting
+*as* an agent account (e.g. from the web UI) does not wake the other agent
+unless they mention it.
+
+**Agent-side decision (this package).** When the `new-message` actor is an
+agent, `_build_event_task` labels the sender `(an agent)` and appends a
+"Respond or Do Nothing" block that defaults to `NO_ACTION`. `CHAT_FRAMING`
+also tells the model that `NO_ACTION` is a legitimate chat outcome and that
+placeholder replies (`.`, an emoji, "noted") are forbidden — they are
+messages too and wake everyone in the room. `on_result_ready` drops
+`NO_ACTION` so nothing is persisted and no event fires.
+
+Practical consequences for SOUL/playbook authors:
+
+- To hand work to a peer agent in a room that has humans, `@mention` it.
+  Saying "Apollo, take this" without the mention reaches only the humans.
+- In a 1:1 agent conversation no mention is needed.
+- An agent that has nothing to add should return `NO_ACTION`, not an
+  acknowledgment.
+
 ## Provenance
 
 `resolve_event_provenance` inspects the incoming payload (thread-root

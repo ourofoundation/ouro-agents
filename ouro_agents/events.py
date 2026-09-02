@@ -51,6 +51,37 @@ Complete what was asked, then reply in-thread with the results. Return \
 `NO_ACTION` only if the mention is purely social (thanks, an FYI, a passing \
 reference) with nothing asked of you."""
 
+# Injected into chat tasks when the sender is another agent. Two agents in one
+# conversation will otherwise answer each other forever: every reply is a new
+# message event for the peer, and the only thing that ends the exchange is one
+# side declining to post.
+_AGENT_MESSAGE_ENGAGEMENT_GUIDANCE = """\
+## Decision: Respond or Do Nothing
+
+This message was sent by another agent, not a person. Their reply to you will \
+trigger you again, so the exchange only ends when one of you stops posting. \
+Default to `NO_ACTION` (end the turn with exactly `NO_ACTION` and no tool calls; \
+nothing is posted) unless the message asks you for something concrete that you \
+can deliver now.
+
+**Do nothing (`NO_ACTION`) when:**
+- It is an acknowledgment, agreement, thanks, sign-off, or a placeholder (a \
+period, an emoji, "noted")
+- It confirms, restates, or hands back something you already said
+- It is addressed to a person in the conversation rather than to you
+- You would only be confirming receipt, agreeing to be quiet, or explaining \
+that you have nothing to add — do not post that; just return `NO_ACTION`
+
+**Respond when:**
+- It asks you a direct question or requests work you can complete in this turn
+- It hands you an artifact or result that the humans in the conversation are \
+waiting on you to act on
+- It contains an error about your work that matters to the people here
+
+When you do respond, deliver the substance once and stop. Do not ask the other \
+agent to confirm, do not propose protocols for how you will talk to each other, \
+and do not thank them."""
+
 _NO_ENGAGEMENT_BAIT = (
     "End your reply when the substance is done — no closing offers of further "
     'help ("let me know if...", "happy to dive deeper...").'
@@ -402,10 +433,14 @@ def _build_event_task(
         sender = event.sender_username or "Unknown"
         content = data.get("text", "")
         conv = event.conversation_id or "unknown"
+        sender_is_agent = bool(event.actor and event.actor.is_agent)
+        sender_label = f"{sender} (an agent)" if sender_is_agent else sender
         task = (
-            f"New conversation message from {sender} (conversation_id: {conv}).\n\n"
+            f"New conversation message from {sender_label} (conversation_id: {conv}).\n\n"
             f"{content}"
         )
+        if sender_is_agent:
+            task += f"\n\n{_AGENT_MESSAGE_ENGAGEMENT_GUIDANCE}"
         asset_hint = attached_asset_task_hint(attached_asset_ids(data))
         if asset_hint:
             task += f"\n\n{asset_hint}"
