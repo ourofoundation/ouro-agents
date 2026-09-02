@@ -18,6 +18,7 @@ point.
   "prompt_caching":{ ... },
   "observations":  { ... },
   "heartbeat":     { ... },     // populated from modes.heartbeat
+  "dream":         { ... },
   "planning":      { ... },     // populated from modes.planning
   "modes":         { ... },
   "subagents":     { ... },
@@ -61,8 +62,8 @@ Configure two or three model bundles once; the harness picks a tier per role.
 
 | Field | Type | Default | Notes |
 |-------|------|---------|-------|
-| `strong` | ModelTierSpec | required | Planning, writer, executor, developer; also `agent.model` fallback. |
-| `light` | ModelTierSpec | required | Preflight, research, reflector, extraction, utilities (compact / summarize / dream / refinement). |
+| `strong` | ModelTierSpec | required | Agent, planning, dream, writer, executor, and developer. |
+| `light` | ModelTierSpec | required | Preflight, research, reflector, extraction, utilities, and refinement. |
 | `mid` | ModelTierSpec | none | Chat, autonomous, and heartbeat when set; otherwise those use `strong`. |
 
 Each tier spec:
@@ -83,7 +84,7 @@ Role → tier map (code-owned, not configurable):
 
 | Role | Tier |
 |------|------|
-| agent, planning, writer, executor, developer, planner | strong |
+| agent, planning, dream, writer, executor, developer, planner | strong |
 | chat, autonomous, heartbeat | mid → strong |
 | search, research, reflector | light |
 | utility, extraction, refinement | light |
@@ -359,9 +360,32 @@ Each named child block is a `SubAgentOverride`:
 
 See [Subagents](./subagents.md) for profile authoring.
 
+## `dream`
+
+Cadence and execution policy for dream review:
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `enabled` | `true` | Register the system dream job. |
+| `every` | none | Interval (`30s`, `5m`, `2h`, `1d`, `1w`). When unset, schedule daily at `at`. |
+| `at` | `03:00` | `HH:MM` anchor for daily and interval schedules. |
+| `timezone` | none | IANA timezone; falls back to the heartbeat active-hours timezone, then `UTC`. |
+| `model` | none | Dream-loop model; falls back to the strong `dream` model tier. |
+| `max_steps` | `40` | Dream-loop step budget. |
+| `min_new_runs` | `3` | Meaningful top-level runs required before a scheduled dream. |
+| `max_changes` | `4` | Soft cap for evidence-backed changes in one review. |
+| `writable` | `["skills", "NOTES.md", "HEARTBEAT.md"]` | Workspace targets the dream may change directly. |
+| `proposal_only` | `["SOUL.md", "skills:always"]` | Identity-bearing targets that require a proposal. |
+| `journal_lookback` | `3` | Prior dream reports included in the evidence window. |
+| `servers` | `["ouro"]` | MCP servers available to the restricted dream profile. |
+| `dry_run` | `false` | Suppress operational mutations for manual and scheduled dreams. |
+
+See [Dream mode](./dream.md) for evidence, write tiers, reports, snapshots,
+and audits.
+
 ## `memory`
 
-Vector memory backend + dream (consolidation) policy.
+Vector memory backend and maintenance policy.
 
 | Field | Default | Notes |
 |-------|---------|-------|
@@ -372,10 +396,8 @@ Vector memory backend + dream (consolidation) policy.
 | `search_limit` | 10 | Default top-K per `memory_recall` query (per-query `limit` overrides). |
 | `max_retrieval_tokens` | 4000 | Global soft cap (tokens) on a single `memory_recall`'s combined output. |
 | `min_signal_score` | 0.35 | Relevance floor for recall results; low-signal hits are dropped unless explicit filters were passed. |
-| `rhythm` | `daily` | Log/dream cadence: `daily`, `weekly`, or `biweekly`. Sets the window a single log doc covers **and** how often the dream cycle runs. |
-| `dream_enabled` | `true` | Run the dream (memory consolidation) cycle. |
-| `dream_time` | `03:00` | Time of day (`HH:MM`, UTC) for the dream tick. The tick only does work when a new `rhythm` period has begun since the last run. |
-| `memory_md_max_tokens` | 4000 | Cap on `MEMORY.md` size after consolidation. |
+| `rhythm` | `daily` | Period-log window: `daily`, `weekly`, or `biweekly`. |
+| `memory_md_max_tokens` | 4000 | Cap on `MEMORY.md` size after compaction. |
 | `decay_after_days` | 30 | Days since last access before strength decay and stale evolving-memory review. |
 | `graph.enabled` | `false` | Optional mem0 graph backend. |
 | `graph.provider` | none | Provider name when graph is enabled. |

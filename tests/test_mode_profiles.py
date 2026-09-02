@@ -2,6 +2,7 @@ from ouro_agents.modes.profiles import (
     AUTONOMOUS,
     AUTONOMOUS_ACTION_PRELOADS,
     CHAT,
+    DREAM,
     RunMode,
     apply_capability_envelope,
     resolve_mode_profile,
@@ -45,6 +46,22 @@ def test_chat_mode_is_conversational_and_work_modes_are_not():
 def test_chat_keeps_post_reflection_and_skip_preflight_removed():
     assert CHAT.skip_post_reflection is False
     assert "skip_preflight" not in type(CHAT).model_fields
+
+
+def test_dream_mode_has_restricted_review_profile():
+    profile = resolve_mode_profile(RunMode.DREAM)
+
+    assert profile is DREAM
+    assert profile.max_steps == 40
+    assert profile.restricted_servers is True
+    assert profile.default_servers == ["ouro"]
+    assert profile.allow_delegation is False
+    assert profile.include_scheduler_tools is False
+    assert profile.lightweight is False
+    assert profile.skip_post_reflection is True
+    assert profile.append_conversation_turns is False
+    assert profile.memory_tool_filter is None
+    assert "write_dream_report" in profile.framing
 
 
 def test_public_comment_envelope_filters_autonomous_preloads():

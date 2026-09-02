@@ -119,13 +119,26 @@
       }
     }
   },
+  "dream": {
+    "enabled": true,
+    "every": "1d",
+    "at": "03:00",
+    "timezone": "America/Chicago",
+    "min_new_runs": 3,
+    "max_steps": 40,
+    "max_changes": 4,
+    "journal_lookback": 3,
+    "servers": [
+      "ouro"
+    ],
+    "dry_run": true
+  },
   "memory": {
     "provider": "mem0",
     "path": "./agents/hermes/protected/memory",
     "embedder": "openai/text-embedding-3-small",
     "search_limit": 10,
     "max_retrieval_tokens": 1500,
-    "dream_enabled": true,
     "rhythm": "weekly",
     "memory_md_max_tokens": 1500,
     "decay_after_days": 30,

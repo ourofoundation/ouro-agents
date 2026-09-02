@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Select, Static
+from textual.widgets import Button, Static
 
 from ..widgets.activity import ActivityLog
 
@@ -10,18 +10,12 @@ from ..widgets.activity import ActivityLog
 class DreamView(Vertical):
     def compose(self) -> ComposeResult:
         yield Static(
-            "[b]Dream[/]\n[dim]Run dream, strength decay, and memory maintenance.[/]",
+            "[b]Dream[/]\n[dim]Review recent runs and improve the agent's operating process.[/]",
             markup=True,
             classes="view-title",
         )
         yield Horizontal(
-            Static("Team", classes="team-label"),
-            Select([], prompt="No teams available", id="dream-team-select"),
-            classes="team-row",
-        )
-        yield Horizontal(
-            Button("Dream all teams", id="dream-all", variant="primary"),
-            Button("Dream selected team", id="dream-team"),
+            Button("Run dream", id="run-dream", variant="primary"),
             classes="button-row",
         )
         yield ActivityLog(id="dream-log")
@@ -29,16 +23,3 @@ class DreamView(Vertical):
     @property
     def log(self) -> ActivityLog:
         return self.query_one("#dream-log", ActivityLog)
-
-    @property
-    def team_select(self) -> Select:
-        return self.query_one("#dream-team-select", Select)
-
-    def set_teams(
-        self, options: list[tuple[str, str]], selected: str | None
-    ) -> None:
-        select = self.team_select
-        select.set_options(options)
-        values = {value for _, value in options}
-        if selected in values:
-            select.value = selected

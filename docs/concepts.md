@@ -13,7 +13,7 @@ A single Python process owns:
   search server).
 - A **memory backend** (mem0 + Chroma by default) that stores curated facts
   and preferences with metadata (team, asset references, basis, stability, strength).
-- A **scheduler** that ticks the heartbeat, dream consolidation/refinement, and
+- A **scheduler** that ticks the heartbeat, evidence-driven dream review, and
   any user-defined recurring tasks.
 - A FastAPI **server** that exposes `/run`, `/health`, `/tasks`, and a
   webhook receiver for Ouro events.
@@ -37,6 +37,7 @@ Built-in modes (see [`run-modes.md`](./run-modes.md)):
 | `heartbeat` | Scheduler tick | One strong run (decide + execute); Ouro MCP only; search via subagents; semantic memory gated by tick summary. |
 | `plan` | `ouro-agents plan` or scheduler | Generates a plan cycle. |
 | `review` | `ouro-agents review` or feedback | Updates an existing plan. |
+| `dream` | Scheduler or `ouro-agents dream` | Agent-wide evidence review, memory maintenance, and bounded self-improvement. |
 
 The mode profile is layered: built-in defaults → user `modes.<name>`
 overrides at config load.
@@ -64,7 +65,7 @@ Multiple delegations in one tool call run in parallel automatically.
 1. **Vector memory** (mem0 + Chroma) — semantic, queryable by category,
    subject, asset, and team. Curated by the `reflector` subagent after every
    run that's worth remembering. Recall reinforces memory strength; dream
-   decays old unaccessed memories.
+   can decay old unaccessed memories when the evidence warrants it.
 2. **Working memory** (`MEMORY.md`, daily logs) — markdown the agent
    maintains itself. Gets injected into every system prompt. Mirrored to
    Ouro as posts via the **doc store**.
@@ -72,10 +73,10 @@ Multiple delegations in one tool call run in parallel automatically.
    platform or `conversations/{id}.jsonl`; chat mode injects them
    directly into the smolagents memory so the model sees them verbatim.
 
-A periodic **consolidation** job promotes high-signal vector memories into
-`MEMORY.md`. The **refinement** runner separately drains a typed
-change-set queue (corrections, retractions) and uses a cheap LLM to rewrite
-affected workspace docs in place.
+The evidence-driven **dream** process runs refinement and a `MEMORY.md`
+compaction baseline, then uses bounded tools for justified memory maintenance
+and improvements. Refinement drains a typed change-set queue (corrections,
+retractions) and uses a cheap LLM to rewrite affected workspace docs in place.
 
 See [Memory model](./memory.md).
 

@@ -2,14 +2,17 @@
 
 The refinement subsystem drains a typed **change-set queue** and uses a
 cheap LLM to revise affected workspace docs in place. It runs as the
-first phase of the dream cycle (see [Memory](./memory.md)), so
-corrections land before decay and compaction touch the same content.
+initial maintenance phase of dream (see [Dream mode](./dream.md)), so
+corrections land before the evidence-driven review touches the same content.
 
 Implementation: `ouro_agents/refinement/queue.py` (the queue) and
 `ouro_agents/refinement/runner.py` (the LLM-driven runner).
 
 Asset deletion is **not** part of this system — it is deterministic and
 lives in `ouro_agents/cleanup/`. See [Cleanup](./cleanup.md).
+
+Reflection's `friction.jsonl` is also separate: it records process evidence
+for dream review rather than requested document rewrites.
 
 ## Why a queue?
 
@@ -97,5 +100,5 @@ free-form replacements for the whole file.
 python scripts/run_refinement.py --config config.json
 ```
 
-This runs the same pass the dream cycle triggers internally; the script
-makes it easy to fire one on demand from a terminal.
+This runs the same pass dream triggers internally; the script makes it easy to
+fire one on demand from a terminal.

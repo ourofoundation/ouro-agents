@@ -12,10 +12,10 @@ It runs only when the FastAPI server is up (`ouro-agents serve`).
 | Task | When | Source |
 |------|------|--------|
 | `system:heartbeat` | Every `heartbeat.every`, anchored to the start of the active window. | `HeartbeatConfig`. |
-| `system:dream` | Ticks daily at `memory.dream_time` (default `03:00`), but only runs once per `memory.rhythm` period (daily/weekly/biweekly). | `MemoryConfig`. |
+| `system:dream` | Every `dream.every`, or daily at `dream.at` when `every` is unset. | `DreamConfig`. |
 
 Refinement no longer has its own job: the change-set queue is drained as
-the first phase of `system:dream` (see [refinement.md](refinement.md)).
+an initial phase of `system:dream` (see [refinement.md](refinement.md)).
 
 System task ids are protected: `SYSTEM_PROTECTED_IDS` blocks the agent
 from accidentally deleting them with `remove_task`.
@@ -79,6 +79,18 @@ Anything else raises `ValueError` with a hint.
 When `heartbeat.active_hours.start` is set, the heartbeat trigger anchors
 its schedule to the configured start minute so daily ticks don't drift
 across days. Without active hours it uses a plain `IntervalTrigger`.
+
+## Dream cadence and gate
+
+`dream.every` accepts interval shorthand (`30m`, `6h`, `1d`, `1w`); unlike
+user-defined tasks, it does not accept cron. `dream.at` (default `03:00`)
+anchors the interval, or selects the local time for the default daily trigger.
+`dream.timezone` falls back to the heartbeat active-hours timezone, then `UTC`.
+
+Scheduled dreams run only after `dream.min_new_runs` meaningful
+top-level runs have accumulated since the last completed dream. Dream/plan
+runs, child runs, and empty records do not count. Manual dream runs bypass the
+gate. See [Dream mode](./dream.md).
 
 ## Curiosity window
 

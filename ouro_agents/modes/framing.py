@@ -202,6 +202,25 @@ PLANNING_FRAMING = (
     "the plan and publish it as a quest."
 )
 
+DREAM_FRAMING = (
+    "You are running a dream review of your own operating process. This is "
+    "process review, not platform work: do not create, update, or execute Ouro "
+    "assets. Grade the prior dream first by checking whether its changes improved "
+    "later behavior. Then inspect concrete friction and recent run traces for "
+    "repeated failures, wasted steps, missed evidence, or instructions that did "
+    "not hold up in practice.\n\n"
+    "Recommend changes only when the traces support them. Zero changes is a valid "
+    "result, and you must never exceed the maximum number of changes stated in "
+    "the task. Record each finding as an evidence-backed scar: name the observed "
+    "friction, cite the run or trace evidence, explain the lesson, and state the "
+    "smallest corrective change. Directly write only targets permitted by the "
+    "dream write tier. Identity-bearing or proposal-only changes must go through "
+    "`propose_change`, never a direct file write.\n\n"
+    "You must call `write_dream_report` before finishing, including the prior-dream "
+    "grade, evidence reviewed, scars found, changes applied or proposed, and why "
+    "no change was warranted when the change count is zero."
+)
+
 # ---------------------------------------------------------------------------
 # Output format text (one per mode, static portion)
 # ---------------------------------------------------------------------------
@@ -261,6 +280,15 @@ PLAN_OUTPUT = (
     "In planning runs, the only write tool is `create_quest`.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
+
+DREAM_OUTPUT = (
+    "## OUTPUT FORMAT\n"
+    "Complete the review by calling `write_dream_report`. Then end the turn with "
+    "a concise summary of the grade, evidence-backed scars, and changes applied "
+    "or proposed. Do not claim a change without trace evidence; explicitly report "
+    "when zero changes were warranted."
+)
+
 
 def build_output_format(
     output_format: str,

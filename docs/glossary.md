@@ -8,7 +8,7 @@ connections, memory backend, doc store, scheduler, and team registry.
 
 ### Run mode / `RunMode`
 The kind of run being performed (`chat`, `autonomous`,
-`heartbeat`, `plan`, `review`). Each value maps to a `ModeProfile` that
+`heartbeat`, `plan`, `dream`). Each value maps to a `ModeProfile` that
 controls prompt assembly, tools, and lifecycle hooks. See
 [Run modes](./run-modes.md).
 
@@ -36,7 +36,7 @@ mode profile preloads them.
 
 ### Workspace
 The agent's home directory on disk (`agent.workspace`, default
-`./workspace`). Holds soul, memory, conversations, daily logs, plans,
+`./workspace`). Holds soul, memory, conversations, period logs, plans,
 scheduled tasks, and the local mem0 / Chroma store. See
 [Workspace layout](./workspace.md).
 
@@ -76,6 +76,17 @@ A scheduled, lightweight, autonomous tick. Restricted to the `ouro` MCP
 server by default. Drives the planning cycle, advances active plans,
 runs proactive playbooks. Skipped outside `active_hours`.
 
+### Dream
+An evidence-driven, agent-wide review of recent runs, process friction,
+memory, skills, and prior dream results. Its restricted `ModeProfile` can make
+bounded direct changes or write identity-level proposals. See [Dream
+mode](./dream.md).
+
+### Reflection friction
+Durable process evidence emitted by post-run reflection (for example, repeated
+work, a misleading skill, or a user correction). Dream reviews the queue and
+preserves resolved entries as an audit trail.
+
 ### Active hours
 The daily window during which heartbeats actually run
 (`heartbeat.active_hours = {start, end, timezone}`). Outside this window
@@ -91,7 +102,7 @@ instead of the quest inbox and priority ladder.
 ### Refinement
 The LLM-driven cleanup of workspace docs that drains a typed change-set
 queue (`ChangeKind.CORRECTION`, `GUIDANCE_UPDATED`, `ASSET_UPDATED`).
-Runs as the first phase of the dream cycle. See
+Runs at the start of dream and is separate from reflection friction. See
 [Refinement](./refinement.md).
 
 ### Cleanup

@@ -95,6 +95,56 @@ class _FakeMemoryBackend:
 
 
 class TestReflectionParsing(unittest.TestCase):
+    def test_reflector_prompt_has_distinct_optional_friction_contract(self):
+        self.assertIn('"friction":', REFLECTOR_PROMPT)
+        self.assertIn("Most runs", REFLECTOR_PROMPT)
+        self.assertIn("Do NOT turn friction into candidates", REFLECTOR_PROMPT)
+
+    def test_parses_valid_friction_and_skips_malformed_items(self):
+        result = parse_reflection_result(
+            """
+            {
+              "candidates": [],
+              "user_preferences": [],
+              "daily_log_entries": [],
+              "friction": [
+                {
+                  "kind": "skill_misled",
+                  "skill": "publishing",
+                  "evidence": "The skill prescribed a removed argument.",
+                  "severity": "high"
+                },
+                {"kind": "not-real", "evidence": "ignore this"},
+                {"kind": "tool_failure", "severity": "low"},
+                "also ignore this"
+              ]
+            }
+            """
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(
+            result.friction,
+            [
+                {
+                    "kind": "skill_misled",
+                    "skill": "publishing",
+                    "evidence": "The skill prescribed a removed argument.",
+                    "severity": "high",
+                }
+            ],
+        )
+
+    def test_old_reflection_payload_defaults_to_no_friction(self):
+        result = parse_reflection_result(
+            '{"candidates": [], "user_preferences": [], "daily_log_entries": []}'
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.friction, [])
+
     def test_reflector_prompt_mentions_coil_adoption(self):
         self.assertIn("Coil adoption", REFLECTOR_PROMPT)
         self.assertIn("run_coil", REFLECTOR_PROMPT)
@@ -405,8 +455,59 @@ class TestReflectionParsing(unittest.TestCase):
         self.assertIn("- ouro:write_comment: comment 0", task)
         self.assertIn("- ouro:write_comment: comment 11", task)
 
+    def test_build_run_reflection_task_includes_process_signals(self):
+        task = build_run_reflection_task(
+            task="Complete the task.",
+            result="Done.",
+            run_mode="autonomous",
+            step_count=9,
+            retry_error_count=2,
+            loaded_skill_names=["publishing", "filesystem", "publishing"],
+        )
+
+        self.assertIn("Process signals:", task)
+        self.assertIn("- Main-agent steps: 9", task)
+        self.assertIn("- Retry/error steps: 2", task)
+        self.assertIn("- Loaded skills: publishing, filesystem", task)
+
 
 class TestApplyReflection(unittest.TestCase):
+    def test_apply_reflection_enqueues_friction_with_run_context(self):
+        from ouro_agents.memory.friction import FrictionQueue
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            result = ReflectionResult(
+                friction=[
+                    {
+                        "kind": "user_correction",
+                        "skill": None,
+                        "evidence": "The user corrected the requested output format.",
+                        "severity": "high",
+                    }
+                ]
+            )
+
+            apply_reflection(
+                result,
+                _FakeMemoryBackend(),
+                agent_id="hermes",
+                user_id="user-1",
+                conversation_id="conv-1",
+                run_id="run-1",
+                workspace=workspace,
+                conversations_dir=workspace / "conversations",
+                team_id="team-42",
+                mode="chat",
+            )
+
+            rows = FrictionQueue.for_workspace(workspace).pending()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].run_id, "run-1")
+            self.assertEqual(rows[0].mode, "chat")
+            self.assertEqual(rows[0].team_id, "team-42")
+            self.assertEqual(rows[0].kind.value, "user_correction")
+
     def test_valid_reflection_stores_fact(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)

@@ -7,6 +7,7 @@ recurring tasks.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -25,6 +27,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from pydantic import BaseModel, Field
 
 from .modes.heartbeat import format_active_period_status
+from .run_log import RunLogStore
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +141,7 @@ class TaskStore:
 # Trigger helpers
 # ---------------------------------------------------------------------------
 
-_INTERVAL_RE = re.compile(r"^(\d+)([smhd])$")
+_INTERVAL_RE = re.compile(r"^(\d+)([smhdw])$")
 
 
 def _is_cron_expression(schedule: str) -> bool:
@@ -152,7 +155,7 @@ def parse_trigger(schedule: str, tz: str = "UTC"):
 
     Supports:
     - Cron expressions: "0 9 * * *" (5 fields)
-    - Interval shorthand: "30s", "5m", "2h", "1d"
+    - Interval shorthand: "30s", "5m", "2h", "1d", "1w"
     """
     schedule = schedule.strip()
 
@@ -168,23 +171,66 @@ def parse_trigger(schedule: str, tz: str = "UTC"):
             "m": {"minutes": val},
             "h": {"hours": val},
             "d": {"days": val},
+            "w": {"weeks": val},
         }[unit]
         return IntervalTrigger(**kwargs)
 
     raise ValueError(
         f"Invalid schedule '{schedule}'. Use a cron expression (e.g. '0 9 * * *') "
-        f"or an interval (e.g. '30m', '4h', '1d')."
+        f"or an interval (e.g. '30m', '4h', '1d', '1w')."
     )
 
 
-def _daily_time_trigger(time_str: str, tz: str = "UTC"):
-    """Build a daily cron trigger from an ``HH:MM`` string (defaults to 03:00)."""
+def _parse_cadence_time(value: Optional[str]) -> tuple[int, int]:
+    """Parse an HH:MM cadence anchor, defaulting an omitted value to 03:00."""
+    value = value or "03:00"
     try:
-        hour_str, minute_str = time_str.strip().split(":", 1)
-        return CronTrigger(hour=int(hour_str), minute=int(minute_str), timezone=tz)
+        parsed = datetime.strptime(value.strip(), "%H:%M")
     except (ValueError, AttributeError):
-        logger.warning("Invalid dream_time '%s', defaulting to 03:00", time_str)
-        return CronTrigger(hour=3, minute=0, timezone=tz)
+        raise ValueError(f"Invalid cadence time {value!r}; expected HH:MM") from None
+    return parsed.hour, parsed.minute
+
+
+def cadence_trigger(
+    every: Optional[str],
+    *,
+    at: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+):
+    """Build an anchored interval trigger, or a daily trigger when omitted."""
+    tz_name = timezone_name or "UTC"
+    try:
+        tz = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ValueError(f"Invalid cadence timezone {tz_name!r}") from None
+
+    hour, minute = _parse_cadence_time(at)
+    if every is None:
+        return CronTrigger(hour=hour, minute=minute, timezone=tz)
+
+    match = _INTERVAL_RE.fullmatch(every.strip())
+    if not match or int(match.group(1)) < 1:
+        raise ValueError(
+            f"Invalid cadence {every!r}; expected Ns, Nm, Nh, Nd, or Nw"
+        )
+
+    value = int(match.group(1))
+    unit = match.group(2)
+    # A one-day cadence means "every local night at this wall-clock time",
+    # not a fixed 24-hour interval that drifts across daylight-saving changes.
+    if unit == "d" and value == 1:
+        return CronTrigger(hour=hour, minute=minute, timezone=tz)
+    interval = {
+        "s": {"seconds": value},
+        "m": {"minutes": value},
+        "h": {"hours": value},
+        "d": {"days": value},
+        "w": {"weeks": value},
+    }[unit]
+    # A fixed historical anchor keeps interval phase stable across restarts
+    # without baking the current deployment year into scheduling behavior.
+    anchor = datetime(1970, 1, 1, hour, minute, tzinfo=tz)
+    return IntervalTrigger(**interval, start_date=anchor, timezone=tz)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +240,53 @@ def _daily_time_trigger(time_str: str, tz: str = "UTC"):
 SYSTEM_HEARTBEAT_ID = "system:heartbeat"
 SYSTEM_DREAM_ID = "system:dream"
 SYSTEM_PROTECTED_IDS = frozenset({SYSTEM_HEARTBEAT_ID, SYSTEM_DREAM_ID})
+
+
+def count_dream_activity_runs(
+    store: RunLogStore,
+    *,
+    since: Optional[str] = None,
+) -> int:
+    """Count meaningful top-level runs eligible for the agentic dream gate."""
+    from .classify import is_trivial_message
+
+    rows = store.query_runs(since=since, limit=10_000)
+    count = 0
+    for row in rows:
+        mode = row.get("mode") or ""
+        if mode in {"dream", "plan"} or row.get("parent_run_id"):
+            continue
+        if mode == "chat" and is_trivial_message(row.get("task")):
+            continue
+        if mode == "heartbeat" and row.get("preflight_intent") == "pass":
+            continue
+        if not any(
+            (
+                row.get("num_steps"),
+                row.get("num_tool_calls"),
+                row.get("total_tokens"),
+                (row.get("task") or "").strip(),
+                (row.get("result") or "").strip(),
+            )
+        ):
+            continue
+        count += 1
+    return count
+
+
+def has_sufficient_dream_activity(
+    workspace: Path,
+    store: RunLogStore,
+    *,
+    min_new_runs: int,
+) -> tuple[bool, int]:
+    """Check activity since the last completed dream recorded in status."""
+    from .memory.dream import read_dream_status
+
+    status = read_dream_status(workspace) or {}
+    since = status.get("last_dream_at") or status.get("completed_at")
+    count = count_dream_activity_runs(store, since=since)
+    return count >= min_new_runs, count
 
 
 class AgentScheduler:
@@ -217,8 +310,8 @@ class AgentScheduler:
         config = agent.config
         if config.heartbeat.enabled:
             self._register_heartbeat(config.heartbeat)
-        if config.memory.dream_enabled:
-            self._register_dream(config.memory)
+        if config.dream.enabled:
+            self._register_dream(config.dream)
         self._scheduler.start()
         task_count = len(self.store.load())
         logger.debug(
@@ -226,8 +319,12 @@ class AgentScheduler:
             task_count,
             "enabled" if config.heartbeat.enabled else "disabled",
             (
-                f"{config.memory.rhythm}@{config.memory.dream_time}"
-                if config.memory.dream_enabled
+                (
+                    f"every {config.dream.every}"
+                    if config.dream.every
+                    else f"daily@{config.dream.at}"
+                )
+                if config.dream.enabled
                 else "disabled"
             ),
         )
@@ -309,55 +406,16 @@ class AgentScheduler:
         logger.debug("Registered scheduled task: %s (%s)", task.name, task.schedule)
 
     def _register_heartbeat(self, heartbeat_config) -> None:
-        from apscheduler.triggers.cron import CronTrigger
-        from apscheduler.triggers.interval import IntervalTrigger
-
-        from .config import HeartbeatConfig
-
-        match = _INTERVAL_RE.match(heartbeat_config.every)
-        if not match:
+        active_hours = heartbeat_config.active_hours or {}
+        try:
+            trigger = cadence_trigger(
+                heartbeat_config.every,
+                at=active_hours.get("start") or "00:00",
+                timezone_name=active_hours.get("timezone"),
+            )
+        except ValueError:
             logger.error("Invalid heartbeat interval: %s", heartbeat_config.every)
             return
-
-        val = int(match.group(1))
-        unit = match.group(2)
-
-        start_hour = 0
-        start_minute = 0
-        if heartbeat_config.active_hours and "start" in heartbeat_config.active_hours:
-            try:
-                start_time = datetime.strptime(
-                    heartbeat_config.active_hours["start"], "%H:%M"
-                ).time()
-                start_hour = start_time.hour
-                start_minute = start_time.minute
-            except Exception:
-                pass
-
-        if unit == "d":
-            trigger = CronTrigger(day=f"*/{val}", hour=start_hour, minute=start_minute)
-        else:
-            kwargs = {
-                "s": {"seconds": val},
-                "m": {"minutes": val},
-                "h": {"hours": val},
-            }[unit]
-
-            tz = None
-            if (
-                heartbeat_config.active_hours
-                and "timezone" in heartbeat_config.active_hours
-            ):
-                try:
-                    import zoneinfo
-
-                    tz = zoneinfo.ZoneInfo(heartbeat_config.active_hours["timezone"])
-                except Exception:
-                    pass
-
-            # Anchor date in the past to align intervals to the start time
-            anchor = datetime(2026, 1, 1, start_hour, start_minute, tzinfo=tz)
-            trigger = IntervalTrigger(**kwargs, start_date=anchor)
 
         job = self._scheduler.add_job(
             self._execute_heartbeat,
@@ -406,8 +464,22 @@ class AgentScheduler:
         except Exception:
             logger.exception("Heartbeat failed")
 
-    def _register_dream(self, memory_config) -> None:
-        trigger = _daily_time_trigger(memory_config.dream_time)
+    def _register_dream(self, dream_config) -> None:
+        heartbeat_hours = (
+            getattr(self._agent.config.heartbeat, "active_hours", None) or {}
+            if self._agent is not None
+            else {}
+        )
+        timezone_name = dream_config.timezone or heartbeat_hours.get("timezone")
+        try:
+            trigger = cadence_trigger(
+                dream_config.every,
+                at=dream_config.at,
+                timezone_name=timezone_name,
+            )
+        except ValueError as exc:
+            logger.error("Invalid dream cadence: %s", exc)
+            return
         self._scheduler.add_job(
             self._execute_dream,
             trigger=trigger,
@@ -417,9 +489,10 @@ class AgentScheduler:
             replace_existing=True,
         )
         logger.debug(
-            "Registered dream cycle: rhythm=%s, daily tick at %s",
-            memory_config.rhythm,
-            memory_config.dream_time,
+            "Registered dream cycle: cadence=%s, at=%s, timezone=%s",
+            dream_config.every or "daily",
+            dream_config.at,
+            timezone_name or "UTC",
         )
 
 
@@ -427,88 +500,31 @@ class AgentScheduler:
         if not self._agent:
             return
         try:
-            from .memory.dream import (
-                has_recent_dream_activity,
-                read_dream_marker,
-                scope_has_dream_work,
-                write_dream_marker,
-                write_dream_status,
-            )
-            from .memory.naming import period_key, period_key_offset
-            from .uuid_v7 import uuid7_str
-
             agent = self._agent
             workspace = agent.config.agent.workspace
-            rhythm = agent.config.memory.rhythm
+            dream_config = agent.config.dream
 
-            # The tick fires daily, but the cycle only runs once per rhythm
-            # period. This is what makes "dream on the log cadence" work
-            # uniformly for daily/weekly/biweekly without a per-cadence cron.
-            current_period = period_key(rhythm)
-            if read_dream_marker(workspace) == current_period:
-                logger.debug(
-                    "Dream: rhythm boundary not reached (period %s already processed), skipping",
-                    current_period,
+            ready, run_count = has_sufficient_dream_activity(
+                workspace,
+                agent._run_log,
+                min_new_runs=dream_config.min_new_runs,
+            )
+            if not ready:
+                logger.info(
+                    "Dream: skipping cycle (%d/%d new runs)",
+                    run_count,
+                    dream_config.min_new_runs,
                 )
                 return
 
-            logger.info("Running dream cycle for period %s (rhythm=%s)...", current_period, rhythm)
-            tick_id = uuid7_str()
-            results_by_scope: dict[str, dict] = {}
-            results_by_scope["shared"] = agent._run_dream_scope(
-                mode="scheduled",
-                tick_id=tick_id,
-                doc_store=agent.doc_store,
-            )
-
-            previous_period = period_key_offset(rhythm, -1)
-
-            for team_id, doc_store in sorted(agent._team_doc_stores.items()):
-                # Skip teams with no log in the current or previous period.
-                has_activity = has_recent_dream_activity(
-                    doc_store,
-                    agent.config.agent.name,
-                    rhythm,
-                    current_period=current_period,
-                    previous_period=previous_period,
-                )
-                if not has_activity:
-                    logger.debug("Dream: skipping team %s (no recent activity)", team_id)
-                    continue
-
-                # Skip empty scopes: logs exist but carry no meaningful
-                # content, the memory doc is empty, and there are no vector
-                # memories — a run there would be pure overhead.
-                if not scope_has_dream_work(
-                    doc_store,
-                    agent.memory,
-                    agent.config.agent.name,
-                    rhythm,
-                    team_id=team_id,
-                    current_period=current_period,
-                    previous_period=previous_period,
-                ):
-                    logger.info("Dream: skipping empty scope %s", team_id[:8])
-                    continue
-
-                results_by_scope[team_id] = agent._run_dream_scope(
-                    team_id=team_id,
-                    mode="scheduled",
-                    tick_id=tick_id,
-                    doc_store=doc_store,
-                )
-
-            write_dream_marker(workspace, current_period)
-            status = write_dream_status(workspace, current_period, results_by_scope)
-            if status.get("scopes_with_failures"):
-                logger.warning(
-                    "Dream cycle for %s finished with failures in %d/%d scopes: %s",
-                    current_period,
-                    status["scopes_with_failures"],
-                    status["scopes_run"],
-                    status["failures"],
-                )
-            logger.info("Dream cycle complete: %s", results_by_scope)
+            logger.info("Running dream cycle after %d new runs...", run_count)
+            dream_kwargs: dict[str, Any] = {"mode": "scheduled"}
+            if dream_config.dry_run:
+                dream_kwargs["dry_run"] = True
+            # dream() owns an asyncio.run(agent.run(...)) call, so keep it off
+            # APScheduler's live event-loop thread.
+            await asyncio.to_thread(agent.dream, **dream_kwargs)
+            logger.info("Dream cycle complete")
         except Exception:
             logger.exception("Dream cycle failed")
 

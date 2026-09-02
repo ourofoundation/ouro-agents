@@ -115,6 +115,7 @@ class ModelTiersConfig(BaseModel):
 MODEL_ROLE_TIERS: Dict[str, ModelTierName] = {
     "agent": "strong",
     "planning": "strong",
+    "dream": "strong",
     "writer": "strong",
     "executor": "strong",
     "developer": "strong",
@@ -369,6 +370,28 @@ class HeartbeatConfig(BaseModel):
     openrouter_provider: Optional[Dict[str, Any]] = None
 
 
+class DreamConfig(BaseModel):
+    """Cadence and execution policy for scheduled dream cycles."""
+
+    enabled: bool = True
+    every: Optional[str] = None
+    at: Optional[str] = "03:00"
+    timezone: Optional[str] = None
+    model: Optional[str] = None
+    max_steps: int = Field(default=40, ge=1)
+    min_new_runs: int = Field(default=3, ge=0)
+    max_changes: int = Field(default=4, ge=0)
+    writable: List[str] = Field(
+        default_factory=lambda: ["skills", "NOTES.md", "HEARTBEAT.md"]
+    )
+    proposal_only: List[str] = Field(
+        default_factory=lambda: ["SOUL.md", "skills:always"]
+    )
+    journal_lookback: int = Field(default=3, ge=0)
+    servers: List[str] = Field(default_factory=lambda: ["ouro"])
+    dry_run: bool = False
+
+
 class MCPServerConfig(BaseModel):
     name: str
     transport: str  # "stdio" or "streamable-http"
@@ -423,34 +446,11 @@ class MemoryConfig(BaseModel):
     # this are dropped unless the caller passed explicit filters. The best hit
     # is always kept so recall never comes back empty when matches exist.
     min_signal_score: float = 0.35
-    # Memory rhythm: how often the agent rolls its log and runs the dream cycle.
-    # Drives both the log bucket window AND the dream cadence (single source of
-    # truth — there is intentionally no separate dream cron to misconfigure).
+    # Period-log bucket window. Dream scheduling is configured independently.
     rhythm: Rhythm = "daily"
-    dream_enabled: bool = True
-    # Time of day (HH:MM, UTC) for the nightly dream tick. The tick only does
-    # work when a new `rhythm` period has begun since the last run.
-    dream_time: str = "03:00"
-    dream_review_enabled: bool = True
-    dream_review_max_per_run: int = 5
     memory_md_max_tokens: int = 4000
     decay_after_days: int = 30
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_deprecated_dream_schedule(cls, data: Any) -> Any:
-        """`dream_schedule` is superseded by `rhythm` + `dream_time`."""
-        if isinstance(data, dict) and "dream_schedule" in data:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "memory.dream_schedule is deprecated and ignored. The dream cycle "
-                "now follows memory.rhythm (daily/weekly/biweekly) and runs at "
-                "memory.dream_time."
-            )
-            data = {k: v for k, v in data.items() if k != "dream_schedule"}
-        return data
 
 
 class ServerConfig(BaseModel):
@@ -998,6 +998,7 @@ class OuroAgentsConfig(BaseSettings):
     chat_compaction: ChatCompactionConfig = Field(default_factory=ChatCompactionConfig)
     observations: ObservationPolicyConfig = Field(default_factory=ObservationPolicyConfig)
     heartbeat: HeartbeatConfig
+    dream: DreamConfig = Field(default_factory=DreamConfig)
     mcp_servers: List[MCPServerConfig]
     memory: MemoryConfig
     server: ServerConfig = Field(default_factory=ServerConfig)

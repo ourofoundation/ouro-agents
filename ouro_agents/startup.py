@@ -82,8 +82,21 @@ def _mode_rows(config: OuroAgentsConfig) -> list[tuple[str, str]]:
         hb_value += f" · {window}" if window else " · always on"
     else:
         hb_value = "off"
-    memory = config.memory
-    dream = f"{memory.rhythm} · {memory.dream_time} UTC" if memory.dream_enabled else "off"
+    dream_config = config.dream
+    dream_timezone = dream_config.timezone or (
+        (config.heartbeat.active_hours or {}).get("timezone")
+    ) or "UTC"
+    if dream_config.enabled:
+        dream = (
+            f"every {dream_config.every} · {dream_timezone}"
+            if dream_config.every
+            else (
+                f"daily · {dream_config.at or '03:00'} "
+                f"{dream_timezone}"
+            )
+        )
+    else:
+        dream = "off"
     planning = config.planning
     if planning.enabled:
         plan_value = f"every {planning.cadence}"
@@ -160,11 +173,12 @@ def _config_grid(config: OuroAgentsConfig, platform: Optional[str]) -> Table:
 
 
 def _dream_state(config: OuroAgentsConfig) -> str:
-    from .memory.dream import read_dream_marker
-    from .memory.naming import period_key
+    from .memory.dream import read_dream_status
 
-    done = read_dream_marker(config.agent.workspace) == period_key(config.memory.rhythm)
-    return "[ouro.muted]done[/]" if done else "pending"
+    status = read_dream_status(config.agent.workspace) or {}
+    if status.get("scopes_with_failures"):
+        return "[red]failed[/]"
+    return "[ouro.muted]done[/]" if status else "pending"
 
 
 def _schedule_rows(
@@ -191,12 +205,22 @@ def _schedule_rows(
             )
         )
 
-    memory = config.memory
-    if memory.dream_enabled:
+    dream = config.dream
+    if dream.enabled:
+        dream_timezone = dream.timezone or (
+            (config.heartbeat.active_hours or {}).get("timezone")
+        ) or "UTC"
+        schedule = (
+            f"every {dream.every} · {dream_timezone}"
+            if dream.every
+            else (
+                f"{dream.at or '03:00'} {dream_timezone} · daily"
+            )
+        )
         rows.append(
             (
                 "dream",
-                f"{memory.dream_time} UTC · {memory.rhythm}",
+                schedule,
                 _fmt_next_run(next_runs.get(SYSTEM_DREAM_ID), now),
                 _dream_state(config),
             )

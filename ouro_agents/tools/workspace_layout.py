@@ -6,7 +6,13 @@ artifacts land in a discoverable place instead of the root or framework dirs.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterable, Iterator
+
+import yaml
 
 # Top-level dirs agents may create or write under.
 ALLOWED_TOP_LEVEL_DIRS = frozenset(
@@ -34,9 +40,135 @@ FORBIDDEN_TOP_LEVEL_DIRS = frozenset({"protected", "data", "memory"})
 _WRITE_MODE_CHARS = frozenset("wax+")
 
 
+@dataclass(frozen=True)
+class _DreamWriteTier:
+    workspace: Path
+    writable: frozenset[Path]
+    proposal_only: frozenset[Path]
+
+
+_DREAM_WRITE_TIER: ContextVar[_DreamWriteTier | None] = ContextVar(
+    "ouro_dream_write_tier",
+    default=None,
+)
+
+
 def _is_write_mode(mode: str) -> bool:
     """Return True if an open() mode string can create or modify file contents."""
     return any(ch in mode for ch in _WRITE_MODE_CHARS)
+
+
+def _normalize_dream_targets(
+    workspace: Path,
+    targets: Iterable[str | Path],
+) -> frozenset[Path]:
+    normalized: set[Path] = set()
+    for value in targets:
+        target = Path(value)
+        if target.is_absolute():
+            try:
+                target = target.resolve().relative_to(workspace)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Dream write target escapes workspace: {value}"
+                ) from exc
+        if target == Path(".") or ".." in target.parts:
+            raise ValueError(f"Invalid dream write target: {value}")
+        is_root_file = len(target.parts) == 1 and bool(target.suffix)
+        is_skill_target = target.parts[:1] == ("skills",)
+        is_special_marker = target == Path("skills:always")
+        if not (is_root_file or is_skill_target or is_special_marker):
+            raise ValueError(
+                "Dream write targets must be root files or paths under skills/: "
+                f"{value}"
+            )
+        normalized.add(target)
+    return frozenset(normalized)
+
+
+@contextmanager
+def dream_write_scope(
+    workspace: str | Path,
+    writable: Iterable[str | Path],
+    proposal_only: Iterable[str | Path] = (),
+) -> Iterator[None]:
+    """Temporarily narrow workspace writes for a dream review run.
+
+    ``writable`` may name root files (for example ``NOTES.md``) and either
+    individual skill files or ``skills`` to allow that tree. Targets in
+    ``proposal_only`` can only be changed through the ``propose_change`` tool.
+    The scope is context-local, so concurrent non-dream work is unaffected.
+    """
+    root = Path(workspace).resolve()
+    tier = _DreamWriteTier(
+        workspace=root,
+        writable=_normalize_dream_targets(root, writable),
+        proposal_only=_normalize_dream_targets(root, proposal_only),
+    )
+    token = _DREAM_WRITE_TIER.set(tier)
+    try:
+        yield
+    finally:
+        _DREAM_WRITE_TIER.reset(token)
+
+
+def _dream_target_matches(rel: Path, configured: frozenset[Path]) -> bool:
+    if rel in configured:
+        return True
+    return Path("skills") in configured and rel.parts[:1] == ("skills",)
+
+
+def _skill_loads_always(path: Path) -> bool:
+    """Return whether an existing skill has ``load: always`` frontmatter."""
+    if not path.is_file():
+        return False
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return False
+    if not text.startswith("---"):
+        return False
+    end = text.find("\n---", 3)
+    if end == -1:
+        return False
+    try:
+        metadata = yaml.safe_load(text[3:end].strip())
+    except yaml.YAMLError:
+        return False
+    return (
+        isinstance(metadata, dict)
+        and str(metadata.get("load", "")).strip().lower() == "always"
+    )
+
+
+def _check_dream_write(
+    tier: _DreamWriteTier,
+    rel: Path,
+    resolved: Path,
+    *,
+    is_dir: bool,
+) -> None:
+    display = rel.as_posix()
+    if _dream_target_matches(rel, tier.proposal_only):
+        raise PermissionError(
+            f"Dream write tier: {display} is proposal-only. "
+            "Use `propose_change` to submit the change for review."
+        )
+    if not _dream_target_matches(rel, tier.writable):
+        raise PermissionError(
+            f"Dream write tier: direct write to {display} is not allowed. "
+            "Only the configured dream root files and skills may be written."
+        )
+    if is_dir and rel.parts[:1] != ("skills",):
+        raise PermissionError(
+            f"Dream write tier: {display} is configured as a root file, "
+            "not a writable directory."
+        )
+    if rel.parts[:1] == ("skills",) and _skill_loads_always(resolved):
+        raise PermissionError(
+            f"Dream write tier: {display} has `load: always` and cannot be "
+            "changed directly. Use `propose_change` to submit the change for review."
+        )
 
 
 def check_workspace_write(
@@ -77,6 +209,11 @@ def check_workspace_write(
             f"Workspace layout: refuse write under {top}/ — that directory is "
             "framework-managed. Use projects/<slug>/, drafts/, or scratch/ instead."
         )
+
+    dream_tier = _DREAM_WRITE_TIER.get()
+    if dream_tier is not None and dream_tier.workspace == root:
+        _check_dream_write(dream_tier, rel, resolved, is_dir=is_dir)
+        return resolved
 
     if len(parts) == 1:
         if is_dir:

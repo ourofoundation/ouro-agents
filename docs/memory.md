@@ -49,8 +49,8 @@ The reflector emits strength as a word (`minor`/`normal`/`high`, mapped to
 0.3/0.5/0.8) and may list `supersedes` memory IDs on a candidate — IDs
 surfaced by its own `memory_recall` search that the new memory contradicts
 or replaces. Superseded memories are deleted as soon as the replacement is
-stored, so bans and reversals take effect immediately instead of waiting
-for dream consolidation.
+stored, so bans and reversals take effect immediately instead of waiting for
+later maintenance.
 
 ### Categories and decay
 
@@ -63,25 +63,17 @@ episodes and go to the period log instead of mem0. The durable categories are:
 
 `memory.decay_after_days` controls the single use-based decay law.
 Recall hits update `last_accessed` and reinforce `strength`; dream weakens
-unused memories and deletes memories that fall below the strength floor.
-Direction memories do not decay automatically.
+unused memories when evidence warrants it and can delete memories that fall
+below the strength floor. Direction memories do not decay automatically.
 
-`memory.dream_enabled` runs a consolidation ("dream") pass —
-once per `memory.rhythm` period, at `memory.dream_time` — that:
+Dream mode reviews bounded run evidence and process friction through one
+agent-wide `RunMode.DREAM` loop. It runs refinement and a `MEMORY.md`
+compaction baseline, then can use dream tools for justified maintenance or
+operating-document improvements. See [Dream mode](./dream.md).
 
-- Drains the refinement change queue.
-- Promotes important period-log episodes into `MEMORY.md`.
-- Distills reinforced direction memories into workspace lesson skills
-  (`skills/lessons-<topic>.md`) so procedural lessons load by topic
-  instead of competing for recall.
-- Decays old, unaccessed memories by strength.
-- Reviews stale `stability="evolving"` memories.
-- Caps `MEMORY.md` size at `memory.memory_md_max_tokens`.
-
-Each scope writes a JSON audit under `workspace/protected/data/dream_runs/` with
-mutations (`operations`), truncated LLM I/O (`llm_calls`), skips/warnings,
-phase timings, and a `run_id` that links to the `mode=dream` row in
-`runs.db`. See [Run logging](./run-logging.md).
+Dream writes machine-readable audits under
+`workspace/protected/data/dream_runs/` linked to `mode=dream` records in
+`runs.db`. It also writes journal reports and may create review-only proposals.
 
 ### Team scoping
 
@@ -198,9 +190,11 @@ by it.
 
 Dream and cleanup maintain memory hygiene:
 
+- **Dream review** — uses recent run evidence, reflection friction, and memory
+  state to select bounded improvements. See [Dream mode](./dream.md).
 - **Dream refinement** — drains a typed change-set queue (corrections,
-  retractions) as the first dream phase and uses a cheap LLM to rewrite affected docs in-place.
-  See [Refinement](./refinement.md).
+  retractions) before the evidence-driven review and uses a cheap LLM to
+  rewrite affected docs in-place. See [Refinement](./refinement.md).
 - **Cleanup** — handles `asset.deleted` webhook events deterministically:
   prunes vector memories that referenced the asset and rewrites markdown
   / JSON references as `[deleted]`. No LLM involved. See

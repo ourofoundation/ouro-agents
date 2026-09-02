@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from ..syncing import read_field
 from ..constants import clip_text
@@ -394,8 +394,9 @@ def build_outcome_evidence_context(
     lines = [
         "## Outcome Evidence",
         "External engagement on work your recent quests produced. Use these "
-        "outcomes to shape the next plan's focus when useful. Low engagement "
-        "is a signal to change approach, not a reason to skip planning.",
+        "outcomes to shape the next plan's focus when useful: completion without "
+        "engagement is not success. Low engagement is a signal to change "
+        "approach, not a reason to skip planning.",
     ]
     any_row = False
     for quest in quests:

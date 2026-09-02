@@ -10,11 +10,45 @@ from pathlib import Path
 from typing import Optional
 
 from ..subagents.reflector import ReflectionResult, normalize_daily_log_entry
+from .friction import FrictionEntry, FrictionQueue
 from .model import to_metadata
 from .naming import log_entry_timestamp, period_key, period_log_title, store_rhythm
 from .validator import MemoryRunContext, validate_memory_candidates
 
 logger = logging.getLogger(__name__)
+
+
+def enqueue_reflection_friction(
+    result: ReflectionResult,
+    workspace: Path,
+    *,
+    run_id: str,
+    mode: str,
+    team_id: Optional[str] = None,
+    queue: Optional[FrictionQueue] = None,
+) -> int:
+    """Persist reflected process friction independently of semantic memory."""
+    friction_queue = queue or FrictionQueue.for_workspace(workspace)
+    enqueued = 0
+    for item in getattr(result, "friction", []) or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            wrote = friction_queue.enqueue(
+                FrictionEntry(
+                    kind=item.get("kind"),
+                    skill=item.get("skill"),
+                    evidence=item.get("evidence", ""),
+                    severity=item.get("severity", "med"),
+                    run_id=run_id,
+                    mode=mode,
+                    team_id=team_id,
+                )
+            )
+            enqueued += int(wrote)
+        except Exception as exc:
+            logger.warning("Failed to enqueue reflected friction: %s", exc)
+    return enqueued
 
 
 def write_log(
@@ -298,14 +332,17 @@ def apply_reflection(
     org_id: str = "",
     mode: str = "chat",
     event_type: str = "",
+    run_id: str = "",
+    friction_queue: Optional[FrictionQueue] = None,
 ) -> None:
-    """Apply reflection results: store facts, update user model, write daily log."""
+    """Apply durable facts, process friction, user preferences, and daily logs."""
+    effective_run_id = run_id or conversation_id
     store_reflection_memories(
         result,
         memory_backend,
         agent_id=agent_id,
         user_id=user_id,
-        run_id=conversation_id,
+        run_id=effective_run_id,
         conversation_id=conversation_id,
         team_id=team_id,
         available_team_ids=available_team_ids,
@@ -313,6 +350,15 @@ def apply_reflection(
         mode=mode,
         event_type=event_type,
         source=f"reflection:{conversation_id}",
+    )
+
+    enqueue_reflection_friction(
+        result,
+        workspace,
+        run_id=effective_run_id,
+        mode=mode,
+        team_id=team_id,
+        queue=friction_queue,
     )
 
     if result.user_preferences and user_id:

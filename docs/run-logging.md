@@ -7,9 +7,13 @@ success, error, **and** cancellation, so failed and interrupted runs are just
 as visible as successful ones.
 
 The implementation lives in [`ouro_agents/run_log.py`](../ouro_agents/run_log.py).
-Normal smolagents modes are wrapped by `OuroAgent._run_blocking`. Dream is not a
-smolagents loop, so `OuroAgent._run_dream_scope` writes the same schema (one row
-per memory scope, grouped by `tick_id` within a cycle).
+Dream uses the normal, agent-wide `RunMode.DREAM` loop, so its model steps and
+dream-only tool calls appear in `run_steps`.
+
+Dream also writes a machine-readable audit under
+`protected/data/dream_runs/`, linking the journal report, proposals, friction
+resolutions, Git snapshots, and review diff. See
+[Dream mode](./dream.md).
 
 ## Why SQLite
 

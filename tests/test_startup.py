@@ -114,13 +114,13 @@ class TestConfigRows(unittest.TestCase):
         config = _load_config(_base_config())
         rows = dict(_mode_rows(config))
         self.assertEqual(rows["heartbeat"], "every 1h · 09:00–22:00 America/Chicago")
-        self.assertEqual(rows["dream"], "daily · 03:00 UTC")
+        self.assertEqual(rows["dream"], "daily · 03:00 America/Chicago")
         self.assertEqual(rows["planning"], "off")
 
     def test_mode_rows_disabled(self):
         data = _base_config()
         data["modes"]["heartbeat"]["enabled"] = False
-        data["memory"]["dream_enabled"] = False
+        data["dream"] = {"enabled": False}
         config = _load_config(data)
         rows = dict(_mode_rows(config))
         self.assertEqual(rows["heartbeat"], "off")
@@ -164,7 +164,7 @@ class TestScheduleRows(unittest.TestCase):
         self.assertIn(heartbeat[2].split(" · ")[0], {"in 29m", "in 30m"})
 
         dream = rows[1]
-        self.assertEqual(dream[1], "03:00 UTC · daily")
+        self.assertEqual(dream[1], "03:00 America/Chicago · daily")
 
         task_row = rows[2]
         self.assertEqual(task_row[1], "0 9 * * * · Chicago")
@@ -236,7 +236,7 @@ class TestPrintSummary(unittest.TestCase):
     def test_smoke_nothing_scheduled(self):
         data = _base_config()
         data["modes"]["heartbeat"]["enabled"] = False
-        data["memory"]["dream_enabled"] = False
+        data["dream"] = {"enabled": False}
         config = _load_config(data)
         output = self._render(config, _FakeScheduler())
         self.assertIn("nothing scheduled", output)

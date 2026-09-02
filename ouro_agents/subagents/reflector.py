@@ -25,6 +25,16 @@ _NOISY_REFLECTION_TOOLS = {
     "ouro:get_team",
 }
 
+_FRICTION_KINDS = {
+    "skill_misled",
+    "wasted_steps",
+    "user_correction",
+    "repeated_work",
+    "tool_failure",
+    "instruction_conflict",
+}
+_FRICTION_SEVERITIES = {"low", "med", "high"}
+
 
 REFLECTOR_PROMPT = """\
 You are a memory curator. Given context about recent activity — either a \
@@ -56,7 +66,8 @@ Output ONLY valid JSON matching this schema (no markdown fences):
 {
   "candidates": [{"text": "string", "subject_type": "user"|"agent"|"team"|"asset"|"general", "subject_id_hint": "string", "category": "fact"|"direction"|"preference", "basis": "stated"|"inferred"|"observed", "stability": "stable"|"evolving", "strength": "minor"|"normal"|"high", "team_ids": ["uuid from available teams"], "asset_ids": ["uuid"], "verification_hint": "string or empty", "supersedes": ["memory_id from memory_recall results"]}],
   "user_preferences": ["string"],
-  "daily_log_entries": [{"team_id": "uuid from available teams", "entry": "string"}]
+  "daily_log_entries": [{"team_id": "uuid from available teams", "entry": "string"}],
+  "friction": [{"kind": "skill_misled"|"wasted_steps"|"user_correction"|"repeated_work"|"tool_failure"|"instruction_conflict", "skill": "skill name or null", "evidence": "specific process evidence", "severity": "low"|"med"|"high"}]
 }
 
 Writing candidates:
@@ -176,7 +187,13 @@ Daily log entries:
 Other outputs:
 - user_preferences: Communication style, interests, or workflow patterns observed. \
   Only include clear, repeated signals. Omit for task/run reflection.
-- If nothing is worth remembering, return empty lists.
+- friction: Process failures that should be reviewed separately from durable \
+  facts. Use concrete evidence from this run, including process signals when \
+  supplied. Do NOT turn friction into candidates or user_preferences. Most runs \
+  have no friction and should return an empty list. A high step count alone is \
+  not friction; identify a specific avoidable problem. Set skill only when a \
+  loaded skill contributed to the problem.
+- If nothing is worth remembering or reviewing, return empty lists.
 - If the run was trivial (e.g. NO_ACTION) and the task/result contains no explicit
   human guidance, return empty lists. NO_ACTION is only an immediate reply
   decision; it must not cause you to discard explicit human work-direction,
@@ -228,6 +245,7 @@ class ReflectionResult:
     facts_to_store: list[dict] = field(default_factory=list)
     user_preferences: list[str] = field(default_factory=list)
     daily_log_entries: list[DailyLogEntry] = field(default_factory=list)
+    friction: list[dict] = field(default_factory=list)
 
 
 def resolve_daily_log_tag(
@@ -268,6 +286,9 @@ def build_run_reflection_task(
     memory_notes: list[str] | None = None,
     *,
     episode_only: bool = False,
+    step_count: int | None = None,
+    retry_error_count: int | None = None,
+    loaded_skill_names: list[str] | None = None,
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
@@ -313,6 +334,26 @@ def build_run_reflection_task(
             "when literally nothing happened.\n"
         )
 
+    process_lines: list[str] = []
+    if step_count is not None:
+        process_lines.append(f"- Main-agent steps: {max(0, int(step_count))}")
+    if retry_error_count is not None:
+        process_lines.append(
+            f"- Retry/error steps: {max(0, int(retry_error_count))}"
+        )
+    skill_names = list(
+        dict.fromkeys(
+            str(name).strip() for name in (loaded_skill_names or []) if str(name).strip()
+        )
+    )
+    if loaded_skill_names is not None:
+        process_lines.append(
+            "- Loaded skills: " + (", ".join(skill_names) if skill_names else "(none)")
+        )
+    process_block = ""
+    if process_lines:
+        process_block = "\nProcess signals:\n" + "\n".join(process_lines) + "\n"
+
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
         f"Run mode: {run_mode}\n"
@@ -322,6 +363,7 @@ def build_run_reflection_task(
         f"Task:\n{task[:1500]}\n\n"
         f"Result:\n{str(result)[:2000]}\n\n"
         f"Tool calls:\n{tools_text}\n"
+        f"{process_block}"
         f"{notes_block}"
         f"{episode_block}\n"
         "If this run created a durable Ouro asset (dataset, post, file, quest, "
@@ -438,10 +480,36 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
             if text:
                 daily_entries.append(DailyLogEntry(team_id=team_id, entry=text))
 
+        friction = []
+        raw_friction = data.get("friction", [])
+        if isinstance(raw_friction, list):
+            for item in raw_friction:
+                if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("kind") or "").strip().lower()
+                severity = str(item.get("severity") or "med").strip().lower()
+                evidence = " ".join(str(item.get("evidence") or "").split())
+                if (
+                    kind not in _FRICTION_KINDS
+                    or severity not in _FRICTION_SEVERITIES
+                    or not evidence
+                ):
+                    continue
+                skill = str(item.get("skill") or "").strip() or None
+                friction.append(
+                    {
+                        "kind": kind,
+                        "skill": skill,
+                        "evidence": evidence,
+                        "severity": severity,
+                    }
+                )
+
         return ReflectionResult(
             facts_to_store=facts,
             user_preferences=data.get("user_preferences", []),
             daily_log_entries=daily_entries,
+            friction=friction,
         )
     except Exception as e:
         logger.warning(

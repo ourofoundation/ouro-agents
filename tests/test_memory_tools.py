@@ -335,16 +335,53 @@ class _MutableBackend(_FakeBackend):
         self.updated.append((memory_id, text))
 
 
-def test_write_tools_only_exposed_when_remember_enabled():
+def test_write_tools_only_exposed_when_remember_enabled(tmp_path):
     backend = _MutableBackend()
     read_only = {t.name for t in make_memory_tools(backend, agent_id="hermes")}
     assert read_only == {"memory_recall", "memory_status"}
 
     writable = {
         t.name
-        for t in make_memory_tools(backend, agent_id="hermes", enable_remember=True)
+        for t in make_memory_tools(
+            backend,
+            agent_id="hermes",
+            workspace=tmp_path,
+            enable_remember=True,
+        )
     }
-    assert {"remember", "update_memory", "forget"} <= writable
+    assert {"remember", "update_memory", "forget", "note_friction"} <= writable
+
+
+def test_note_friction_uses_run_context_and_queue(tmp_path):
+    from ouro_agents.memory.friction import FrictionQueue
+
+    tool = _tool_by_name(
+        make_memory_tools(
+            _MutableBackend(),
+            agent_id="hermes",
+            workspace=tmp_path,
+            team_id="team-42",
+            run_id="run-42",
+            mode="autonomous",
+            enable_remember=True,
+        ),
+        "note_friction",
+    )
+
+    response = json.loads(
+        tool.forward(
+            "tool_failure",
+            "The route failed twice before succeeding.",
+            "med",
+            None,
+        )
+    )
+
+    assert response["status"] == "ok"
+    row = FrictionQueue.for_workspace(tmp_path).pending()[0]
+    assert row.run_id == "run-42"
+    assert row.mode == "autonomous"
+    assert row.team_id == "team-42"
 
 
 def test_recall_surfaces_ids_only_when_writes_enabled():

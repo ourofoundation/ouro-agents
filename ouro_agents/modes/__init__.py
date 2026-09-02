@@ -2,6 +2,7 @@ from .framing import build_output_format
 from .profiles import (
     AUTONOMOUS,
     CHAT,
+    DREAM,
     HEARTBEAT,
     MODE_REGISTRY,
     PLAN,
@@ -24,4 +25,5 @@ __all__ = [
     "AUTONOMOUS",
     "HEARTBEAT",
     "PLAN",
+    "DREAM",
 ]

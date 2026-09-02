@@ -747,7 +747,57 @@ def make_memory_tools(
             status = "partial"
         return json.dumps({"status": status, "results": results})
 
+    @tool
+    def note_friction(
+        kind: str,
+        evidence: str,
+        severity: str = "med",
+        skill: Optional[str] = None,
+    ) -> str:
+        """Record a concrete process problem for later improvement review.
+
+        Use only when the current run encountered avoidable friction, not for
+        routine status or durable facts.
+
+        Args:
+            kind: One of skill_misled, wasted_steps, user_correction,
+                repeated_work, tool_failure, or instruction_conflict.
+            evidence: Specific evidence describing what went wrong.
+            severity: low, med, or high.
+            skill: Loaded skill name when that skill contributed to the problem.
+        """
+        if not enable_remember or workspace is None:
+            return json.dumps(
+                {"status": "error", "error": "note_friction is not enabled for this run"}
+            )
+
+        from .friction import FrictionEntry, FrictionQueue
+
+        try:
+            entry = FrictionEntry(
+                kind=kind,
+                evidence=evidence,
+                severity=severity,
+                skill=skill,
+                run_id=run_id or conversation_id or "",
+                mode=run_mode,
+                team_id=run_team_id,
+            )
+            enqueued = FrictionQueue.for_workspace(workspace).enqueue(entry)
+        except Exception as exc:
+            return json.dumps({"status": "error", "error": str(exc)})
+        return json.dumps(
+            {
+                "status": "ok",
+                "id": entry.id,
+                "enqueued": enqueued,
+                "deduplicated": not enqueued,
+            }
+        )
+
     tools = [memory_recall, memory_status]
     if enable_remember:
         tools.extend([remember, update_memory, forget])
+        if workspace is not None:
+            tools.append(note_friction)
     return tools

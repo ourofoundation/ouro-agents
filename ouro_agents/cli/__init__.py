@@ -14,7 +14,7 @@ from ..cancellation import RunCancelled
 from ..config import OuroAgentsConfig, RunMode
 from ..display import OuroDisplay, Verbosity, set_display
 from ..server import start_server
-from ..tui.team_picker import _ALL_TEAMS_SENTINEL, choose_dream_team, choose_plan_team
+from ..tui.team_picker import choose_plan_team
 from ..uuid_v7 import uuid7_str
 from .auth import (
     DEFAULT_LOGIN_TIMEOUT,
@@ -284,38 +284,48 @@ def plan(
 @cli.command()
 def dream(
     ctx: typer.Context,
-    team_id: Optional[str] = typer.Option(
-        None, "--team-id", help="Run dream for a specific team only."
+    action: Optional[str] = typer.Argument(
+        None, help="Optional action: report or proposals."
     ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
         help="Preview dream changes and write an audit log without mutating memory.",
     ),
+    last: int = typer.Option(1, "--last", min=1, help="Reports to show."),
 ) -> None:
-    """Run the dream cycle."""
+    """Run dream, inspect recent reports, or list proposals."""
     state = _state(ctx)
-    with OuroAgent(state.config) as agent:
-        selected_team_id = team_id
-        if not selected_team_id:
-            try:
-                agent._refresh_platform_context()
-            except Exception:
-                pass
-            selected_team_id = choose_dream_team(agent.team_registry.list_teams())
-            if selected_team_id is None:
-                state.display.info("Dream cancelled.")
-                raise typer.Exit(0)
+    from ..tools.workspace_paths import protected_data
 
-        resolved_team_id = (
-            None if selected_team_id == _ALL_TEAMS_SENTINEL else selected_team_id
+    data_dir = protected_data(state.config.agent.workspace)
+    if action == "report":
+        reports = sorted((data_dir / "dreams").glob("*.md"), reverse=True)
+        if not reports:
+            state.display.info("No dream reports found.")
+            return
+        for path in reports[:last]:
+            state.display.info(f"[{path}]")
+            state.display.info(path.read_text())
+        return
+    if action == "proposals":
+        proposals = sorted(
+            (data_dir / "dream_proposals").glob("*.md"), reverse=True
         )
-        scope = f" for team {resolved_team_id}" if resolved_team_id else " (all teams)"
+        if not proposals:
+            state.display.info("No dream proposals found.")
+            return
+        for path in proposals:
+            state.display.info(str(path))
+        return
+    if action is not None:
+        raise typer.BadParameter("action must be 'report' or 'proposals'")
+
+    with OuroAgent(state.config) as agent:
         mode = "dry-run " if dry_run else ""
-        state.display.info(f"Running {mode}dream cycle{scope}...")
-        results = agent.dream(team_id=resolved_team_id, dry_run=dry_run)
-    for scope, summary in results.items():
-        state.display.info(f"  [{scope}] {summary}")
+        state.display.info(f"Running {mode}dream cycle (agent-wide)...")
+        summary = agent.dream(dry_run=dry_run)
+    state.display.info(str(summary))
 
 
 def _run_inline_chat(state: CLIState, conversation_id: str | None) -> int:

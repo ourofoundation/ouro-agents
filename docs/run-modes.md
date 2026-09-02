@@ -13,6 +13,7 @@ class RunMode(str, Enum):
     AUTONOMOUS = "autonomous"
     HEARTBEAT = "heartbeat"
     PLAN = "plan"
+    DREAM = "dream"
 ```
 
 Each value maps to a built-in `ModeProfile`.
@@ -83,12 +84,14 @@ Generates a new plan cycle. Restricted servers, only `memory_recall` from
 memory tools, no post-reflection. Drives a quest creation flow inside
 `modes/planning.py`.
 
-### `dream` (run-log mode, not a ModeProfile)
-Memory maintenance cycle (compaction, promotion, decay, review). Not in the
-`RunMode` enum — it has no smolagents framing/tools/max_steps — but each scope
-still writes a `mode=dream` row to `runs.db` with tokens/cost via
-`OuroAgent._run_dream_scope`. Mutation detail and truncated LLM I/O live in
-`workspace/protected/data/dream_runs/*.json` (linked via `run_id` / `audit_log`).
+### `dream`
+An agent-wide `ModeProfile`: a restricted, non-delegating loop that grades the
+previous dream, reviews bounded run evidence and reflection friction, and
+makes only permitted self-improvements. It runs refinement and a compaction
+baseline before the review, and skips post-reflection and conversation
+persistence. `dream.max_steps`, `dream.servers`, and the dream write tiers
+bound the run. It logs as `mode=dream` with a normal step trace and a separate
+dream audit. See [Dream mode](./dream.md).
 
 ## Overriding a profile from config
 

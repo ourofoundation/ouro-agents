@@ -127,6 +127,7 @@ class TestModelRoleTiers(unittest.TestCase):
         self.assertEqual(MODEL_ROLE_TIERS["agent"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["writer"], "strong")
         self.assertEqual(MODEL_ROLE_TIERS["planning"], "strong")
+        self.assertEqual(MODEL_ROLE_TIERS["dream"], "strong")
         self.assertNotIn("strategist", MODEL_ROLE_TIERS)
         self.assertNotIn("preflight", MODEL_ROLE_TIERS)
         self.assertNotIn("heartbeat_preflight", MODEL_ROLE_TIERS)
@@ -381,7 +382,7 @@ class TestHermesConfigLoads(unittest.TestCase):
             config.memory.extraction_model, config.models.light.id
         )
         self.assertNotIn("strategist", config.subagents.profiles)
-        self.assertEqual(config.heartbeat.model, config.models.strong.id)
+        self.assertEqual(config.heartbeat.model, config.models.mid.id)
         self.assertEqual(config.modes.profiles["heartbeat"].max_steps, 40)
         self.assertIsNone(config.models.strong.max_completion_tokens)
         self.assertIsNone(config.models.mid.max_completion_tokens)

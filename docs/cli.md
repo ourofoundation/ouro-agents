@@ -102,6 +102,23 @@ the planner builds around.
 The planner publishes an Ouro **quest** (as a draft awaiting review) and
 records it in the team's planning cursor. See [Planning](./planning.md).
 
+## `dream`
+
+```bash
+ouro-agents dream
+ouro-agents dream --dry-run
+ouro-agents dream report --last 3
+ouro-agents dream proposals
+```
+
+Runs the agent-wide, evidence-driven dream process immediately.
+
+`--dry-run` suppresses memory, workspace-document, friction-resolution, and
+Git mutations while retaining review artifacts. `report` prints recent
+dream journals and `proposals` lists identity-level changes awaiting
+human review. Git review and revert use normal Git commands; see
+[Dream mode](./dream.md).
+
 ## `runs`
 
 ```bash

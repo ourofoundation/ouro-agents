@@ -19,7 +19,12 @@ workspace/
 │   ├── data/
 │   │   ├── platform_context.json    # cached profile/orgs/teams from Ouro
 │   │   ├── scheduled_tasks.json     # persisted ScheduledTask list
-│   │   ├── last_dream_period        # dream-cycle rollover marker (rhythm)
+│   │   ├── dream_status.json         # last completed dream and health
+│   │   ├── friction.jsonl            # reflected process-friction queue
+│   │   ├── dreams/                   # dream journal reports
+│   │   ├── dream_proposals/          # identity changes awaiting review
+│   │   ├── dream_runs/               # machine-readable dream audits
+│   │   ├── dream_snapshots/          # fallback snapshots when Git is unavailable
 │   │   └── .log_prefix_v1           # migration marker (DAILY→LOG rename)
 │   └── memory/                  # mem0 + Chroma store (do not edit)
 ├── conversations/{id}.jsonl     # per-conversation user/assistant turns
@@ -86,11 +91,11 @@ team is writable by agents.
 The agent maintains both files itself:
 
 - The `reflector` subagent appends curated facts after runs.
-- The dream cycle promotes salient log entries and compacts
-  working memory on each `memory.rhythm` boundary.
+- Dream runs refinement and a compaction baseline, then can use its tools for
+  further evidence-backed memory maintenance or improvements.
 
 Hand-editing is fine, but expect edits to be reorganized over time as
-the agent rewrites for clarity.
+the agent rewrites for clarity. See [Dream mode](./dream.md).
 
 ## Period logs
 

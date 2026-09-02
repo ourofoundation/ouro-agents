@@ -41,6 +41,28 @@ class TestConfigModeOverrides(unittest.TestCase):
         self.assertEqual(config.ask_controller.fast_wait_seconds, 90.0)
         self.assertEqual(config.ask_controller.gate_mode, "observe")
 
+    def test_dream_config_defaults(self):
+        config = self._load_config(_base_config())
+
+        self.assertTrue(config.dream.enabled)
+        self.assertIsNone(config.dream.every)
+        self.assertEqual(config.dream.at, "03:00")
+        self.assertEqual(
+            config.dream.writable,
+            ["skills", "NOTES.md", "HEARTBEAT.md"],
+        )
+        self.assertEqual(config.dream.proposal_only, ["SOUL.md", "skills:always"])
+        self.assertEqual(config.dream.servers, ["ouro"])
+
+    def test_top_level_dream_fields_override_defaults(self):
+        data = _base_config()
+        data["dream"] = {"enabled": True, "at": None}
+
+        config = self._load_config(data)
+
+        self.assertTrue(config.dream.enabled)
+        self.assertIsNone(config.dream.at)
+
     def test_normalizes_friendly_mode_aliases(self):
         data = _base_config()
         data["modes"].update(

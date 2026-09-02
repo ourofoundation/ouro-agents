@@ -21,6 +21,8 @@ from .framing import (
     AUTONOMOUS_OUTPUT,
     CHAT_FRAMING,
     CHAT_OUTPUT,
+    DREAM_FRAMING,
+    DREAM_OUTPUT,
     HEARTBEAT_FRAMING,
     HEARTBEAT_OUTPUT,
     PLAN_OUTPUT,
@@ -33,6 +35,7 @@ class RunMode(str, Enum):
     AUTONOMOUS = "autonomous"
     HEARTBEAT = "heartbeat"
     PLAN = "plan"
+    DREAM = "dream"
 
 
 class ModeProfile(BaseModel):
@@ -159,17 +162,40 @@ PLAN = ModeProfile(
     append_conversation_turns=False,
 )
 
+DREAM = ModeProfile(
+    name="dream",
+    framing=DREAM_FRAMING,
+    output_format=DREAM_OUTPUT,
+    max_steps=40,
+    restricted_servers=True,
+    default_servers=["ouro"],
+    allow_delegation=False,
+    include_scheduler_tools=False,
+    allowed_capabilities=frozenset(
+        {
+            Capability.READ_PLATFORM,
+            Capability.MEMORY_WRITE,
+            Capability.LOAD_MCP_TOOL,
+        }
+    ),
+    memory_tool_filter=None,
+    lightweight=False,
+    skip_post_reflection=True,
+    append_conversation_turns=False,
+)
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
-PROFILES = [CHAT, AUTONOMOUS, HEARTBEAT, PLAN]
+PROFILES = [CHAT, AUTONOMOUS, HEARTBEAT, PLAN, DREAM]
 
 MODE_REGISTRY: dict[RunMode, ModeProfile] = {
     RunMode.CHAT: CHAT,
     RunMode.AUTONOMOUS: AUTONOMOUS,
     RunMode.HEARTBEAT: HEARTBEAT,
     RunMode.PLAN: PLAN,
+    RunMode.DREAM: DREAM,
 }
 
 

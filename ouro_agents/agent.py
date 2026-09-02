@@ -49,12 +49,13 @@ from .memory.naming import (
 )
 from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
+    enqueue_reflection_friction,
     store_reflection_memories,
     validated_daily_log_entries,
     write_log,
 )
 from .memory.tools import make_memory_tools
-from .teams import TeamContext, TeamRegistry
+from .teams import TeamRegistry
 
 from .modes import (
     ModeProfile,
@@ -124,7 +125,6 @@ from .provider_errors import (
 )
 from .usage import (
     MirroredUsageTracker,
-    RunUsage,
     TrackedOpenAIModel,
     UsageTracker,
     collect_run_usage,
@@ -135,11 +135,9 @@ from .utils.conversation import (
     HISTORY_FETCH_LIMIT,
     append_conversation_turn,
     build_history_steps,
-    conversation_file,
     extract_run_steps,
     extract_tool_summary,
     format_conversation_turns,
-    load_conversation_turns,
     resolve_conversation_turns,
 )
 from .utils.debug import (
@@ -1857,7 +1855,11 @@ class OuroAgent:
                 current_run_id=self._active_run_id(),
                 team_id=team_id,
                 conversation_id=conversation_id,
-                default_scope=self.config.run_log.agent_default_scope,
+                default_scope=(
+                    "all"
+                    if profile.name == "dream"
+                    else self.config.run_log.agent_default_scope
+                ),
                 max_results=self.config.run_log.agent_max_results,
                 max_detail_chars=self.config.run_log.agent_max_detail_chars,
             )
@@ -2692,6 +2694,9 @@ class OuroAgent:
         doc_store: Optional[DocStore] = None,
         conversation_id: Optional[str] = None,
         memory_notes: Optional[list[str]] = None,
+        step_count: Optional[int] = None,
+        retry_error_count: Optional[int] = None,
+        loaded_skill_names: Optional[list[str]] = None,
         *,
         store_semantic: bool = True,
     ) -> None:
@@ -2714,6 +2719,9 @@ class OuroAgent:
             available_teams=self._available_memory_teams(team_id),
             memory_notes=memory_notes if store_semantic else None,
             episode_only=not store_semantic,
+            step_count=step_count,
+            retry_error_count=retry_error_count,
+            loaded_skill_names=loaded_skill_names,
         )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
@@ -2728,6 +2736,14 @@ class OuroAgent:
             )
             if not reflection:
                 return
+
+            friction_count = enqueue_reflection_friction(
+                reflection,
+                self.config.agent.workspace,
+                run_id=run_id or conversation_id or "",
+                mode=mode.value,
+                team_id=team_id,
+            )
 
             if store_semantic:
                 store_reflection_memories(
@@ -2784,9 +2800,10 @@ class OuroAgent:
                 daily_writes += 1
 
             logger.info(
-                "Post-run reflection: semantic=%s facts=%d daily=%s",
+                "Post-run reflection: semantic=%s facts=%d friction=%d daily=%s",
                 store_semantic,
                 len(reflection.facts_to_store) if store_semantic else 0,
+                friction_count,
                 bool(daily_writes),
             )
         except Exception as e:
@@ -2816,6 +2833,8 @@ class OuroAgent:
         preemptible: Optional[bool] = None,
         heartbeat_tick_kind: Optional[str] = None,
         include_plans_index: bool = True,
+        run_id_override: Optional[str] = None,
+        max_steps_override: Optional[int] = None,
     ) -> str:
         # ``preemptible`` is retained for API compatibility but ignored —
         # modes overlap; only conversation-scoped interrupt cancels a run.
@@ -2848,6 +2867,8 @@ class OuroAgent:
                     trigger_turn_id=trigger_turn_id,
                     heartbeat_tick_kind=heartbeat_tick_kind,
                     include_plans_index=include_plans_index,
+                    run_id_override=run_id_override,
+                    max_steps_override=max_steps_override,
                 )
             except asyncio.CancelledError:
                 token.cancel("async task cancelled")
@@ -2880,7 +2901,7 @@ class OuroAgent:
         ``RunContext`` bound for this thread so overlapping modes stay isolated.
         """
         mode = kwargs.get("mode", RunMode.AUTONOMOUS)
-        run_uid = uuid7_str()
+        run_uid = kwargs.pop("run_id_override", None) or uuid7_str()
         parent_ctx = get_run_context()
         parent_run_id = parent_ctx.run_id if parent_ctx else None
         preserve = bool(kwargs.get("preserve_existing_usage", False))
@@ -2973,6 +2994,7 @@ class OuroAgent:
         trigger_turn_id: Optional[str] = None,
         heartbeat_tick_kind: Optional[str] = None,
         include_plans_index: bool = True,
+        max_steps_override: Optional[int] = None,
     ) -> str:
         token = cancellation_token or RunCancellationToken()
         token.raise_if_cancelled()
@@ -3071,6 +3093,10 @@ class OuroAgent:
         override = self.config.modes.profiles.get(profile.name)
         if override:
             profile = apply_mode_override(profile, override)
+        if max_steps_override is not None:
+            profile = profile.model_copy(
+                update={"max_steps": max(1, int(max_steps_override))}
+            )
         if capability_envelope is not None:
             logger.info(
                 "Applying capability envelope: role=%s surface=%s capabilities=%s",
@@ -3445,6 +3471,7 @@ class OuroAgent:
             )
 
         use_reset = not has_history
+        run_steps_start = len(agent.memory.steps)
 
         # Measure what actually went into this turn's prompt so history policy
         # and compaction thresholds can be tuned against real cache and token
@@ -3615,6 +3642,29 @@ class OuroAgent:
                 logger.warning("Failed to append debug markdown trace: %s", e)
 
         tool_summary = extract_tool_summary(agent, for_persistence=True)
+        current_run_steps = agent.memory.steps[run_steps_start:]
+        reflection_step_count = sum(
+            1 for step in current_run_steps if isinstance(step, ActionStep)
+        )
+        reflection_retry_error_count = sum(
+            1
+            for step in current_run_steps
+            if isinstance(step, ActionStep) and getattr(step, "error", None)
+        )
+        reflection_loaded_skills: list[str] = []
+        for call in tool_summary:
+            if call.get("tool") != "load_skill":
+                continue
+            args = call.get("args")
+            raw_names = args.get("skill_names", []) if isinstance(args, dict) else []
+            if isinstance(raw_names, str):
+                raw_names = [raw_names]
+            if not isinstance(raw_names, list):
+                continue
+            for raw_name in raw_names:
+                name = str(raw_name).strip()
+                if name and name not in reflection_loaded_skills:
+                    reflection_loaded_skills.append(name)
 
         # Finish overlapping naming before persist so email can use the title.
         await_conversation_naming(naming_future, conversation_id=conversation_id)
@@ -3701,6 +3751,9 @@ class OuroAgent:
                     doc_store=active_doc_store,
                     conversation_id=conversation_id,
                     memory_notes=memory_notes,
+                    step_count=reflection_step_count,
+                    retry_error_count=reflection_retry_error_count,
+                    loaded_skill_names=reflection_loaded_skills,
                     store_semantic=store_semantic,
                 )
 
@@ -3810,189 +3863,16 @@ class OuroAgent:
 
         return await force_planning_heartbeat(self, goal=goal, team_id=team_id)
 
-    def _run_dream_scope(
-        self,
-        *,
-        team_id: str | None = None,
-        dry_run: bool = False,
-        mode: str = "manual",
-        tick_id: str | None = None,
-        doc_store=None,
-    ) -> dict:
-        """Run dream for one memory scope and ledger it like other modes.
-
-        Writes a ``runs.db`` row with ``mode="dream"``, isolated LLM usage, and
-        optional memory ledger — matching chat/autonomous/heartbeat cost
-        accounting. Existing ``protected/data/dream_runs/*.json`` audits are unchanged.
-        """
-        scope = team_id or "shared"
-        if doc_store is None:
-            doc_store = (
-                self.doc_store_for(team_id) if team_id else self.doc_store
-            )
-
-        run_uid = uuid7_str()
-        parent_ctx = get_run_context()
-        parent_run_id = parent_ctx.run_id if parent_ctx else None
-        dream_tracker = UsageTracker()
-        run_ctx = RunContext(
-            run_id=run_uid,
-            mode="dream",
-            team_id=team_id,
-            tick_id=tick_id or getattr(self, "_current_tick_id", None),
-            parent_run_id=parent_run_id,
-            usage_tracker=dream_tracker,
-            task_preview=f"dream [{mode}] scope={scope}",
-        )
-        record = RunRecord(
-            run_id=run_uid,
-            agent_name=self.config.agent.name,
-            mode="dream",
-            parent_run_id=parent_run_id,
-            tick_id=run_ctx.tick_id,
-            team_id=team_id,
-            task=(
-                f"dream [{mode}] scope={scope}"
-                + (" (dry-run)" if dry_run else "")
-            ),
-        )
-
-        # Dedicated tracker so dream LLM cost never pollutes / is lost in the
-        # shared run tracker (dream is not a smolagents loop).
-        active_runs = getattr(self, "_active_runs", None)
-        with bind_run_context(run_ctx):
-            if active_runs is not None:
-                active_runs.register(run_ctx, RunCancellationToken())
-            try:
-                return OuroAgent._run_dream_scope_inner(
-                    self,
-                    record=record,
-                    dream_tracker=dream_tracker,
-                    team_id=team_id,
-                    dry_run=dry_run,
-                    mode=mode,
-                    doc_store=doc_store,
-                    scope=scope,
-                    run_uid=run_uid,
-                )
-            finally:
-                if active_runs is not None:
-                    active_runs.unregister(run_uid)
-
-    def _run_dream_scope_inner(
-        self,
-        *,
-        record: RunRecord,
-        dream_tracker: UsageTracker,
-        team_id: str | None,
-        dry_run: bool,
-        mode: str,
-        doc_store,
-        scope: str,
-        run_uid: str,
-    ) -> dict:
-        from .memory.dream import run_dream
-
-        model = self._build_model(
-            self._utility_model_id(),
-            role="utility",
-            usage_tracker=dream_tracker,
-        )
-        record.model = getattr(model, "model_id", "") or ""
-        record._model_obj = model
-
-        started = time.monotonic()
-        try:
-            summary = run_dream(
-                workspace=self.config.agent.workspace,
-                backend=self.memory,
-                agent_id=self.config.agent.name,
-                config=self.config.memory,
-                model=model,
-                doc_store=doc_store,
-                team_id=team_id,
-                dry_run=dry_run,
-                mode=mode,
-                agent=self,
-                run_id=run_uid,
-            )
-            record.mark_success(json.dumps(summary, default=str))
-            return summary
-        except Exception as e:
-            record.mark_error(e)
-            raise
-        finally:
-            record.finalize_timing(time.monotonic() - started)
-            try:
-                usage = RunUsage.from_tracker(
-                    dream_tracker,
-                    model_id=getattr(model, "model_id", "") or "",
-                )
-                memory_ledger = None
-                try:
-                    memory_ledger = self.memory.usage_ledger() or None
-                except Exception:
-                    pass
-                if memory_ledger:
-                    usage.num_embedding_calls = sum(
-                        int(
-                            getattr(u, "num_embedding_calls", 0)
-                            or getattr(u, "num_api_calls", 0)
-                            or 0
-                        )
-                        for name, u in memory_ledger
-                        if name == "embeddings"
-                    )
-                record.set_usage(usage)
-                record.set_memory_ledger(memory_ledger)
-                logger.info(
-                    "Dream usage (%s):\n%s",
-                    scope,
-                    format_usage_breakdown(usage, None, memory_ledger),
-                )
-            except Exception:
-                logger.debug("Failed to collect dream usage", exc_info=True)
-            self._finalize_run_record(record)
-
     def dream(
         self,
-        team_id: str | None = None,
         *,
         dry_run: bool = False,
         mode: str = "manual",
-    ) -> dict[str, dict]:
-        """Run the dream cycle (memory maintenance) immediately.
+    ) -> dict:
+        """Run the agent-wide dream review immediately."""
+        from .memory.agentic_dream import run_dream
 
-        If *team_id* is provided, only that team is processed. Otherwise runs
-        across shared scope and all configured teams. Each scope writes a
-        ``mode=dream`` run-log row; a shared ``tick_id`` groups the cycle.
-        """
-        tick_id = uuid7_str()
-        results: dict[str, dict] = {}
-
-        if team_id:
-            results[team_id] = self._run_dream_scope(
-                team_id=team_id,
-                dry_run=dry_run,
-                mode=mode,
-                tick_id=tick_id,
-            )
-        else:
-            results["shared"] = self._run_dream_scope(
-                dry_run=dry_run,
-                mode=mode,
-                tick_id=tick_id,
-                doc_store=self.doc_store,
-            )
-            for tid, store in sorted(self._team_doc_stores.items()):
-                results[tid] = self._run_dream_scope(
-                    team_id=tid,
-                    dry_run=dry_run,
-                    mode=mode,
-                    tick_id=tick_id,
-                    doc_store=store,
-                )
-        return results
+        return run_dream(self, dry_run=dry_run, mode=mode)
 
     def _finalize_run_record(self, record: RunRecord) -> None:
         """Snapshot steps + usage onto the record and persist it.

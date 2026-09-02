@@ -190,7 +190,6 @@ class OuroApp(App[None]):
         self.last_global_view = "dashboard"
         self.current_conversation: ConversationSummary | None = None
         self.selected_quest_team_id: str | None = None
-        self.selected_memory_team_id: str | None = None
         self.last_heartbeat_at: str | None = None
         self.last_heartbeat_summary: str | None = None
 
@@ -392,14 +391,8 @@ class OuroApp(App[None]):
             self.run_worker(self.start_autonomous_run(), name="run", exclusive=True)
         elif button_id == "refresh-quests":
             self.refresh_quests()
-        elif button_id == "dream-all":
-            self.run_worker(self.run_dream(None), name="dream", exclusive=True)
-        elif button_id == "dream-team":
-            self.run_worker(
-                self.run_dream(self.selected_memory_team_id),
-                name="dream",
-                exclusive=True,
-            )
+        elif button_id == "run-dream":
+            self.run_worker(self.run_dream(), name="dream", exclusive=True)
         elif button_id == "refresh-inbox":
             self.run_worker(self.refresh_inbox(), name="refresh-inbox", exclusive=True)
 
@@ -408,8 +401,6 @@ class OuroApp(App[None]):
             return
         if event.select.id == "quest-team-select":
             self.selected_quest_team_id = str(event.value)
-        elif event.select.id == "dream-team-select":
-            self.selected_memory_team_id = str(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "chat-input":
@@ -551,17 +542,15 @@ class OuroApp(App[None]):
         log.panel("quest", result or "No quest generated.")
         self.refresh_quests()
 
-    async def run_dream(self, team_id: str | None) -> None:
+    async def run_dream(self) -> None:
         log = self._view_log("dream")
-        scope = f"team {team_id}" if team_id else "all teams"
-        log.line(f"Running dream for {scope}...")
+        log.line("Running agent-wide dream...")
         agent = await self._ensure_agent()
-        results = await asyncio.to_thread(agent.dream, team_id=team_id)
-        if not results:
+        result = await asyncio.to_thread(agent.dream)
+        if not result:
             log.line("No dream output.")
             return
-        for result_scope, summary in results.items():
-            log.panel(str(result_scope), str(summary))
+        log.panel("dream", str(result))
 
     async def refresh_inbox(self) -> None:
         log = self._view_log("inbox")
@@ -724,13 +713,10 @@ class OuroApp(App[None]):
         team_ids = sorted(self._team_ids())
         if not team_ids:
             self.selected_quest_team_id = None
-            self.selected_memory_team_id = None
             self._render_selected_teams()
             return
         if self.selected_quest_team_id not in team_ids:
             self.selected_quest_team_id = team_ids[0]
-        if self.selected_memory_team_id not in team_ids:
-            self.selected_memory_team_id = team_ids[0]
         self._render_selected_teams()
 
     def _team_label(self, team_id: str | None) -> str:
@@ -751,7 +737,6 @@ class OuroApp(App[None]):
     def _render_selected_teams(self) -> None:
         options = self._team_options()
         self.query_one(QuestsView).set_teams(options, self.selected_quest_team_id)
-        self.query_one(DreamView).set_teams(options, self.selected_memory_team_id)
 
     def _view_log(self, view_key: str) -> ActivityLog:
         if view_key == "runs":

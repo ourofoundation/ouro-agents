@@ -60,6 +60,10 @@ class _NonBlockingSafeStream:
     def write(self, data: Any) -> int:
         try:
             return self._stream.write(data)
+        except ValueError:
+            # Test capture streams and replaced stdio handles may already be
+            # closed; display output must never abort an agent run.
+            return _stream_write_len(data)
         except BlockingIOError:
             return _stream_write_len(data)
         except OSError as exc:
@@ -70,6 +74,8 @@ class _NonBlockingSafeStream:
     def flush(self) -> None:
         try:
             self._stream.flush()
+        except ValueError:
+            return
         except BlockingIOError:
             return
         except OSError as exc:
@@ -557,7 +563,7 @@ class OuroDisplay:
 
     def chat_response(self, text: str) -> None:
         self.blank()
-        self._print(f"[ouro.bold]agent[/]")
+        self._print("[ouro.bold]agent[/]")
         self.markdown(text)
         self.blank()
         self.flush_pending_run_summary()

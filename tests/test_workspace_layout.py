@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from ouro_agents.tools.python_tool import _make_workspace_fs
 from ouro_agents.tools.workspace_layout import (
     check_workspace_write,
+    dream_write_scope,
     install_workspace_layout_guard,
     uninstall_workspace_layout_guard,
 )
@@ -123,6 +124,91 @@ class TestWorkspaceFsHelpers(unittest.TestCase):
             self.assertTrue(extracted.exists())
             self.assertEqual(extracted.read_text(), "hello world")
             self.assertEqual(result["file_count"], 1)
+
+
+class TestDreamWriteScope(unittest.TestCase):
+    def test_normal_root_file_denial_is_unchanged(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with self.assertRaises(PermissionError):
+                check_workspace_write(root / "NOTES.md", root)
+
+    def test_allows_configured_notes_and_heartbeat(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with dream_write_scope(
+                root,
+                writable=["NOTES.md", "HEARTBEAT.md"],
+                proposal_only=["SOUL.md"],
+            ):
+                self.assertEqual(
+                    check_workspace_write(root / "NOTES.md", root),
+                    root / "NOTES.md",
+                )
+                self.assertEqual(
+                    check_workspace_write(root / "HEARTBEAT.md", root),
+                    root / "HEARTBEAT.md",
+                )
+
+    def test_denies_proposal_only_soul_with_actionable_message(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with dream_write_scope(
+                root,
+                writable=["NOTES.md"],
+                proposal_only=["SOUL.md"],
+            ):
+                with self.assertRaises(PermissionError) as ctx:
+                    check_workspace_write(root / "SOUL.md", root)
+            self.assertIn("propose_change", str(ctx.exception))
+
+    def test_allows_skills_when_configured(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with dream_write_scope(root, writable=["skills"]):
+                check_workspace_write(root / "skills" / "lessons.md", root)
+
+    def test_denies_load_always_skill_even_when_skills_are_writable(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            skill = root / "skills" / "identity.md"
+            skill.parent.mkdir()
+            skill.write_text(
+                "---\ndescription: Identity guidance\nload: always\n---\nBody\n"
+            )
+            with dream_write_scope(root, writable=["skills"]):
+                with self.assertRaises(PermissionError) as ctx:
+                    check_workspace_write(skill, root)
+            self.assertIn("load: always", str(ctx.exception))
+            self.assertIn("propose_change", str(ctx.exception))
+
+    def test_denies_path_escape_during_dream(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with dream_write_scope(root, writable=["NOTES.md"]):
+                with self.assertRaises(PermissionError) as ctx:
+                    check_workspace_write(root / ".." / "NOTES.md", root)
+            self.assertIn("escapes workspace", str(ctx.exception))
+
+    def test_keeps_framework_trees_forbidden_during_dream(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with dream_write_scope(
+                root,
+                writable=["NOTES.md", "skills"],
+                proposal_only=["SOUL.md", "skills:always"],
+            ):
+                for top in ("protected", "data", "memory"):
+                    with self.assertRaises(PermissionError):
+                        check_workspace_write(root / top / "dream.md", root)
+
+    def test_scope_denies_other_normally_writable_trees(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            check_workspace_write(root / "scratch" / "normal.txt", root)
+            with dream_write_scope(root, writable=["NOTES.md"]):
+                with self.assertRaises(PermissionError):
+                    check_workspace_write(root / "scratch" / "dream.txt", root)
 
 
 class TestInstallGuard(unittest.TestCase):
