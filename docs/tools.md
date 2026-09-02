@@ -161,6 +161,11 @@ become callable inside the loop:
 2. **Deferred directory** — every other tool is listed with its short
    description. The agent calls `load_tool(name)` to attach it.
 
+In Docker sandbox mode, MCP arguments that look like workspace file paths
+(`file_path`, `filePath`, and absolute `/workspace/...` strings) are rewritten
+onto the host workspace before the call, so host-side servers such as Resend
+can read files the sandbox wrote.
+
 `restricted_servers=True` (heartbeat / plan / review) hides every server
 not in `default_servers` (typically `["ouro"]`).
 

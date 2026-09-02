@@ -67,6 +67,7 @@ from .modes.framing import ASK_CONTROLLER_GUIDANCE
 from .observer import AgentObserver, ProgressEvent, emit_progress
 from .mcp_http import ManagedMcpProcess, spawn_managed_mcp_http
 from .mcp_locking import McpServerLocks, wrap_mcp_tool_with_lock
+from .mcp_paths import wrap_mcp_tool_with_workspace_paths
 from .run_context import (
     ActiveRunRegistry,
     RunContext,
@@ -1593,6 +1594,15 @@ class OuroAgent:
             self._server_descriptions[server.name] = server.description
         for mcp_tool in tools:
             self._patch_tool_inputs(mcp_tool)
+            wrap_mcp_tool_with_workspace_paths(
+                mcp_tool,
+                workspace_root=self._workspace,
+                workspace_mount=(
+                    self.config.agent.sandbox.workspace_mount
+                    if self.config.agent.sandbox.mode == "docker"
+                    else None
+                ),
+            )
             if lock_stdio:
                 wrap_mcp_tool_with_lock(
                     mcp_tool, server_name=server.name, locks=self._mcp_locks

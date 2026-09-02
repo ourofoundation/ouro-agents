@@ -139,6 +139,11 @@ The order of branches in the server handler:
    - **Cleanup** — `asset.deleted` runs deterministic cleanup; no LLM.
    - **Mark notifications read** — best-effort, before the realtime run.
    - **`new-conversation`** — no-op until a message arrives.
+   - **Chat overlap** — a human `new-message` supersedes any in-flight
+     reply for that conversation. An agent-authored `new-message` does
+     **not**: if a run is already active, the event is queued and flushed
+     when that run finishes. This keeps two agents in one conversation
+     from cancelling each other and posting empty interrupt stubs.
    - **Normal run** — otherwise call `OuroAgent.run(...)`.
 
 ## Provenance

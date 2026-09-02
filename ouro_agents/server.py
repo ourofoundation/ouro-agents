@@ -73,6 +73,9 @@ session_threads: Dict[str, str] = {}
 # Active chat run tokens by conversation id, so an `interrupt` event can
 # cancel just the run for that conversation.
 active_chat_tokens: Dict[str, RunCancellationToken] = {}
+# Latest agent-authored chat event waiting because this conversation already
+# has an in-flight run. Human messages drop the queue; a finished run flushes it.
+pending_agent_chat_events: Dict[str, EventRunContext] = {}
 
 
 class RunRequest(BaseModel):
@@ -708,9 +711,10 @@ def _supersede_prior_chat_runs(
 ) -> int:
     """Cancel in-flight chat runs for ``conversation_id`` before a new one starts.
 
-    Returns the number of tokens cancelled. A second user message must not race
-    an earlier reply for the same conversation — only an explicit interrupt (or
-    this supersede path) cancels chat runs.
+    Returns the number of tokens cancelled. A second *human* message must not
+    race an earlier reply for the same conversation — only an explicit interrupt
+    (or this supersede path) cancels chat runs. Agent-authored messages use
+    :func:`_begin_chat_run` instead, which queues rather than cancels.
     """
     cancelled = 0
     prior = active_chat_tokens.get(conversation_id)
@@ -727,6 +731,57 @@ def _supersede_prior_chat_runs(
             cancelled += 1
     active_chat_tokens[conversation_id] = new_token
     return cancelled
+
+
+def _conversation_has_active_chat(
+    conversation_id: str, new_token: RunCancellationToken
+) -> bool:
+    prior = active_chat_tokens.get(conversation_id)
+    if prior is not None and prior is not new_token and not prior.cancelled:
+        return True
+    if agent_instance is not None:
+        for reg_token in agent_instance._active_runs.tokens_for_conversation(
+            conversation_id
+        ):
+            if reg_token is new_token or reg_token.cancelled:
+                continue
+            return True
+    return False
+
+
+def _begin_chat_run(
+    conversation_id: str,
+    new_token: RunCancellationToken,
+    *,
+    actor_is_agent: bool = False,
+    pending_event: Optional[EventRunContext] = None,
+) -> bool:
+    """Register a chat run. Returns False if this event should wait.
+
+    Human (and unknown) messages supersede any in-flight reply. Agent messages
+    must not: two agents in one conversation would cancel each other and persist
+    interrupt stubs that look like empty incoming chat.
+    """
+    if actor_is_agent:
+        if _conversation_has_active_chat(conversation_id, new_token):
+            if pending_event is not None:
+                pending_agent_chat_events[conversation_id] = pending_event
+                logger.info(
+                    "Queued agent chat event for %s; conversation already in-flight",
+                    conversation_id,
+                )
+            else:
+                logger.info(
+                    "Skipping agent chat event for %s; conversation already in-flight",
+                    conversation_id,
+                )
+            return False
+        active_chat_tokens[conversation_id] = new_token
+        return True
+
+    pending_agent_chat_events.pop(conversation_id, None)
+    _supersede_prior_chat_runs(conversation_id, new_token)
+    return True
 
 
 async def _run_event_task(event_run: EventRunContext) -> None:
@@ -771,6 +826,17 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         # Conversation creation has no user message yet; we do not run the agent.
         return
 
+    cancellation_token = RunCancellationToken()
+    conversation_id = event_run.conversation_id
+    if conversation_id and is_chat_event(event_run.event_type):
+        if not _begin_chat_run(
+            conversation_id,
+            cancellation_token,
+            actor_is_agent=event_run.actor_is_agent is True,
+            pending_event=event_run,
+        ):
+            return
+
     stream_message_id = uuid7_str()
     turn_id = uuid7_str()
     server_observer = ServerAgentObserver(
@@ -784,14 +850,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
     )
     observer = CompositeAgentObserver(server_observer, terminal_progress)
 
-    cancellation_token = RunCancellationToken()
-    conversation_id = event_run.conversation_id
-    if conversation_id and is_chat_event(event_run.event_type):
-        # New message supersedes any in-flight chat for this conversation —
-        # otherwise two runs can both reply. Explicit interrupt still works
-        # the same path. Persist interrupted markers via RunCancelled handlers.
-        _supersede_prior_chat_runs(conversation_id, cancellation_token)
-
+    flush_pending = True
     try:
         terminal_progress.start()
         with (
@@ -823,6 +882,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
             terminal_progress.finish(result)
             get_display().flush_pending_run_summary()
     except asyncio.CancelledError:
+        flush_pending = False
         observer.on_activity("thinking", None, False)
         server_observer.discard_pending_intermediate()
         terminal_progress.cancel("cancelled")
@@ -837,6 +897,7 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         logger.info("Cancelled webhook event task: %s", event_run.event_type)
         raise
     except RunCancelled:
+        flush_pending = False
         observer.on_activity("thinking", None, False)
         server_observer.discard_pending_intermediate()
         terminal_progress.cancel("cancelled")
@@ -896,6 +957,13 @@ async def _run_event_task(event_run: EventRunContext) -> None:
             and active_chat_tokens.get(conversation_id) is cancellation_token
         ):
             del active_chat_tokens[conversation_id]
+        pending = (
+            pending_agent_chat_events.pop(conversation_id, None)
+            if flush_pending and conversation_id
+            else None
+        )
+    if pending:
+        await _run_event_task(pending)
 
 
 def _persist_interrupted_message(
@@ -1000,6 +1068,8 @@ async def _handle_interrupt_event(event_run: EventRunContext) -> None:
     if not conversation_id:
         logger.warning("Interrupt event without conversation_id; ignoring")
         return
+
+    pending_agent_chat_events.pop(conversation_id, None)
 
     discarded_events: list[EventRunContext] = []
     if event_pool:

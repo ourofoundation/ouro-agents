@@ -422,12 +422,14 @@ concurrent tool calls are safe on the wire.
 
 `${WORKSPACE_ROOT}` is auto-injected for child processes (host workspace path).
 In Docker sandbox mode, `${WORKSPACE_MOUNT}` is also injected (e.g.
-`/workspace`) so MCP remaps container absolute paths onto the host root. For
-the `ouro` server, `OURO_MCP_TIMEZONE` is also injected based on
-`heartbeat.active_hours.timezone` so platform timestamps render in the
-agent's local time. `OURO_MCP_MAX_RESPONSE_SIZE` defaults to `0` (no
-server-side truncation) so observation budgeting stays in the agent; set a
-positive character count in `mcp_servers[].env` to opt into MCP's soft
+`/workspace`). The agent rewrites those container paths onto the host
+workspace on every MCP call (so host-side tools such as Resend `filePath`
+can read files the sandbox wrote). Ouro MCP also remaps internally via
+`resolve_local_path`. For the `ouro` server, `OURO_MCP_TIMEZONE` is also
+injected based on `heartbeat.active_hours.timezone` so platform timestamps
+render in the agent's local time. `OURO_MCP_MAX_RESPONSE_SIZE` defaults to
+`0` (no server-side truncation) so observation budgeting stays in the agent;
+set a positive character count in `mcp_servers[].env` to opt into MCP's soft
 `len(response)` cap.
 
 ## `server`

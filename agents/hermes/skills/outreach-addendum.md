@@ -131,9 +131,28 @@ Sanity FAIL returns rejected-input without executing routes; route failures are
 reported as errors, never filled in. Negative control for regression:
 file 8ba460e9-327d-4c54-a540-31f12c602006 (must be rejected-input).
 
-## Attachments (scar, 2026-08-31)
+## Attachments (updated 2026-09-01)
 
-`send-and-log` has no attachment input: any email that must carry a file (CIFs, PDFs) goes through the manual Resend SDK path in `run_python`. Rules that still bind: deterministic idempotency key, CC Matt + Will, thread headers (`In-Reply-To`/`References`), immediate CRM upsert. On resend-py 2.x the idempotency key is NOT a kwarg on `Emails.send`; pass `options={"idempotency_key": "..."}` as the second argument. If the CRM row's status lagged behind reality (e.g. a reply arrived while the row still read `sent`), triage queues will not surface it — the start-of-tick Resend inbox sweep (`list_received_emails`) is what catches those.
+`send-and-log` accepts `attachments: [{path, filename?, content_type?}]`. Paths
+are workspace-relative or `/workspace/...`; the coil reads them in the
+sandbox. Prefer this over a manual Resend send whenever a CIF/PDF must go
+out. Idempotency is passed as `options={"idempotency_key": "..."}` (resend-py
+2.x); do not put the key in the email dict. CC Matt + Will and thread
+headers still bind.
+
+`read-email-thread` lists inbound attachments and, by default, saves them
+under `scratch/email-attachments/<email-id>/` (`saved_path` on each message).
+Pass `save_attachments: false` for metadata only. Files over 10 MB are
+skipped with an error on the record.
+
+Host-side Resend MCP `filePath` now also works: the agent rewrites
+`/workspace/...` onto the host workspace before the MCP call. Prefer the
+coil for outreach sends so CRM logging stays atomic.
+
+If the CRM row's status lagged behind reality (e.g. a reply arrived while
+the row still read `sent`), triage queues will not surface it — the
+start-of-tick Resend inbox sweep (`list_received_emails`) is what catches
+those.
 
 ## Stale send-ready drafts (scar, 2026-08-31)
 

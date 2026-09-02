@@ -90,17 +90,21 @@ copies, and reuse one canonical filename per recurring artifact.
 
 ## Upload Pattern
 
-`ouro-agents` sets **`WORKSPACE_ROOT`** on the Ouro MCP process to the host
-workspace directory (the same tree bind-mounted into Docker). Relative
-`file_path` values in `ouro:create_file` are joined to that root
-(`resolve_local_path` in ouro-mcp). In Docker mode, absolute paths under the
-container mount (normally `/workspace/...`) are also remapped onto that root,
-so a file written at `Path('scratch/out.cif')` or `/workspace/scratch/out.cif`
-can be uploaded with **`file_path='scratch/out.cif'`** (prefer relative) or the
-matching container absolute path.
+`ouro-agents` sets **`WORKSPACE_ROOT`** on MCP child processes to the host
+workspace directory (the same tree bind-mounted into Docker). Before every
+MCP call, sandbox paths are rewritten onto that root: relative `file_path` /
+`filePath` values, and absolute paths under the container mount (normally
+`/workspace/...`). That is why `ouro:create_file` and Resend `send_email`
+attachments can read a file you just wrote in `run_python`.
+
+Prefer **relative** paths from the workspace root
+(`file_path='scratch/out.cif'`). Container absolute paths
+(`/workspace/scratch/out.cif`) also work. Alternatively, use
+**`file_content_text` + `file_name`** or **`file_content_base64` + `file_name`**
+when inline payload is preferable.
 
 Steps:
 
 1. Write the artifact under the workspace (path relative to workspace root).
-2. `load_tool(["ouro:create_file"])` and pass **`file_path`** using that same relative path. Alternatively, use **`file_content_text` + `file_name`** or **`file_content_base64` + `file_name`** when inline payload is preferable.
+2. `load_tool(["ouro:create_file"])` and pass **`file_path`** using that same relative path.
 3. Include `org_id`, `team_id`, `name`, and optional `description` / `visibility`.
