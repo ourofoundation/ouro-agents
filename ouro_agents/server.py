@@ -36,6 +36,7 @@ from .security.policy import (
     resolve_envelope,
 )
 from .startup import print_startup_summary
+from .tools.agent_base import extract_terminal_no_action
 from .utils.conversation import INTERRUPTED_REPLY_PREFIX
 from .utils.message_persistence import (
     extract_tool_call_payloads,
@@ -54,11 +55,37 @@ _EMPTY_FINAL_ANSWER_MARKERS = frozenset(
         "MODEL_EMPTY_RESPONSE: model returned no content and no tool calls.",
     }
 )
+_AGENT_NO_ACTION_MARKERS = frozenset(
+    {
+        "no action",
+        "no action needed",
+        "no action required",
+        "no response needed",
+        "nothing to add",
+        "无需操作",
+    }
+)
 
 
-def _is_trivial_final_result(result_text: str) -> bool:
+def _normalized_no_action_marker(text: str) -> str:
+    stripped = (text or "").strip().strip("`*_.,!。！")
+    return " ".join(stripped.replace("_", " ").split()).casefold()
+
+
+def _is_trivial_final_result(
+    result_text: str, *, actor_is_agent: bool = False
+) -> bool:
     text = (result_text or "").strip()
-    return not text or text in _EMPTY_FINAL_ANSWER_MARKERS
+    if (
+        not text
+        or text in _EMPTY_FINAL_ANSWER_MARKERS
+        or extract_terminal_no_action(text) is not None
+    ):
+        return True
+    return (
+        actor_is_agent
+        and _normalized_no_action_marker(text) in _AGENT_NO_ACTION_MARKERS
+    )
 
 
 # Global state (still module-scoped for now; see P2 "server globals + session map"
@@ -364,6 +391,24 @@ class ServerAgentObserver(AgentObserver):
                 self._open_content_id = None
                 self._open_content_text = ""
             return
+        if turn_final and _is_trivial_final_result(
+            text, actor_is_agent=self.event_run.actor_is_agent is True
+        ):
+            # Final content normally takes this streaming path before
+            # ``on_result_ready`` applies its NO_ACTION filter. Treat the
+            # sentinel as a completed-but-empty turn here too; persisting it
+            # creates a new-message webhook and makes peer agents ping-pong.
+            if self._open_content_id == message_id:
+                self._open_content_id = None
+                self._open_content_text = ""
+            self._turn_final_id = message_id
+            if is_chat_event(self.event_run.event_type):
+                self.reply_publisher.emit_llm_response_end(
+                    conversation_id=self.event_run.conversation_id,
+                    message_id=message_id,
+                    message=None,
+                )
+            return
         msg = None
         try:
             ouro = self.reply_publisher.client
@@ -396,6 +441,23 @@ class ServerAgentObserver(AgentObserver):
                 message=msg,
             )
 
+    def on_intermediate_drop(self, message_id: str) -> None:
+        """Close accidental content emitted beside a terminal no_action call."""
+        if self._open_content_id == message_id:
+            self._open_content_id = None
+            self._open_content_text = ""
+        self._turn_final_id = message_id
+        if (
+            self.reply_publisher
+            and self.event_run.conversation_id
+            and is_chat_event(self.event_run.event_type)
+        ):
+            self.reply_publisher.emit_llm_response_end(
+                conversation_id=self.event_run.conversation_id,
+                message_id=message_id,
+                message=None,
+            )
+
     def discard_pending_intermediate(self) -> None:
         """End an in-flight content stream without discarding it (cancel/error)."""
         if self._open_content_id is None or not self.reply_publisher:
@@ -415,7 +477,7 @@ class ServerAgentObserver(AgentObserver):
 
         result_text = (result_text or "").strip()
         has_real_result = bool(result_text) and not _is_trivial_final_result(
-            result_text
+            result_text, actor_is_agent=self.event_run.actor_is_agent is True
         )
         msg = None
         if self.event_run.conversation_id and self.reply_publisher and has_real_result:
@@ -820,6 +882,18 @@ async def _run_event_task(event_run: EventRunContext) -> None:
         return
 
     await _mark_event_notifications_read(event_run)
+    if (
+        event_run.event_type == "new-message"
+        and event_run.actor_is_agent is True
+        and _is_trivial_final_result(
+            event_run.event_text or "", actor_is_agent=True
+        )
+    ):
+        logger.info(
+            "Skipping agent no-action placeholder in conversation %s",
+            event_run.conversation_id,
+        )
+        return
     capability_envelope = _event_envelope(event_run)
 
     if event_run.event_type == "new-conversation":

@@ -8,6 +8,7 @@ from ouro.resources.conversations import Messages
 from ouro_mcp.utils import content_from_markdown
 
 from ..observer import AgentObserver
+from ..tools.agent_base import extract_terminal_no_action
 from ..utils.message_persistence import (
     build_persistence_reasoning_callback,
     build_persistence_step_callback,
@@ -80,6 +81,10 @@ class TUIObserver(AgentObserver):
         self, message_id: str, full_text: str, turn_final: bool = False
     ) -> None:
         text = (full_text or "".join(self._intermediate_text.get(message_id, []))).strip()
+        if turn_final and extract_terminal_no_action(text) is not None:
+            self._turn_final_persisted = True
+            self.emit(TUIAgentEvent("intermediate_end", text=text, message_id=message_id))
+            return
         if text and self.agent_client and self.conversation_id:
             try:
                 content = content_from_markdown(self.agent_client, text)
@@ -97,6 +102,11 @@ class TUIObserver(AgentObserver):
                 logger.warning("Failed to persist intermediate content", exc_info=True)
         self.emit(TUIAgentEvent("intermediate_end", text=text, message_id=message_id))
 
+    def on_intermediate_drop(self, message_id: str) -> None:
+        self._intermediate_text.pop(message_id, None)
+        self._turn_final_persisted = True
+        self.emit(TUIAgentEvent("intermediate_end", text="", message_id=message_id))
+
     def on_result_ready(self, result_text: str) -> None:
         if self._turn_final_persisted:
             text = result_text or "".join(self._final_text_parts)
@@ -106,7 +116,7 @@ class TUIObserver(AgentObserver):
         message = None
         if (
             text
-            and text != "NO_ACTION"
+            and extract_terminal_no_action(text) is None
             and self.agent_client
             and self.conversation_id
         ):

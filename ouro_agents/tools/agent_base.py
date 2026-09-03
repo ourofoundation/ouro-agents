@@ -27,6 +27,7 @@ from ..provider_reasoning import (
     copy_reasoning_fields,
 )
 from ..security.action_gates import observed_action_category
+from .no_action import NO_ACTION_TOOL_NAME, SILENT_RUN_RESULT
 from .observation_policy import (
     ObservationPolicy,
     RUN_COMPACT_MARKER,
@@ -741,7 +742,7 @@ def _debug_empty_model_response(chat_message, exc: Exception) -> None:
     )
 
 
-def _extract_terminal_no_action(content: str) -> str | None:
+def extract_terminal_no_action(content: str) -> str | None:
     stripped = content.strip()
     if stripped == "NO_ACTION":
         return "NO_ACTION"
@@ -929,7 +930,7 @@ def _patch_model_for_xml_tool_calls(model):
             # If the model explicitly ends with a standalone NO_ACTION marker,
             # treat it as a terminal answer so autonomous comment runs can exit
             # cleanly even when the model includes reasoning before the marker.
-            no_action_answer = _extract_terminal_no_action(content)
+            no_action_answer = extract_terminal_no_action(content)
             if no_action_answer is not None:
                 logger.info("Recovered raw NO_ACTION text as final_answer tool call")
                 message.role = MessageRole.ASSISTANT
@@ -1240,11 +1241,22 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         if remaining < 0 or remaining > self._STEP_BUDGET_WARNING_THRESHOLD:
             return
 
+        has_no_action = NO_ACTION_TOOL_NAME in getattr(self, "tools", {})
+        silent_close = (
+            " If no reply is warranted, call `no_action` as the only tool with "
+            "no narration."
+            if has_no_action
+            else ""
+        )
         if remaining == 0:
             guidance = (
-                "No steps remain after this one. Do not call tools. Emit your "
-                "final assistant content now (plain text / required JSON) with "
-                "no tool calls."
+                "No work steps remain after this one. Emit your final assistant "
+                "content now (plain text / required JSON) "
+                + (
+                    "without calling another work tool."
+                    if has_no_action
+                    else "with no tool calls."
+                )
             )
         elif remaining == 1:
             guidance = (
@@ -1277,7 +1289,8 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
             "[runtime] Step budget: completed "
             f"{step_number}/{max_steps}; {remaining} step"
             f"{'' if remaining == 1 else 's'} "
-            f"{'remains' if remaining == 1 else 'remain'}. {guidance} {safeguard}"
+            f"{'remains' if remaining == 1 else 'remain'}. "
+            f"{guidance}{silent_close} {safeguard}"
         )
         existing = getattr(memory_step, "observations", None) or ""
         if observation in existing:
@@ -1339,6 +1352,16 @@ class SanitizedToolCallingAgent(ToolCallingAgent):
         per_call: dict[str, str] = {}
         for output in super().process_tool_calls(chat_message, memory_step):
             self._raise_if_cancelled()
+            if (
+                getattr(getattr(output, "tool_call", None), "name", None)
+                == NO_ACTION_TOOL_NAME
+            ):
+                # smolagents only treats a tool literally named final_answer as
+                # terminal. Promote our explicit silent-control tool to the same
+                # stop signal without exposing final_answer to the model.
+                output.is_final_answer = True
+                output.output = SILENT_RUN_RESULT
+                setattr(memory_step, "_ouro_no_action", True)
             if (
                 getattr(output, "observation", None) is not None
                 and getattr(output, "tool_call", None) is not None

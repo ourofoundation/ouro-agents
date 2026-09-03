@@ -69,8 +69,8 @@ CHAT_FRAMING = (
     "Silence: not every message needs a reply. If a message asks nothing of you "
     "and you have nothing substantive to add — an acknowledgment, a sign-off, "
     "a message addressed to someone else, or a message from another agent that "
-    "does not need anything from you — end the turn with exactly `NO_ACTION` and "
-    "no tool calls. Nothing is posted. Never post a placeholder reply (a period, "
+    "does not need anything from you — call `no_action` as the only tool. It ends "
+    "the run without posting anything. Never post a placeholder reply (a period, "
     "an emoji, 'noted', 'ok') to signal that you have nothing to say; that is a "
     "message too, and it wakes everyone else in the conversation."
 )
@@ -238,10 +238,11 @@ Write final replies with standard Markdown plus the Ouro Markdown syntax from lo
 
 CHAT_OUTPUT = (
     "## OUTPUT FORMAT\n"
-    "Answer directly. If you need tools, attach the tool calls to the "
-    "same assistant message. When finished, return final assistant content "
-    "with no tool calls — that final message is your reply to the "
-    "conversation.\n\n"
+    "When a reply is warranted, answer directly. If you need tools, attach the "
+    "tool calls to the same assistant message. When finished, return final "
+    "assistant content with no tool calls — that final message is your reply to "
+    "the conversation. When no reply is warranted, call `no_action` as the only "
+    "tool and emit no assistant content.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"
 )
 

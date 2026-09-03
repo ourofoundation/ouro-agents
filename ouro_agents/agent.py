@@ -115,6 +115,7 @@ from .subagents.reflector import (
 from .tool_prompt import build_tool_calling_system_prompt
 from .tools.agent_base import SanitizedToolCallingAgent as _SanitizedToolCallingAgent
 from .tools.agent_route_tools import make_publish_route_tools, make_run_coil_tool
+from .tools.no_action import NoActionTool
 from .tools.python_tool import make_code_tools
 from .tools.run_history_tools import make_run_history_tools
 from .tools.scheduler_tools import make_scheduler_tools
@@ -2020,6 +2021,12 @@ class OuroAgent:
                 + agent_route_tools
             )
 
+        # Event-driven chat/autonomous runs may legitimately produce no reply.
+        # Keep this terminal control out of scheduled/structured modes and
+        # direct API runs, where a report or JSON result is always required.
+        if event_type and profile.name in {"chat", "autonomous"}:
+            all_tools.append(NoActionTool())
+
         preloaded_names: list[str] = []
         for qualified_name in preload_tools or []:
             resolved, err = _resolve_tool_name(
@@ -3552,11 +3559,15 @@ class OuroAgent:
                 # we must not emit/persist that step's tools twice.
                 last_persisted_step: object | None = None
 
-                def _flush_intermediate(*, turn_final: bool = False) -> None:
+                def _flush_intermediate(
+                    *, turn_final: bool = False, drop: bool = False
+                ) -> None:
                     """Close out the current step's content stream, if any.
 
                     Called on every step boundary. The last step (``turn_final``)
                     is the user-facing reply; earlier steps are narration.
+                    ``drop`` closes a stream emitted alongside ``no_action``
+                    without persisting its accidental narration.
                     """
                     nonlocal current_intermediate_message_id
                     if current_intermediate_message_id is None:
@@ -3568,12 +3579,15 @@ class OuroAgent:
                     if not full_text.strip():
                         return
                     try:
-                        observer.on_intermediate_end(
-                            msg_id, full_text, turn_final
-                        )
+                        if drop:
+                            observer.on_intermediate_drop(msg_id)
+                        else:
+                            observer.on_intermediate_end(
+                                msg_id, full_text, turn_final
+                            )
                     except Exception:
                         logger.warning(
-                            "observer.on_intermediate_end failed",
+                            "observer intermediate finalization failed",
                             exc_info=True,
                         )
 
@@ -3598,9 +3612,8 @@ class OuroAgent:
                         # introduced. ``is_final_answer`` marks the last step
                         # (plain content, not a user-facing tool).
                         _flush_intermediate(
-                            turn_final=bool(
-                                getattr(event, "is_final_answer", False)
-                            )
+                            turn_final=bool(getattr(event, "is_final_answer", False)),
+                            drop=bool(getattr(event, "_ouro_no_action", False)),
                         )
                         # Now emit/persist this step's tool calls. Done here
                         # (rather than as a smolagents step_callback) so tools

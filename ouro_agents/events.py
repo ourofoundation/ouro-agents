@@ -25,10 +25,10 @@ _COMMENT_ENGAGEMENT_GUIDANCE = """\
 ## Decision: Respond or Do Nothing
 
 First, decide whether a reply adds value. Doing nothing is a valid \
-and often correct outcome. Return `NO_ACTION` unless your reply would \
+and often correct outcome. Call `no_action` unless your reply would \
 meaningfully advance the conversation.
 
-**Do nothing (`NO_ACTION`) when:**
+**Do nothing (`no_action`) when:**
 - The comment is an acknowledgment, agreement, or thanks with no question
 - You have nothing substantive to add beyond what's already been said
 - The thread is a back-and-forth that has reached a natural conclusion
@@ -47,8 +47,8 @@ _MENTION_ENGAGEMENT_GUIDANCE = """\
 ## Decision
 
 You were mentioned by name — treat this as a request addressed directly to you. \
-Complete what was asked, then reply in-thread with the results. Return \
-`NO_ACTION` only if the mention is purely social (thanks, an FYI, a passing \
+Complete what was asked, then reply in-thread with the results. Call \
+`no_action` only if the mention is purely social (thanks, an FYI, a passing \
 reference) with nothing asked of you."""
 
 # Injected into chat tasks when the sender is another agent. Two agents in one
@@ -60,17 +60,17 @@ _AGENT_MESSAGE_ENGAGEMENT_GUIDANCE = """\
 
 This message was sent by another agent, not a person. Their reply to you will \
 trigger you again, so the exchange only ends when one of you stops posting. \
-Default to `NO_ACTION` (end the turn with exactly `NO_ACTION` and no tool calls; \
-nothing is posted) unless the message asks you for something concrete that you \
+Default to calling `no_action` as the only tool (nothing is posted) unless the \
+message asks you for something concrete that you \
 can deliver now.
 
-**Do nothing (`NO_ACTION`) when:**
+**Do nothing (`no_action`) when:**
 - It is an acknowledgment, agreement, thanks, sign-off, or a placeholder (a \
 period, an emoji, "noted")
 - It confirms, restates, or hands back something you already said
 - It is addressed to a person in the conversation rather than to you
 - You would only be confirming receipt, agreeing to be quiet, or explaining \
-that you have nothing to add — do not post that; just return `NO_ACTION`
+that you have nothing to add — do not post that; call `no_action`
 
 **Respond when:**
 - It asks you a direct question or requests work you can complete in this turn
@@ -366,7 +366,7 @@ def _default_comment_task(
     parts.append(
         f"If you decide to reply, use `write_comment` on `{reply_target}`. "
         f"{_NO_ENGAGEMENT_BAIT} "
-        "If no reply is warranted, return exactly `NO_ACTION`."
+        "If no reply is warranted, call `no_action` as the only tool."
     )
     return "\n\n".join(parts)
 
@@ -462,7 +462,7 @@ def _build_event_task(
         f"Received event from Ouro: {event_type}\n\n"
         f"Event data:\n{json.dumps(data, indent=2, sort_keys=True)}\n\n"
         "Decide whether this event requires action from you. "
-        "Most events do not — return `NO_ACTION` unless you have a clear, "
+        "Most events do not — call `no_action` unless you have a clear, "
         "specific reason to act. If action is needed, use MCP tools to respond."
     )
     return task, RunMode.AUTONOMOUS, tuple(preload_names), prefetch

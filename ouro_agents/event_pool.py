@@ -248,7 +248,7 @@ def _format_pooled_context(events: Sequence[EventRunContext]) -> str:
             f"This run represents {len(events)} event(s) received close together "
             "for the same conversation or thread. Consider the full batch before "
             "acting. Reply at most once; do not respond separately to each event. "
-            "If no single reply would add value, return exactly `NO_ACTION`."
+            "If no single reply would add value, call `no_action` as the only tool."
         ),
         "",
         "The primary task above is based on the latest event in the batch.",

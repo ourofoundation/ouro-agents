@@ -52,7 +52,11 @@ class AgentObserver:
         pass
 
     def on_intermediate_drop(self, message_id: str) -> None:
-        """Deprecated: last-step content is persisted, not dropped."""
+        """Close a content stream without persisting it.
+
+        Used when a terminal control tool such as ``no_action`` was accompanied
+        by accidental narration that must not become a chat message.
+        """
         pass
 
     def on_step_persist(self, step: dict) -> None:

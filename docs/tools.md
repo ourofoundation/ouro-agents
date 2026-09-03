@@ -5,16 +5,30 @@ assembled per-run in `OuroAgent._build_agent_tools` based on the active
 mode profile and any explicit preloads. Subagents get their own narrower
 tool list per profile.
 
-The four sources of tools:
+The five sources of tools:
 
 1. **Memory tools** — built by `make_memory_tools`.
 2. **Scheduler tools** — built by `make_scheduler_tools` (skipped when
    `restricted_servers=True`).
 3. **Built-in tools** — `delegate`, `load_tool`, `load_skill`,
    `run_python`, and optionally `run_shell`.
-4. **MCP tools** — exposed as deferred entries in a directory; the agent
+4. **Terminal control tools** — `no_action` on event-driven chat and
+   autonomous runs.
+5. **MCP tools** — exposed as deferred entries in a directory; the agent
    pulls specific ones via `load_tool`, or some are preloaded by the mode
    profile so they're immediately callable.
+
+## Terminal control
+
+`no_action()` ends an event-driven run without a final message. It is
+available for `new-message`, comment, mention, and other autonomous webhook
+runs where silence is a valid outcome. It is not available to heartbeat,
+planning, dream, subagent, or direct API runs that require a structured result
+or report.
+
+The runtime promotes the tool to smolagents' terminal signal, discards any
+accidental accompanying narration, and persists neither a message nor a tool
+row. Textual `NO_ACTION` remains accepted only as a compatibility fallback.
 
 ## Memory tools
 

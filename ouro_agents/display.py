@@ -602,6 +602,7 @@ class OuroDisplay:
 
 
 _display: OuroDisplay | None = None
+_TERMINAL_CONTROL_TOOLS = frozenset({"final_answer", "no_action"})
 
 
 def get_display(verbosity: Verbosity = Verbosity.NORMAL) -> OuroDisplay:
@@ -673,7 +674,7 @@ class OuroLogger(AgentLogger):
                     match = re.search(r"Calling tool:\s*'([^']+)'", plain)
                     self._last_tool_name = match.group(1) if match else None
                     if (
-                        self._last_tool_name == "final_answer"
+                        self._last_tool_name in _TERMINAL_CONTROL_TOOLS
                         and not self.show_final_answer
                     ):
                         return
@@ -697,7 +698,10 @@ class OuroLogger(AgentLogger):
                             call_id = match.group("id")
                             name = match.group("name")
                             section = by_id.get(call_id, "") if call_id else ""
-                            if name and name != "final_answer":
+                            if name and (
+                                name not in _TERMINAL_CONTROL_TOOLS
+                                or self.show_final_answer
+                            ):
                                 if section:
                                     self._display.observation(section)
                                 self._display.complete_tool_call(name)
@@ -705,7 +709,10 @@ class OuroLogger(AgentLogger):
                         return
 
                     tool_name = self._last_tool_name
-                    if tool_name and tool_name != "final_answer":
+                    if tool_name and (
+                        tool_name not in _TERMINAL_CONTROL_TOOLS
+                        or self.show_final_answer
+                    ):
                         if body:
                             self._display.observation(body)
                         self._display.complete_tool_call(tool_name)

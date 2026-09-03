@@ -25,8 +25,13 @@ _CHAT_LIST_RESULT_CAP = 20
 
 def should_persist_tool_call_payload(payload: dict) -> bool:
     # Subagent progress is persisted as its own `subagent` row; the delegate
-    # tool call is just the dispatch mechanism behind that UI.
-    return str(payload.get("name", "")).lower() != "delegate"
+    # tool call is just the dispatch mechanism behind that UI. Terminal control
+    # tools must never become chat rows, even if their final-step marker is lost.
+    return str(payload.get("name", "")).lower() not in {
+        "delegate",
+        "final_answer",
+        "no_action",
+    }
 
 
 def build_persistence_step_callback(

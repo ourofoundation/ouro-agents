@@ -777,6 +777,7 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         from smolagents import tool
 
         from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+        from ouro_agents.tools.no_action import NoActionTool
 
         @tool
         def sample_tool() -> str:
@@ -784,15 +785,61 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
             return "ok"
 
         agent = SanitizedToolCallingAgent(
-            tools=[sample_tool],
+            tools=[sample_tool, NoActionTool()],
             model=_FakeModelWithToolCalls(),
         )
 
         advertised = {t.name for t in agent.tools_and_managed_agents}
         self.assertIn("sample_tool", advertised)
+        self.assertIn("no_action", advertised)
         self.assertNotIn("final_answer", advertised)
+        self.assertEqual(NoActionTool().to_dict()["name"], "no_action")
         # The tool stays registered internally as smolagents' stop signal.
         self.assertIn("final_answer", agent.tools)
+
+    def test_no_action_tool_is_promoted_to_silent_terminal_output(self):
+        from smolagents.memory import ActionStep, Timing
+        from smolagents.models import (
+            ChatMessageToolCall,
+            ChatMessageToolCallFunction,
+        )
+
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+        from ouro_agents.tools.no_action import NoActionTool, SILENT_RUN_RESULT
+
+        agent = SanitizedToolCallingAgent(
+            tools=[NoActionTool()],
+            model=_FakeModelWithToolCalls(),
+        )
+        message = ChatMessage(
+            role=MessageRole.ASSISTANT,
+            content=None,
+            tool_calls=[
+                ChatMessageToolCall(
+                    id="silent-1",
+                    type="function",
+                    function=ChatMessageToolCallFunction(
+                        name="no_action",
+                        arguments={},
+                    ),
+                )
+            ],
+        )
+        memory_step = ActionStep(
+            step_number=1,
+            timing=Timing(start_time=0.0, end_time=0.0),
+        )
+
+        outputs = list(agent.process_tool_calls(message, memory_step))
+        terminal = [
+            output
+            for output in outputs
+            if getattr(output, "is_final_answer", False)
+        ]
+
+        self.assertEqual(len(terminal), 1)
+        self.assertEqual(terminal[0].output, SILENT_RUN_RESULT)
+        self.assertTrue(getattr(memory_step, "_ouro_no_action", False))
 
     def test_step_budget_observation_tells_last_step_to_close(self):
         from smolagents import tool
@@ -824,6 +871,28 @@ class TestPreambleNudgeStepHook(unittest.TestCase):
         self.assertIn("Prefer ending with plain final assistant content", memory_step.observations)
         self.assertNotIn("create/update/comment", memory_step.observations)
         self.assertNotIn("save the artifact", memory_step.observations)
+
+    def test_step_budget_allows_silent_terminal_tool(self):
+        from ouro_agents.tools.agent_base import SanitizedToolCallingAgent
+        from ouro_agents.tools.no_action import NoActionTool
+
+        agent = SanitizedToolCallingAgent(
+            tools=[NoActionTool()],
+            model=_FakeModelWithToolCalls(),
+            max_steps=20,
+        )
+        memory_step = SimpleNamespace(
+            step_number=19,
+            observations=None,
+            is_final_answer=False,
+        )
+
+        agent._inject_step_budget_observation(memory_step)
+
+        self.assertIn(
+            "call `no_action` as the only tool with no narration",
+            memory_step.observations,
+        )
 
     def test_step_budget_observation_is_quiet_before_threshold(self):
         from smolagents import tool

@@ -9,7 +9,10 @@ from smolagents.memory import ActionStep, ToolCall
 from smolagents.monitoring import Timing
 
 from ouro_agents.utils.conversation import extract_tool_summary
-from ouro_agents.utils.message_persistence import extract_tool_call_payloads
+from ouro_agents.utils.message_persistence import (
+    extract_tool_call_payloads,
+    should_persist_tool_call_payload,
+)
 from ouro_agents.utils.tool_observations import (
     attribute_observation_results,
     split_labeled_observations,
@@ -125,6 +128,11 @@ class TestAttributeObservationResults(unittest.TestCase):
 
 
 class TestExtractToolCallPayloads(unittest.TestCase):
+    def test_terminal_control_tools_are_never_persisted(self):
+        for name in ("final_answer", "no_action"):
+            self.assertFalse(should_persist_tool_call_payload({"name": name}))
+        self.assertTrue(should_persist_tool_call_payload({"name": "get_asset"}))
+
     def test_parallel_step_payloads_are_distinct(self):
         step = ActionStep(
             step_number=1,

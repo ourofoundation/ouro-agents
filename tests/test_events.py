@@ -148,7 +148,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertTrue(event_run.actor_is_agent)
         self.assertIn("from apollo (an agent)", event_run.task)
         self.assertIn("Respond or Do Nothing", event_run.task)
-        self.assertIn("NO_ACTION", event_run.task)
+        self.assertIn("no_action", event_run.task)
 
     def test_new_message_from_human_has_no_agent_guidance(self):
         event_run = build_event_run_context(
@@ -413,7 +413,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertNotIn("mentioned-user-1", event_run.prefetch.asset_ids)
 
     def test_comment_task_includes_no_action_guidance(self):
-        """Comment tasks should include strong NO_ACTION decision framing."""
+        """Comment tasks should include strong no_action decision framing."""
         event_run = build_event_run_context(
             {
                 "event": "comment",
@@ -433,7 +433,7 @@ class TestBuildEventRunContext(unittest.TestCase):
         )
 
         self.assertIn("Decision: Respond or Do Nothing", event_run.task)
-        self.assertIn("NO_ACTION", event_run.task)
+        self.assertIn("no_action", event_run.task)
         self.assertIn("acknowledgment", event_run.task)
 
     def test_thread_reply_includes_thread_caution(self):

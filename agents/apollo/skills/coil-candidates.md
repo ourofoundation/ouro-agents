@@ -24,4 +24,9 @@ Load the `coils` skill for the contract and templates.
 
 ## Candidates
 
-(none yet)
+### mention-triage
+
+- **Job:** Read the full text of specific comments during notification triage — needed every inbox pass because `get_comments` cannot fetch a comment by ID and API `description.text` is truncated (~330 chars).
+- **Steps:** (1) `get_notifications` -> collect the (comment) `asset.id` per mention; (2) SDK `ouro.comments.retrieve(id)` per id; (3) extract text by walking the rich-doc `content` dict (text nodes + paragraph breaks), never `description.text`. Varies: id list; fixed: fetch + extraction + compact print (id, author, team, parent, text).
+- **Why a coil:** the truncation trap and content-doc walk cost two failed parses to discover; a coil enforces "full text, not preview" and returns one compact triage payload.
+- **Seen:** 2026-09-02

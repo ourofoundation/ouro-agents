@@ -11,7 +11,7 @@ from smolagents.monitoring import Timing
 
 from ouro_agents.run_log import RunLogStore, RunRecord, RunStepRecord
 from ouro_agents.tools.run_history_tools import make_run_history_tools
-from ouro_agents.utils.conversation import extract_run_steps
+from ouro_agents.utils.conversation import compress_tool_call, extract_run_steps
 
 
 def _row_to_dict(conn: sqlite3.Connection, table: str, run_id: str) -> dict:
@@ -29,6 +29,15 @@ def _timing(start=1.0, end=2.5):
     t = Timing(start_time=start)
     t.end_time = end
     return t
+
+
+def test_no_action_is_omitted_from_history_summary():
+    assert (
+        compress_tool_call(
+            {"tool": "no_action", "args": {}, "result": "NO_ACTION"}
+        )
+        == ""
+    )
 
 
 # --------------------------------------------------------------------------- #

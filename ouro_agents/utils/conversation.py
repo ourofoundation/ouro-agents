@@ -433,7 +433,7 @@ def compress_tool_call(tc: dict, max_result_chars: int = 600) -> str:
     args = tc.get("args", {})
     result = str(tc.get("result", ""))
 
-    if tool_name == "final_answer":
+    if tool_name in {"final_answer", "no_action"}:
         return ""
     if tool_name == "load_tool":
         names = args.get("tool_names", [])

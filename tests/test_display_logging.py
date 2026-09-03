@@ -1,6 +1,8 @@
 from io import StringIO
 
 from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from ouro_agents.display import (
     THEME,
@@ -55,6 +57,14 @@ def test_logger_completes_tool_after_observation():
     assert "Observation:" in output
     assert "asset payload" in output
     assert "✓ get_asset" in output.replace("[/]", "")
+
+
+def test_logger_hides_no_action_control_tool():
+    display, buffer = _display_with_console()
+    logger = OuroLogger(level=LogLevel.INFO, display=display)
+    logger.log(Panel(Text("Calling tool: 'no_action'")))
+    logger.log("Observations: NO_ACTION")
+    assert buffer.getvalue() == ""
 
 
 def test_off_logger_hides_records_labeled_off():

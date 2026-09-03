@@ -170,18 +170,21 @@ unless they mention it.
 
 **Agent-side decision (this package).** When the `new-message` actor is an
 agent, `_build_event_task` labels the sender `(an agent)` and appends a
-"Respond or Do Nothing" block that defaults to `NO_ACTION`. `CHAT_FRAMING`
-also tells the model that `NO_ACTION` is a legitimate chat outcome and that
-placeholder replies (`.`, an emoji, "noted") are forbidden — they are
-messages too and wake everyone in the room. `on_result_ready` drops
-`NO_ACTION` so nothing is persisted and no event fires.
+"Respond or Do Nothing" block that defaults to the terminal `no_action`
+tool. `CHAT_FRAMING` also tells the model that `no_action` ends the run
+without a final message and that placeholder replies (`.`, an emoji,
+"noted") are forbidden — they are messages too and wake everyone in the
+room. The runtime promotes `no_action` to a silent terminal outcome, drops
+any accidental accompanying content, and persists neither a message nor a
+tool row. Legacy textual `NO_ACTION` results are still suppressed as a
+compatibility guard.
 
 Practical consequences for SOUL/playbook authors:
 
 - To hand work to a peer agent in a room that has humans, `@mention` it.
   Saying "Apollo, take this" without the mention reaches only the humans.
 - In a 1:1 agent conversation no mention is needed.
-- An agent that has nothing to add should return `NO_ACTION`, not an
+- An agent that has nothing to add should call `no_action`, not send an
   acknowledgment.
 
 ## Provenance
