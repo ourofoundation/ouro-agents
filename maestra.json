@@ -1,0 +1,118 @@
+{
+  "env_file": ".env.maestra",
+  "security": {
+    "controllers": [
+      "mmoderwell"
+    ],
+    "trusted": [],
+    "run_secret": null
+  },
+  "agent": {
+    "name": "maestra",
+    "workspace": "./agents/maestra",
+    "org_id": "00000000-0000-0000-0000-000000000000"
+  },
+  "models": {
+    "strong": {
+      "id": "z-ai/glm-5.3-flash",
+      "reasoning": {
+        "effort": "high"
+      }
+    },
+    "mid": {
+      "id": "z-ai/glm-5.3-flash",
+      "reasoning": {
+        "effort": "low"
+      }
+    },
+    "light": {
+      "id": "z-ai/glm-5.3-flash",
+      "reasoning": {
+        "effort": "low"
+      }
+    }
+  },
+  "subagents": {
+    "search": {
+      "max_steps": 4
+    },
+    "research": {
+      "max_steps": 8
+    },
+    "executor": {
+      "max_steps": 12
+    }
+  },
+  "modes": {
+    "planning": {
+      "enabled": false
+    },
+    "heartbeat": {
+      "enabled": true,
+      "every": "0 9 * * mon,wed,fri",
+      "active_hours": {
+        "start": "09:00",
+        "end": "21:00",
+        "timezone": "America/Chicago"
+      },
+      "servers": [
+        "ouro"
+      ]
+    }
+  },
+  "dream": {
+    "enabled": false
+  },
+  "memory": {
+    "provider": "mem0",
+    "path": "./agents/maestra/protected/memory",
+    "embedder": "openai/text-embedding-3-small",
+    "search_limit": 10,
+    "max_retrieval_tokens": 1500,
+    "dream_enabled": false,
+    "memory_md_max_tokens": 1500,
+    "decay_after_days": 90,
+    "graph": {
+      "enabled": false
+    }
+  },
+  "mcp_servers": [
+    {
+      "name": "ouro",
+      "transport": "stdio",
+      "command": "/home/matt/.pyenv/versions/agents/bin/python",
+      "args": [
+        "-m",
+        "ouro_mcp.server"
+      ],
+      "env": {
+        "OURO_API_KEY": "${OURO_API_KEY}",
+        "OURO_BASE_URL": "${OURO_BASE_URL}"
+      }
+    },
+    {
+      "name": "search",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "exa-mcp-server"
+      ],
+      "env": {
+        "EXA_API_KEY": "${EXA_API_KEY}"
+      }
+    }
+  ],
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8025,
+    "webhook_path": "/maestra/events"
+  },
+  "event_pooling": {
+    "enabled": false
+  },
+  "prompt_caching": {
+    "enabled": true,
+    "ttl": "5m"
+  }
+}

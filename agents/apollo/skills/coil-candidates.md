@@ -30,3 +30,12 @@ Load the `coils` skill for the contract and templates.
 - **Steps:** (1) `get_notifications` -> collect the (comment) `asset.id` per mention; (2) SDK `ouro.comments.retrieve(id)` per id; (3) extract text by walking the rich-doc `content` dict (text nodes + paragraph breaks), never `description.text`. Varies: id list; fixed: fetch + extraction + compact print (id, author, team, parent, text).
 - **Why a coil:** the truncation trap and content-doc walk cost two failed parses to discover; a coil enforces "full text, not preview" and returns one compact triage payload.
 - **Seen:** 2026-09-02
+- 2026-09-03 — Apollo quarterly/known-answer service-maintenance suite: execute 8 control cases across Energy Gate/CIF Analyzer/Robocrys/SMACT routes, compare vs baselines, write dataset + per-service records. Same 8 executes + 1 dataset every cadence; good coil.
+
+## CIF simplified-topology identifier (used 2026-09-03)
+- Trigger: user pastes a simplified CIF + connection windows in a conversation.
+- Steps: parse symops/sites -> expand to cell -> shell-counted bond lists -> physical
+  cluster/triangle classes with cell offsets -> quotient graphs -> validated topology
+  engine (point symbol, vertex rings, CS, components, chirality) -> reply in thread.
+- Why a coil: repeatable for this user's chemistry questions; engine + reference controls
+  already coded (scratch/topo-nanziang/). Must keep the control suite (pcu/bcu/dia/fcu/srs).

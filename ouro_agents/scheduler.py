@@ -233,6 +233,18 @@ def cadence_trigger(
     return IntervalTrigger(**interval, start_date=anchor, timezone=tz)
 
 
+def heartbeat_trigger(
+    every: str,
+    *,
+    at: Optional[str] = None,
+    timezone_name: Optional[str] = None,
+):
+    """Build a heartbeat trigger from either cron or anchored interval syntax."""
+    if _is_cron_expression(every):
+        return parse_trigger(every, timezone_name or "UTC")
+    return cadence_trigger(every, at=at, timezone_name=timezone_name)
+
+
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
@@ -408,13 +420,13 @@ class AgentScheduler:
     def _register_heartbeat(self, heartbeat_config) -> None:
         active_hours = heartbeat_config.active_hours or {}
         try:
-            trigger = cadence_trigger(
+            trigger = heartbeat_trigger(
                 heartbeat_config.every,
                 at=active_hours.get("start") or "00:00",
                 timezone_name=active_hours.get("timezone"),
             )
         except ValueError:
-            logger.error("Invalid heartbeat interval: %s", heartbeat_config.every)
+            logger.error("Invalid heartbeat schedule: %s", heartbeat_config.every)
             return
 
         job = self._scheduler.add_job(

@@ -28,3 +28,7 @@ load: stub
 - Rule: the CRM email/name dedup query is a precondition for creating any `identified` row, not just for sending. A `found via search` row created without it inherits false freshness and can resurface a do-not-contact person through the triage queue (this duplicate did exactly that).
 - Before staging any draft for a "new" target, re-pull the CRM rows by email AND surname yourself; never trust a prior tick's dedup claim in a log or a `next_action` field. Caught Moosavi only because the row pull happened before drafting.
 - Fixed 2026-09-01: duplicate row b25159aa renamed "(DUPLICATE - ignore)" with a pointer to the canonical row; canonical row's spent-cycle state unchanged.
+
+## Surname variants defeat exclusion lists (2026-09-03)
+
+- A search delegate proposed IIT Bombay Amrita Bhattacharya (arXiv:2507.01849) as a fresh target even though her group's follow-up was spent 2026-07-07 — the exclusion list contained "Bhattacharjee" (a different person) but not "Bhattacharya". Exclusion lists must carry surname spellings AND their near-variants, and the lessons-file / group-level check (is any group member already worked?) is the gate that actually matters. The CRM-by-email dedup would have caught this only at send time; the near-miss was caught at shortlist review.

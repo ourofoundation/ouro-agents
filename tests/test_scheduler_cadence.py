@@ -15,6 +15,7 @@ from ouro_agents.scheduler import (
     cadence_trigger,
     count_dream_activity_runs,
     has_sufficient_dream_activity,
+    heartbeat_trigger,
 )
 
 
@@ -68,6 +69,22 @@ def test_one_day_cadence_uses_local_cron_without_dst_drift():
 
     assert isinstance(trigger, CronTrigger)
     assert str(trigger.timezone) == "America/Chicago"
+
+
+def test_heartbeat_trigger_accepts_cron_schedule():
+    trigger = heartbeat_trigger(
+        "0 9 * * mon,wed,fri",
+        timezone_name="America/Chicago",
+    )
+
+    assert isinstance(trigger, CronTrigger)
+    assert str(trigger.timezone) == "America/Chicago"
+    next_fire = trigger.get_next_fire_time(
+        None,
+        datetime(2026, 9, 3, tzinfo=timezone.utc),
+    )
+    assert next_fire.weekday() == 4
+    assert next_fire.hour == 9
 
 
 @pytest.mark.parametrize("cadence", ["", "hourly", "0m", "1y"])
