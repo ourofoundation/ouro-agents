@@ -47,5 +47,6 @@ module.exports = {
     agentApp("athena", "athena.json", ".env.athena"),
     agentApp("apollo", "apollo.json", ".env.apollo"),
     agentApp("maestra", "maestra.json", ".env.maestra"),
+    agentApp("magnes", "magnes.json", ".env.magnes"),
   ],
 };

@@ -1,0 +1,210 @@
+{
+  "env_file": ".env.magnes",
+  "security": {
+    "controllers": [
+      "mmoderwell"
+    ],
+    "trusted": [
+      "hermes",
+      "apollo",
+      "athena",
+      "will"
+    ],
+    "run_secret": null
+  },
+  "agent": {
+    "name": "magnes",
+    "workspace": "./agents/magnes",
+    "org_id": "00000000-0000-0000-0000-000000000000",
+    "sandbox": {
+      "mode": "docker",
+      "enable_shell": true,
+      "python_packages": [
+        "numpy.*",
+        "scipy.*",
+        "pandas.*",
+        "ase.*",
+        "pymatgen.*",
+        "spglib.*"
+      ],
+      "image": "ouro-agents-sandbox-hermes:latest",
+      "workspace_mount": "/workspace",
+      "network": "bridge",
+      "memory": "4g",
+      "cpus": 2.0,
+      "pids_limit": 512,
+      "timeout_seconds": 600,
+      "max_output_chars": 50000,
+      "env_allowlist": [
+        "OURO_API_KEY",
+        "OURO_BASE_URL"
+      ]
+    }
+  },
+  "models": {
+    "strong": {
+      "id": "openai/gpt-5.6-sol",
+      "reasoning": {
+        "effort": "max"
+      }
+    },
+    "mid": {
+      "id": "z-ai/glm-5.3-flash",
+      "reasoning": {
+        "effort": "high"
+      }
+    },
+    "light": {
+      "id": "z-ai/glm-5.3-flash",
+      "reasoning": {
+        "effort": "high"
+      }
+    }
+  },
+  "openrouter_provider": {
+    "allow_fallbacks": true
+  },
+  "subagents": {
+    "search": {
+      "max_steps": 4
+    },
+    "research": {
+      "max_steps": 8
+    },
+    "reflector": {
+      "max_steps": 5
+    },
+    "executor": {
+      "max_steps": 16
+    },
+    "developer": {
+      "max_steps": 30
+    }
+  },
+  "modes": {
+    "autonomous": {
+      "max_steps": 40
+    },
+    "chat": {
+      "max_steps": 30
+    },
+    "planning": {
+      "enabled": true,
+      "max_steps": 20,
+      "cadence": "12h",
+      "min_heartbeats": 6,
+      "review_window": "2h",
+      "auto_approve": true,
+      "max_plans_per_day": 1,
+      "backlog_limit": 6
+    },
+    "heartbeat": {
+      "enabled": true,
+      "every": "1h",
+      "max_steps": 60,
+      "active_hours": {
+        "start": "06:00",
+        "end": "23:00",
+        "timezone": "America/Chicago"
+      },
+      "servers": [
+        "ouro"
+      ],
+      "curiosity": {
+        "enabled": true,
+        "last_beats": 2
+      }
+    }
+  },
+  "dream": {
+    "enabled": true,
+    "every": "1d",
+    "at": "03:30",
+    "timezone": "America/Chicago",
+    "min_new_runs": 3,
+    "max_steps": 40,
+    "max_changes": 4,
+    "journal_lookback": 3,
+    "servers": [
+      "ouro"
+    ],
+    "dry_run": true
+  },
+  "memory": {
+    "provider": "mem0",
+    "path": "./agents/magnes/protected/memory",
+    "embedder": "openai/text-embedding-3-small",
+    "search_limit": 10,
+    "max_retrieval_tokens": 1500,
+    "rhythm": "weekly",
+    "memory_md_max_tokens": 1500,
+    "decay_after_days": 60,
+    "graph": {
+      "enabled": false
+    }
+  },
+  "event_pooling": {
+    "enabled": true,
+    "events": {
+      "comment": {
+        "enabled": true,
+        "settle_seconds": 20,
+        "jitter_seconds": 60,
+        "max_wait_seconds": 180
+      },
+      "mention": {
+        "enabled": true,
+        "settle_seconds": 20,
+        "jitter_seconds": 60,
+        "max_wait_seconds": 180
+      }
+    }
+  },
+  "event_delivery": {
+    "events": {
+      "comment": "heartbeat",
+      "mention": "heartbeat"
+    }
+  },
+  "mcp_servers": [
+    {
+      "name": "ouro",
+      "transport": "stdio",
+      "command": "/home/matt/.pyenv/versions/agents/bin/python",
+      "args": [
+        "-m",
+        "ouro_mcp.server"
+      ],
+      "env": {
+        "OURO_API_KEY": "${OURO_API_KEY}",
+        "OURO_BASE_URL": "${OURO_BASE_URL}"
+      }
+    },
+    {
+      "name": "search",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "exa-mcp-server"
+      ],
+      "env": {
+        "EXA_API_KEY": "${EXA_API_KEY}"
+      }
+    }
+  ],
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8030,
+    "webhook_path": "/magnes/events",
+    "public_base_url": "https://agents.ouro.foundation/magnes"
+  },
+  "prompt_caching": {
+    "enabled": true,
+    "ttl": "5m"
+  },
+  "agent_routes": {
+    "enabled": true,
+    "path_prefix": "/routes"
+  }
+}
