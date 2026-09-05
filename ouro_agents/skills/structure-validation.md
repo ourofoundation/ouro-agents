@@ -40,7 +40,7 @@ Then check each item against intent:
 1. **It parses.** If pymatgen can't read it, stop.
 2. **Stoichiometry matches.** Reduced formula and site count match the phase you intended (e.g. MgAl2O4 spinel: 8 formula units, 56 atoms in the conventional cell).
 3. **Spacegroup matches the prototype.** Analyze at a couple of `symprec` values (0.01, 0.1). If you built a spinel and the analyzer says P1, *your CIF is wrong* — do not proceed. Compare against the known prototype spacegroup (spinel Fd-3m, Heusler Fm-3m, C14 Laves P6_3/mmc, etc.).
-4. **No overlapping or absurdly close sites.** Minimum pair distance below ~1.5 Å for non-hydrogen pairs almost always means duplicated or misplaced sites.
+4. **No overlapping or absurdly close sites.** Minimum pair distance below ~1.5 Å for non-hydrogen pairs almost always means duplicated or misplaced sites. The most common way to build one: `Structure(lattice, species, coords)` with Cartesian Ångström coordinates but no `coords_are_cartesian=True` — pymatgen stores them as fractions and CifWriter writes them out unchanged. If any `frac_coords` value is outside [0, 1) right after construction, that is what happened.
 5. **Sensible density and volume.** Compare density against the known experimental value or a same-family compound; a factor-of-two miss means a wrong cell or wrong Z.
 6. **Full occupancies** unless you deliberately built a disordered structure.
 7. **Diff against a reference when one exists.** Prefer fetching the structure from an established source (Materials Project, COD, ICSD-derived data, or an existing validated Ouro file asset) over hand-writing a CIF. If you must hand-build, use `StructureMatcher` to compare against a reference of the same prototype.
