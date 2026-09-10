@@ -109,6 +109,29 @@ def test_subagent_task_context_includes_shared_core_sections(tmp_path):
     assert "## PLAN QUEST INDEX\n- PLAN:athena:2026-04-06" in prompt
     assert "## WORKING MEMORY\nRecent anchor post: Day 9." in prompt
     assert "## Ouro asset placement" in prompt
+    assert "## WRITING STYLE" in prompt
+
+
+def test_writing_style_reaches_narrow_profile_subagents(tmp_path):
+    from ouro_agents.subagents.profiles import SEARCH
+
+    ctx = SubAgentContext(
+        workspace=tmp_path,
+        backend=None,
+        agent_id="magnes",
+        memory_config=None,
+        model=None,
+        platform_context="You are @magnes.",
+    )
+
+    prompt = _format_task_context(
+        "Look up the current price of neodymium.",
+        ctx,
+        shared_context_sections=SEARCH.shared_context_sections,
+    )
+
+    assert "## WRITING STYLE" in prompt
+    assert "plain, simple technical English" in prompt
 
 
 

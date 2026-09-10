@@ -469,6 +469,7 @@ def _format_task_context(
     )
     default_shared_keys = (
         "current_datetime",
+        "writing_style",
         "soul",
         "platform_context",
         "user_model",
@@ -482,6 +483,10 @@ def _format_task_context(
         if shared_context_sections is not None
         else default_shared_keys
     )
+    # Writing style applies to every subagent, including profiles that pick a
+    # narrower set of shared sections.
+    if "writing_style" not in ordered_shared_keys:
+        ordered_shared_keys = ("writing_style",) + ordered_shared_keys
     parts: list[str] = [
         shared_sections[key] for key in ordered_shared_keys if key in shared_sections
     ]

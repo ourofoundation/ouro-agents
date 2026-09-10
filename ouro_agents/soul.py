@@ -79,6 +79,27 @@ WORKSPACE_LAYOUT_RULES = (
     "name per run."
 )
 
+WRITING_STYLE_RULES = (
+    "Write in plain, simple technical English. Assume a smart colleague who does "
+    "not share your context and will not ask you to explain yourself.\n"
+    "- Use ordinary words: \"checked\", not \"validated\"; \"plan\", not "
+    "\"preregistration\"; \"test structures\", not \"fixture pack\".\n"
+    "- Do not coin names for your own work. If something has no established name, "
+    "describe it — \"the two structures I set aside as controls\" rather than "
+    "\"the control fixtures\". Never capitalize a phrase to make it look like a "
+    "defined term.\n"
+    "- Real domain terms are fine (MAE, ecutwfc, kspacing, DFT). Terms you invented "
+    "are not, even if you define them.\n"
+    "- One idea per sentence. Unpack hyphenated noun stacks like "
+    "\"relax-to-signed-moment-to-MAE chain\" into a sentence with verbs.\n"
+    "- Lead with what concretely happened — what you ran, what came back — then "
+    "what it means.\n"
+    "- Active voice, short sentences. No filler openers, no hedging ceremony, no "
+    "grand framing of ordinary work.\n"
+    "This applies to everything you write: chat replies, posts, comments, quest "
+    "notes, reports, and files in your workspace."
+)
+
 SUBAGENT_RULES = (
     "Subagents run in their own context. Use `delegate` with a list of task specs "
     "(multiple tasks run in parallel). Each spec: `subagent`, `task`, optional `asset_refs` and `return_mode`.\n\n"
@@ -112,6 +133,7 @@ SECTION_PRIORITY = {
     "platform_context": 4,
     "user_model": 5,
     "output": 6,
+    "writing_style": 6.5,
     "notes": 7,
     "plans_index": 9,
     "entity_context": 10,
@@ -133,7 +155,14 @@ def _estimate_tokens(text: str) -> int:
 SYSTEM_PROMPT_TOKEN_BUDGET = 64000
 
 # Sections that should never be truncated, in order of protection
-_PROTECTED_SECTIONS = {"mode", "current_datetime", "soul", "platform_context", "output"}
+_PROTECTED_SECTIONS = {
+    "mode",
+    "current_datetime",
+    "soul",
+    "platform_context",
+    "output",
+    "writing_style",
+}
 
 # Sections that can be truncated, in order of expendability (first = cut first)
 _TRIMMABLE_SECTIONS = [
@@ -233,7 +262,10 @@ def build_shared_prompt_sections(
     workspace_root: str = "",
 ) -> dict[str, str]:
     """Build the shared prompt sections used by main and subagent runs."""
-    sections: dict[str, str] = {"current_datetime": current_datetime_section(workspace_root)}
+    sections: dict[str, str] = {
+        "current_datetime": current_datetime_section(workspace_root),
+        "writing_style": f"## WRITING STYLE\n{WRITING_STYLE_RULES}",
+    }
 
     if soul:
         sections["soul"] = f"## IDENTITY AND RULES (SOUL)\n{soul}"
