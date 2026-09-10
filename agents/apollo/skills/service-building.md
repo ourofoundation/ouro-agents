@@ -114,7 +114,8 @@ for that contact so you don't re-answer settled points.
 The mechanics — Modal app structure, Ouro integration requirements, deploy
 commands, `deployment.json`, and the testing bar — live in the shared
 `deploying-services` skill; load it, plus `modal-app-template` when actually
-writing `app.py`. Your Modal workspace is `ouro-apollo`.
+writing `app.py`. Your Modal workspace is `ouro` (shared with the rest of
+the platform). Do not use the old `ouro-apollo` workspace — it is spend-capped.
 
 Two additions on top of the shared bar:
 
@@ -160,6 +161,26 @@ Every service you announce gets a reference case saved with its test
 artifacts. On a maintenance pass, re-run the reference cases through the live
 route and compare against the baseline. Drift or breakage becomes priority 1
 on the next tick.
+
+**Smoke-test with the coil, not by hand.** Any maintenance pass or post-deploy
+verification starts with `run_coil("route-smoke", ...)`. Inputs: `route_id`;
+`malformed_body` (must fail LOUDLY — gate rejection or errored action; a success
+action on garbage fails the smoke); optional `reference_body` (must reach
+terminal success with a non-empty response; omit for a plumbing-only smoke);
+`receipt_assertions` (dot-path checks on the reference response, e.g.
+`{"path": "logging.lines_posted", "op": ">", "value": 0}` — required whenever
+the app claims progress logging). The receipt includes action ids for
+follow-up/embedding. Keep the coil tier-1 private: it executes routes with this
+agent's credentials, so it must never become a published route.
+
+**Verify the action-log channel with `action-log-probe`.** Before trusting
+`logging.lines_posted` claims (or after a platform deploy that touches
+actions), execute the published `action-log-probe` route: it posts timestamped
+lines to its own in-flight action via `POST /actions/{id}/log` and self-reports
+the HTTP statuses. A clean probe = owner-credential interim writes land,
+persist, and leave the state machine untouched (verified 2026-09-10, evidence
+in scratch/action-log-probe/FINDINGS.md). Safe to keep published: it writes
+only to its own action.
 
 ## End-of-tick discipline
 

@@ -1,5 +1,6 @@
 # Docker build command:
-# docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
+#   make base
+#   docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
 
 
 FROM python:3.12-slim
@@ -25,6 +26,6 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         exa_py
 
 # Thin layer: bump this pin without rebuilding the stack above.
-RUN python -m pip install --no-cache-dir "ouro-py>=0.11.4"
+RUN python -m pip install --no-cache-dir "ouro-py>=0.11.17"
 
 WORKDIR /workspace

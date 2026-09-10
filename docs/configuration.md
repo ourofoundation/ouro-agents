@@ -167,12 +167,14 @@ Agents that need extra tooling get their own thin overlay Dockerfile built
 building; `Dockerfile.sandbox.hermes` adds the Resend SDK for outreach
 routes) and point `agent.sandbox.image` at the overlay tag.
 
-Build from the `ouro-agents` directory, base first:
+Build from the `ouro-agents` directory. The Makefile builds the base first,
+then every `Dockerfile.sandbox.<name>` overlay:
 
 ```bash
-docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
-docker build -f Dockerfile.sandbox.apollo -t ouro-agents-sandbox-apollo:latest .
-docker build -f Dockerfile.sandbox.hermes -t ouro-agents-sandbox-hermes:latest .
+make              # base + all overlays
+make apollo       # base, then apollo
+make hermes
+make NO_CACHE=1   # rebuild without Docker cache
 ```
 
 If you add packages to `agent.sandbox.python_packages`, make sure the agent's

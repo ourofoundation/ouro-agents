@@ -1,9 +1,7 @@
 # Hermes' sandbox: the shared base plus the Resend Python SDK for outreach
-# routes (tier 1). Build the base first:
-#   docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
-#
-# Docker build command:
-#   docker build -f Dockerfile.sandbox.hermes -t ouro-agents-sandbox-hermes:latest .
+# routes (tier 1). Build: make hermes
+#   (or docker build -f Dockerfile.sandbox -t ouro-agents-sandbox:latest .
+#    then docker build -f Dockerfile.sandbox.hermes -t ouro-agents-sandbox-hermes:latest .)
 
 FROM ouro-agents-sandbox:latest
 

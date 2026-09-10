@@ -29,3 +29,6 @@
 
 - 2026-08-30 (pressure census, atlas slice): DOI-level "series" counts conflate multiple compounds and settings aliases with real transitions — always regroup per compound (DOI+formula+Z) and compare space-group NUMBERS, not symbols, before claiming a phase transition.
 - 2026-08-30 (unit solving): without a near-ambient anchor, soft solids are scale-degenerate under BM2+rms gating — the blind solver put acetonitrile at 57 GPa (paper: 0.63) and Pb2SnO4 at 1 GPa (literature: 10-12). When a data dictionary documents the unit (CIF kPa), that frame is the default hypothesis requiring positive evidence to override, not one candidate among eight.
+
+## 2026-09-05 scar: silent low-T point drop
+- A census builder dropped all celltemp<2.5 K entries after grouping; series were fitted without their lowest-T point while cod_files still listed it, manufacturing a fake 'confident NTE' (GaMo4Se8 -18.07±1.7 = descending branch of a 30 K volume maximum; flat +0.13±3.77 with the 2 K point). Guards: assert fitted n_temps == number of listed cod_files; flag series whose t_min jumps well past a known deposited low-T entry; a volume *maximum* inside a series means any single-branch fit is a transition artifact, not NTE.

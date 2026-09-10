@@ -41,7 +41,25 @@ not cover the case (e.g. a brand-new email pattern the coil schema doesn't
 handle). When you do fall back, still follow the parent skill's idempotency,
 CC, and immutability rules exactly.
 
+## Coil scar: outreach-triage InvalidHandlerReturn (2026-09-06)
+
+`run_coil("outreach-triage", {})` began failing with `InvalidHandlerReturn:
+handler must return a JSON-serializable object; got non-JSON string` even though
+the handler's dict serialized cleanly when invoked manually in `run_python`.
+Root cause was never pinned down (data- or environment-dependent non-strict
+JSON inside the runner), so the fix is defensive rather than diagnostic: the
+handler now routes its return through `_sanitize` (NaN/Inf -> None,
+non-serializable -> str, recursion-safe) plus `_strict`, which round-trips the
+payload with `json.dumps(..., allow_nan=False)` and degrades to a
+budget-only dict if the full payload ever fails the strict check. Queues are
+capped at 30 rows and `today_sends` at 20 to keep the payload small. If this
+coil fails again, first suspect a CRM or Resend row carrying an exotic value,
+then the runner's serializer — do not revert the sanitizer.
+
 ## CRM scars
+- Workspace staging labels drift from CRM truth: a draft/pipeline file marked READY with a scheduled date is not evidence the send did or did not happen. CRM `first_outbound_at` is authoritative; always dedup against it before treating a READY entry as unsent (caught Kim Nayoung mislabeled READY on 09-05 after a real 09-01 send).
+- **send-and-log continuation path overwrites a caller-supplied `next_action` with its generic default** (reproduced live 2026-09-09 on Wilkinson 291d25ba, second occurrence after the 11:05 tick same day): the explicit `next_action` param is written, then the continuation CRM write replaces it with "No further contact unless they reply." Repair after every continuation send via crm-upsert with the specific next_action until the coil is fixed.
+
 - **send-and-log continuation path does not update `status`** (verified by dry-run 2026-08-30): for a CRM row that already has `first_outbound_*` from a bounced prior send, the coil classifies the resend as a continuation and its CRM write touches only last-outbound fields, leaving a `drafted` row `drafted` after a successful send. For bounce-repair first sends, use the manual path and include `status='sent'` in the upsert, or run the coil with `dry_run: true` first and check `first_send_detected`.
 
 - `ouro.datasets.query(...)` returns a pandas DataFrame, not a list of dicts.
@@ -163,3 +181,37 @@ A send-ready draft file is not evidence of send-state. On 2026-08-31 a "refresh"
 ## Inserting a new drafted/identified CRM row via crm-upsert (2026-09-02)
 
 - `crm-upsert` rejects an insert that carries only the legacy first-send fields (`date_sent`, `email_id`) without the full canonical set (`first_outbound_at`, `first_outbound_email_id`): error `incomplete_first_send_fields`. For an unsent (drafted/identified) row, omit ALL of `date_sent`, `email_id`, `first_outbound_at`, `first_outbound_email_id` — the insert succeeds and `write_once_written` stays false; the send-and-log coil writes the complete first-send set at actual send time.
+
+## Duplicate-row scar (recurring)
+
+Three incidents now (Odkhuu 2026-08-25, Moosavi 2026-09-01, Weiyi Xia 2026-09-06): a
+heartbeat that researches a "new" target and creates an `identified` row + draft skips
+the group-level dedup (CRM email/name + Resend) and manufactures a duplicate contact.
+The Xia case was worst: the person had a live `sent` row with the one follow-up already
+used, so the freshly written draft was an unsendable re-contact.
+
+**Hard rule for any pipeline-prep tick:** before writing a draft or creating a CRM row,
+query the CRM for every author's name fragment AND email; a match on any author means
+the whole cold angle is dead or must be re-angled (follow-up used -> no email; follow-up
+unused -> re-angle as the one follow-up). Name-only rows (`email='n-a'`) must be checked
+against author names too, not just addresses.
+
+## CRM scars (additions)
+- `send-and-log` followup path ignores the `next_action` param: dry-run 2026-09-07 confirmed the would_crm_row shows the generic "No further contact unless they reply." default instead of the passed hook. After any follow-up send, restore the specific `next_action` via a second `crm-upsert` call (write-once fields unaffected).
+
+## Idempotency-key trigger collisions (2026-09-08)
+- The trigger component of `hermes:{contact_id}:{intent}:{trigger}` must be
+  unique per logical email, not per inbound message. Answering the same
+  inbound message twice in 24h (e.g. a same-day partial receipt reply, then
+  next-day final receipt) collides: Resend rejects a reused key with a
+  modified body ("idempotency key has been used... request body was
+  modified"). When the natural trigger id is already consumed, derive the
+  trigger from the new artifact instead (e.g. `final-receipt-<post-id>`);
+  it stays deterministic and retry-safe.
+
+- `send-and-log` overrides a caller-supplied `idempotency_key` with its own
+  deterministic key derived from contact_id + intent + internal trigger
+  (observed 2026-09-08: follow-up sent with trigger `first` instead of
+  `followup-<first_outbound_email_id>`). Harmless for uniqueness so far, but
+  do not rely on passing your own key; verify the echoed key and ensure the
+  natural trigger ids for a contact stay distinct across intents.

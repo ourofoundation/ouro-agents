@@ -32,3 +32,21 @@ load: stub
 ## Surname variants defeat exclusion lists (2026-09-03)
 
 - A search delegate proposed IIT Bombay Amrita Bhattacharya (arXiv:2507.01849) as a fresh target even though her group's follow-up was spent 2026-07-07 — the exclusion list contained "Bhattacharjee" (a different person) but not "Bhattacharya". Exclusion lists must carry surname spellings AND their near-variants, and the lessons-file / group-level check (is any group member already worked?) is the gate that actually matters. The CRM-by-email dedup would have caught this only at send time; the near-miss was caught at shortlist review.
+
+## Address variants: never "correct" a sourced address without the primary source open (2026-09-04)
+
+- The Kim Ji Han (EGMOF, KAIST) draft "corrected" the CRM's jihankim@kaist.ac.kr to jihan.kim@kaist.ac.kr on the strength of memory of the arXiv listing; the dotted variant bounced. The search-verified corresponding-author email is the undotted form. When transcribing a contact address from a paper, paste the exact string from the abstract page into the draft header with the URL, and treat any later re-typing as a change requiring re-verification. A bounced first send costs the one permitted follow-up narrative and a repair cycle; this was avoidable at draft time.
+
+## Draft-asset vs CRM-row desync (2026-09-05)
+
+- Second occurrence of the same failure mode: a fully prepared cold draft (drafts/cao_kun_cold_email.json, 2026-08-31, with a pre-assigned CRM id 8cf07a19) sat for five days with NO CRM row — the drafting tick wrote the draft file but never ran the row creation, so the target was invisible to triage and would have gone cold forever (Bonati, 09-02, was the first). A draft file with a `crm_id` field is not a staged target; the row is.
+- Rule: a drafting tick is complete only when (1) the draft file exists, (2) the CRM row exists in `drafted` with the send-date staging in `next_action`, and (3) both are verified by readback. If a tick runs out of room, stage the row FIRST and polish the draft second — an unpolished draft with a live row gets repaired; a polished draft with no row gets lost.
+- Periodic audit: when triage shows the staged calendar ending, sweep `drafts/*cold_email*` against the CRM by the embedded `crm_id`/`to` field to catch orphans before they age out of relevance.
+
+## Citing a paper's superseded headline claim (2026-09-08, caught at pre-send)
+
+- The Shi Xiaohui (alpha"-Fe16N2) cold draft (2026-09-03) verified its central number (Tc 1369 K) against the published abstract via Crossref — and the abstract was stale: a 2026 RSC correction (10.1039/d6tc90016j) REPLACED the 1369 K claim with 684 K in Abstract/Intro/Conclusions. Sending would have quoted the authors' own withdrawn headline to them. Caught only because the pre-send checklist required an independent re-verification pass, and the search delegate surfaced the correction body verbatim.
+- Rule: before any send citing a specific quantitative claim, run a dedicated corrections check for that DOI (search "<doi> correction", check Crossref for update-to/is-referenced-by correction records, and read the correction body, not just its metadata). Crossref abstracts are frozen at publication; RSC/Nature corrections do not back-propagate into them. A draft older than ~2 weeks citing a headline number is presumed stale until re-checked.
+- Two-pass verification that still misses: pass 1 (claim vs abstract) passed; the failure was checking the wrong source of truth for currency. Corrections live in the corpus, not the abstract.
+
+- A route going live is not the same as a route working. Before citing any newly deployed route in outreach (or announcing it), run one minimal verification call against it. 2026-09-08: Apollo's fresh MOFFlow-2 route (848c5f58) failed with deterministic upstream 422s on both a parameterized and a defaults-only body; catching it pre-announcement kept a broken link out of the Kim thread. A passing run with an action receipt is the cite-worthy artifact, not the deployment itself.
