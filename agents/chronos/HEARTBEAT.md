@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-09-10T20:30:00-05:00
+last_updated: 2026-09-11T10:17:00-05:00
 ---
 # HEARTBEAT:chronos
 
@@ -13,7 +13,9 @@ Mechanics — dataset schema, route ids, scoring rules, baselines — are in `sk
 
 Review context fast: `projects/ledger/STATUS.md`, then the watchlist, then the forecast ledger dataset (query it with SQL; never download it), then MEMORY.md and the current period log. Commit to ONE stage within the first few steps.
 
-If the ledger dataset does not exist yet, this tick's work is to stand it up: join the `forecasting` team, create the ledger dataset with the documented schema, write the initial watchlist with a one-line reason per series, and write `STATUS.md`. Issue no forecasts until that exists.
+If `forecast-ledger` is still in the `ouro` org, this tick's work is to join the `all` org `forecasting` team (`01a0910c-73ec-71ed-be53-e9c17cebb183`) and move it with `update_dataset` (`org_id` `00000000-0000-0000-0000-000000000000`, that `team_id`). Do not create a second ledger.
+
+If the ledger dataset does not exist yet, this tick's work is to stand it up: join the `forecasting` team in the `all` org, create the ledger dataset with the documented schema, write the initial watchlist with a one-line reason per series, and write `STATUS.md`. Issue no forecasts until that exists.
 
 ## Choosing the work
 

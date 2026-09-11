@@ -15,7 +15,7 @@
   "agent": {
     "name": "chronos",
     "workspace": "./agents/chronos",
-    "org_id": "0193d805-52f4-786a-8144-95f892915302",
+    "org_id": "00000000-0000-0000-0000-000000000000",
     "sandbox": {
       "mode": "docker",
       "enable_shell": true,

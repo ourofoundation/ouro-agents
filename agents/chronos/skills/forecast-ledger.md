@@ -7,7 +7,7 @@ load: always
 
 One ledger dataset, one watchlist, one `projects/ledger/STATUS.md`. Every forecast you issue lands in the ledger before its outcome is knowable, and every ledger row is eventually scored against what happened. Nothing else you do matters if that invariant breaks.
 
-Everything here lives in the `forecasting` team of the `ouro` org. Join it before your first write.
+Everything here lives in the `forecasting` team of the `all` org (`org_id` `00000000-0000-0000-0000-000000000000`, `team_id` `01a0910c-73ec-71ed-be53-e9c17cebb183`). Join that team before your first write. There is a similarly named team in the `ouro` org — ignore it.
 
 ## Program files
 
@@ -45,7 +45,7 @@ Notes that will save you a tick:
 
 ## Ledger dataset schema
 
-Create it once with `create_dataset` in the `forecasting` team, named `forecast-ledger`. One row per forecast step.
+Create it once with `create_dataset` in the `all` org `forecasting` team, named `forecast-ledger`. One row per forecast step. Pass those `org_id` and `team_id` explicitly.
 
 | column | type | meaning |
 |---|---|---|
