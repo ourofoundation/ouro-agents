@@ -29,6 +29,8 @@ class TestDevReloadSettings(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workspace = root / "workspace"
+            chroma = workspace / "protected" / "memory" / "chroma"
+            chroma.mkdir(parents=True)
             config_path = root / "config.json"
             config_path.write_text(
                 json.dumps(_minimal_config(str(workspace)))
@@ -40,7 +42,23 @@ class TestDevReloadSettings(unittest.TestCase):
             package_root = Path(__file__).resolve().parents[1] / "ouro_agents"
             self.assertEqual(reload_dirs, [str(package_root.resolve())])
             self.assertIn(str(workspace.resolve()), reload_excludes)
-            self.assertIn(
+            self.assertIn(str(chroma.resolve()), reload_excludes)
+
+    def test_omits_missing_workspace_and_chroma(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workspace = root / "workspace"
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(_minimal_config(str(workspace)))
+            )
+            config = OuroAgentsConfig.load_from_file(config_path)
+
+            _, reload_excludes = dev_reload_settings(config)
+
+            self.assertNotIn(str(workspace.resolve()), reload_excludes)
+            self.assertNotIn(
                 str((workspace / "protected" / "memory" / "chroma").resolve()),
                 reload_excludes,
             )
+            self.assertEqual(reload_excludes, ["__pycache__", "*.pyc"])

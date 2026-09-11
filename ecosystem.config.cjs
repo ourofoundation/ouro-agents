@@ -31,6 +31,7 @@ function agentApp(name, configFile, envFile) {
       PYTHONPATH: appDir,
       PYENV_ROOT: pyenvRoot,
       ENV_FILE: path.join(appDir, envFile),
+      PYTHON_ENV: "production",
     },
     env_production: {
       NODE_ENV: "production",

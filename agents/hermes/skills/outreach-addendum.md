@@ -215,3 +215,14 @@ against author names too, not just addresses.
   `followup-<first_outbound_email_id>`). Harmless for uniqueness so far, but
   do not rely on passing your own key; verify the echoed key and ensure the
   natural trigger ids for a contact stay distinct across intents.
+
+## Name-list dedup failures (2026-09-10, second occurrence)
+- Staging target lists in `projects/outreach/*.md` and deduping them by eyeball or by a
+  subagent's name list has now missed an existing CRM row twice: Junaid Jami (caught 09-10
+  pre-send) and Churna Bhandari (caught 09-10 post-append, only after a fresh verification
+  pass queried the CRM directly and found row 7a2f4c1e with the follow-up already used).
+  A written "dedup guard checked" claim inside the staging file is not evidence. Before
+  staging or re-verifying ANY target, run the SQL yourself against the Unified Outreach
+  Tracker (email OR name match) AND against Resend history; an `identified`/alternate status
+  in a notes file means nothing. The dataset has no row-delete, so a mistaken append becomes
+  a permanent tombstone row — cheap to avoid, annoying to clean.

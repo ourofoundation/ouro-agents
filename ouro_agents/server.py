@@ -21,6 +21,7 @@ from .display import OuroDisplay, get_display, set_display
 from .event_pool import EventPool
 from .event_registry import is_chat_event
 from .events import EventRunContext, build_event_run_context
+from .http_protocol import LoggedHttpToolsProtocol
 from .logging_config import uvicorn_log_config
 from .observer import AgentObserver, CompositeAgentObserver, ProgressEvent
 from .provenance import resolve_event_provenance
@@ -1401,12 +1402,12 @@ def dev_reload_settings(config: OuroAgentsConfig) -> tuple[list[str], list[str]]
     workspace = config.agent.workspace.resolve()
     chroma = (config.memory.path / "chroma").resolve()
     reload_dirs = [str(package_root)]
-    reload_excludes = [
-        str(workspace),
-        str(chroma),
-        "__pycache__",
-        "*.pyc",
-    ]
+    # Uvicorn globs exclude patterns via pathlib. Path.glob() rejects absolute
+    # patterns, so only pass directories that already exist.
+    reload_excludes = ["__pycache__", "*.pyc"]
+    for path in (workspace, chroma):
+        if path.is_dir():
+            reload_excludes.append(str(path))
     return reload_dirs, reload_excludes
 
 
@@ -1425,5 +1426,6 @@ def start_server(config_path: str = "config.json"):
         reload=reload,
         reload_dirs=reload_dirs,
         reload_excludes=reload_excludes,
+        http=LoggedHttpToolsProtocol,
         log_config=uvicorn_log_config(),
     )
