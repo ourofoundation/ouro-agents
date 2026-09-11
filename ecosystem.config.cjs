@@ -48,5 +48,6 @@ module.exports = {
     agentApp("apollo", "apollo.json", ".env.apollo"),
     agentApp("maestra", "maestra.json", ".env.maestra"),
     agentApp("magnes", "magnes.json", ".env.magnes"),
+    agentApp("chronos", "chronos.json", ".env.chronos"),
   ],
 };
