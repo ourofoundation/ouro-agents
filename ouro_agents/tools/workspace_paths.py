@@ -47,19 +47,24 @@ def configure_external_data_dir(
     if protected.exists():
         if target.exists():
             try:
+                protected_has_data = any(protected.iterdir())
                 target_has_data = any(target.iterdir())
             except (NotADirectoryError, OSError) as exc:
                 raise RuntimeError(
                     f"Configured data dir is not usable: {target}"
                 ) from exc
-            if target_has_data:
+            if not protected_has_data:
+                protected.rmdir()
+            elif target_has_data:
                 raise RuntimeError(
                     f"Both {protected} and configured data dir {target} contain "
                     "state; merge them explicitly before starting the agent"
                 )
-            target.rmdir()
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(protected), str(target))
+            else:
+                target.rmdir()
+        if protected.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(protected), str(target))
     else:
         target.mkdir(parents=True, exist_ok=True)
 

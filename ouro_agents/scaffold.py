@@ -14,7 +14,7 @@ def _runtime_version() -> str:
     try:
         return version("ouro-agents")
     except PackageNotFoundError:
-        return "0.1.3"
+        return "0.1.4"
 
 
 def _agent_config(name: str) -> str:
@@ -67,7 +67,7 @@ def _agent_config(name: str) -> str:
         },
         "memory": {
             "provider": "mem0",
-            "path": "./protected/memory",
+            "path": f"~/ouro-data/{name}/memory",
             "embedder": "openai/text-embedding-3-small",
         },
         "mcp_servers": [

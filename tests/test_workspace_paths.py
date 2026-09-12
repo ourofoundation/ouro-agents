@@ -52,6 +52,20 @@ class TestProtectedPaths(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(protected_root(ws), target.resolve())
 
+    def test_external_data_dir_removes_empty_workspace_stub(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ws = root / "repo"
+            target = root / "runtime"
+            (ws / "protected").mkdir(parents=True)
+            target.mkdir()
+            (target / "runs.db").write_text("state")
+
+            configure_external_data_dir(ws, target)
+
+            self.assertFalse((ws / "protected").exists())
+            self.assertEqual(protected_runs_db(ws).read_text(), "state")
+
 
 class TestMigrateProtectedWorkspace(unittest.TestCase):
     def test_moves_legacy_trees(self):

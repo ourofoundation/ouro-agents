@@ -15,6 +15,7 @@ def test_init_agent_project_creates_standalone_git_ready_project():
         assert config["agent"]["name"] == "atlas"
         assert config["agent"]["workspace"] == "."
         assert config["agent"]["data_dir"] == "~/ouro-data/atlas"
+        assert config["memory"]["path"] == "~/ouro-data/atlas/memory"
         assert config["agent"]["sandbox"]["enable_shell"] is True
         assert "GH_TOKEN" in config["agent"]["sandbox"]["env_allowlist"]
         assert (target / "SOUL.md").exists()
