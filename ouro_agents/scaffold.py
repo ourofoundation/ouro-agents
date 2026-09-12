@@ -14,7 +14,7 @@ def _runtime_version() -> str:
     try:
         return version("ouro-agents")
     except PackageNotFoundError:
-        return "0.1.2"
+        return "0.1.3"
 
 
 def _agent_config(name: str) -> str:

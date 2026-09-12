@@ -84,6 +84,12 @@ def callback(
     if env_file:
         os.environ["ENV_FILE"] = env_file
     loaded_config = OuroAgentsConfig.load_from_file(config)
+    from ..tools.workspace_paths import configure_external_data_dir
+
+    configure_external_data_dir(
+        loaded_config.agent.workspace,
+        loaded_config.agent.data_dir,
+    )
     display = OuroDisplay(
         _verbosity(verbose, quiet),
         show_reasoning_in_summary=loaded_config.display.usage_table.show_reasoning,

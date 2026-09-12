@@ -25,7 +25,7 @@ class TestProtectedPaths(unittest.TestCase):
             self.assertEqual(protected_memory(ws), ws / "protected" / "memory")
             self.assertEqual(protected_runs_db(ws), ws / "protected" / "runs.db")
 
-    def test_external_data_dir_moves_existing_state_and_links_workspace(self):
+    def test_external_data_dir_moves_existing_state_outside_workspace(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             ws = root / "repo"
@@ -35,10 +35,10 @@ class TestProtectedPaths(unittest.TestCase):
 
             protected = configure_external_data_dir(ws, target)
 
-            self.assertTrue(protected.is_symlink())
-            self.assertEqual(protected.resolve(), target.resolve())
+            self.assertEqual(protected, target.resolve())
+            self.assertFalse((ws / "protected").exists())
+            self.assertEqual(protected_root(ws), target.resolve())
             self.assertEqual((target / "runs.db").read_text(), "state")
-            self.assertEqual((protected / "runs.db").read_text(), "state")
 
     def test_external_data_dir_is_idempotent(self):
         with TemporaryDirectory() as tmpdir:
@@ -50,7 +50,7 @@ class TestProtectedPaths(unittest.TestCase):
             second = configure_external_data_dir(ws, target)
 
             self.assertEqual(first, second)
-            self.assertTrue(first.is_symlink())
+            self.assertEqual(protected_root(ws), target.resolve())
 
 
 class TestMigrateProtectedWorkspace(unittest.TestCase):

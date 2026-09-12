@@ -13,6 +13,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 PROTECTED_DIRNAME = "protected"
+_EXTERNAL_DATA_DIRS: dict[Path, Path] = {}
 
 
 def configure_external_data_dir(
@@ -20,13 +21,14 @@ def configure_external_data_dir(
 ) -> Path:
     """Place harness-owned state outside the repository when configured.
 
-    ``workspace/protected`` remains the stable path used by the runtime and
-    sandbox, but becomes an ignored symlink to ``agent.data_dir``. Existing
-    protected state is moved on first use so upgrades preserve memory and run
-    history.
+    Existing protected state is moved on first use so upgrades preserve memory
+    and run history. The mapping stays process-local; Docker bind-mounts the
+    external directory at ``/workspace/protected`` so host and sandbox paths
+    retain the same logical layout without repository symlinks.
     """
     ws = Path(workspace)
-    protected = protected_root(ws)
+    workspace_key = ws.expanduser().resolve()
+    protected = ws / PROTECTED_DIRNAME
     if data_dir is None:
         return protected
 
@@ -34,13 +36,13 @@ def configure_external_data_dir(
     ws.mkdir(parents=True, exist_ok=True)
 
     if protected.is_symlink():
-        if protected.resolve() != target:
+        current_target = protected.resolve()
+        if current_target != target:
             raise RuntimeError(
-                f"{protected} already points to {protected.resolve()}, "
+                f"{protected} already points to {current_target}, "
                 f"not configured data dir {target}"
             )
-        target.mkdir(parents=True, exist_ok=True)
-        return protected
+        protected.unlink()
 
     if protected.exists():
         if target.exists():
@@ -61,13 +63,17 @@ def configure_external_data_dir(
     else:
         target.mkdir(parents=True, exist_ok=True)
 
-    protected.symlink_to(target, target_is_directory=True)
-    logger.info("Runtime data: %s → %s", protected, target)
-    return protected
+    _EXTERNAL_DATA_DIRS[workspace_key] = target
+    logger.info("Runtime data for %s: %s", ws, target)
+    return target
 
 
 def protected_root(workspace: Path | str) -> Path:
-    return Path(workspace) / PROTECTED_DIRNAME
+    ws = Path(workspace)
+    return _EXTERNAL_DATA_DIRS.get(
+        ws.expanduser().resolve(),
+        ws / PROTECTED_DIRNAME,
+    )
 
 
 def protected_data(workspace: Path | str) -> Path:
