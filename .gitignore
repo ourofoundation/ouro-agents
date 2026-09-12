@@ -56,25 +56,13 @@ Thumbs.db
 .env
 .env.*
 
-# Data
+# Runtime data
 **/*.sqlite3
 **/*.bin
 **/*.jsonl
 
-
-# Workspace runtime (default ./workspace)
+# Local development workspace
 workspace/*
-
-# Agent workspaces — ignore runtime data by default, track identity/config
-agents/*
-!agents/*/
-agents/*/*
-!agents/*/SOUL.md
-!agents/*/HEARTBEAT.md
-!agents/*/NOTES.md
-!agents/*/skills/
-agents/*/skills/*
-!agents/*/skills/**
 
 # Config file
 config.json

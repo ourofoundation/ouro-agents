@@ -1020,7 +1020,7 @@ class OuroAgentsConfig(BaseSettings):
         import os
         from dotenv import load_dotenv
 
-        path = Path(path)
+        path = Path(path).expanduser().absolute()
         if not path.exists():
             raise FileNotFoundError(f"Config file not found: {path}")
 
@@ -1036,7 +1036,8 @@ class OuroAgentsConfig(BaseSettings):
             env_file = str(candidate)
             data["env_file"] = env_file
 
-        load_dotenv(env_file or ".env", override=True)
+        default_env_file = path.parent / ".env"
+        load_dotenv(env_file or default_env_file, override=True)
 
         import os
         import re
@@ -1126,5 +1127,32 @@ class OuroAgentsConfig(BaseSettings):
             agent_section["reasoning"] = legacy_reasoning
 
         _migrate_security_section(expanded_data)
+
+        # A config file is the root of an agent project. Relative paths must not
+        # depend on the caller's current working directory: installed users
+        # commonly run `ouro-agents --config /path/to/agent.json` from elsewhere.
+        project_root = path.parent
+
+        def resolve_project_path(value: str | Path) -> str:
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                candidate = project_root / candidate
+            return str(candidate.absolute())
+
+        agent_section["workspace"] = resolve_project_path(
+            agent_section.get("workspace", "./workspace")
+        )
+
+        memory_section = expanded_data.setdefault("memory", {})
+        if memory_section.get("path"):
+            memory_section["path"] = resolve_project_path(memory_section["path"])
+        else:
+            memory_section["path"] = str(
+                Path(agent_section["workspace"]) / "protected" / "memory"
+            )
+
+        run_log_section = expanded_data.get("run_log")
+        if isinstance(run_log_section, dict) and run_log_section.get("path"):
+            run_log_section["path"] = resolve_project_path(run_log_section["path"])
 
         return cls(**expanded_data)

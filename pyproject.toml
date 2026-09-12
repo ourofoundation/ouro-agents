@@ -8,6 +8,19 @@ version = "0.1.0"
 description = "Autonomous Agent Package for Ouro"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Ouro Foundation", email = "hello@ouro.foundation" },
+]
+keywords = ["agents", "ai", "ouro", "mcp"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
 dependencies = [
     "uuid7-standard>=1.1.0",
     "smolagents[mcp]==1.24.0",
@@ -36,8 +49,28 @@ dependencies = [
 [project.scripts]
 ouro-agents = "ouro_agents.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/ourofoundation/ouro-agents"
+Documentation = "https://github.com/ourofoundation/ouro-agents/tree/main/docs"
+Issues = "https://github.com/ourofoundation/ouro-agents/issues"
+
 [project.optional-dependencies]
-dev = ["pytest", "ruff"]
+dev = ["build", "pytest", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["ouro_agents"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/ouro_agents",
+    "/tests",
+    "/docs",
+    "/README.md",
+    "/LICENSE",
+    "/config.example.json",
+    "/Dockerfile.sandbox",
+    "/Makefile",
+]
 
 [tool.pytest.ini_options]
 # Without this, a bare ``pytest`` walks the whole repo — including agent
