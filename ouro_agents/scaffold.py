@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import tempfile
+from importlib import resources
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -14,7 +17,29 @@ def _runtime_version() -> str:
     try:
         return version("ouro-agents")
     except PackageNotFoundError:
-        return "0.1.4"
+        return "0.1.5"
+
+
+def sandbox_image_name() -> str:
+    return f"ouro-agents-sandbox:{_runtime_version()}"
+
+
+def build_sandbox_image() -> str:
+    """Build the packaged sandbox image and return its local tag."""
+    dockerfile = (
+        resources.files("ouro_agents.resources")
+        .joinpath("Dockerfile.sandbox")
+        .read_text()
+    )
+    image = sandbox_image_name()
+    with tempfile.TemporaryDirectory() as context:
+        subprocess.run(
+            ["docker", "build", "--file", "-", "--tag", image, context],
+            input=dockerfile,
+            text=True,
+            check=True,
+        )
+    return image
 
 
 def _agent_config(name: str) -> str:
@@ -27,10 +52,7 @@ def _agent_config(name: str) -> str:
             "org_id": "00000000-0000-0000-0000-000000000000",
             "sandbox": {
                 "mode": "docker",
-                "image": (
-                    "ghcr.io/ourofoundation/ouro-agents-sandbox:"
-                    f"{runtime_version}"
-                ),
+                "image": f"ouro-agents-sandbox:{runtime_version}",
                 "workspace_mount": "/workspace",
                 "enable_shell": True,
                 "env_allowlist": [
@@ -164,6 +186,7 @@ def _files(name: str) -> dict[str, str]:
             "source .venv/bin/activate\n"
             "pip install -e .\n"
             "cp .env.example .env\n"
+            "ouro-agents build-sandbox\n"
             "ouro-agents --config agent.json serve\n"
             "```\n"
         ),

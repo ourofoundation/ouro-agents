@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ from ..agent import OuroAgent
 from ..cancellation import RunCancelled
 from ..config import OuroAgentsConfig, RunMode
 from ..display import OuroDisplay, Verbosity, set_display
-from ..scaffold import init_agent_project
+from ..scaffold import build_sandbox_image, init_agent_project
 from ..server import start_server
 from ..tui.team_picker import choose_plan_team
 from ..uuid_v7 import uuid7_str
@@ -79,7 +80,7 @@ def callback(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Show errors only"),
 ) -> None:
-    if ctx.invoked_subcommand == "init":
+    if ctx.invoked_subcommand in {"init", "build-sandbox"}:
         return
     if env_file:
         os.environ["ENV_FILE"] = env_file
@@ -123,6 +124,17 @@ def init_command(
         raise typer.BadParameter(str(exc)) from exc
     typer.echo(f"Created {name} agent project at {target}")
     typer.echo(f"Next: cd {target} && cp .env.example .env && pip install -e .")
+
+
+@cli.command("build-sandbox")
+def build_sandbox_command() -> None:
+    """Build the version-matched Docker sandbox shipped in the wheel."""
+    try:
+        image = build_sandbox_image()
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        typer.echo(f"Sandbox build failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+    typer.echo(f"Built {image}")
 
 
 @cli.command()

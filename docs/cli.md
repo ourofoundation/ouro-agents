@@ -29,6 +29,16 @@ configuration, identity and heartbeat documents, curated memory, skills,
 coils, PM2 config, environment template, and runtime-safe `.gitignore`.
 It refuses to overwrite any generated path that already exists.
 
+## `build-sandbox`
+
+```bash
+ouro-agents build-sandbox
+```
+
+Builds the version-matched Docker sandbox bundled in the installed wheel. The
+local image includes Python/science dependencies plus `git` and `gh`; no runtime
+source checkout or private container-registry access is required.
+
 ## `serve`
 
 ```bash

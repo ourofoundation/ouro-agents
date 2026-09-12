@@ -51,6 +51,7 @@ pip install -e .
 
 cp .env.example .env
 # edit .env and agent.json, then:
+ouro-agents build-sandbox
 ouro-agents --config agent.json chat
 ```
 

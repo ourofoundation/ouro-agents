@@ -1,7 +1,6 @@
 name: Publish to PyPI
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
@@ -10,47 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  sandbox:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Generate image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/ourofoundation/ouro-agents-sandbox
-          tags: |
-            type=semver,pattern={{version}}
-            type=raw,value=latest
-
-      - name: Build and publish sandbox
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.sandbox
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Make sandbox publicly pullable
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api --method PATCH \
-            /orgs/ourofoundation/packages/container/ouro-agents-sandbox \
-            -f visibility=public
-
   build:
     runs-on: ubuntu-latest
     steps:
