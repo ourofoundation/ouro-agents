@@ -8,7 +8,7 @@
       "python_packages": [
         "exa_py.*"
       ],
-      "image": "ghcr.io/ourofoundation/ouro-agents-sandbox:0.1.0",
+      "image": "ghcr.io/ourofoundation/ouro-agents-sandbox:0.1.1",
       "workspace_mount": "/workspace",
       "network": "bridge",
       "memory": "1g",
