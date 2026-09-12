@@ -71,11 +71,28 @@ jobs:
     permissions:
       id-token: write
     steps:
+      - name: Resolve version
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether version already exists
+        id: existing
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if curl --fail --silent "https://pypi.org/pypi/ouro-agents/${VERSION}/json" >/dev/null; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download distributions
+        if: steps.existing.outputs.value != 'true'
         uses: actions/download-artifact@v4
         with:
           name: python-package-distributions
           path: dist/
 
       - name: Publish distributions to PyPI
+        if: steps.existing.outputs.value != 'true'
         uses: pypa/gh-action-pypi-publish@release/v1
