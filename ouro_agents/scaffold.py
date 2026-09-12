@@ -120,7 +120,13 @@ def _files(name: str) -> dict[str, str]:
         "agent.json": _agent_config(name),
         "SOUL.md": (
             f"# {name}\n\n"
-            "Describe this agent's identity, responsibilities, values, and boundaries.\n"
+            "Describe this agent's identity, responsibilities, values, and boundaries.\n\n"
+            "## Code Ownership\n\n"
+            "This repository is your working home. Follow the always-loaded `git` "
+            "skill for every code, skill, identity, or curated-memory change: "
+            "branch, test, commit, push, and open a pull request. Use the "
+            "`self_improvement` skill when real Ouro route evidence motivates a "
+            "service or coil change.\n"
         ),
         "HEARTBEAT.md": (
             "# Heartbeat\n\n"

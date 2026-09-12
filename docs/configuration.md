@@ -1,13 +1,14 @@
 # Configuration reference
 
-`config.json` is the single source of truth for an agent. It is loaded by
+`agent.json` is the single source of truth for an agent (`config.json` still
+loads if you pass `--config`). It is loaded by
 `OuroAgentsConfig.load_from_file(path)` (`ouro_agents/config.py`), which
 also expands `${ENV_VAR}` references and migrates a few legacy field
 shapes.
 
 This page documents every field. See
 [`config.example.json`](../config.example.json) for a working starting
-point.
+point, or run `ouro-agents init <name>` to generate a project.
 
 ## Top-level shape
 
@@ -99,7 +100,8 @@ models as before.
 |-------|------|---------|-------|
 | `name` | str | required | Display name, also used in doc-store keys. |
 | `model` | str | required\* | Default OpenRouter model id. \*Filled from `models.strong` when omitted. |
-| `workspace` | path | `./workspace` | Workspace directory. |
+| `workspace` | path | `./workspace` | Workspace directory. Standalone agent repos set this to `.` so the repository is the workspace. |
+| `data_dir` | path | none | Optional directory for harness-owned state (`protected/` contents: runs.db, mem0/Chroma, dream logs). Generated projects use `~/ouro-data/<name>` so runtime databases stay out of git. When set, the Docker sandbox bind-mounts this path at `/workspace/protected` without creating a repo symlink. |
 | `org_id` | str | none | Ouro organization the agent operates in. Required when using teams. |
 | `sandbox` | SandboxConfig | see below | Selects the `run_python` execution backend. |
 | `reasoning` | ReasoningConfig | none | Default OpenRouter reasoning for the main agent model (see below). Filled from `models.strong.reasoning` when omitted. |
@@ -161,25 +163,38 @@ dependencies.
 
 #### Build the Docker sandbox images
 
-`Dockerfile.sandbox` is the shared base image with the common science stack.
-Agents that need extra tooling get their own thin overlay Dockerfile built
-`FROM` the base (e.g. `Dockerfile.sandbox.apollo` adds git for service
-building; `Dockerfile.sandbox.hermes` adds the Resend SDK for outreach
-routes) and point `agent.sandbox.image` at the overlay tag.
-
-Build from the `ouro-agents` directory. The Makefile builds the base first,
-then every `Dockerfile.sandbox.<name>` overlay:
+The released wheel ships `ouro_agents/resources/Dockerfile.sandbox`: a shared
+science stack plus `git` and the `gh` CLI. Build it from any machine that has
+the package installed — no `ouro-agents` source checkout is required:
 
 ```bash
-make              # base + all overlays
-make apollo       # base, then apollo
-make hermes
-make NO_CACHE=1   # rebuild without Docker cache
+ouro-agents build-sandbox
 ```
 
-If you add packages to `agent.sandbox.python_packages`, make sure the agent's
-configured image installs them: add them to the agent's overlay Dockerfile (or
-the base, if every agent should have them) and rebuild.
+That tags `ouro-agents-sandbox:<installed-version>`. Generated projects pin
+the same tag in `agent.sandbox.image`.
+
+If an agent needs extra packages, keep a thin `Dockerfile.agent` in *that*
+agent's repository:
+
+```dockerfile
+ARG OURO_AGENTS_VERSION=0.1.5
+FROM ouro-agents-sandbox:${OURO_AGENTS_VERSION}
+RUN python -m pip install --no-cache-dir resend
+```
+
+```bash
+ouro-agents build-sandbox
+docker build -f Dockerfile.agent -t ouro-agents-sandbox-<name>:latest .
+```
+
+Point `agent.sandbox.image` at the overlay tag. Keep extra CLI tools and
+SDKs in the agent repo so the public runtime stays generic.
+
+To let the agent commit and open pull requests, set `sandbox.enable_shell`
+to `true` and allow `GH_TOKEN` plus the `GIT_AUTHOR_*` / `GIT_COMMITTER_*`
+variables through `env_allowlist`. Scope that token as described in
+[GitHub identities](./github-identities.md).
 
 ### `agent.reasoning`
 

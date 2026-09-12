@@ -12,7 +12,7 @@ Global options:
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--config PATH` | `config.json` | Path to the config file. |
+| `--config PATH` | `agent.json` | Path to the config file. |
 | `--env-file PATH` | `.env` | `.env` file passed to `python-dotenv`. Sets `ENV_FILE` for the rest of the process. |
 | `-v` / `--verbose` | off | Verbose display (debug-level info). |
 | `-q` / `--quiet` | off | Errors only. |

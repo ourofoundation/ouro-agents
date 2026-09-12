@@ -22,11 +22,17 @@ def test_init_agent_project_creates_standalone_git_ready_project():
         )
         assert config["agent"]["sandbox"]["enable_shell"] is True
         assert "GH_TOKEN" in config["agent"]["sandbox"]["env_allowlist"]
-        assert (target / "SOUL.md").exists()
+        soul = (target / "SOUL.md").read_text()
+        env_example = (target / ".env.example").read_text()
+        assert "always-loaded `git` skill" in soul
+        assert "`self_improvement` skill" in soul
         assert (target / "HEARTBEAT.md").exists()
         assert (target / "MEMORY.md").exists()
         assert "ouro-agents==" in (target / "pyproject.toml").read_text()
         assert "protected/" in (target / ".gitignore").read_text()
+        assert "GH_TOKEN=" in env_example
+        assert "GIT_AUTHOR_NAME=atlas" in env_example
+        assert "GIT_AUTHOR_EMAIL=atlas@ouro.foundation" in env_example
 
 
 def test_init_agent_project_refuses_to_overwrite_files():

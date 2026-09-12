@@ -14,7 +14,7 @@
 
 The app uses `lifespan(app)` instead of `@app.on_event`. On startup it:
 
-1. Loads `config.json` (path from `CONFIG_FILE`, set by `start_server`).
+1. Loads `agent.json` (path from `CONFIG_FILE`, set by `start_server`).
 2. Builds an `OuroAgent`, connects MCP servers, and refreshes platform
    context (orgs/teams).
 3. Constructs an `EventPool` and an `OuroReplyPublisher`.

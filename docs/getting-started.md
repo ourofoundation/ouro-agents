@@ -56,7 +56,8 @@ plumbs it into the search MCP server).
 
 `GH_TOKEN` is optional. Set it when the agent should use authenticated `git`
 and `gh` commands in its Docker sandbox. Scope that credential to the agent's
-own repository and protect the default branch.
+own repository and protect the default branch — see
+[GitHub identities](./github-identities.md).
 
 ## 4. Configure your agent
 
@@ -129,4 +130,5 @@ See the [CLI reference](./cli.md) for every flag and the
 
 - Read [Concepts](./concepts.md) to understand modes, subagents, and memory.
 - Tune behavior via the [Configuration reference](./configuration.md).
+- Give the agent its own GitHub token and protect `main` ([GitHub identities](./github-identities.md)).
 - Wire your agent into Ouro events (see [Events & webhooks](./events.md)).

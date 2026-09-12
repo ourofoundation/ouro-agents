@@ -1,9 +1,10 @@
 # Skills
 
 Skills are reusable markdown knowledge fragments stored under
-`ouro_agents/skills/` (built-ins) and `workspace/skills/` (overrides /
-project-specific). Each file has optional YAML frontmatter and a markdown
-body.
+`ouro_agents/skills/` (built-ins) and `<workspace>/skills/` (overrides /
+project-specific). In a standalone agent repo the workspace is `.`, so
+agent-authored skills live at `skills/`. Each file has optional YAML
+frontmatter and a markdown body.
 
 The skills system has two consumers:
 
@@ -86,6 +87,8 @@ Shipping with the package today:
 | `filesystem` | Workspace file conventions. |
 | `web-search` | When and how to use web search. |
 | `working-memory` | How to maintain `MEMORY.md` and daily logs. |
+| `git` | Always-loaded: branch, test, commit, push, and open a PR. Never force-push. |
+| `self_improvement` | Observe Ouro route evidence, edit owned code, open a PR, deploy, verify. |
 | `asset_output` | Output handoff conventions for asset-creating subagents. |
 | `benchmarking` | Running benchmarks via Ouro routes. |
 | `screening-campaigns` | Materials-science screening playbook. |

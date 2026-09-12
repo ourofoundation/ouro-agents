@@ -1,10 +1,14 @@
 # Workspace layout
 
-The workspace is the agent's home directory on disk. Everything an agent
-"remembers" between processes — identity, working memory, conversations,
-team plans, scheduled tasks — lives here.
+The workspace is the agent's home directory on disk. In a standalone agent
+repository (`ouro-agents init`, or our own agents), `agent.workspace` is `.`
+— the git repo *is* the workspace. Durable identity, skills, coils, service
+code, and curated `MEMORY.md` are tracked; harness-owned databases live in
+`agent.data_dir` (typically `~/ouro-data/<name>`) so `git status` stays
+meaningful.
 
-`agent.workspace` in `config.json` (default `./workspace`) sets the root.
+`agent.workspace` in `agent.json` (default `./workspace` for legacy layouts)
+sets the root.
 
 ## Layout
 

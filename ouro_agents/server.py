@@ -142,7 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     global agent_instance, reply_publisher, event_pool, agent_routes_server
     config = OuroAgentsConfig.load_from_file(
-        os.environ.get("CONFIG_FILE", "config.json")
+        os.environ.get("CONFIG_FILE", "agent.json")
     )
     set_display(
         OuroDisplay(show_reasoning_in_summary=config.display.usage_table.show_reasoning)
@@ -1411,7 +1411,7 @@ def dev_reload_settings(config: OuroAgentsConfig) -> tuple[list[str], list[str]]
     return reload_dirs, reload_excludes
 
 
-def start_server(config_path: str = "config.json"):
+def start_server(config_path: str = "agent.json"):
     os.environ["CONFIG_FILE"] = config_path
     config = OuroAgentsConfig.load_from_file(config_path)
     reload = os.getenv("PYTHON_ENV") != "production"
