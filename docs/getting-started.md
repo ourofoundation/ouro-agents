@@ -86,7 +86,9 @@ my-agent/
 └── scratch/         # ignored temporary work
 ```
 
-The first run populates ignored runtime directories. See
+The generated config puts harness-owned state in `~/ouro-data/my-agent` and
+links the ignored `protected/` path there. Conversation and scratch paths are
+also ignored, so runtime activity does not pollute `git status`. See
 [Workspace layout](./workspace.md).
 
 ## 6. First run

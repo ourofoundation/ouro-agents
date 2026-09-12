@@ -253,6 +253,7 @@ class AgentConfig(BaseModel):
     name: str
     model: str
     workspace: Path = Path("./workspace")
+    data_dir: Optional[Path] = None
     org_id: Optional[str] = None
     sandbox: "SandboxConfig" = Field(default_factory=lambda: SandboxConfig())
     # Default OpenRouter reasoning for the main agent model (see ``ReasoningConfig``).
@@ -1142,10 +1143,18 @@ class OuroAgentsConfig(BaseSettings):
         agent_section["workspace"] = resolve_project_path(
             agent_section.get("workspace", "./workspace")
         )
+        if agent_section.get("data_dir"):
+            agent_section["data_dir"] = resolve_project_path(
+                agent_section["data_dir"]
+            )
 
         memory_section = expanded_data.setdefault("memory", {})
         if memory_section.get("path"):
             memory_section["path"] = resolve_project_path(memory_section["path"])
+        elif agent_section.get("data_dir"):
+            memory_section["path"] = str(
+                Path(agent_section["data_dir"]) / "memory"
+            )
         else:
             memory_section["path"] = str(
                 Path(agent_section["workspace"]) / "protected" / "memory"

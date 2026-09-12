@@ -60,6 +60,7 @@ class TestConfigModeOverrides(unittest.TestCase):
             project.mkdir()
             path = project / "agent.json"
             data = _base_config()
+            data["agent"]["data_dir"] = "./state"
             data["memory"]["path"] = "./state/memory"
             data["run_log"] = {"path": "./state/runs.db"}
             path.write_text(json.dumps(data))
@@ -68,6 +69,7 @@ class TestConfigModeOverrides(unittest.TestCase):
                 config = OuroAgentsConfig.load_from_file(path)
 
             self.assertEqual(config.agent.workspace, project / "workspace")
+            self.assertEqual(config.agent.data_dir, project / "state")
             self.assertEqual(config.memory.path, project / "state" / "memory")
             self.assertEqual(config.run_log.path, project / "state" / "runs.db")
 

@@ -15,6 +15,57 @@ logger = logging.getLogger(__name__)
 PROTECTED_DIRNAME = "protected"
 
 
+def configure_external_data_dir(
+    workspace: Path | str, data_dir: Path | str | None
+) -> Path:
+    """Place harness-owned state outside the repository when configured.
+
+    ``workspace/protected`` remains the stable path used by the runtime and
+    sandbox, but becomes an ignored symlink to ``agent.data_dir``. Existing
+    protected state is moved on first use so upgrades preserve memory and run
+    history.
+    """
+    ws = Path(workspace)
+    protected = protected_root(ws)
+    if data_dir is None:
+        return protected
+
+    target = Path(data_dir).expanduser().resolve()
+    ws.mkdir(parents=True, exist_ok=True)
+
+    if protected.is_symlink():
+        if protected.resolve() != target:
+            raise RuntimeError(
+                f"{protected} already points to {protected.resolve()}, "
+                f"not configured data dir {target}"
+            )
+        target.mkdir(parents=True, exist_ok=True)
+        return protected
+
+    if protected.exists():
+        if target.exists():
+            try:
+                target_has_data = any(target.iterdir())
+            except (NotADirectoryError, OSError) as exc:
+                raise RuntimeError(
+                    f"Configured data dir is not usable: {target}"
+                ) from exc
+            if target_has_data:
+                raise RuntimeError(
+                    f"Both {protected} and configured data dir {target} contain "
+                    "state; merge them explicitly before starting the agent"
+                )
+            target.rmdir()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(protected), str(target))
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+
+    protected.symlink_to(target, target_is_directory=True)
+    logger.info("Runtime data: %s → %s", protected, target)
+    return protected
+
+
 def protected_root(workspace: Path | str) -> Path:
     return Path(workspace) / PROTECTED_DIRNAME
 

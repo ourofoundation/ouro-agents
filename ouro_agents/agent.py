@@ -199,11 +199,16 @@ class OuroAgent:
         # otherwise create_memory_backend mkdir's an empty protected/memory and
         # the migrate step skips the real store.
         from .tools.workspace_paths import (
+            configure_external_data_dir,
             migrate_protected_workspace,
             protected_data,
             protected_runs_db,
         )
 
+        configure_external_data_dir(
+            self._workspace,
+            config.agent.data_dir,
+        )
         migrate_protected_workspace(self._workspace)
 
         self.memory = create_memory_backend(

@@ -58,6 +58,8 @@ The generated repository owns the agent's identity, skills, curated memory,
 coils, and service code. Runtime data and secrets are ignored. Its
 `pyproject.toml` pins the same released `ouro-agents` package an external user
 installs; no checkout of this repository is required.
+Harness-owned databases and run state live under `agent.data_dir` (generated
+as `~/ouro-data/<name>`), outside the repository.
 
 Run a one-shot task:
 

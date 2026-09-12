@@ -14,7 +14,7 @@ def _runtime_version() -> str:
     try:
         return version("ouro-agents")
     except PackageNotFoundError:
-        return "0.1.1"
+        return "0.1.2"
 
 
 def _agent_config(name: str) -> str:
@@ -23,6 +23,7 @@ def _agent_config(name: str) -> str:
         "agent": {
             "name": name,
             "workspace": ".",
+            "data_dir": f"~/ouro-data/{name}",
             "org_id": "00000000-0000-0000-0000-000000000000",
             "sandbox": {
                 "mode": "docker",

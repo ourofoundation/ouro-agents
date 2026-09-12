@@ -2,13 +2,14 @@
   "agent": {
     "name": "my-agent",
     "workspace": ".",
+    "data_dir": "~/ouro-data/my-agent",
     "org_id": "00000000-0000-0000-0000-000000000000",
     "sandbox": {
       "mode": "docker",
       "python_packages": [
         "exa_py.*"
       ],
-      "image": "ghcr.io/ourofoundation/ouro-agents-sandbox:0.1.1",
+      "image": "ghcr.io/ourofoundation/ouro-agents-sandbox:0.1.2",
       "workspace_mount": "/workspace",
       "network": "bridge",
       "memory": "1g",
