@@ -83,7 +83,8 @@ Full docs live in [`docs/`](docs/README.md). A few starting points:
 - [Concepts overview](docs/concepts.md) — how the agent loop, modes,
   subagents, memory, and planning fit together.
 - [Configuration reference](docs/configuration.md) — every field in
-  `config.json`.
+  `agent.json`.
+- [GitHub identities](docs/github-identities.md) — per-agent tokens and PRs.
 - [CLI reference](docs/cli.md) — every subcommand and flag.
 - [Run modes](docs/run-modes.md) — chat, autonomous, heartbeat, plan, review.
 - [Subagents](docs/subagents.md) — built-in profiles, custom profiles,
@@ -155,7 +156,7 @@ See [docs/workspace.md](docs/workspace.md).
 
 ## Configuration at a glance
 
-Minimal `config.json` shape (full reference in
+Minimal `agent.json` shape (full reference in
 [docs/configuration.md](docs/configuration.md)):
 
 ```json
@@ -163,7 +164,8 @@ Minimal `config.json` shape (full reference in
   "agent": {
     "name": "hermes",
     "org_id": "00000000-0000-0000-0000-000000000000",
-    "workspace": "./workspace"
+    "workspace": ".",
+    "data_dir": "~/ouro-data/hermes"
   },
   "models": {
     "strong": {

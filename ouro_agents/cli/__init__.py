@@ -73,7 +73,7 @@ def _state(ctx: typer.Context) -> CLIState:
 @cli.callback()
 def callback(
     ctx: typer.Context,
-    config: str = typer.Option("config.json", "--config", help="Path to config.json"),
+    config: str = typer.Option("agent.json", "--config", help="Path to agent.json"),
     env_file: Optional[str] = typer.Option(
         None, "--env-file", help="Path to .env file (default: .env)"
     ),

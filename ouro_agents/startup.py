@@ -112,7 +112,7 @@ def _config_grid(config: OuroAgentsConfig, platform: Optional[str]) -> Table:
     rows.append(("server", f"{server.host}:{server.port} · webhook {server.webhook_path}"))
     if server.public_base_url:
         rows.append(("public", escape(server.public_base_url)))
-    config_bits = [escape(os.environ.get("CONFIG_FILE") or "config.json")]
+    config_bits = [escape(os.environ.get("CONFIG_FILE") or "agent.json")]
     env_file = os.environ.get("ENV_FILE") or (
         str(config.env_file) if config.env_file else ""
     )

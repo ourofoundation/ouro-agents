@@ -136,7 +136,8 @@ validated inside the configured image at startup. Use wildcard entries such as
 When Ouro credentials are available, the tool exposes `get_ouro_client()`
 for SDK access. In Docker mode, the container receives only the environment
 variables listed in `agent.sandbox.env_allowlist` (by default
-`OURO_API_KEY` and `OURO_BASE_URL`).
+`OURO_API_KEY` and `OURO_BASE_URL`; generated projects also pass
+`GH_TOKEN` and git author/committer identity).
 
 ## run_shell
 

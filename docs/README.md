@@ -9,9 +9,10 @@ for the mental model.
 ## Index
 
 ### Getting started
-- [Getting started](./getting-started.md) — install, configure, and run your first agent.
-- [Configuration reference](./configuration.md) — every field in `config.json`.
-- [CLI reference](./cli.md) — `ouro-agents serve | run | chat | heartbeat | plan | review`.
+- [Getting started](./getting-started.md) — install from PyPI, `init`, configure, and run.
+- [Configuration reference](./configuration.md) — every field in `agent.json`.
+- [CLI reference](./cli.md) — `ouro-agents init | serve | run | chat | heartbeat | plan`.
+- [GitHub identities](./github-identities.md) — per-agent tokens, repo scope, and branch protection.
 - [HTTP API & webhooks](./http-api.md) — the FastAPI server, `/run`, `/health`, `/events`.
 
 ### Concepts
