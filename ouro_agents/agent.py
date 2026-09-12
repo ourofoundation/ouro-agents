@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1507,15 +1508,20 @@ class OuroAgent:
             del schema["anyOf"]
 
     def _connect_one_server(self, server: MCPServerConfig) -> None:
+        command = (
+            sys.executable
+            if server.command in {"python", "python3"}
+            else server.command
+        )
         if server.transport == "stdio":
-            if not server.command:
+            if not command:
                 return
             try:
                 from mcp import StdioServerParameters
 
                 env = self._mcp_server_env(server)
                 server_params = StdioServerParameters(
-                    command=server.command, args=server.args or [], env=env
+                    command=command, args=server.args or [], env=env
                 )
                 ctx = ToolCollection.from_mcp(
                     server_parameters=server_params,
@@ -1536,10 +1542,10 @@ class OuroAgent:
                 )
                 return
             try:
-                if server.command:
+                if command:
                     managed = spawn_managed_mcp_http(
                         name=server.name,
-                        command=server.command,
+                        command=command,
                         args=server.args,
                         env=self._mcp_server_env(server),
                         url=server.url,

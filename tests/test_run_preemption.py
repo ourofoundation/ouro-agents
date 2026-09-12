@@ -1,6 +1,7 @@
 """Tests for overlapping runs (no cross-mode preemption) and ActiveRunRegistry."""
 
 import asyncio
+import sys
 import threading
 import time
 from unittest.mock import MagicMock
@@ -244,3 +245,38 @@ def test_streamable_http_connect_uses_dict_params(monkeypatch):
         "transport": "streamable-http",
     }
     assert agent._mcp_locks.lock_for("ouro") is None
+
+
+def test_stdio_python_command_uses_running_interpreter(monkeypatch):
+    from ouro_agents.config import MCPServerConfig
+
+    seen = {}
+
+    class _FakeCollection:
+        tools = []
+
+        def __enter__(self):
+            return self
+
+    def fake_from_mcp(server_parameters=None, **kwargs):
+        seen["params"] = server_parameters
+        return _FakeCollection()
+
+    monkeypatch.setattr(
+        "ouro_agents.agent.ToolCollection.from_mcp", fake_from_mcp
+    )
+    agent = MagicMock(spec=OuroAgent)
+    agent._mcp_contexts = []
+    agent._mcp_locks = McpServerLocks()
+    agent._mcp_server_env = lambda server: {}
+    agent._register_mcp_tools = lambda server, tools, lock_stdio=False: None
+
+    server = MCPServerConfig(
+        name="ouro",
+        transport="stdio",
+        command="python",
+        args=["-m", "ouro_mcp.server"],
+    )
+    OuroAgent._connect_one_server(agent, server)
+
+    assert seen["params"].command == sys.executable
