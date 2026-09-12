@@ -24,6 +24,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 cp .env.example .env
+ouro-agents build-sandbox
 ```
 
 The generated `pyproject.toml` pins the released runtime version. The repository

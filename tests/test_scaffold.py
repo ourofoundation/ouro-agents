@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
 
-from ouro_agents.scaffold import init_agent_project
+from ouro_agents.scaffold import build_sandbox_image, init_agent_project
 
 
 def test_init_agent_project_creates_standalone_git_ready_project():
@@ -16,6 +17,9 @@ def test_init_agent_project_creates_standalone_git_ready_project():
         assert config["agent"]["workspace"] == "."
         assert config["agent"]["data_dir"] == "~/ouro-data/atlas"
         assert config["memory"]["path"] == "~/ouro-data/atlas/memory"
+        assert config["agent"]["sandbox"]["image"].startswith(
+            "ouro-agents-sandbox:"
+        )
         assert config["agent"]["sandbox"]["enable_shell"] is True
         assert "GH_TOKEN" in config["agent"]["sandbox"]["env_allowlist"]
         assert (target / "SOUL.md").exists()
@@ -35,6 +39,22 @@ def test_init_agent_project_refuses_to_overwrite_files():
             init_agent_project("atlas", target)
 
         assert (target / "SOUL.md").read_text() == "existing"
+
+
+def test_build_sandbox_image_uses_packaged_dockerfile():
+    with (
+        patch("ouro_agents.scaffold._runtime_version", return_value="1.2.3"),
+        patch("ouro_agents.scaffold.subprocess.run") as run,
+    ):
+        image = build_sandbox_image()
+
+    assert image == "ouro-agents-sandbox:1.2.3"
+    args = run.call_args.args[0]
+    assert args[:5] == ["docker", "build", "--file", "-", "--tag"]
+    assert args[5] == image
+    assert "apt-get install --no-install-recommends --yes git gh" in (
+        run.call_args.kwargs["input"]
+    )
 
 
 @pytest.mark.parametrize("name", ["Atlas", "a", "../atlas", "atlas_agent"])
