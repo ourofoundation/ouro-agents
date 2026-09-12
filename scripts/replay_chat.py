@@ -7,10 +7,10 @@ nothing is written back and no platform calls are made.
 
 Usage:
     # Replay a real conversation from the run log
-    python scripts/replay_chat.py --config apollo.json --conversation-id <uuid>
+    python scripts/replay_chat.py --config /path/to/agent.json --conversation-id <uuid>
 
     # Save it as a fixture, then replay offline
-    python scripts/replay_chat.py --config apollo.json --conversation-id <uuid> \
+    python scripts/replay_chat.py --config /path/to/agent.json --conversation-id <uuid> \
         --export tests/fixtures/chat/goal_drift_019fb5df.json
     python scripts/replay_chat.py --fixture tests/fixtures/chat/goal_drift_019fb5df.json
 
@@ -29,8 +29,6 @@ import logging
 import sys
 from pathlib import Path
 
-logging.basicConfig(level=logging.WARNING)
-
 from ouro_agents.chat_replay import (
     ReplayTurn,
     first_turn_drop,
@@ -45,6 +43,8 @@ from ouro_agents.config import OuroAgentsConfig
 from ouro_agents.run_log import RunLogStore
 from ouro_agents.tools.workspace_paths import protected_runs_db
 from ouro_agents.utils.conversation import select_history_window
+
+logging.basicConfig(level=logging.WARNING)
 
 
 def _identity_window(turns: list[dict]) -> list[dict]:
@@ -70,7 +70,7 @@ def _load_turns(args) -> list[ReplayTurn]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="apollo.json")
+    parser.add_argument("--config", default="agent.json")
     parser.add_argument("--conversation-id", help="Replay from the run log")
     parser.add_argument("--fixture", help="Replay from a saved transcript JSON")
     parser.add_argument("--export", help="Save the transcript to this path and exit")

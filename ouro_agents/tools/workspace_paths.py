@@ -13,10 +13,72 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 PROTECTED_DIRNAME = "protected"
+_EXTERNAL_DATA_DIRS: dict[Path, Path] = {}
+
+
+def configure_external_data_dir(
+    workspace: Path | str, data_dir: Path | str | None
+) -> Path:
+    """Place harness-owned state outside the repository when configured.
+
+    Existing protected state is moved on first use so upgrades preserve memory
+    and run history. The mapping stays process-local; Docker bind-mounts the
+    external directory at ``/workspace/protected`` so host and sandbox paths
+    retain the same logical layout without repository symlinks.
+    """
+    ws = Path(workspace)
+    workspace_key = ws.expanduser().resolve()
+    protected = ws / PROTECTED_DIRNAME
+    if data_dir is None:
+        return protected
+
+    target = Path(data_dir).expanduser().resolve()
+    ws.mkdir(parents=True, exist_ok=True)
+
+    if protected.is_symlink():
+        current_target = protected.resolve()
+        if current_target != target:
+            raise RuntimeError(
+                f"{protected} already points to {current_target}, "
+                f"not configured data dir {target}"
+            )
+        protected.unlink()
+
+    if protected.exists():
+        if target.exists():
+            try:
+                protected_has_data = any(protected.iterdir())
+                target_has_data = any(target.iterdir())
+            except (NotADirectoryError, OSError) as exc:
+                raise RuntimeError(
+                    f"Configured data dir is not usable: {target}"
+                ) from exc
+            if not protected_has_data:
+                protected.rmdir()
+            elif target_has_data:
+                raise RuntimeError(
+                    f"Both {protected} and configured data dir {target} contain "
+                    "state; merge them explicitly before starting the agent"
+                )
+            else:
+                target.rmdir()
+        if protected.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(protected), str(target))
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+
+    _EXTERNAL_DATA_DIRS[workspace_key] = target
+    logger.info("Runtime data for %s: %s", ws, target)
+    return target
 
 
 def protected_root(workspace: Path | str) -> Path:
-    return Path(workspace) / PROTECTED_DIRNAME
+    ws = Path(workspace)
+    return _EXTERNAL_DATA_DIRS.get(
+        ws.expanduser().resolve(),
+        ws / PROTECTED_DIRNAME,
+    )
 
 
 def protected_data(workspace: Path | str) -> Path:

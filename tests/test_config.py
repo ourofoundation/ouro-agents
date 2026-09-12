@@ -54,6 +54,38 @@ class TestConfigModeOverrides(unittest.TestCase):
         self.assertEqual(config.dream.proposal_only, ["SOUL.md", "skills:always"])
         self.assertEqual(config.dream.servers, ["ouro"])
 
+    def test_resolves_project_paths_relative_to_config_file(self):
+        with TemporaryDirectory() as tmpdir, TemporaryDirectory() as other_dir:
+            project = Path(tmpdir) / "agent"
+            project.mkdir()
+            path = project / "agent.json"
+            data = _base_config()
+            data["agent"]["data_dir"] = "./state"
+            data["memory"]["path"] = "./state/memory"
+            data["run_log"] = {"path": "./state/runs.db"}
+            path.write_text(json.dumps(data))
+
+            with patch("os.getcwd", return_value=other_dir):
+                config = OuroAgentsConfig.load_from_file(path)
+
+            self.assertEqual(config.agent.workspace, project / "workspace")
+            self.assertEqual(config.agent.data_dir, project / "state")
+            self.assertEqual(config.memory.path, project / "state" / "memory")
+            self.assertEqual(config.run_log.path, project / "state" / "runs.db")
+
+    def test_default_memory_path_follows_resolved_workspace(self):
+        with TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir)
+            path = project / "agent.json"
+            path.write_text(json.dumps(_base_config()))
+
+            config = OuroAgentsConfig.load_from_file(path)
+
+            self.assertEqual(
+                config.memory.path,
+                project / "workspace" / "protected" / "memory",
+            )
+
     def test_top_level_dream_fields_override_defaults(self):
         data = _base_config()
         data["dream"] = {"enabled": True, "at": None}

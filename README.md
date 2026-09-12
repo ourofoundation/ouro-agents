@@ -32,35 +32,45 @@ heartbeats, and a multi-cycle planning loop tied to Ouro quests.
 ## Install
 
 ```bash
-pip install -e .
+pip install ouro-agents
 ```
 
 Python 3.10+ is required.
 
 ## Quickstart
 
-Set credentials and start an interactive chat:
+Create a standalone agent project:
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-...
-export OURO_API_KEY=ouro_...
+ouro-agents init my-agent
+cd my-agent
 
-cp config.example.json config.json
-# edit config.json: set agent.name, models, agent.org_id, mcp_servers[].command
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
 
-ouro-agents chat
+cp .env.example .env
+# edit .env and agent.json, then:
+ouro-agents --config agent.json chat
 ```
 
-Or run a one-shot task:
+The generated repository owns the agent's identity, skills, curated memory,
+coils, and service code. Runtime data and secrets are ignored. Its
+`pyproject.toml` pins the same released `ouro-agents` package an external user
+installs; no checkout of this repository is required.
+Harness-owned databases and run state live under `agent.data_dir` (generated
+as `~/ouro-data/<name>`), outside the repository.
+
+Run a one-shot task:
 
 ```bash
-ouro-agents run "What teams am I on?"
+ouro-agents --config agent.json run "What teams am I on?"
 ```
 
 Or start the long-running server (heartbeats + webhook receiver):
 
 ```bash
-ouro-agents serve --config config.json
+ouro-agents --config agent.json serve
 ```
 
 The full walkthrough is in [docs/getting-started.md](docs/getting-started.md).
@@ -87,12 +97,13 @@ Full docs live in [`docs/`](docs/README.md). A few starting points:
 ## CLI cheatsheet
 
 ```bash
-ouro-agents serve --config config.json          # FastAPI server + scheduler
-ouro-agents run "Summarize today's activity"    # one-shot autonomous run
-ouro-agents chat [--conversation-id <id>]       # interactive REPL
-ouro-agents heartbeat                           # one heartbeat tick
-ouro-agents plan ["goal"] [--team-id <id>]      # force a planning heartbeat
-ouro-agents review                              # force a review heartbeat
+ouro-agents init my-agent                       # scaffold a standalone agent repo
+ouro-agents --config agent.json serve           # FastAPI server + scheduler
+ouro-agents --config agent.json run "Summarize today's activity"
+ouro-agents --config agent.json chat             # interactive REPL
+ouro-agents --config agent.json heartbeat        # one heartbeat tick
+ouro-agents --config agent.json plan ["goal"]    # force a planning heartbeat
+ouro-agents --config agent.json review           # force a review heartbeat
 ```
 
 Add `-v` for verbose output or `--debug-md` to capture a full run trace

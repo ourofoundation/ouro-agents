@@ -17,10 +17,22 @@ Global options:
 | `-v` / `--verbose` | off | Verbose display (debug-level info). |
 | `-q` / `--quiet` | off | Errors only. |
 
+## `init`
+
+```bash
+ouro-agents init my-agent
+ouro-agents init my-agent --directory /path/to/my-agent
+```
+
+Creates a standalone, git-ready agent project with a PyPI runtime pin,
+configuration, identity and heartbeat documents, curated memory, skills,
+coils, PM2 config, environment template, and runtime-safe `.gitignore`.
+It refuses to overwrite any generated path that already exists.
+
 ## `serve`
 
 ```bash
-ouro-agents serve --config config.json
+ouro-agents --config agent.json serve
 ```
 
 Starts the FastAPI server (uvicorn) on `server.host:server.port`. Launches

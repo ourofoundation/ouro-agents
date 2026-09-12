@@ -13,6 +13,7 @@ from ..agent import OuroAgent
 from ..cancellation import RunCancelled
 from ..config import OuroAgentsConfig, RunMode
 from ..display import OuroDisplay, Verbosity, set_display
+from ..scaffold import init_agent_project
 from ..server import start_server
 from ..tui.team_picker import choose_plan_team
 from ..uuid_v7 import uuid7_str
@@ -78,9 +79,17 @@ def callback(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug output"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Show errors only"),
 ) -> None:
+    if ctx.invoked_subcommand == "init":
+        return
     if env_file:
         os.environ["ENV_FILE"] = env_file
     loaded_config = OuroAgentsConfig.load_from_file(config)
+    from ..tools.workspace_paths import configure_external_data_dir
+
+    configure_external_data_dir(
+        loaded_config.agent.workspace,
+        loaded_config.agent.data_dir,
+    )
     display = OuroDisplay(
         _verbosity(verbose, quiet),
         show_reasoning_in_summary=loaded_config.display.usage_table.show_reasoning,
@@ -95,6 +104,25 @@ def callback(
 def app_command(ctx: typer.Context) -> None:
     """Launch the activity-oriented Textual app."""
     _launch_app(_state(ctx).config)
+
+
+@cli.command("init")
+def init_command(
+    name: str = typer.Argument(..., help="Lowercase name for the agent."),
+    directory: Optional[Path] = typer.Option(
+        None,
+        "--directory",
+        "-d",
+        help="Destination directory (default: ./<name>).",
+    ),
+) -> None:
+    """Create a standalone agent project."""
+    try:
+        target = init_agent_project(name, directory)
+    except (ValueError, FileExistsError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(f"Created {name} agent project at {target}")
+    typer.echo(f"Next: cd {target} && cp .env.example .env && pip install -e .")
 
 
 @cli.command()

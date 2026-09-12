@@ -143,11 +143,11 @@ class TestDreamWriteScope(unittest.TestCase):
             ):
                 self.assertEqual(
                     check_workspace_write(root / "NOTES.md", root),
-                    root / "NOTES.md",
+                    root.resolve() / "NOTES.md",
                 )
                 self.assertEqual(
                     check_workspace_write(root / "HEARTBEAT.md", root),
-                    root / "HEARTBEAT.md",
+                    root.resolve() / "HEARTBEAT.md",
                 )
 
     def test_denies_proposal_only_soul_with_actionable_message(self):

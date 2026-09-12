@@ -6,7 +6,7 @@ shared snapshot + recent digest), prints tick kind / framing / preloads, and
 optionally the full assembled task.
 
 Usage:
-    python scripts/dry_run_heartbeat.py --config hermes.json [--show-task]
+    python scripts/dry_run_heartbeat.py --config /path/to/agent.json [--show-task]
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-
-logging.basicConfig(level=logging.WARNING)
 
 from ouro_agents.agent import OuroAgent
 from ouro_agents.config import OuroAgentsConfig
@@ -26,10 +24,12 @@ from ouro_agents.modes.heartbeat import (
 )
 from ouro_agents.modes.profiles import resolve_mode_profile, RunMode
 
+logging.basicConfig(level=logging.WARNING)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="hermes.json")
+    parser.add_argument("--config", default="agent.json")
     parser.add_argument("--show-task", action="store_true")
     parser.add_argument("--show-framing", action="store_true")
     args = parser.parse_args()

@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ouro_agents.tools.workspace_paths import (
+    configure_external_data_dir,
     migrate_protected_workspace,
     protected_data,
     protected_memory,
@@ -23,6 +24,47 @@ class TestProtectedPaths(unittest.TestCase):
             self.assertEqual(protected_data(ws), ws / "protected" / "data")
             self.assertEqual(protected_memory(ws), ws / "protected" / "memory")
             self.assertEqual(protected_runs_db(ws), ws / "protected" / "runs.db")
+
+    def test_external_data_dir_moves_existing_state_outside_workspace(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ws = root / "repo"
+            target = root / "runtime"
+            (ws / "protected").mkdir(parents=True)
+            (ws / "protected" / "runs.db").write_text("state")
+
+            protected = configure_external_data_dir(ws, target)
+
+            self.assertEqual(protected, target.resolve())
+            self.assertFalse((ws / "protected").exists())
+            self.assertEqual(protected_root(ws), target.resolve())
+            self.assertEqual((target / "runs.db").read_text(), "state")
+
+    def test_external_data_dir_is_idempotent(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ws = root / "repo"
+            target = root / "runtime"
+
+            first = configure_external_data_dir(ws, target)
+            second = configure_external_data_dir(ws, target)
+
+            self.assertEqual(first, second)
+            self.assertEqual(protected_root(ws), target.resolve())
+
+    def test_external_data_dir_removes_empty_workspace_stub(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ws = root / "repo"
+            target = root / "runtime"
+            (ws / "protected").mkdir(parents=True)
+            target.mkdir()
+            (target / "runs.db").write_text("state")
+
+            configure_external_data_dir(ws, target)
+
+            self.assertFalse((ws / "protected").exists())
+            self.assertEqual(protected_runs_db(ws).read_text(), "state")
 
 
 class TestMigrateProtectedWorkspace(unittest.TestCase):

@@ -1,3 +1,4 @@
+import importlib.util
 import re
 from pathlib import Path
 
@@ -10,8 +11,10 @@ from ouro_agents.security.tool_capabilities import (
 
 
 def _ouro_mcp_tool_names() -> list[str]:
-    repo_root = Path(__file__).resolve().parents[2]
-    tools_dir = repo_root / "ouro-mcp" / "src" / "ouro_mcp" / "tools"
+    spec = importlib.util.find_spec("ouro_mcp.tools")
+    if spec is None or not spec.submodule_search_locations:
+        return []
+    tools_dir = Path(next(iter(spec.submodule_search_locations)))
     names: list[str] = []
     for path in sorted(tools_dir.glob("*.py")):
         pending_tool = False
