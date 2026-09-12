@@ -40,7 +40,7 @@ dependencies = [
     "chromadb>=0.4.24",
     "anthropic",
     "openai",
-    "mcp",
+    "mcp<2",
     "textual",
     "ouro-mcp>=0.7.16",
     "ouro-py>=0.11.12",
