@@ -26,6 +26,37 @@ modal secret create ouro \
 If you don't have `OURO_BACKEND_URL` or `SUPABASE_URL`, ask @mmoderwell before
 your first deploy; every template below depends on this secret.
 
+## Input schema: title and description on every field
+
+The OpenAPI schema is the route form. Ouro uses `title` as the field label
+and `description` as the help text. A bare `n_samples: int` shows as
+`n_samples`; `Field(..., title="Number of samples", description="...")`
+shows a real form.
+
+Every Pydantic field on a request body — including nested `File` fields and
+optional knobs — needs both:
+
+- **`title`**: short human label. Words, not the snake_case name
+  (`"CIF file"`, `"Energy cutoff"`, `"K-point spacing"`).
+- **`description`**: one sentence of help. What it is, units, defaults,
+  valid range, when to leave it blank.
+
+```python
+file: File = Field(
+    ..., title="CIF file", description="Input CIF of a crystal structure"
+)
+ecutwfc: float = Field(
+    50.0,
+    ge=30.0,
+    le=150.0,
+    title="Energy cutoff",
+    description="Plane-wave cutoff energy in Ry",
+)
+```
+
+Do not ship a route whose body fields are unannotated. Copy the `File` model
+below as-is; write real titles/descriptions for every model-specific param.
+
 ## Synchronous pattern (jobs < 5 min)
 
 Use when inference is fast enough to return directly.
@@ -78,21 +109,31 @@ app = modal.App(
 
 
 class File(BaseModel):
-    """Ouro file input model."""
-    url: str
-    filename: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-    id: Optional[str] = None
-    type: str
-    org_id: str
-    team_id: str
-    visibility: str
+    """Ouro file input. Titles/descriptions become OpenAPI form labels."""
+    url: str = Field(..., title="File URL", description="URL for the input file")
+    filename: str = Field(..., title="Filename", description="Original filename")
+    name: Optional[str] = Field(None, title="Name", description="Display name")
+    description: Optional[str] = Field(
+        None, title="Description", description="File description"
+    )
+    id: Optional[str] = Field(None, title="File ID", description="Ouro file ID")
+    type: str = Field(..., title="File type", description="MIME type")
+    org_id: str = Field(..., title="Organization ID", description="Ouro organization ID")
+    team_id: str = Field(..., title="Team ID", description="Ouro team ID")
+    visibility: str = Field(..., title="Visibility", description="Ouro asset visibility")
 
 
 class PredictRequest(BaseModel):
-    """Adjust fields to match the model's input."""
-    file: File = Field(..., description="Input CIF file")
+    """Adjust fields to match the model's input. Every field needs title + description."""
+    file: File = Field(
+        ..., title="CIF file", description="Input CIF of a crystal structure"
+    )
+    # Example extra param — replace with the model's real knobs:
+    # n_samples: int = Field(
+    #     1, ge=1, le=16,
+    #     title="Number of samples",
+    #     description="How many structures to generate",
+    # )
 
 
 @app.function(
@@ -210,19 +251,25 @@ compute_image = (
 
 
 class File(BaseModel):
-    url: str
-    filename: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-    id: Optional[str] = None
-    type: str
-    org_id: str
-    team_id: str
-    visibility: str
+    """Ouro file input. Titles/descriptions become OpenAPI form labels."""
+    url: str = Field(..., title="File URL", description="URL for the input file")
+    filename: str = Field(..., title="Filename", description="Original filename")
+    name: Optional[str] = Field(None, title="Name", description="Display name")
+    description: Optional[str] = Field(
+        None, title="Description", description="File description"
+    )
+    id: Optional[str] = Field(None, title="File ID", description="Ouro file ID")
+    type: str = Field(..., title="File type", description="MIME type")
+    org_id: str = Field(..., title="Organization ID", description="Ouro organization ID")
+    team_id: str = Field(..., title="Team ID", description="Ouro team ID")
+    visibility: str = Field(..., title="Visibility", description="Ouro asset visibility")
 
 
 class ComputeRequest(BaseModel):
-    file: File = Field(..., description="Input file")
+    """Every field needs title + description — they become the route form."""
+    file: File = Field(
+        ..., title="CIF file", description="Input CIF of a crystal structure"
+    )
 
 
 def _normalize_webhook_url(url: str) -> str:

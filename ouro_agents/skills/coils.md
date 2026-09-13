@@ -57,8 +57,17 @@ coils/<name>/
   "inputs": {
     "type": "object",
     "properties": {
-      "asset_id": {"type": "string", "description": "Asset UUID"},
-      "comment_limit": {"type": "integer", "default": 20}
+      "asset_id": {
+        "type": "string",
+        "title": "Asset ID",
+        "description": "UUID of the asset to load"
+      },
+      "comment_limit": {
+        "type": "integer",
+        "title": "Comment limit",
+        "default": 20,
+        "description": "Max comments to fetch"
+      }
     },
     "required": ["asset_id"]
   },
@@ -79,6 +88,8 @@ coils/<name>/
 - `inputs` is a JSON Schema object (tool params / HTTP body). Params are
   validated against this schema on both `run_coil` and the live HTTP path —
   bad input returns a corrective error / HTTP 422 and never reaches the handler.
+  Every property needs `title` (form label — human words, not the snake_case
+  name) and `description` (what to pass). The published route form uses these.
 - Optional `input_assets` / `output_assets` use the same shape as Modal
   `x-ouro-input-assets` (see `modal-app-template`).
 - Optional `mined_from`: the MCP tool names this coil replaces (your notes).

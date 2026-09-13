@@ -62,6 +62,10 @@ Ouro integration requirements (non-negotiable):
   `ouro-webhook-token` for async).
 - Declare inputs/outputs with `@ouro_field("x-ouro-input-assets", ...)` and
   `@ouro_field("x-ouro-output-assets", ...)` so routes can wire assets through.
+- Every request-body field needs `Field(..., title="...", description="...")`.
+  `title` is the form label (human words, not snake_case); `description` is
+  the help text (what it is, units, range). The OpenAPI schema *is* the
+  route form. See `modal-app-template`.
 - Return file outputs as base64 with Ouro file metadata (name, filename, MIME
   type, extension, org_id, team_id).
 - Log progress through the `Action` model: `action.log("...")`, with
