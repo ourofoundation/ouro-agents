@@ -1,0 +1,12 @@
+.git
+.gitignore
+.pytest_cache
+.ruff_cache
+.github
+agents-old
+docs
+notes
+scripts
+tests
+**/*.pyc
+**/__pycache__

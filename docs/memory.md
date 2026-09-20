@@ -127,6 +127,55 @@ Names are scoped by team and agent:
   not present).
 - `SHARED:memory` — used internally to read the root `MEMORY.md` from a
   team-scoped run.
+- `SHARED:standing` — the root `STANDING.md` (see below); always root scope.
+
+### Coordination teams
+
+Some teams are channels where humans talk *to* the agents (an org-wide
+`agents` team, say) rather than project workspaces. `memory.coordination_teams`
+(slugs, names, or ids; default `["agents"]`) lists them, and runs scoped to
+those teams read and write root memory exactly like the All/nil catch-all
+does. Without this, an acknowledgement given in the coordination channel is
+written to an empty `teams/<coordination>/` store and is invisible to every
+heartbeat that runs in a real team.
+
+## STANDING — currently-binding directives
+
+`STANDING.md` at the workspace root is the one piece of memory that is
+loaded in **every** mode and **every** team scope, immediately after SOUL.
+It holds the short list of cross-team constraints that are in force right
+now: "Modal routes are paused until the controller says otherwise", "do not
+post to team X this week". It exists because vector memory is query-driven
+(it only helps if the agent thinks to ask) and team memory is siloed.
+
+It is bounded by construction, not by discipline:
+
+- Hard cap of 8 entries / 400 chars each (`memory/standing.py`).
+- Every entry carries `since`, `from`, and `until`. `until` is an ISO date or
+  a named condition with a pointer ("controller all-clear on post `<uuid>`").
+- Near-duplicate writes refresh the existing entry instead of adding one.
+- Dated entries past their `until` are dropped by dream hygiene. Undated
+  entries older than seven days are flagged *overdue* in the prompt and in
+  the dream context so the agent asks the controller rather than guessing.
+- Entries are cleared, never appended-to: the resolution of a directive is
+  its deletion.
+
+Writers, all landing in the same doc:
+
+- **Reflector** — when a run heard a controller state a cross-team
+  operational constraint, the reflector emits a `standing` entry and
+  `apply_standing_candidates` writes it to the root store regardless of the
+  run's team. Candidates whose `source` is not a known controller are
+  dropped.
+- **Agent** — `standing_set(text, until, source)` and
+  `standing_clear(entry_id, reason)`, gated by `Capability.MEMORY_WRITE`.
+- **Operator** — `ouro-agents standing list|set|clear`, or a text editor;
+  the on-disk format is plain markdown.
+
+Heartbeat framing treats STANDING as the one exception to "remembered
+blockers are stale until re-verified", and tells agents that infrastructure
+failures (404/5xx, timeouts, frozen logs) are not experimental outcomes:
+they do not consume attempt budgets, close questions, or earn verdict posts.
 
 ## Conversation history
 
@@ -155,6 +204,8 @@ Built by `make_memory_tools` (`memory/tools.py`):
 - `forget(items=[...])` — permanently delete one or more stale or superseded
   memories. Both write tools are gated by `Capability.MEMORY_WRITE`, and
   `memory_recall` surfaces the `id` to act on when the agent can write.
+- `standing_set(text, until, source)` / `standing_clear(entry_id, reason)` —
+  maintain the cross-team STANDING list (above). Same gate as `remember`.
 
 Profiles can restrict the visible memory tool set with
 `memory_tool_filter` (e.g. `plan` only sees `memory_recall`).

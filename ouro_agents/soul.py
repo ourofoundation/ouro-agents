@@ -130,6 +130,7 @@ SECTION_PRIORITY = {
     "current_datetime": 2,
     "conversation_id": 2.5,
     "soul": 3,
+    "standing": 3.5,
     "platform_context": 4,
     "user_model": 5,
     "output": 6,
@@ -260,6 +261,7 @@ def build_shared_prompt_sections(
     working_memory: str = "",
     plans_index: str = "",
     workspace_root: str = "",
+    standing: str = "",
 ) -> dict[str, str]:
     """Build the shared prompt sections used by main and subagent runs."""
     sections: dict[str, str] = {
@@ -269,6 +271,9 @@ def build_shared_prompt_sections(
 
     if soul:
         sections["soul"] = f"## IDENTITY AND RULES (SOUL)\n{soul}"
+
+    if standing:
+        sections["standing"] = f"## STANDING\n{standing}"
 
     if platform_context:
         sections["platform_context"] = f"## PLATFORM CONTEXT\n{platform_context}"
@@ -332,6 +337,7 @@ def build_prompt(
     preloaded_tool_names: Optional[list[str]] = None,
     plans_index: str = "",
     workspace_root: str = "",
+    standing: str = "",
 ) -> tuple[str, str]:
     """Assemble the system prompt and dynamic context.
 
@@ -348,6 +354,7 @@ def build_prompt(
         working_memory=working_memory,
         plans_index=plans_index,
         workspace_root=workspace_root,
+        standing=standing,
     )
 
     framing = mode_framing_override or profile.framing

@@ -10,6 +10,7 @@
 IMAGE_PREFIX ?= ouro-agents-sandbox
 TAG ?= latest
 DOCKER ?= docker
+OURO_PY_VERSION ?= 0.11.17
 
 ifeq ($(NO_CACHE),1)
 BUILD_FLAGS += --no-cache
@@ -23,7 +24,9 @@ BASE_IMAGE := $(IMAGE_PREFIX):$(TAG)
 all: base
 
 base:
-	$(DOCKER) build $(BUILD_FLAGS) -f $(BASE_DOCKERFILE) -t $(BASE_IMAGE) .
+	$(DOCKER) build $(BUILD_FLAGS) \
+	  --build-arg OURO_PY_VERSION=$(OURO_PY_VERSION) \
+	  -f $(BASE_DOCKERFILE) -t $(BASE_IMAGE) .
 
 list:
 	$(DOCKER) images '$(IMAGE_PREFIX)*'
@@ -34,10 +37,12 @@ help:
 	  '' \
 	  '  make              $(BASE_IMAGE)' \
 	  '  make list         show local sandbox images' \
+	  '  make OURO_PY_VERSION=0.11.18   rebuild only the ouro-py layer' \
 	  '' \
 	  'Installed users: ouro-agents build-sandbox' \
 	  '' \
 	  'Variables:' \
+	  '  OURO_PY_VERSION=  pin for the last image layer (default $(OURO_PY_VERSION))' \
 	  '  NO_CACHE=1        rebuild without Docker cache' \
 	  '  BUILD_FLAGS=      extra docker build flags' \
 	  '  TAG=$(TAG)        image tag'

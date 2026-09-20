@@ -318,6 +318,55 @@ def store_reflection_memories(
     return stored
 
 
+def apply_standing_candidates(
+    result: ReflectionResult,
+    root_doc_store,
+    *,
+    controller_usernames: Optional[list[str]] = None,
+) -> int:
+    """Write reflector-proposed STANDING entries to the root store.
+
+    The reflector may only *add* on behalf of a controller: when a controller
+    roster is known, candidates whose ``source`` is not one of them are
+    dropped, so a misread peer comment cannot bind every future run. Agents
+    add their own entries deliberately via ``standing_set``.
+    """
+    from .standing import set_standing
+
+    candidates = list(getattr(result, "standing", None) or [])
+    if not candidates or root_doc_store is None:
+        return 0
+
+    allowed = {
+        str(name).strip().lstrip("@").lower()
+        for name in (controller_usernames or [])
+        if str(name).strip()
+    }
+    written = 0
+    for candidate in candidates:
+        source = str(getattr(candidate, "source", "") or "").strip()
+        handle = source.lstrip("@").lower()
+        if allowed and handle not in allowed:
+            logger.info(
+                "Skipping STANDING candidate from non-controller source %r: %s",
+                source,
+                str(getattr(candidate, "text", ""))[:80],
+            )
+            continue
+        entry, error = set_standing(
+            root_doc_store,
+            getattr(candidate, "text", ""),
+            source=("@" + handle) if handle else "reflection",
+            until=getattr(candidate, "until", "") or "",
+        )
+        if entry is None:
+            logger.warning("STANDING candidate not written: %s", error)
+            continue
+        written += 1
+        logger.info("STANDING set [%s] from %s: %s", entry.id, entry.source, entry.text[:80])
+    return written
+
+
 def apply_reflection(
     result: ReflectionResult,
     memory_backend,
@@ -334,9 +383,14 @@ def apply_reflection(
     event_type: str = "",
     run_id: str = "",
     friction_queue: Optional[FrictionQueue] = None,
+    root_doc_store=None,
+    controller_usernames: Optional[list[str]] = None,
 ) -> None:
     """Apply durable facts, process friction, user preferences, and daily logs."""
     effective_run_id = run_id or conversation_id
+    apply_standing_candidates(
+        result, root_doc_store, controller_usernames=controller_usernames
+    )
     store_reflection_memories(
         result,
         memory_backend,

@@ -452,6 +452,10 @@ class MemoryConfig(BaseModel):
     memory_md_max_tokens: int = 4000
     decay_after_days: int = 30
     graph: GraphMemoryConfig = Field(default_factory=GraphMemoryConfig)
+    # Teams that are coordination channels rather than project workspaces
+    # (slug, name, or id). Runs scoped to them use root memory, so a controller
+    # directive heard there is not siloed away from every other team.
+    coordination_teams: List[str] = Field(default_factory=lambda: ["agents"])
 
 
 class ServerConfig(BaseModel):

@@ -67,6 +67,7 @@ Output ONLY valid JSON matching this schema (no markdown fences):
   "candidates": [{"text": "string", "subject_type": "user"|"agent"|"team"|"asset"|"general", "subject_id_hint": "string", "category": "fact"|"direction"|"preference", "basis": "stated"|"inferred"|"observed", "stability": "stable"|"evolving", "strength": "minor"|"normal"|"high", "team_ids": ["uuid from available teams"], "asset_ids": ["uuid"], "verification_hint": "string or empty", "supersedes": ["memory_id from memory_recall results"]}],
   "user_preferences": ["string"],
   "daily_log_entries": [{"team_id": "uuid from available teams", "entry": "string"}],
+  "standing": [{"text": "string", "until": "ISO date or named condition", "source": "@username or agent name"}],
   "friction": [{"kind": "skill_misled"|"wasted_steps"|"user_correction"|"repeated_work"|"tool_failure"|"instruction_conflict", "skill": "skill name or null", "evidence": "specific process evidence", "severity": "low"|"med"|"high"}]
 }
 
@@ -163,6 +164,25 @@ Direction memories:
   unambiguously supersedes older advice (name the banned thing and the date). \
   List any recalled memories that recommend the now-banned thing in supersedes.
 
+Standing directives:
+- standing is the small, always-loaded list of constraints that bind EVERY \
+  team and run mode right now: a controller pausing compute, banning a class \
+  of action, or freezing a workflow "until further notice". It is separate \
+  from direction memories (durable guidance, query-driven recall) because it \
+  must be visible without being searched for and must survive team scoping.
+- Emit a standing entry ONLY when a controller (listed in the run context) \
+  or the agent's owner states a cross-team operational constraint that is \
+  currently in force. Not for team-local priorities, not for the agent's own \
+  plans, not for platform observations (a 404 is evidence, not a directive).
+- text: one or two self-contained sentences naming the constraint and the \
+  required behavior. until: an ISO date if one was given, otherwise the \
+  named condition and where its resolution will appear ("controller \
+  all-clear on post <uuid>"). source: the controller's @username.
+- Also store the same guidance as a category=direction candidate for the \
+  long-term record; the standing entry is the currently-binding copy. When a \
+  controller lifts a constraint, do NOT emit a new standing entry — the agent \
+  clears it in-run with standing_clear.
+
 Daily log entries:
 - daily_log_entries: Team-specific one-line summaries of what was accomplished. \
   Use this for episodic memory: what happened, when, and which assets were touched. \
@@ -241,11 +261,19 @@ class DailyLogEntry:
 
 
 @dataclass
+class StandingCandidate:
+    text: str = ""
+    until: str = ""
+    source: str = ""
+
+
+@dataclass
 class ReflectionResult:
     facts_to_store: list[dict] = field(default_factory=list)
     user_preferences: list[str] = field(default_factory=list)
     daily_log_entries: list[DailyLogEntry] = field(default_factory=list)
     friction: list[dict] = field(default_factory=list)
+    standing: list[StandingCandidate] = field(default_factory=list)
 
 
 def resolve_daily_log_tag(
@@ -289,6 +317,7 @@ def build_run_reflection_task(
     step_count: int | None = None,
     retry_error_count: int | None = None,
     loaded_skill_names: list[str] | None = None,
+    controller_usernames: list[str] | None = None,
 ) -> str:
     """Build the reflector task for a completed run."""
     tools_compact = []
@@ -354,12 +383,26 @@ def build_run_reflection_task(
     if process_lines:
         process_block = "\nProcess signals:\n" + "\n".join(process_lines) + "\n"
 
+    controllers = [
+        "@" + str(name).strip().lstrip("@")
+        for name in (controller_usernames or [])
+        if str(name).strip()
+    ]
+    controller_block = ""
+    if controllers:
+        controller_block = (
+            "Controllers (humans whose operational constraints go in standing): "
+            + ", ".join(controllers)
+            + "\n\n"
+        )
+
     return (
         "Reflect on this completed run and extract what is worth remembering.\n\n"
         f"Run mode: {run_mode}\n"
         f"Daily log tag: {tag}\n\n"
         "Available teams (use only these IDs in team_ids):\n"
         f"{available_team_text}\n\n"
+        f"{controller_block}"
         f"Task:\n{task[:1500]}\n\n"
         f"Result:\n{str(result)[:2000]}\n\n"
         f"Tool calls:\n{tools_text}\n"
@@ -381,6 +424,11 @@ def build_run_reflection_task(
         'that as a category=\"direction\" memory even when the run result is '
         "NO_ACTION. This is especially important for comments, mentions, "
         "plan-review feedback, and replies on direction-proposal posts.\n\n"
+        "If a controller stated a cross-team operational constraint that is in "
+        "force right now (compute paused, an action class banned, a workflow "
+        "frozen until further notice), ALSO emit one standing entry with its "
+        "until condition — even when the run result is NO_ACTION or a brief "
+        "acknowledgement reply.\n\n"
         "If this run authored or changed a coil (coils/ or run_coil / publish_route) "
         "without patching the owning workspace skill (or its "
         "<name>-addendum.md when the skill is human-authored) to prefer "
@@ -505,11 +553,29 @@ def parse_reflection_result(text: str) -> Optional[ReflectionResult]:
                     }
                 )
 
+        standing: list[StandingCandidate] = []
+        raw_standing = data.get("standing", [])
+        if isinstance(raw_standing, list):
+            for item in raw_standing:
+                if not isinstance(item, dict):
+                    continue
+                text = " ".join(str(item.get("text") or "").split())
+                if not text:
+                    continue
+                standing.append(
+                    StandingCandidate(
+                        text=text,
+                        until=" ".join(str(item.get("until") or "").split()),
+                        source=str(item.get("source") or "").strip(),
+                    )
+                )
+
         return ReflectionResult(
             facts_to_store=facts,
             user_preferences=data.get("user_preferences", []),
             daily_log_entries=daily_entries,
             friction=friction,
+            standing=standing,
         )
     except Exception as e:
         logger.warning(

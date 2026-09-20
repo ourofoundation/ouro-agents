@@ -172,7 +172,9 @@ ouro-agents build-sandbox
 ```
 
 That tags `ouro-agents-sandbox:<installed-version>`. Generated projects pin
-the same tag in `agent.sandbox.image`.
+the same tag in `agent.sandbox.image`. The last image layer is `ouro-py`;
+pass `--build-arg OURO_PY_VERSION=…` (or `make OURO_PY_VERSION=…` from a
+source checkout) to bump it without rebuilding pymatgen / ase.
 
 If an agent needs extra packages, keep a thin `Dockerfile.agent` in *that*
 agent's repository:

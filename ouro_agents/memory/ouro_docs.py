@@ -792,6 +792,8 @@ class LocalDocStore:
     - ``SOUL`` → ``{workspace}/SOUL.md`` (always at workspace root)
     - ``SHARED:memory`` → ``{workspace}/MEMORY.md`` (cross-team shared notes,
       always at workspace root regardless of team scope)
+    - ``SHARED:standing`` → ``{workspace}/STANDING.md`` (currently-binding
+      cross-team directives; see ``memory.standing``)
     - With ``team_id`` set (on-disk leaf is the team slug when known; UUID is
       identity only — see ``memory.team_paths``):
         - ``MEMORY`` → ``teams/{slug}/MEMORY.md``
@@ -886,6 +888,8 @@ class LocalDocStore:
             # any team scope on this store.
             if len(parts) >= 2 and parts[1] == "memory":
                 return self._workspace / "MEMORY.md"
+            if len(parts) >= 2 and parts[1] == "standing":
+                return self._workspace / "STANDING.md"
             safe = parts[1] if len(parts) >= 2 else "shared"
             return self._workspace / f"SHARED_{safe}.md"
 

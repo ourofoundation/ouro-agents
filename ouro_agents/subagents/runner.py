@@ -461,6 +461,7 @@ def _format_task_context(
         user_model=ctx.user_model,
         working_memory=ctx.working_memory,
         plans_index=ctx.plans_index,
+        standing=ctx.standing,
         workspace_root=(
             ctx.sandbox_config.agent_facing_root(ctx.workspace)
             if ctx.sandbox_config is not None
@@ -471,6 +472,7 @@ def _format_task_context(
         "current_datetime",
         "writing_style",
         "soul",
+        "standing",
         "platform_context",
         "user_model",
         "notes",

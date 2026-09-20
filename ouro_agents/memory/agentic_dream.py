@@ -115,6 +115,42 @@ def _run_window(agent, since: str | None) -> tuple[list[dict[str, Any]], dict[st
     return summaries, dict(counts)
 
 
+def _standing_hygiene(agent) -> dict[str, Any]:
+    """Expire dated STANDING entries and surface overdue ones for review.
+
+    Dated ``until`` values are settled by the clock and dropped here. Undated
+    ones ("until the controller says otherwise") are listed as overdue after
+    the default TTL so the dream can ask the controller rather than guess.
+    """
+    from .standing import expire_standing, load_standing
+
+    store = getattr(agent, "doc_store", None)
+    if store is None:
+        return {}
+    dry_run = bool(getattr(getattr(agent.config, "dream", None), "dry_run", False))
+    expired = expire_standing(store, dry_run=dry_run)
+    doc = load_standing(store)
+    return {
+        "expired": [{"id": e.id, "text": e.text, "until": e.until} for e in expired],
+        "active": [
+            {
+                "id": e.id,
+                "since": e.since,
+                "source": e.source,
+                "until": e.until,
+                "text": e.text,
+                "overdue": e.is_overdue(),
+            }
+            for e in doc.entries
+        ],
+        "guidance": (
+            "Overdue entries without a date need a human answer, not a guess: "
+            "leave them in place and, if a controller is known, note the "
+            "question in the dream report so it is asked on the next contact."
+        ),
+    }
+
+
 def build_dream_context(agent, friction_queue) -> dict[str, Any]:
     """Assemble the bounded evidence window supplied to the dream agent."""
     workspace = Path(agent.config.agent.workspace)
@@ -137,6 +173,7 @@ def build_dream_context(agent, friction_queue) -> dict[str, Any]:
         logger.debug("Dream outcome digest unavailable: %s", exc)
         outcomes = ""
     return {
+        "standing": _standing_hygiene(agent),
         "policy": {
             "max_changes": cfg.max_changes,
             "writable": list(cfg.writable),

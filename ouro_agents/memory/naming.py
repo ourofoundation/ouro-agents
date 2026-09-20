@@ -17,6 +17,27 @@ _TEAM_SLUG_RE = re.compile(r"[^a-z0-9]+")
 _NIL_TEAM_ID = "00000000-0000-0000-0000-000000000000"
 
 
+# Coordination channels (e.g. an org-wide ``agents`` team) are where humans
+# talk *to* the agents, not where the agents keep project memory. Runs there
+# read and write root memory so what is heard binds every team. Populated at
+# startup from ``memory.coordination_teams`` once team ids are known.
+_COORDINATION_TEAM_IDS: set[str] = set()
+
+
+def configure_coordination_teams(team_ids) -> None:
+    """Replace the set of team ids that map to root memory scope."""
+    _COORDINATION_TEAM_IDS.clear()
+    _COORDINATION_TEAM_IDS.update(
+        str(tid).strip().lower() for tid in (team_ids or []) if str(tid).strip()
+    )
+
+
+def is_coordination_team_id(team_id: str | None) -> bool:
+    if not team_id:
+        return False
+    return str(team_id).strip().lower() in _COORDINATION_TEAM_IDS
+
+
 def is_catch_all_team_id(team_id: str | None) -> bool:
     """True when *team_id* is the platform All/nil catch-all team."""
     if not team_id:
@@ -29,9 +50,14 @@ def memory_team_id(team_id: str | None) -> str | None:
 
     The All/nil catch-all is not a real workspace — map it to untargeted
     (``None``) so chat/DM runs use shared MEMORY + cross-team digests instead
-    of the empty ``teams/<nil>/`` store. Event/platform ``team_id`` stays as-is.
+    of the empty ``teams/<nil>/`` store. Configured coordination teams map the
+    same way. Event/platform ``team_id`` stays as-is.
     """
-    if not team_id or is_catch_all_team_id(team_id):
+    if (
+        not team_id
+        or is_catch_all_team_id(team_id)
+        or is_coordination_team_id(team_id)
+    ):
         return None
     return team_id
 

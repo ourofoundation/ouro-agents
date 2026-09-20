@@ -141,8 +141,12 @@ def make_memory_tools(
     search_limit: int = 5,
     max_retrieval_tokens: int = 4000,
     min_signal_score: float = 0.35,
+    root_doc_store: Optional["DocStore"] = None,
 ) -> list:
     allowed_categories = set(memory_categories or [])
+    # STANDING always lives in the root store; team-scoped ``doc_store`` is
+    # only a fallback for callers that never distinguish the two.
+    standing_store = root_doc_store if root_doc_store is not None else doc_store
     # Global character budget across all recall output for a single call.
     retrieval_char_budget = max(int(max_retrieval_tokens), 0) * 4
     run_team_id = team_id
@@ -795,9 +799,72 @@ def make_memory_tools(
             }
         )
 
+    @tool
+    def standing_set(text: str, until: str, source: str = "self") -> str:
+        """Record a directive that binds every team and run mode until a condition is met.
+
+        STANDING is the small, always-loaded list of currently-binding
+        constraints ("Modal routes are paused", "do not post to team X this
+        week"). Use it when you learn something that must survive across
+        team scopes and heartbeats, not for ordinary facts (use remember).
+        Near-duplicates refresh the existing entry instead of adding one.
+        Capped at 8 entries — clear stale ones first.
+
+        Args:
+            text: One or two plain sentences stating the constraint and the
+                behavior it requires. Self-contained; no "this" or "it".
+            until: When it stops applying: an ISO date/time ("2026-09-20" or
+                "2026-09-20 18:00Z") or a named condition with a pointer
+                ("controller all-clear on post 01a0a05f").
+            source: Who established it: "@username" for a human, an agent
+                name, or "self" (default) for your own observation.
+        """
+        from .standing import set_standing
+
+        if not enable_remember:
+            return json.dumps(
+                {"status": "error", "error": "standing_set is not enabled for this run"}
+            )
+        if not str(until or "").strip():
+            return json.dumps(
+                {"status": "error", "error": "until is required (a date or a named condition)"}
+            )
+        entry, error = set_standing(
+            standing_store, text, source=source or "self", until=until
+        )
+        if error or entry is None:
+            return json.dumps({"status": "error", "error": error or "write failed"})
+        return json.dumps(
+            {"status": "ok", "id": entry.id, "since": entry.since, "until": entry.until}
+        )
+
+    @tool
+    def standing_clear(entry_id: str, reason: str) -> str:
+        """Remove a STANDING directive whose `until` condition has been met.
+
+        Args:
+            entry_id: The six-character id shown in brackets in the STANDING section.
+            reason: What satisfied the condition (e.g. "controller confirmed
+                Modal is back in comment 01a0a6f0").
+        """
+        from .standing import clear_standing
+
+        if not enable_remember:
+            return json.dumps(
+                {"status": "error", "error": "standing_clear is not enabled for this run"}
+            )
+        if not str(reason or "").strip():
+            return json.dumps({"status": "error", "error": "reason is required"})
+        entry, error = clear_standing(standing_store, entry_id)
+        if error or entry is None:
+            return json.dumps({"status": "error", "error": error or "write failed"})
+        return json.dumps({"status": "ok", "cleared": entry.id, "text": entry.text})
+
     tools = [memory_recall, memory_status]
     if enable_remember:
         tools.extend([remember, update_memory, forget])
         if workspace is not None:
             tools.append(note_friction)
+        if standing_store is not None:
+            tools.extend([standing_set, standing_clear])
     return tools

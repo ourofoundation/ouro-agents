@@ -16,4 +16,6 @@ def test_wheel_ships_sandbox_dockerfile_with_git_and_gh():
         .read_text()
     )
     assert "apt-get install --no-install-recommends --yes git gh" in dockerfile
-    assert 'WORKDIR /workspace' in dockerfile
+    assert "ARG OURO_PY_VERSION" in dockerfile
+    assert "ouro-py==" in dockerfile
+    assert "WORKDIR /workspace" in dockerfile

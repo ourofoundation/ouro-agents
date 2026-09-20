@@ -30,7 +30,9 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
         modal \
         exa_py
 
-# Thin layer: bump this pin without rebuilding the stack above.
-RUN python -m pip install --no-cache-dir "ouro-py>=0.11.17"
+# Thin layer: bump OURO_PY_VERSION without rebuilding the stack above.
+# ARG must sit immediately above this RUN — a file-level ARG would bust pymatgen.
+ARG OURO_PY_VERSION=0.11.17
+RUN python -m pip install --no-cache-dir "ouro-py==${OURO_PY_VERSION}"
 
 WORKDIR /workspace

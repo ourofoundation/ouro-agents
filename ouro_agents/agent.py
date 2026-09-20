@@ -50,6 +50,7 @@ from .memory.naming import (
 )
 from .memory.ouro_docs import CompositeDocStore, LocalDocStore, OuroDocStore
 from .memory.reflection import (
+    apply_standing_candidates,
     enqueue_reflection_friction,
     store_reflection_memories,
     validated_daily_log_entries,
@@ -459,6 +460,7 @@ class OuroAgent:
         cache_path.write_text(json.dumps(context, indent=2))
 
         self.team_registry.refresh(context, self.config.agent.org_id)
+        self._configure_coordination_teams()
         logger.info(
             "Refreshed platform context: %d orgs, %d teams, %d controllers",
             len(context["organizations"]),
@@ -467,6 +469,41 @@ class OuroAgent:
         )
         if self._mcp_connected:
             self._init_doc_store()
+
+    def _configure_coordination_teams(self) -> None:
+        """Resolve ``memory.coordination_teams`` (slug/name/id) to team ids."""
+        from .memory.naming import configure_coordination_teams
+
+        wanted = {
+            str(entry).strip().lower()
+            for entry in (getattr(self.config.memory, "coordination_teams", None) or [])
+            if str(entry).strip()
+        }
+        if not wanted:
+            configure_coordination_teams([])
+            return
+        resolved: set[str] = set()
+        for info in self.team_registry.list_teams():
+            keys = {
+                str(info.id).lower(),
+                str(getattr(info, "slug", "") or "").lower(),
+                str(getattr(info, "name", "") or "").lower(),
+            }
+            if keys & wanted:
+                resolved.add(str(info.id))
+        # Raw ids pass through even when the registry has not seen them yet.
+        resolved.update(e for e in wanted if self._looks_like_user_id(e))
+        configure_coordination_teams(resolved)
+        if resolved:
+            logger.info("Coordination teams mapped to root memory: %s", sorted(resolved))
+
+    def _controller_usernames(self) -> list[str]:
+        """Known controller handles (for prompts that must name them)."""
+        return [
+            str(entry["username"])
+            for entry in self._controller_context_entries()
+            if entry.get("username")
+        ]
 
     def _controller_context_entries(self) -> list[dict]:
         """Build controller username/user_id pairs for platform context prompts."""
@@ -802,6 +839,12 @@ class OuroAgent:
             time.perf_counter() - stage_started
         ) * 1000
 
+        # STANDING is global by definition: always the root store, never the
+        # team scope, so a directive heard in one team binds every other.
+        stage_started = time.perf_counter()
+        standing_text = self._load_standing()
+        timings["standing_ms"] = (time.perf_counter() - stage_started) * 1000
+
         logger.info(
             "Shared prompt context timing: team=%s total_ms=%.1f %s",
             scope_team_id or "shared",
@@ -816,7 +859,14 @@ class OuroAgent:
             "working_memory": working_memory,
             "user_model": user_model_text,
             "plans_index": plans_index_text,
+            "standing": standing_text,
         }
+
+    def _load_standing(self) -> str:
+        """Render currently-binding cross-team directives (see ``memory.standing``)."""
+        from .memory.standing import format_standing_for_prompt
+
+        return format_standing_for_prompt(self.doc_store)
 
     def _cross_team_recent_activity_digest(self) -> str:
         """Compact tails of current period logs across teams for chat status."""
@@ -1794,6 +1844,7 @@ class OuroAgent:
             search_limit=self.config.memory.search_limit,
             max_retrieval_tokens=self.config.memory.max_retrieval_tokens,
             min_signal_score=self.config.memory.min_signal_score,
+            root_doc_store=self.doc_store,
         )
         if profile.memory_tool_filter is not None:
             allowed = set(profile.memory_tool_filter)
@@ -2283,6 +2334,7 @@ class OuroAgent:
             workspace_root=self.config.agent.sandbox.agent_facing_root(
                 self._workspace
             ),
+            standing=shared_context.get("standing", ""),
         )
         prompt_timings["assemble_ms"] = (time.perf_counter() - stage_started) * 1000
         total_ms = (time.perf_counter() - prompt_started) * 1000
@@ -2413,6 +2465,7 @@ class OuroAgent:
             working_memory=shared_context["working_memory"],
             user_model=shared_context["user_model"],
             plans_index=shared_context["plans_index"],
+            standing=shared_context.get("standing", ""),
             doc_store=active_doc_store,
             team_id=team_id,
             asset_refs=list(asset_refs or []),
@@ -2750,6 +2803,7 @@ class OuroAgent:
             step_count=step_count,
             retry_error_count=retry_error_count,
             loaded_skill_names=loaded_skill_names,
+            controller_usernames=self._controller_usernames(),
         )
 
         active_doc_store = self._resolve_doc_store(team_id=team_id, doc_store=doc_store)
@@ -2764,6 +2818,14 @@ class OuroAgent:
             )
             if not reflection:
                 return
+
+            # Controller directives bind every scope: written to the root
+            # store regardless of which team this run happened in.
+            apply_standing_candidates(
+                reflection,
+                self.doc_store,
+                controller_usernames=self._controller_usernames(),
+            )
 
             friction_count = enqueue_reflection_friction(
                 reflection,

@@ -51,8 +51,10 @@ cli = typer.Typer(
 
 from . import memory as memory_cli  # noqa: E402
 from .runs import runs_app  # noqa: E402
+from .standing import standing_app  # noqa: E402
 
 cli.add_typer(runs_app, name="runs")
+cli.add_typer(standing_app, name="standing")
 memory_cli.register(cli)
 
 

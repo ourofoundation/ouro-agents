@@ -113,6 +113,7 @@ class SubAgentContext:
     working_memory: str = ""
     user_model: str = ""
     plans_index: str = ""
+    standing: str = ""
     doc_store: Any = None
     team_id: Optional[str] = None
 
