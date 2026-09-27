@@ -22,6 +22,7 @@ from ouro_agents.modes.heartbeat import (
     run_heartbeat,
 )
 from ouro_agents.modes.profiles import HEARTBEAT
+from ouro_agents.soul import HEARTBEAT_SUBAGENT_RULES
 from ouro_agents.subagents.context import SubAgentUsage
 from ouro_agents.usage import RunUsage, UsageTracker
 
@@ -84,7 +85,10 @@ def test_heartbeat_framing_prefers_bounded_progress():
 def test_heartbeat_framing_allows_direction_proposal_posts():
     assert "direction" in HEARTBEAT_FRAMING
     assert "strategist" not in HEARTBEAT_FRAMING
-    assert "delegate" in HEARTBEAT_FRAMING.lower() or "`search`" in HEARTBEAT_FRAMING
+    assert "strategist" not in HEARTBEAT_SUBAGENT_RULES
+    # Delegation guidance lives with the subagent directory, not in MODE.
+    assert "`search`" in HEARTBEAT_SUBAGENT_RULES
+    assert "`search`" not in HEARTBEAT_FRAMING
     assert "ouro:search_assets" in HEARTBEAT.preload_tools
     assert "ouro:create_post" in HEARTBEAT.preload_tools
     assert HEARTBEAT.restricted_servers is True
@@ -1047,12 +1051,9 @@ def test_run_heartbeat_works_inbox_before_planning(tmp_path):
         "ouro:get_asset",
         "ouro:list_quest_items",
         "ouro:update_quest_item",
-        "ouro:create_quest_items",
-        "ouro:delete_quest_item",
         "ouro:complete_quest_item",
         "ouro:submit_quest_entry",
         "ouro:write_comment",
-        "ouro:update_quest",
     ]
 
 

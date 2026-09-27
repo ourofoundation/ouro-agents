@@ -42,20 +42,21 @@ AUTONOMOUS_ACTION: tuple[str, ...] = (
 HEARTBEAT_DEFAULT: tuple[str, ...] = (
     "ouro:search_assets",
     GET_ASSET,
+    "ouro:get_comments",
+    "ouro:get_action",
     "ouro:write_comment",
     "ouro:create_post",
 )
 
+# Quest-admin tools (create_quest_items, delete_quest_item, update_quest) stay
+# deferred: heartbeats almost never call them and their schemas are large.
 HEARTBEAT_INBOX: tuple[str, ...] = (
     GET_ASSET,
     "ouro:list_quest_items",
     "ouro:update_quest_item",
-    "ouro:create_quest_items",
-    "ouro:delete_quest_item",
     "ouro:complete_quest_item",
     "ouro:submit_quest_entry",
     "ouro:write_comment",
-    "ouro:update_quest",
 )
 
 HEARTBEAT_NOTIFICATIONS: tuple[str, ...] = (

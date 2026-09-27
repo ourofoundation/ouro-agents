@@ -1,5 +1,10 @@
 from ouro_agents.config import OuroAgentsConfig
-from ouro_agents.soul import build_prompt, build_shared_prompt_sections, current_datetime_section
+from ouro_agents.soul import (
+    HEARTBEAT_SUBAGENT_RULES,
+    build_prompt,
+    build_shared_prompt_sections,
+    current_datetime_section,
+)
 from ouro_agents.modes.framing import (
     CHAT_FRAMING,
     HEARTBEAT_FRAMING,
@@ -163,9 +168,9 @@ def test_executor_and_developer_prompts_require_concrete_work():
 
 
 
-def test_heartbeat_framing_points_at_search_delegation():
-    assert "`search`" in HEARTBEAT_FRAMING
-    assert "`research`" in HEARTBEAT_FRAMING
+def test_heartbeat_subagent_rules_point_at_search_delegation():
+    assert "`search`" in HEARTBEAT_SUBAGENT_RULES
+    assert "`research`" in HEARTBEAT_SUBAGENT_RULES
     assert "writer subagent" not in HEARTBEAT_FRAMING
     assert "You own the whole tick" in HEARTBEAT_FRAMING
 

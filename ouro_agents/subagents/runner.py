@@ -507,7 +507,7 @@ def _format_task_context(
                 "When creating posts, files, or datasets on Ouro, choose the `org_id` and "
                 "`team_id` that best fit each artifact from the platform context above. "
                 "You may publish different outputs to different teams in the same run when appropriate. "
-                "If `agent_can_create` is false for a team, do not use it for API creates — pick another team "
+                "If a team is marked `agent cannot create`, do not use it for API creates — pick another team "
                 "or call `get_teams` / `get_organizations` to refresh. "
                 "Default visibility: public unless the user or task requires otherwise."
             )

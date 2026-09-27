@@ -73,6 +73,23 @@ Canonical filename: `skills/<parent>-addendum.md` (e.g.
 - Valid addenda are excluded from the skill directory and
   `list_skill_names` — load the parent to get both.
 
+## Capability-gated skills
+
+A skill may declare `requires: <token>` (or a list). It exists only when
+every token is in the workspace's runtime capabilities, set at startup via
+`set_skill_capabilities`; otherwise it is not inlined, listed, or loadable.
+The agent derives git tokens from `detect_git_capability`:
+
+| Level | Condition | Token |
+|------|---------|-------|
+| `none` | no Docker shell, or workspace is not a git repo | (none) |
+| `local` | repo exists, but `origin` is missing, SSH, not HTTPS GitHub, or `GH_TOKEN` is empty or not forwarded | `git-local` |
+| `remote` | HTTPS GitHub `origin` and a non-empty forwarded `GH_TOKEN` | `git-remote` |
+
+Startup logs the level and, below `remote`, the reason. `run_shell` also
+refuses git commands that embed credentials in URLs, edit remotes or
+credential config, or force-push.
+
 ## Built-in skills
 
 Shipping with the package today:
@@ -87,7 +104,8 @@ Shipping with the package today:
 | `filesystem` | Workspace file conventions. |
 | `web-search` | When and how to use web search. |
 | `working-memory` | How to maintain `MEMORY.md` and daily logs. |
-| `git` | Always-loaded: branch, test, commit, push, and open a PR. Never force-push. |
+| `git` | Always-loaded when push is configured (`requires: git-remote`): branch from `origin/main`, test, commit, push, and open a PR. Never force-push. |
+| `git-local` | Always-loaded when the workspace is a repo but push is not configured (`requires: git-local`): commit on focused local branches, no push or PR. |
 | `self_improvement` | Observe Ouro route evidence, edit owned code, open a PR, deploy, verify. |
 | `asset_output` | Output handoff conventions for asset-creating subagents. |
 | `benchmarking` | Running benchmarks via Ouro routes. |

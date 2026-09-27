@@ -440,6 +440,20 @@ def build_run_reflection_task(
 
 
 _TAG_RE = re.compile(r"^\[[\w:.-]+\]\s*")
+# A log line the reflector copied from the period log, e.g.
+# "- 2026-09-26 07:05 — [heartbeat] ...". write_log adds its own timestamp.
+_LOG_LINE_PREFIX_RE = re.compile(
+    r"^(?:[-*]\s+)?~?\d{4}-\d{2}-\d{2}(?:[T ]~?\d{2}:\d{2}(?::\d{2})?Z?)?\s*[—–-]+\s*"
+)
+
+
+def _strip_log_prefixes(entry: str) -> str:
+    body = entry.strip()
+    while True:
+        stripped = _TAG_RE.sub("", _LOG_LINE_PREFIX_RE.sub("", body)).strip()
+        if stripped == body:
+            return body
+        body = stripped
 
 
 def normalize_daily_log_entry(
@@ -450,7 +464,7 @@ def normalize_daily_log_entry(
 ) -> str:
     """Enforce the correct daily-log tag regardless of what the LLM emitted."""
     expected = resolve_daily_log_tag(run_mode, event_type, team_name=team_name)
-    body = _TAG_RE.sub("", entry).strip()
+    body = _strip_log_prefixes(entry)
     if not body:
         return entry
     return f"{expected} {body}"

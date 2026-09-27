@@ -26,13 +26,11 @@ MCP_TOOL_RULES = (
     "context, call `memory_recall`; when it returns asset refs, use get_asset to load them if needed.\n"
     "- When a recalled memory is wrong or outdated, fix it immediately: `update_memory(id, ...)` to "
     "revise it in place, or `forget([{\"memory_id\": id, \"reason\": \"...\"}])` to delete it "
-    "(batch multiple deletes in one call). memory_recall returns the id to use.\n"
-    "- For complex multi-step workflows or batch operations, prefer the `developer` subagent when "
-    "delegation is available — it has direct access to the Ouro Python SDK."
+    "(batch multiple deletes in one call). memory_recall returns the id to use."
 )
 
 HEARTBEAT_SUBAGENT_RULES = (
-    "Follow the strategist brief. Delegate when it keeps this heartbeat focused; "
+    "Delegation is optional. Delegate when it keeps this heartbeat focused; "
     "keep quest lifecycle updates and one-shot comments here.\n\n"
     "**Good fits (optional):** web/current-info lookup → `search`, "
     "multi-source research that needs a written draft → `research`, "
@@ -96,6 +94,8 @@ WRITING_STYLE_RULES = (
     "what it means.\n"
     "- Active voice, short sentences. No filler openers, no hedging ceremony, no "
     "grand framing of ordinary work.\n"
+    "- Posts: write like a person with something to say. Prose over bullet lists, "
+    "a clear point of view, no preamble or engagement bait.\n"
     "This applies to everything you write: chat replies, posts, comments, quest "
     "notes, reports, and files in your workspace."
 )

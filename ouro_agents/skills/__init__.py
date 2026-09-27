@@ -34,6 +34,10 @@ _BUILTIN_DIR = Path(__file__).parent
 
 _index_cache: dict[str, "dict[str, SkillEntry]"] = {}
 
+# Runtime capabilities per workspace (see ``set_skill_capabilities``). Skills
+# whose ``requires:`` is not a subset are dropped from the index entirely.
+_capabilities: dict[str, frozenset[str]] = {}
+
 # Soft cap on total addendum body characters per parent (across all children).
 _ADDENDUM_CHAR_CAP = 8000
 _ADDENDUM_TRUNCATION_MARKER = "[addendum truncated — compact this file]"
@@ -97,10 +101,22 @@ class SkillEntry:
         """Parent skill name when this entry is an addendum, else ``""``."""
         return str(self.meta.get("extends", "") or "").strip()
 
+    @property
+    def requires(self) -> frozenset[str]:
+        """Capability tokens that must all be present for this skill to exist."""
+        raw = self.meta.get("requires") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        return frozenset(str(r).strip() for r in raw if str(r).strip())
+
 
 # ---------------------------------------------------------------------------
 # Core index (shared by main agent and subagents)
 # ---------------------------------------------------------------------------
+
+
+def _workspace_key(workspace: Optional[Path]) -> str:
+    return str(Path(workspace).resolve()) if workspace else "__builtins_only__"
 
 
 def _build_index(workspace: Optional[Path] = None) -> dict[str, SkillEntry]:
@@ -109,7 +125,7 @@ def _build_index(workspace: Optional[Path] = None) -> dict[str, SkillEntry]:
     Workspace skills override built-in skills of the same name.
     Cached per workspace path.
     """
-    cache_key = str(workspace) if workspace else "__builtins_only__"
+    cache_key = _workspace_key(workspace)
     if cache_key in _index_cache:
         return _index_cache[cache_key]
 
@@ -123,6 +139,13 @@ def _build_index(workspace: Optional[Path] = None) -> dict[str, SkillEntry]:
         if ws_dir.exists():
             for f in sorted(ws_dir.glob("*.md")):
                 index[f.stem] = SkillEntry(f.stem, f.read_text())
+
+    available = _capabilities.get(cache_key, frozenset())
+    index = {
+        name: entry
+        for name, entry in index.items()
+        if entry.requires <= available
+    }
 
     _index_cache[cache_key] = index
     return index
@@ -233,7 +256,16 @@ def _render_with_addenda(
 
 def invalidate_skill_cache(workspace: Optional[Path] = None) -> None:
     """Drop the cached skill index after workspace skill files change."""
-    _index_cache.pop(str(workspace) if workspace else "__builtins_only__", None)
+    _index_cache.pop(_workspace_key(workspace), None)
+
+
+def set_skill_capabilities(
+    workspace: Optional[Path], capabilities: frozenset[str] | set[str]
+) -> None:
+    """Record runtime capabilities that gate skills declaring ``requires:``."""
+    key = _workspace_key(workspace)
+    _capabilities[key] = frozenset(capabilities)
+    _index_cache.pop(key, None)
 
 
 def load_startup_skills(config: OuroAgentsConfig) -> str:

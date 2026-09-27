@@ -122,9 +122,9 @@ def _files(name: str) -> dict[str, str]:
             f"# {name}\n\n"
             "Describe this agent's identity, responsibilities, values, and boundaries.\n\n"
             "## Code Ownership\n\n"
-            "This repository is your working home. Follow the always-loaded `git` "
-            "skill for every code, skill, identity, or curated-memory change: "
-            "branch, test, commit, push, and open a pull request. Use the "
+            "This repository is your working home. When a git skill is loaded, "
+            "follow it for every code, skill, or identity change; it says "
+            "whether this deployment can push and open pull requests. Use the "
             "`self_improvement` skill when real Ouro route evidence motivates a "
             "service or coil change.\n"
         ),

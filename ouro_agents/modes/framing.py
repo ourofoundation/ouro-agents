@@ -123,16 +123,7 @@ HEARTBEAT_FRAMING = (
     "creating an asset can justify inspection, but not priority unless it connects "
     "to direct feedback, an active plan, or high-confidence work-direction memory.\n"
     "- Prefer one meaningful slice over finishing an entire multi-step plan. If "
-    "nothing is worth doing, pass.\n\n"
-    "Delegation (optional): prefer `search` for routine current-info lookup when "
-    "you need fresh web facts; `research` for multi-source work that needs a local "
-    "draft; `writer` / `executor` / `developer` for heavy writing, focused MCP "
-    "execution, or SDK/batch coding. Skip delegates when local context already "
-    "suffices, and do the build/deploy slice yourself. When a subagent returns an "
-    "asset link, surface that link — do not republish.\n\n"
-    "When creating posts, write like a person with something to say — not like an AI "
-    "producing content. Prose over bullet lists. Have a point of view. Skip the "
-    "preamble and engagement bait."
+    "nothing is worth doing, pass."
 )
 
 # Quest tool mechanics — appended only for quest_work ticks so open-ended
@@ -161,7 +152,9 @@ HEARTBEAT_QUEST_MECHANICS = (
     "explaining the pivot. Never execute an item you know is stale.\n"
     "- When you complete the final open item on a quest you own, close the loop: "
     "`write_comment` summarizing the work (with links to produced assets) and set "
-    'the quest status to "closed" with `update_quest`.'
+    'the quest status to "closed" with `update_quest`.\n'
+    "- `create_quest_items`, `delete_quest_item`, and `update_quest` are not "
+    "preloaded; `load_tool` them when you need them."
 )
 
 
@@ -183,10 +176,7 @@ CURIOSITY_FRAMING = (
     "until tomorrow — note it and let it go.\n\n"
     "Capture sparks: when you notice something interesting, add it to your "
     "ideas file so future curiosity windows have material. End-of-day energy "
-    "is for feeding yourself, not clearing queues.\n\n"
-    "When creating posts, write like a person with something to say — not like "
-    "an AI producing content. Prose over bullet lists. Have a point of view. "
-    "Skip the preamble and engagement bait."
+    "is for feeding yourself, not clearing queues."
 )
 
 

@@ -988,7 +988,10 @@ def format_inbox_items(items: list[dict[str, Any]]) -> str:
         quest_name = quest.get("name") or "Untitled quest"
         status = item.get("status") or "unknown"
         item_id = str(item.get("id") or "")
-        description = item.get("description") or "(no description)"
+        description = item.get("description")
+        if isinstance(description, dict):
+            description = description.get("text") or ""
+        description = description or "(no description)"
         details = []
         if item.get("inbox_source") == "assigned":
             details.append("assigned to you")
@@ -1219,17 +1222,14 @@ def _append_shared_context_snapshot(
     tick_kind: TickKind,
     team_id: str | None,
 ) -> str:
-    """Append the per-kind memory/task index the heartbeat can read_context."""
-    from ..memory.context_loader import (
-        build_cross_team_task_index,
-        build_memory_index,
-    )
+    """Append the per-kind memory/task index the heartbeat can read_context.
 
-    if tick_kind == TickKind.QUEST_WORK and team_id:
-        task_index = build_memory_index(
-            agent.config.agent.workspace, team_id=team_id
-        )
-    elif tick_kind in (TickKind.OPEN_ENDED, TickKind.CURIOSITY):
+    Quest-work ticks get no snapshot: the team-scoped memory index is already
+    in ACTIVE CONTEXT (``load_entity_context``).
+    """
+    from ..memory.context_loader import build_cross_team_task_index
+
+    if tick_kind in (TickKind.OPEN_ENDED, TickKind.CURIOSITY):
         labels: dict[str, str] = {}
         registry = getattr(agent, "team_registry", None)
         if registry is not None:
@@ -1245,7 +1245,6 @@ def _append_shared_context_snapshot(
             agent.config.agent.workspace, team_labels=labels
         )
     else:
-        # Quest work without a known team: skip the cross-team fan-out.
         task_index = ""
 
     if task_index:

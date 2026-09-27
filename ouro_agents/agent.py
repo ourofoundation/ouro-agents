@@ -96,7 +96,8 @@ from .security.tool_capabilities import (
     filter_deferred_tools,
 )
 from .tool_preloads import filter_preloads, merge_preloads
-from .skills import get_skill_directory, load_startup_skills
+from .git_capability import detect_git_capability, log_git_capability
+from .skills import get_skill_directory, load_startup_skills, set_skill_capabilities
 from .soul import build_prompt
 from .subagents.context import SubAgentUsage
 from .subagents.delegate_utils import (
@@ -177,6 +178,41 @@ def _dedup_bullet_lines(text: str) -> str:
     return "\n".join(lines)
 
 
+# Period logs grow all week and are injected into every call of every run.
+# Recent entries carry the "already done this" signal; older ones stay
+# reachable through read_context.
+_PERIOD_LOG_PROMPT_CHARS = 8000
+
+
+def _period_log_tail(log_content: str, period: str, max_chars: int = _PERIOD_LOG_PROMPT_CHARS) -> str:
+    """Keep the newest period-log entries that fit in ``max_chars``."""
+    if len(log_content) <= max_chars:
+        return log_content
+    entries: list[str] = []
+    for line in log_content.splitlines():
+        if line.startswith("- ") or not entries:
+            entries.append(line)
+        else:
+            entries[-1] += "\n" + line
+    kept: list[str] = []
+    used = 0
+    for entry in reversed(entries):
+        if not entry.startswith("- "):
+            continue
+        if kept and used + len(entry) > max_chars:
+            break
+        kept.append(entry)
+        used += len(entry) + 1
+    omitted = sum(1 for e in entries if e.startswith("- ")) - len(kept)
+    if omitted <= 0:
+        return log_content
+    note = (
+        f"[{omitted} earlier entries this period omitted; "
+        f'read_context(["LOG:{period}"]) for the full log]'
+    )
+    return "\n".join([note, *reversed(kept)])
+
+
 RunStatusCallback = Callable[[str, Optional[str], bool], None]
 RunResponseCallback = Callable[[str], None]
 
@@ -188,6 +224,13 @@ class OuroAgent:
         self.soul = soul_path.read_text() if soul_path.exists() else ""
         notes_path = config.agent.workspace / "NOTES.md"
         self.notes = notes_path.read_text() if notes_path.exists() else ""
+        self.git_capability = detect_git_capability(
+            config.agent.workspace, config.agent.sandbox
+        )
+        log_git_capability(config.agent.name, self.git_capability)
+        set_skill_capabilities(
+            config.agent.workspace, self.git_capability.skill_capabilities
+        )
         self.skills = load_startup_skills(config)
         self.skill_directory = get_skill_directory(config)
         # Fallback tracker/ledger used when no RunContext is bound (startup
@@ -726,6 +769,7 @@ class OuroAgent:
             parts.append(content)
         log_content = active_doc_store.read(log_name)
         if log_content:
+            log_content = _period_log_tail(_dedup_bullet_lines(log_content), period)
             parts.append(
                 f"## {current_period_heading(rhythm)} ({period})\n{log_content}"
             )

@@ -512,6 +512,8 @@ class DockerSandboxSession:
             "PYTHONUNBUFFERED=1",
             "-e",
             "HOME=/tmp",
+            "-e",
+            "GIT_TERMINAL_PROMPT=0",
         ]
         if self.config.no_new_privileges:
             args += ["--security-opt", "no-new-privileges"]
@@ -531,6 +533,16 @@ class DockerSandboxSession:
         for name in self.config.env_allowlist:
             if name in os.environ:
                 args += ["-e", name]
+        if "GH_TOKEN" in self.config.env_allowlist and os.environ.get("GH_TOKEN", "").strip():
+            # HOME is a throwaway /tmp, so configure git through the environment.
+            args += [
+                "-e",
+                "GIT_CONFIG_COUNT=1",
+                "-e",
+                "GIT_CONFIG_KEY_0=credential.https://github.com.helper",
+                "-e",
+                "GIT_CONFIG_VALUE_0=!gh auth git-credential",
+            ]
         args += [self.config.image, "python", "-u", "-c", _WORKER_CODE]
         return args
 

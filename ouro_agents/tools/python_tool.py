@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional
 from smolagents import tool
 from smolagents.local_python_executor import LocalPythonExecutor
 
+from ..git_capability import refused_git_command
 from .workspace_layout import check_workspace_write
 
 if TYPE_CHECKING:
@@ -468,6 +469,9 @@ def make_shell_tool(executor, sandbox_config: "SandboxConfig"):
         """
         if not command.strip():
             return "Execution error: command must not be empty"
+        refusal = refused_git_command(command)
+        if refusal:
+            return f"Refused: {refusal}. This is a boundary; do not retry another way."
         if not hasattr(executor, "execute_shell"):
             return "Execution error: run_shell requires Docker sandbox mode"
         try:

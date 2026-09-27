@@ -9,7 +9,7 @@ from typing import Any, Optional
 # Team blurbs belong in the ID roster, not as full wiki pages. Long
 # descriptions (onboarding guides, competition rules, embedded asset
 # blocks) otherwise dominate every system prompt.
-_MAX_TEAM_DESCRIPTION_CHARS = 240
+_MAX_TEAM_DESCRIPTION_CHARS = 100
 
 
 def platform_context_path(workspace: Path) -> Path:
@@ -54,25 +54,32 @@ def _truncate_team_description(
 
 def _format_team_line(team: dict) -> str:
     desc = _truncate_team_description(team.get("description"))
-    name = team.get("name", "?")
-    tid = team.get("id", "?")
-    oid = team.get("org_id", "?")
-    org_name = team.get("organization_name", "?")
-    role = team.get("role", "?")
-    bits = [
-        f"- {name}",
-        f"team_id: {tid}",
-        f"org_id: {oid}",
-        f"org: {org_name}",
-        f"role: {role}",
-    ]
-    acc = team.get("agent_can_create")
-    if acc is not None:
-        bits.append(f"agent_can_create: {acc}")
-    line = ", ".join(bits)
+    line = f"- {team.get('name', '?')} `{team.get('id', '?')}`"
+    flags = []
+    role = team.get("role")
+    if role and role != "write":
+        flags.append(role)
+    if team.get("agent_can_create") is False:
+        flags.append("agent cannot create")
+    if flags:
+        line += f" [{', '.join(flags)}]"
     if desc:
         line += f" — {desc}"
     return line
+
+
+def _format_teams(teams: list[dict]) -> list[str]:
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for team in teams:
+        key = (str(team.get("org_id", "?")), str(team.get("organization_name", "?")))
+        groups.setdefault(key, []).append(team)
+    lines = [
+        "\nYour teams (grouped by org; role is write unless marked):"
+    ]
+    for (org_id, org_name), members in groups.items():
+        lines.append(f"Org {org_name} (org_id: {org_id}):")
+        lines.extend(_format_team_line(team) for team in members)
+    return lines
 
 
 def format_platform_context_for_prompt(workspace: Path) -> str:
@@ -111,9 +118,7 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
 
     teams = context.get("teams", [])
     if teams:
-        parts.append("\nYour teams:")
-        for team in teams:
-            parts.append(_format_team_line(team))
+        parts.extend(_format_teams(teams))
 
     controllers = context.get("controllers") or []
     if controllers:

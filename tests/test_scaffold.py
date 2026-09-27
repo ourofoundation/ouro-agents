@@ -24,7 +24,7 @@ def test_init_agent_project_creates_standalone_git_ready_project():
         assert "GH_TOKEN" in config["agent"]["sandbox"]["env_allowlist"]
         soul = (target / "SOUL.md").read_text()
         env_example = (target / ".env.example").read_text()
-        assert "always-loaded `git` skill" in soul
+        assert "When a git skill is loaded" in soul
         assert "`self_improvement` skill" in soul
         assert (target / "HEARTBEAT.md").exists()
         assert (target / "MEMORY.md").exists()
