@@ -14,7 +14,10 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
+
+from ouro import Ouro
+from ouro.models import Notification
 
 from .config import NotificationInboxConfig
 
@@ -44,91 +47,42 @@ class NotificationInbox:
     thread_count: int = 0
 
 
-def _as_datetime(value: Any) -> Optional[datetime]:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
-        try:
-            parsed = datetime.fromisoformat(text)
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
-        return parsed
-    return None
+def _created_at(n: Notification) -> datetime:
+    created = n.created_at
+    if created is None:
+        return _MIN_DATETIME
+    if created.tzinfo is None:
+        return created.replace(tzinfo=timezone.utc)
+    return created
 
 
-def _notification_id(n: Any) -> str:
-    return str(getattr(n, "id", None) or n.get("id") or "")
-
-
-def _is_unread(n: Any) -> bool:
-    """Treat as unread unless explicitly marked viewed/read."""
-    viewed = n.get("viewed") if hasattr(n, "get") else getattr(n, "viewed", None)
-    if viewed is True:
-        return False
-    read = n.get("read") if hasattr(n, "get") else getattr(n, "read", None)
-    if read is True:
-        return False
-    return True
-
-
-def _get_content(n: Any) -> dict:
-    content = n.get("content") if hasattr(n, "get") else getattr(n, "content", None)
-    return content if isinstance(content, dict) else {}
-
-
-def _get_source_user(n: Any) -> dict:
-    source = (
-        n.get("source_user") if hasattr(n, "get") else getattr(n, "source_user", None)
-    )
-    return source if isinstance(source, dict) else {}
-
-
-def _get_asset(n: Any) -> dict:
-    asset = n.get("asset") if hasattr(n, "get") else getattr(n, "asset", None)
-    if isinstance(asset, dict):
-        return asset
-    # Some payloads nest the asset under content.asset
-    content_asset = _get_content(n).get("asset")
-    return content_asset if isinstance(content_asset, dict) else {}
+def _content_field(n: Notification, key: str) -> dict:
+    value = (n.content or {}).get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def fetch_unread(
-    ouro: Any,
+    ouro: Ouro,
     max_fetch: int,
     categories: Sequence[str],
-) -> list[Any]:
+) -> list[Notification]:
     """Fetch unread notifications, optionally filtered by backend categories."""
     category = ",".join(categories) if categories else None
-    result = ouro.notifications.list(
+    page = ouro.notifications.list(
         unread_only=True,
         limit=max_fetch,
         category=category,
     )
-    if isinstance(result, dict):
-        items = result.get("data") or []
-    else:
-        items = list(result or [])
-    return [n for n in items if _is_unread(n)]
+    return [n for n in page if not n.viewed]
 
 
 def expire_stale(
-    ouro: Any,
-    notifications: Sequence[Any],
+    ouro: Ouro,
+    notifications: Sequence[Notification],
     expire_after_hours: int,
     *,
     now: Optional[datetime] = None,
-) -> tuple[list[Any], int]:
+) -> tuple[list[Notification], int]:
     """Mark unread notifications older than the cutoff as read.
 
     Returns ``(remaining, expired_count)``. Per-id failures are logged and
@@ -139,21 +93,17 @@ def expire_stale(
 
     clock = now or datetime.now(timezone.utc)
     cutoff = clock - timedelta(hours=expire_after_hours)
-    remaining: list[Any] = []
+    remaining: list[Notification] = []
     expired = 0
 
     for n in notifications:
-        created = _as_datetime(
-            n.get("created_at") if hasattr(n, "get") else getattr(n, "created_at", None)
-        )
-        if created is not None and created < cutoff:
-            nid = _notification_id(n)
+        if n.created_at is not None and _created_at(n) < cutoff:
             try:
-                ouro.notifications.read(nid)
+                ouro.notifications.read(str(n.id))
                 expired += 1
             except Exception:
                 logger.warning(
-                    "Failed to expire stale notification %s", nid, exc_info=True
+                    "Failed to expire stale notification %s", n.id, exc_info=True
                 )
                 remaining.append(n)
             continue
@@ -162,13 +112,10 @@ def expire_stale(
     return remaining, expired
 
 
-def thread_key_for(n: Any) -> str:
+def thread_key_for(n: Notification) -> str:
     """Stable grouping key for a notification's conversation thread."""
-    content = _get_content(n)
-    parent = content.get("parent") if isinstance(content.get("parent"), dict) else {}
-    content_asset = (
-        content.get("asset") if isinstance(content.get("asset"), dict) else {}
-    )
+    parent = _content_field(n, "parent")
+    content_asset = _content_field(n, "asset")
 
     for candidate in (
         parent.get("assetId"),
@@ -176,34 +123,26 @@ def thread_key_for(n: Any) -> str:
         content_asset.get("assetId"),
         content_asset.get("id"),
         content_asset.get("asset_id"),
+        n.asset_id,
+        n.asset.id if n.asset else None,
     ):
         if candidate:
             return str(candidate)
 
-    asset_id = n.get("asset_id") if hasattr(n, "get") else getattr(n, "asset_id", None)
-    if asset_id:
-        return str(asset_id)
-
-    asset = _get_asset(n)
-    for candidate in (asset.get("id"), asset.get("asset_id")):
-        if candidate:
-            return str(candidate)
-
-    return _notification_id(n) or "unknown"
+    return str(n.id)
 
 
-def _format_actor(n: Any) -> str:
-    source = _get_source_user(n)
-    username = source.get("username") or source.get("name")
+def _format_actor(n: Notification) -> str:
+    source = n.source_user
+    username = source and (source.username or source.name)
     label = f"@{username}" if username else "unknown"
-    actor_type = source.get("actor_type")
-    if actor_type == "agent" or source.get("is_agent") is True:
+    if source and source.is_agent:
         return f"{label} (agent)"
     return label
 
 
-def _snippet_for(n: Any, snippet_chars: int) -> str:
-    content = _get_content(n)
+def _snippet_for(n: Notification, snippet_chars: int) -> str:
+    content = n.content or {}
     text = content.get("text") or content.get("message") or ""
     if not isinstance(text, str):
         text = str(text)
@@ -220,79 +159,44 @@ def _short_thread_id(thread_key: str) -> str:
 
 
 def group_threads(
-    notifications: Sequence[Any],
+    notifications: Sequence[Notification],
     snippet_chars: int,
 ) -> list[InboxThread]:
     """Group notifications by thread; oldest-waiting threads first."""
-    buckets: dict[str, list[Any]] = defaultdict(list)
+    buckets: dict[str, list[Notification]] = defaultdict(list)
     for n in notifications:
         buckets[thread_key_for(n)].append(n)
 
     threads: list[InboxThread] = []
     for key, items in buckets.items():
-        items_sorted = sorted(
-            items,
-            key=lambda n: _as_datetime(
-                n.get("created_at")
-                if hasattr(n, "get")
-                else getattr(n, "created_at", None)
-            )
-            or _MIN_DATETIME,
-        )
+        items_sorted = sorted(items, key=_created_at)
         newest = items_sorted[-1]
         oldest = items_sorted[0]
-        asset = _get_asset(newest)
-        content_asset = _get_content(newest).get("asset")
-        if not isinstance(content_asset, dict):
-            content_asset = {}
+        content_asset = _content_field(newest, "asset")
 
         asset_name = (
-            asset.get("name")
+            (newest.asset and newest.asset.name)
             or content_asset.get("name")
             or _short_thread_id(key)
         )
         asset_type = (
-            asset.get("asset_type")
+            (newest.asset and newest.asset.asset_type)
             or content_asset.get("asset_type")
             or "asset"
         )
-
-        newest_at = (
-            _as_datetime(
-                newest.get("created_at")
-                if hasattr(newest, "get")
-                else getattr(newest, "created_at", None)
-            )
-            or _MIN_DATETIME
-        )
-        oldest_at = (
-            _as_datetime(
-                oldest.get("created_at")
-                if hasattr(oldest, "get")
-                else getattr(oldest, "created_at", None)
-            )
-            or _MIN_DATETIME
-        )
-        notif_type = (
-            newest.get("type")
-            if hasattr(newest, "get")
-            else getattr(newest, "type", None)
-        ) or "notification"
 
         threads.append(
             InboxThread(
                 thread_key=key,
                 asset_name=str(asset_name),
                 asset_type=str(asset_type),
-                notification_ids=[
-                    nid for nid in (_notification_id(n) for n in items_sorted) if nid
-                ],
+                notification_ids=[str(n.id) for n in items_sorted],
                 count=len(items_sorted),
                 latest_actor=_format_actor(newest),
                 latest_snippet=_snippet_for(newest, snippet_chars),
-                latest_type=str(notif_type),
-                oldest_at=oldest_at,
-                newest_at=newest_at,
+                latest_type=newest.type or "notification",
+                oldest_at=_created_at(oldest),
+                newest_at=_created_at(newest),
             )
         )
 
@@ -393,7 +297,7 @@ def render_inbox(
 
 
 def build_notification_inbox(
-    ouro: Any,
+    ouro: Ouro,
     cfg: NotificationInboxConfig,
     *,
     now: Optional[datetime] = None,

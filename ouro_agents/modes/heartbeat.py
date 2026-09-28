@@ -22,6 +22,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from ouro.models import Quest
 
 from ..config import HeartbeatConfig
 from ..constants import parse_interval_seconds, parse_json_from_llm
@@ -709,18 +710,12 @@ def load_assigned_quest_items(
         return []
     try:
         ouro = agent._get_ouro_client()
-        list_assigned = getattr(ouro.quests, "list_assigned_items", None)
-        if not list_assigned:
-            logger.debug("Assigned quest item listing is not available in this SDK")
-            return []
-        raw = list_assigned(limit=limit, status=["pending", "in_progress"])
-        if isinstance(raw, dict):
-            raw = raw.get("data") or []
-        if not isinstance(raw, list):
-            return []
+        page = ouro.quests.list_assigned_items(
+            limit=limit, status=["pending", "in_progress"]
+        )
         items = []
-        for item in raw:
-            if not isinstance(item, dict) or item_is_waiting(item):
+        for item in page:
+            if item_is_waiting(item):
                 continue
             normalized = normalize_item(item)
             normalized["inbox_source"] = "assigned"
@@ -735,19 +730,17 @@ def load_assigned_quest_items(
 _load_assigned_quest_items = load_assigned_quest_items
 
 
-def _quest_asset_summary(quest: Any, fallback: dict[str, Any]) -> dict[str, Any]:
-    from ..syncing import read_field
-
-    quest_details = read_field(quest, "quest")
+def _quest_asset_summary(quest: Quest) -> dict[str, Any]:
+    details = quest.quest
     return {
-        "id": str(read_field(quest, "id") or fallback.get("id") or ""),
-        "name": read_field(quest, "name") or fallback.get("name") or "Untitled quest",
-        "org_id": str(read_field(quest, "org_id") or fallback.get("org_id") or ""),
-        "team_id": str(read_field(quest, "team_id") or fallback.get("team_id") or ""),
-        "user_id": str(read_field(quest, "user_id") or fallback.get("user_id") or ""),
+        "id": str(quest.id),
+        "name": quest.name or "Untitled quest",
+        "org_id": str(quest.org_id or ""),
+        "team_id": str(quest.team_id or ""),
+        "user_id": str(quest.user_id or ""),
         "quest": {
-            "status": read_field(quest_details, "status"),
-            "type": read_field(quest_details, "type"),
+            "status": details.status if details else None,
+            "type": details.type if details else None,
         },
     }
 
@@ -776,18 +769,11 @@ def _load_owned_open_quest_items(
         return []
     try:
         ouro = agent._get_ouro_client()
-        retrieve = getattr(getattr(ouro, "quests", None), "retrieve", None)
-        if not retrieve:
-            logger.debug("Owned quest discovery is not available in this SDK")
-            return []
-
         actionable: list[dict[str, Any]] = []
         for asset in search_own_quests(agent, limit=quest_limit):
-            quest_id = str(asset.get("id") or "")
-            if not quest_id:
-                continue
+            quest_id = str(asset.id)
             try:
-                quest = retrieve(quest_id)
+                quest = ouro.quests.retrieve(quest_id)
             except Exception as e:
                 logger.debug("Failed to retrieve owned quest %s: %s", quest_id[:8], e)
                 continue
@@ -795,7 +781,7 @@ def _load_owned_open_quest_items(
             if quest_status(quest) != "open":
                 continue
 
-            quest_asset = _quest_asset_summary(quest, asset)
+            quest_asset = _quest_asset_summary(quest)
             for item in quest_items(quest):
                 if item.get("status") not in ("pending", "in_progress"):
                     continue
@@ -869,21 +855,12 @@ def count_plans_created_since(
     # (e.g. multi-plan same day before skip path existed).
     try:
         for asset in search_own_quests(agent, limit=30):
-            quest_id = str(asset.get("id") or "")
-            if not quest_id or quest_id in counted_ids:
+            quest_id = str(asset.id)
+            created = asset.created_at
+            if quest_id in counted_ids or created is None:
                 continue
-            created_raw = str(asset.get("created_at") or "")
-            if not created_raw:
-                continue
-            try:
-                text = created_raw
-                if text.endswith("Z"):
-                    text = text[:-1] + "+00:00"
-                created = datetime.fromisoformat(text)
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
             if created >= since:
                 count += 1
                 counted_ids.add(quest_id)
@@ -916,11 +893,8 @@ def count_owned_open_backlog(agent: "OuroAgent", *, quest_limit: int = 25) -> in
     total = 0
     try:
         for asset in search_own_quests(agent, limit=quest_limit):
-            quest_id = str(asset.get("id") or "")
-            if not quest_id:
-                continue
             try:
-                quest = ouro.quests.retrieve(quest_id)
+                quest = ouro.quests.retrieve(str(asset.id))
             except Exception:
                 continue
             status = quest_status(quest)

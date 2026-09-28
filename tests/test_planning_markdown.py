@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from sdk_models import make_asset
+
 from ouro_agents.memory.focus import build_focus_memory_context
 from ouro_agents.modes.planning import (
     PlanningCursor,
@@ -578,12 +580,11 @@ def test_build_quest_history_context_summarizes_recent_quests():
             quests=FakeQuests(),
             assets=SimpleNamespace(
                 search=lambda **kwargs: [
-                    {
-                        "id": "q1",
-                        "name": "Cycle 22",
-                        "team_id": "team-aaa",
-                        "created_at": "2026-07-11T00:00:00+00:00",
-                    }
+                    make_asset(
+                        id="q1",
+                        name="Cycle 22",
+                        created_at="2026-07-11T00:00:00+00:00",
+                    )
                 ]
             ),
         ),

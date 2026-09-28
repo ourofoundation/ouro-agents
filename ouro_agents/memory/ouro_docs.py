@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Protocol
 
+from ouro.models import Asset
+
 from .frontmatter import strip_frontmatter
 from .naming import (
     IDENTITY_PREFIXES,
@@ -133,7 +135,7 @@ class DocStore(Protocol):
     def exists(self, name: str) -> bool: ...
     def comment(self, name: str, content_md: str) -> bool: ...
     def read_comments(self, name: str) -> list[dict]: ...
-    def search(self, query: str) -> list[dict]: ...
+    def search(self, query: str) -> list[Asset]: ...
     def is_owner(self, name: str) -> bool: ...
     def memory_name(self, agent_name: str | None = None) -> str: ...
     def log_name(self, agent_name: str | None, period: str) -> str: ...
@@ -400,20 +402,7 @@ class OuroDocStore:
 
     # -- Search + resolution -------------------------------------------------
 
-    @staticmethod
-    def _coerce_timestamp(value) -> Optional[datetime]:
-        """Normalize search result timestamps for duplicate resolution."""
-        if isinstance(value, datetime):
-            return value
-        if not isinstance(value, str) or not value:
-            return None
-        normalized = value.replace("Z", "+00:00")
-        try:
-            return datetime.fromisoformat(normalized)
-        except ValueError:
-            return None
-
-    def _search_exact_name_matches(self, name: str, *, limit: int = 25) -> list[dict]:
+    def _search_exact_name_matches(self, name: str, *, limit: int = 25) -> list[Asset]:
         """Search this agent's posts whose remote title exactly matches *name*'s display."""
         remote_name = remote_display_name(name)
         results = self._client.assets.search(
@@ -423,32 +412,20 @@ class OuroDocStore:
             team_id=self.team_id,
             limit=limit,
         )
-        if not isinstance(results, list):
-            return []
-        return [item for item in results if item.get("name", "") == remote_name]
+        return [item for item in results if item.name == remote_name]
 
-    def _select_exact_match_item(
-        self, name: str, matches: list[dict]
-    ) -> Optional[dict]:
+    def _select_exact_match_item(self, name: str, matches: list[Asset]) -> Optional[Asset]:
         """Pick the most recent exact match item when duplicates already exist."""
         if not matches:
             return None
         if len(matches) == 1:
             return matches[0]
 
-        def sort_key(item: dict) -> tuple[bool, datetime]:
-            ts = self._coerce_timestamp(
-                item.get("last_updated")
-                or item.get("updated_at")
-                or item.get("created_at")
-            )
-            return (ts is not None, ts or datetime.min.replace(tzinfo=timezone.utc))
-
-        selected = max(matches, key=sort_key)
+        selected = max(matches, key=lambda item: item.last_updated or item.created_at)
         logger.warning(
             "Multiple exact post matches found for %s; using %s",
             name,
-            selected.get("id"),
+            selected.id,
         )
         return selected
 
@@ -495,7 +472,7 @@ class OuroDocStore:
             if not selected:
                 continue
 
-            uuid = str(selected["id"])
+            uuid = str(selected.id)
             self._remember_uuid(lookup_name, uuid)
             return uuid, False
 
@@ -762,7 +739,7 @@ class OuroDocStore:
         """
         return name in self._owner_cache
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[Asset]:
         """Search posts in the team."""
         try:
             results = self._client.assets.search(
@@ -771,7 +748,7 @@ class OuroDocStore:
                 team_id=self.team_id,
                 limit=20,
             )
-            return results if isinstance(results, list) else []
+            return list(results)
         except Exception as e:
             logger.warning("OuroDocStore.search failed: %s", e)
             return []
@@ -997,7 +974,7 @@ class LocalDocStore:
     def read_comments(self, name: str) -> list[dict]:
         return []
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[Asset]:
         return []
 
     def is_owner(self, name: str) -> bool:
@@ -1088,6 +1065,6 @@ class CompositeDocStore:
     def is_owner(self, name: str) -> bool:
         return self._backend(name).is_owner(name)
 
-    def search(self, query: str) -> list[dict]:
+    def search(self, query: str) -> list[Asset]:
         backend = self._ouro or self._local
         return backend.search(query)

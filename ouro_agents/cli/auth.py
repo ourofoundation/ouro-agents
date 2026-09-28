@@ -195,22 +195,22 @@ def identify_account(
 
 def read_identity(client) -> OuroIdentity:
     user_data = _as_mapping(getattr(client, "user", None))
-    profile: dict[str, Any] = {}
     try:
-        profile = client.users.me() or {}
+        profile = client.users.me()
     except Exception:
-        profile = {}
+        profile = None
 
     user_id = str(
-        profile.get("user_id")
-        or profile.get("id")
+        (profile and profile.user_id)
         or user_data.get("user_id")
         or user_data.get("id")
         or ""
     )
-    username = str(profile.get("username") or user_data.get("username") or "")
-    email = str(user_data.get("email") or profile.get("email") or "")
-    actor_type = str(profile.get("actor_type") or user_data.get("actor_type") or "unknown")
+    username = str((profile and profile.username) or user_data.get("username") or "")
+    email = str(user_data.get("email") or "")
+    actor_type = str(
+        (profile and profile.actor_type) or user_data.get("actor_type") or "unknown"
+    )
     api_key_name = str(getattr(client, "api_key_name", "") or "")
     return OuroIdentity(
         user_id=user_id,

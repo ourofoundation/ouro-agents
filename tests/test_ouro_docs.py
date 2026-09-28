@@ -69,9 +69,11 @@ class _FakeAssets:
 
     def search(self, **kwargs):
         self.search_calls.append(kwargs)
-        if self.search_results:
-            return self.search_results.pop(0)
-        return []
+        rows = self.search_results.pop(0) if self.search_results else []
+        return [
+            SimpleNamespace(**{"created_at": None, "last_updated": None, **row})
+            for row in rows
+        ]
 
 
 class _FakePosts:

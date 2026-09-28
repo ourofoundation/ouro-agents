@@ -5,6 +5,9 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
+from uuid import NAMESPACE_URL, uuid5
+
+from ouro.models import Notification, Page
 
 from ouro_agents.config import (
     EventDeliveryConfig,
@@ -22,17 +25,11 @@ from ouro_agents.notification_inbox import (
 )
 
 
-class _DictNotif(dict):
-    """Dict-shaped notification with attribute access for model-compat tests."""
-
-    def __getattr__(self, item):
-        try:
-            return self[item]
-        except KeyError as exc:
-            raise AttributeError(item) from exc
+def _uid(name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, name))
 
 
-def _dict_notif(
+def _notif(
     *,
     nid: str,
     notif_type: str = "comment",
@@ -45,7 +42,7 @@ def _dict_notif(
     username: str = "apollo",
     actor_type: str = "agent",
     viewed: bool = False,
-) -> _DictNotif:
+) -> Notification:
     content: dict = {"text": text}
     if parent_asset_id is not None:
         content["parent"] = {"assetId": parent_asset_id}
@@ -56,23 +53,26 @@ def _dict_notif(
             "name": asset_name,
             "asset_type": asset_type,
         }
-    return _DictNotif(
-        id=nid,
-        type=notif_type,
-        viewed=viewed,
-        read=False,
-        created_at=created_at or datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc),
-        content=content,
-        source_user={
-            "username": username,
-            "actor_type": actor_type,
-        },
-        asset={
-            "id": asset_id or parent_asset_id,
-            "name": asset_name,
-            "asset_type": asset_type,
-        },
-        asset_id=asset_id,
+    return Notification.model_validate(
+        {
+            "id": _uid(nid),
+            "type": notif_type,
+            "viewed": viewed,
+            "created_at": created_at
+            or datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc),
+            "content": content,
+            "source_user": {
+                "user_id": _uid(username),
+                "username": username,
+                "actor_type": actor_type,
+            },
+            "asset": {
+                "id": _uid(asset_id or parent_asset_id or nid),
+                "name": asset_name,
+                "asset_type": asset_type,
+            },
+            "asset_id": _uid(asset_id) if asset_id else None,
+        }
     )
 
 
@@ -141,26 +141,26 @@ class TestEventDeliveryConfig(unittest.TestCase):
 
 class TestNotificationInbox(unittest.TestCase):
     def test_thread_key_prefers_parent_asset(self):
-        n = _dict_notif(nid="n1", parent_asset_id="parent-1", asset_id="asset-1")
+        n = _notif(nid="n1", parent_asset_id="parent-1", asset_id="asset-1")
         self.assertEqual(thread_key_for(n), "parent-1")
 
     def test_group_threads_merges_same_thread(self):
         now = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
-        older = _dict_notif(
+        older = _notif(
             nid="n1",
             text="first",
             created_at=now - timedelta(hours=3),
             username="apollo",
             actor_type="agent",
         )
-        newer = _dict_notif(
+        newer = _notif(
             nid="n2",
             text="second reply with more detail",
             created_at=now - timedelta(hours=1),
             username="mmoderwell",
             actor_type="human",
         )
-        other = _dict_notif(
+        other = _notif(
             nid="n3",
             text="elsewhere",
             parent_asset_id="thread-2",
@@ -176,19 +176,19 @@ class TestNotificationInbox(unittest.TestCase):
         # Oldest-waiting thread first
         self.assertEqual(threads[0].thread_key, "thread-1")
         self.assertEqual(threads[0].count, 2)
-        self.assertEqual(threads[0].notification_ids, ["n1", "n2"])
+        self.assertEqual(threads[0].notification_ids, [_uid("n1"), _uid("n2")])
         self.assertEqual(threads[0].latest_actor, "@mmoderwell")
         self.assertIn("second reply", threads[0].latest_snippet)
         self.assertEqual(threads[1].thread_key, "thread-2")
 
     def test_agent_actor_flagged(self):
-        n = _dict_notif(nid="n1", username="apollo", actor_type="agent")
+        n = _notif(nid="n1", username="apollo", actor_type="agent")
         threads = group_threads([n], snippet_chars=150)
         self.assertEqual(threads[0].latest_actor, "@apollo (agent)")
 
     def test_snippet_truncation(self):
         long_text = "x" * 200
-        n = _dict_notif(nid="n1", text=long_text)
+        n = _notif(nid="n1", text=long_text)
         threads = group_threads([n], snippet_chars=50)
         self.assertLessEqual(len(threads[0].latest_snippet), 50)
         self.assertTrue(threads[0].latest_snippet.endswith("..."))
@@ -224,10 +224,9 @@ class TestNotificationInbox(unittest.TestCase):
 
     def test_fetch_unread_passes_category(self):
         ouro = MagicMock()
-        ouro.notifications.list.return_value = [
-            _dict_notif(nid="n1"),
-            _dict_notif(nid="n2", viewed=True),
-        ]
+        ouro.notifications.list.return_value = Page[Notification](
+            data=[_notif(nid="n1"), _notif(nid="n2", viewed=True)]
+        )
         items = fetch_unread(
             ouro, max_fetch=50, categories=["mentions", "comments", "shares"]
         )
@@ -237,15 +236,15 @@ class TestNotificationInbox(unittest.TestCase):
             category="mentions,comments,shares",
         )
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["id"], "n1")
+        self.assertEqual(str(items[0].id), _uid("n1"))
 
     def test_expire_stale_marks_old_and_keeps_fresh(self):
         now = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
-        stale = _dict_notif(
+        stale = _notif(
             nid="old",
             created_at=now - timedelta(hours=100),
         )
-        fresh = _dict_notif(
+        fresh = _notif(
             nid="new",
             created_at=now - timedelta(hours=1),
         )
@@ -255,30 +254,32 @@ class TestNotificationInbox(unittest.TestCase):
         )
         self.assertEqual(expired, 1)
         self.assertEqual(len(remaining), 1)
-        self.assertEqual(remaining[0]["id"], "new")
-        ouro.notifications.read.assert_called_once_with("old")
+        self.assertEqual(str(remaining[0].id), _uid("new"))
+        ouro.notifications.read.assert_called_once_with(_uid("old"))
 
     def test_build_notification_inbox_happy_path(self):
         now = datetime(2026, 7, 28, 15, 0, tzinfo=timezone.utc)
         ouro = MagicMock()
-        ouro.notifications.list.return_value = [
-            _dict_notif(
-                nid="n1",
-                text="@hermes please look",
-                created_at=now - timedelta(hours=2),
-                username="mmoderwell",
-                actor_type="human",
-                notif_type="mention",
-            )
-        ]
+        ouro.notifications.list.return_value = Page[Notification](
+            data=[
+                _notif(
+                    nid="n1",
+                    text="@hermes please look",
+                    created_at=now - timedelta(hours=2),
+                    username="mmoderwell",
+                    actor_type="human",
+                    notif_type="mention",
+                )
+            ]
+        )
         cfg = NotificationInboxConfig()
         inbox = build_notification_inbox(ouro, cfg, now=now)
         self.assertIsNotNone(inbox.section)
         assert inbox.section is not None
         self.assertIn("Notification Inbox", inbox.section)
-        self.assertIn("n1", inbox.section)
+        self.assertIn(_uid("n1"), inbox.section)
         self.assertEqual(inbox.thread_count, 1)
-        self.assertEqual(inbox.notification_ids, ["n1"])
+        self.assertEqual(inbox.notification_ids, [_uid("n1")])
 
     def test_build_notification_inbox_swallows_errors(self):
         ouro = MagicMock()

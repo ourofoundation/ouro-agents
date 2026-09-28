@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+from ouro.models import Page, QuestItem, RichText
 from ouro_agents.agent import OuroAgent
 from ouro_agents.config import HeartbeatConfig
 from ouro_agents.display import OuroDisplay
@@ -25,6 +26,7 @@ from ouro_agents.modes.profiles import HEARTBEAT
 from ouro_agents.soul import HEARTBEAT_SUBAGENT_RULES
 from ouro_agents.subagents.context import SubAgentUsage
 from ouro_agents.usage import RunUsage, UsageTracker
+from sdk_models import make_asset, uid
 
 
 def test_advance_due_recurring_items_reschedules_only_due_recurring():
@@ -164,19 +166,11 @@ def test_build_heartbeat_task_context_composes_inbox_with_policy(tmp_path):
 
     class _Assets:
         def search(self, **_kwargs):
-            return [
-                {
-                    "id": "quest-a",
-                    "name": "Outreach",
-                    "org_id": "org-a",
-                    "team_id": "team-a",
-                    "user_id": "agent-user",
-                }
-            ]
+            return [make_asset(id="quest-a", name="Outreach")]
 
     class _Quests:
         def list_assigned_items(self, **_kwargs):
-            return []
+            return Page[QuestItem](data=[])
 
         def retrieve(self, quest_id):
             return SimpleNamespace(
@@ -796,19 +790,11 @@ def test_load_owned_open_quest_items_includes_unassigned_items():
         def search(self, **kwargs):
             assert kwargs["asset_type"] == "quest"
             assert kwargs["user_id"] == "agent-user"
-            return [
-                {
-                    "id": "quest-a",
-                    "name": "Outreach",
-                    "org_id": "org-a",
-                    "team_id": "team-a",
-                    "user_id": "agent-user",
-                }
-            ]
+            return [make_asset(id="quest-a", name="Outreach")]
 
     class _Quests:
         def retrieve(self, quest_id):
-            assert quest_id == "quest-a"
+            assert quest_id == uid("quest-a")
             return SimpleNamespace(
                 id="quest-a",
                 name="Outreach",
@@ -851,15 +837,7 @@ def test_load_owned_open_quest_items_includes_unassigned_items():
 def test_load_owned_open_quest_items_excludes_draft_quests():
     class _Assets:
         def search(self, **_kwargs):
-            return [
-                {
-                    "id": "quest-draft",
-                    "name": "Draft plan quest",
-                    "org_id": "org-a",
-                    "team_id": "team-a",
-                    "user_id": "agent-user",
-                }
-            ]
+            return [make_asset(id="quest-draft", name="Draft plan quest")]
 
     class _Quests:
         def retrieve(self, _quest_id):
@@ -888,36 +866,28 @@ def test_load_owned_open_quest_items_excludes_draft_quests():
 def test_load_work_inbox_puts_assigned_items_first_and_dedupes():
     class _Assets:
         def search(self, **_kwargs):
-            return [
-                {
-                    "id": "quest-a",
-                    "name": "Outreach",
-                    "org_id": "org-a",
-                    "team_id": "team-a",
-                    "user_id": "agent-user",
-                }
-            ]
+            return [make_asset(id="quest-a", name="Outreach")]
 
     class _Quests:
         def list_assigned_items(self, **_kwargs):
-            return [
-                {
-                    "id": "item-assigned",
-                    "quest_id": "quest-other",
-                    "status": "pending",
-                    "description": "Assigned by someone else",
-                },
-                {
-                    "id": "item-a",
-                    "quest_id": "quest-a",
-                    "status": "pending",
-                    "description": "Also on my own quest",
-                },
-            ]
+            return Page[QuestItem](
+                data=[
+                    QuestItem(
+                        id=uid("item-assigned"),
+                        quest_id=uid("quest-other"),
+                        description=RichText(text="Assigned by someone else"),
+                    ),
+                    QuestItem(
+                        id=uid("item-a"),
+                        quest_id=uid("quest-a"),
+                        description=RichText(text="Also on my own quest"),
+                    ),
+                ]
+            )
 
         def retrieve(self, _quest_id):
             return SimpleNamespace(
-                id="quest-a",
+                id=uid("quest-a"),
                 name="Outreach",
                 org_id="org-a",
                 team_id="team-a",
@@ -925,14 +895,14 @@ def test_load_work_inbox_puts_assigned_items_first_and_dedupes():
                 quest=SimpleNamespace(status="open", type="closable"),
                 items=[
                     SimpleNamespace(
-                        id="item-a",
-                        quest_id="quest-a",
+                        id=uid("item-a"),
+                        quest_id=uid("quest-a"),
                         status="pending",
                         description="Also on my own quest",
                     ),
                     SimpleNamespace(
-                        id="item-c",
-                        quest_id="quest-a",
+                        id=uid("item-c"),
+                        quest_id=uid("quest-a"),
                         status="pending",
                         description="Owned only",
                     ),
@@ -947,7 +917,11 @@ def test_load_work_inbox_puts_assigned_items_first_and_dedupes():
 
     inbox = load_work_inbox(agent)
 
-    assert [item["id"] for item in inbox] == ["item-assigned", "item-a", "item-c"]
+    assert [item["id"] for item in inbox] == [
+        uid("item-assigned"),
+        uid("item-a"),
+        uid("item-c"),
+    ]
     assert inbox[0]["inbox_source"] == "assigned"
     assert inbox[2]["inbox_source"] == "owned"
 
@@ -957,22 +931,14 @@ def test_run_heartbeat_works_inbox_before_planning(tmp_path):
 
     class _Assets:
         def search(self, **_kwargs):
-            return [
-                {
-                    "id": "quest-a",
-                    "name": "Outreach",
-                    "org_id": "org-a",
-                    "team_id": "team-a",
-                    "user_id": "agent-user",
-                }
-            ]
+            return [make_asset(id="quest-a", name="Outreach")]
 
     class _Quests:
         def list_assigned_items(self, **_kwargs):
-            return []
+            return Page[QuestItem](data=[])
 
         def retrieve(self, quest_id):
-            assert quest_id == "quest-a"
+            assert quest_id == uid("quest-a")
             return SimpleNamespace(
                 id="quest-a",
                 name="Outreach",
@@ -1368,7 +1334,7 @@ def test_planning_budget_blocks_on_backlog_including_waiting(tmp_path):
             quests=FakeQuests(),
             assets=SimpleNamespace(
                 search=lambda **kwargs: [
-                    {"id": "quest-1", "name": "Sponsor sprint"}
+                    make_asset(id="quest-1", name="Sponsor sprint")
                 ]
             ),
         ),

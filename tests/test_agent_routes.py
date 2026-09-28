@@ -315,7 +315,7 @@ class TestPublishSnapshot(unittest.TestCase):
             # would hide the getattr(..., obj["id"]) eager-default bug.
             created = SimpleNamespace(id="service-123")
             ouro.services.create.return_value = created
-            ouro.assets.search.return_value = MagicMock(data=[])
+            ouro.assets.search.return_value = []
             routes_config = AgentRoutesConfig(
                 enabled=True,
                 path_prefix="/routes",
@@ -356,9 +356,7 @@ class TestPublishSnapshot(unittest.TestCase):
             _write_draft(workspace, "load-context")
             ouro = MagicMock()
             existing = SimpleNamespace(id="service-existing", name="apollo-routes")
-            ouro.assets.search.return_value = MagicMock(
-                data=[existing]
-            )
+            ouro.assets.search.return_value = [existing]
             ouro.services.update.return_value = existing
             ouro.services.create.side_effect = AssertionError("should not create")
             tools = make_publish_route_tools(
@@ -384,7 +382,7 @@ class TestPublishSnapshot(unittest.TestCase):
             workspace = Path(tmp)
             _write_draft(workspace, "load-context")
             ouro = MagicMock()
-            ouro.assets.search.return_value = MagicMock(data=[])
+            ouro.assets.search.return_value = []
             ouro.services.create.side_effect = RuntimeError("boom")
             tools = make_publish_route_tools(
                 workspace,

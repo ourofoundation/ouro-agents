@@ -6,15 +6,18 @@ import re
 import sys
 import threading
 import time
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 from uuid import uuid4
 
+from mcp import StdioServerParameters
+from mcp.client.stdio import stdio_client
+from ouro.models import Team
 from smolagents import (
     ActionStep,
     ChatMessageStreamDelta,
     FinalAnswerStep,
-    ToolCollection,
     tool,
 )
 
@@ -67,6 +70,7 @@ from .modes import (
 )
 from .modes.framing import ASK_CONTROLLER_GUIDANCE
 from .observer import AgentObserver, ProgressEvent, emit_progress
+from .mcp_client import MCPConnection, streamable_http_transport
 from .mcp_http import ManagedMcpProcess, spawn_managed_mcp_http
 from .mcp_locking import McpServerLocks, wrap_mcp_tool_with_lock
 from .mcp_paths import wrap_mcp_tool_with_workspace_paths
@@ -280,7 +284,7 @@ class OuroAgent:
         )
         self._current_tick_id: Optional[str] = None
 
-        self._mcp_contexts: list = []
+        self._mcp_connections: list[MCPConnection] = []
         self._managed_mcp: list[ManagedMcpProcess] = []
         self._mcp_locks = McpServerLocks()
         self._deferred_tools: dict = {}
@@ -459,13 +463,13 @@ class OuroAgent:
             logger.warning("Platform context: Ouro SDK client unavailable")
         else:
             try:
-                profile = ouro.users.me() or {}
+                profile = ouro.users.me()
                 context["profile"] = {
-                    "id": str(profile.get("user_id") or getattr(ouro.user, "id", "")),
-                    "username": profile.get("username"),
-                    "display_name": profile.get("display_name"),
-                    "email": profile.get("email") or getattr(ouro.user, "email", None),
-                    "bio": profile.get("bio"),
+                    "id": str(profile.user_id),
+                    "username": profile.username,
+                    "display_name": profile.name,
+                    "email": ouro.user.email,
+                    "bio": profile.bio,
                 }
             except Exception as e:
                 logger.warning("Platform context: failed to fetch profile: %s", e)
@@ -473,10 +477,10 @@ class OuroAgent:
             try:
                 context["organizations"] = [
                     {
-                        "id": str(org.get("id") or ""),
-                        "name": org.get("name"),
-                        "display_name": org.get("display_name"),
-                        "role": (org.get("membership") or {}).get("role"),
+                        "id": str(org.id),
+                        "name": org.name,
+                        "display_name": org.display_name,
+                        "role": org.membership.role if org.membership else None,
                     }
                     for org in ouro.organizations.list()
                 ]
@@ -580,24 +584,22 @@ class OuroAgent:
         return entries
 
     @staticmethod
-    def _team_context_entry(team) -> dict:
+    def _team_context_entry(team: Team) -> dict:
         """Flatten an SDK Team into the cached platform-context shape."""
-        org = team.get("organization") or {}
+        org = team.organization
         source_policy = (
-            team.get("source_policy") or org.get("source_policy") or "any"
+            team.source_policy or (org.source_policy if org else None) or "any"
         )
-        membership = team.get("userMembership") or {}
-        desc = team.get("description")
         return {
-            "id": str(team.get("id") or ""),
-            "name": team.get("name"),
-            "slug": team.get("slug"),
-            "org_id": str(team.get("org_id") or ""),
-            "organization_name": org.get("name") or org.get("display_name"),
-            "role": membership.get("role"),
+            "id": str(team.id),
+            "name": team.name,
+            "slug": team.slug,
+            "org_id": str(team.org_id or ""),
+            "organization_name": (org.name or org.display_name) if org else None,
+            "role": team.user_membership.role if team.user_membership else None,
             "source_policy": source_policy,
             "agent_can_create": source_policy != "web_only",
-            "description": desc.get("text", "") if isinstance(desc, dict) else desc,
+            "description": team.description.text if team.description else None,
         }
 
     def _resolve_security_actors(self) -> None:
@@ -682,13 +684,8 @@ class OuroAgent:
             return None
 
         for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            candidate_username = str(candidate.get("username") or "").strip()
-            candidate_id = str(
-                candidate.get("user_id") or candidate.get("id") or ""
-            ).strip()
-            if candidate_username == username and candidate_id:
+            if (candidate.username or "").strip() == username:
+                candidate_id = str(candidate.user_id)
                 logger.info("Resolved username '%s' to user id %s", username, candidate_id)
                 return candidate_id
         return None
@@ -1557,9 +1554,9 @@ class OuroAgent:
 
     @classmethod
     def _patch_tool_inputs(cls, mcp_tool) -> None:
-        """Fix mcpadapt's schema conversion for nullable/optional MCP params.
+        """Fix the MCP-to-smolagents schema conversion for nullable/optional params.
 
-        mcpadapt doesn't translate anyOf: [{type: X}, {type: null}] into
+        ``mcp_client`` doesn't translate anyOf: [{type: X}, {type: null}] into
         smolagents' nullable flag, causing validation errors when the LLM
         sends null or omits optional parameters.  It also forces a missing
         top-level ``type`` to ``"string"`` even when ``anyOf`` allows
@@ -1616,21 +1613,16 @@ class OuroAgent:
             if not command:
                 return
             try:
-                from mcp import StdioServerParameters
-
-                env = self._mcp_server_env(server)
                 server_params = StdioServerParameters(
-                    command=command, args=server.args or [], env=env
+                    command=command,
+                    args=server.args or [],
+                    env=self._mcp_server_env(server),
                 )
-                ctx = ToolCollection.from_mcp(
-                    server_parameters=server_params,
-                    trust_remote_code=True,
-                    structured_output=False,
-                )
-                collection = ctx.__enter__()
-                self._mcp_contexts.append(ctx)
+                connection = MCPConnection(partial(stdio_client, server_params))
+                tools = connection.open()
+                self._mcp_connections.append(connection)
                 self._mcp_locks.register_stdio(server.name)
-                self._register_mcp_tools(server, collection.tools, lock_stdio=True)
+                self._register_mcp_tools(server, tools, lock_stdio=True)
                 logger.info("Connected to MCP server: %s (stdio)", server.name)
             except Exception as e:
                 logger.error("Failed to connect to MCP server %s: %s", server.name, e)
@@ -1641,25 +1633,25 @@ class OuroAgent:
                 )
                 return
             try:
+                env = self._mcp_server_env(server)
                 if command:
                     managed = spawn_managed_mcp_http(
                         name=server.name,
                         command=command,
                         args=server.args,
-                        env=self._mcp_server_env(server),
+                        env=env,
                         url=server.url,
                     )
                     self._managed_mcp.append(managed)
-                params = {"url": server.url, "transport": "streamable-http"}
-                ctx = ToolCollection.from_mcp(
-                    server_parameters=params,
-                    trust_remote_code=True,
-                    structured_output=False,
+                api_key = env.get("OURO_API_KEY")
+                headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+                connection = MCPConnection(
+                    partial(streamable_http_transport, server.url, headers)
                 )
-                collection = ctx.__enter__()
-                self._mcp_contexts.append(ctx)
+                tools = connection.open()
+                self._mcp_connections.append(connection)
                 self._mcp_locks.register_http(server.name)
-                self._register_mcp_tools(server, collection.tools, lock_stdio=False)
+                self._register_mcp_tools(server, tools, lock_stdio=False)
                 logger.info(
                     "Connected to MCP server: %s (streamable-http %s)",
                     server.name,
@@ -1749,12 +1741,12 @@ class OuroAgent:
             except Exception:
                 pass
         self._managed_mcp.clear()
-        for ctx in self._mcp_contexts:
+        for connection in self._mcp_connections:
             try:
-                ctx.__exit__(None, None, None)
+                connection.close()
             except Exception:
                 pass
-        self._mcp_contexts.clear()
+        self._mcp_connections.clear()
         self._mcp_locks.clear()
         self._deferred_tools.clear()
         self._deferred_tools_by_raw_name.clear()

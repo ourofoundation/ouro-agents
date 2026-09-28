@@ -2,6 +2,9 @@
 
 from types import SimpleNamespace
 
+from ouro.models import Asset, AssetCounts, Comment, Entry, Page
+from sdk_models import make_asset, uid
+
 from ouro_agents.modes.outcomes import (
     build_outcome_evidence_context,
     collect_quest_outcome,
@@ -36,19 +39,23 @@ def test_format_outcome_line_includes_external_metrics():
 def test_collect_quest_outcome_uses_notes_asset_ids_and_counts_fallback():
     class FakeAssets:
         def counts(self, asset_id):
-            return {"views": 10, "comments": 2, "reactions": 0, "downloads": 1}
+            return AssetCounts(views=10, comments=2, reactions=0, downloads=1)
 
     class FakeComments:
-        def list(self, parent_id=None, *args, **kwargs):
+        def list_by_parent(self, parent_id):
             return [
-                {"user_id": "owner-1", "id": "c1"},
-                {"user_id": "other-2", "id": "c2"},
+                make_asset(Comment, id="c1", asset_type="comment", user_id=uid("owner-1")),
+                make_asset(Comment, id="c2", asset_type="comment", user_id=uid("other-2")),
             ]
+
+    class FakeQuests:
+        def list_entries(self, quest_id):
+            return Page[Entry](data=[])
 
     ouro = SimpleNamespace(
         assets=FakeAssets(),
         comments=FakeComments(),
-        quests=SimpleNamespace(),
+        quests=FakeQuests(),
     )
     quest = SimpleNamespace(
         id="quest-1",
@@ -66,7 +73,7 @@ def test_collect_quest_outcome_uses_notes_asset_ids_and_counts_fallback():
         ],
     )
 
-    outcome = collect_quest_outcome(ouro, quest, owner_user_id="owner-1")
+    outcome = collect_quest_outcome(ouro, quest, owner_user_id=uid("owner-1"))
     assert outcome["items_resolved"] == 1
     assert "019f4c4e-73f2-7dcb-a0a9-daf9840b712e" in outcome["produced_asset_ids"]
     assert outcome["metrics"]["views"] == 10
@@ -103,16 +110,18 @@ def test_build_outcome_evidence_context_renders_digest():
 
     class FakeAssets:
         def search(self, **kwargs):
-            return [
-                {
-                    "id": "q1",
-                    "name": "Cycle 25",
-                    "created_at": "2026-07-13T00:00:00+00:00",
-                }
-            ]
+            return Page[Asset](
+                data=[
+                    make_asset(
+                        id="q1",
+                        name="Cycle 25",
+                        created_at="2026-07-13T00:00:00+00:00",
+                    )
+                ]
+            )
 
         def counts(self, asset_id):
-            return {}
+            return AssetCounts()
 
     agent = SimpleNamespace(
         own_user_id="u1",

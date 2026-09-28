@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from sdk_models import make_asset
+
 from ouro_agents.chat_compaction import (
     CompactionRecord,
     build_injectable_history,
@@ -236,8 +238,8 @@ class TestFailedTurnMarkers(unittest.TestCase):
 class TestPlansPointer(unittest.TestCase):
     def test_pointer_is_one_line_without_quest_titles(self):
         quests = [
-            {"id": "q1", "name": "Cu2Sb Validation Gate", "team_id": "t1"},
-            {"id": "q2", "name": "GGen Heusler Calibration", "team_id": "t1"},
+            make_asset(id="q1", name="Cu2Sb Validation Gate"),
+            make_asset(id="q2", name="GGen Heusler Calibration"),
         ]
         pointer = format_quests_index_pointer(quests)
         self.assertIn("2 active plan quests", pointer)

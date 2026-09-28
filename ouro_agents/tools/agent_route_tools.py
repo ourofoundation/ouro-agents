@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from ouro.models import Service
 from smolagents import tool
 
 from ..agent_routes.executor import execute_agent_route
@@ -154,20 +155,6 @@ def _service_base_url(public_base_url: str | None, path_prefix: str) -> str:
     if not prefix.startswith("/"):
         prefix = f"/{prefix}"
     return f"{base}{prefix}"
-
-
-def _resolve_service_id(service: Any) -> str:
-    """Extract id from a Service model or dict without eager subscripting.
-
-    ``getattr(obj, "id", obj["id"])`` evaluates the default before the call, so
-    a real Service (not subscriptable) raises TypeError even when ``.id`` exists.
-    """
-    sid = getattr(service, "id", None)
-    if sid is None and isinstance(service, dict):
-        sid = service.get("id")
-    if not sid:
-        raise ValueError("service response missing id")
-    return str(sid)
 
 
 def _sync_ouro_auth(
@@ -319,13 +306,10 @@ def make_publish_route_tools(
                 payload.update(extra)
                 return payload
 
-            def _adopt_existing_service() -> Any | None:
+            def _adopt_existing_service() -> Service | None:
                 """Find an existing <agent>-routes service owned by this agent."""
-                search = getattr(getattr(ouro_client, "assets", None), "search", None)
-                if not callable(search):
-                    return None
                 try:
-                    found = search(
+                    found = ouro_client.assets.search(
                         query=service_name,
                         asset_type="service",
                         scope="personal",
@@ -334,25 +318,11 @@ def make_publish_route_tools(
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Could not search for existing service: %s", exc)
                     return None
-                results = getattr(found, "data", None)
-                if results is None and isinstance(found, dict):
-                    results = found.get("data") or found.get("results") or []
-                if results is None and isinstance(found, list):
-                    results = found
-                for item in results or []:
-                    item_name = getattr(item, "name", None)
-                    if item_name is None and isinstance(item, dict):
-                        item_name = item.get("name")
-                    if item_name != service_name:
-                        continue
-                    sid = getattr(item, "id", None)
-                    if sid is None and isinstance(item, dict):
-                        sid = item.get("id")
-                    if not sid:
-                        continue
-                    return ouro_client.services.update(
-                        str(sid), **_service_payload()
-                    )
+                for item in found:
+                    if item.name == service_name:
+                        return ouro_client.services.update(
+                            str(item.id), **_service_payload()
+                        )
                 return None
 
             def _rollback_registry() -> None:
@@ -377,7 +347,7 @@ def make_publish_route_tools(
                     if adopted is not None:
                         service = adopted
                         action = "updated (adopted existing)"
-                        registry.service_id = _resolve_service_id(service)
+                        registry.service_id = str(service.id)
                         save_published_registry(workspace, registry)
                     else:
                         if not org or not team:
@@ -403,7 +373,7 @@ def make_publish_route_tools(
                                 raise create_exc
                             service = adopted
                             action = "updated (adopted existing)"
-                        registry.service_id = _resolve_service_id(service)
+                        registry.service_id = str(service.id)
                         save_published_registry(workspace, registry)
                         location_note = f"\n- Location: org={org} team={team}"
             except Exception as exc:  # noqa: BLE001
@@ -415,7 +385,7 @@ def make_publish_route_tools(
                     "Fix the error and call publish_route again."
                 )
 
-            service_id = registry.service_id or _resolve_service_id(service)
+            service_id = registry.service_id or str(service.id)
             serve_token = os.environ.get(routes_config.serve_token_env) or ""
             auth_note = ""
             # Sync serve token on every successful publish (idempotent upsert).

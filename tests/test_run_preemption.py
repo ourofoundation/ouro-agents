@@ -6,9 +6,12 @@ import threading
 import time
 from unittest.mock import MagicMock
 
+from mcp.client.stdio import stdio_client
+
 from ouro_agents.agent import OuroAgent
 from ouro_agents.cancellation import RunCancellationToken
 from ouro_agents.config import RunMode
+from ouro_agents.mcp_client import streamable_http_transport
 from ouro_agents.mcp_locking import McpServerLocks, wrap_mcp_tool_with_lock
 from ouro_agents.run_context import (
     ActiveRunRegistry,
@@ -193,28 +196,25 @@ def test_streamable_http_config_requires_url():
     assert cfg.url.endswith("/mcp")
 
 
-def test_streamable_http_connect_uses_dict_params(monkeypatch):
-    """_connect_one_server passes url dict into ToolCollection.from_mcp."""
+def _fake_mcp_connection(monkeypatch) -> dict:
+    seen: dict = {}
+
+    class _FakeConnection:
+        def __init__(self, transport):
+            seen["transport"] = transport
+
+        def open(self):
+            return []
+
+    monkeypatch.setattr("ouro_agents.agent.MCPConnection", _FakeConnection)
+    return seen
+
+
+def test_streamable_http_connect_uses_server_url(monkeypatch):
+    """_connect_one_server opens a streamable-http transport to the url."""
     from ouro_agents.config import MCPServerConfig
 
-    seen = {}
-
-    class _FakeCollection:
-        tools = []
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def fake_from_mcp(server_parameters=None, **kwargs):
-        seen["params"] = server_parameters
-        return _FakeCollection()
-
-    monkeypatch.setattr(
-        "ouro_agents.agent.ToolCollection.from_mcp", fake_from_mcp
-    )
+    seen = _fake_mcp_connection(monkeypatch)
 
     agent = MagicMock(spec=OuroAgent)
     agent._workspace = MagicMock()
@@ -222,7 +222,7 @@ def test_streamable_http_connect_uses_dict_params(monkeypatch):
     agent.config = MagicMock()
     agent.config.agent.sandbox.mode = "local"
     agent.config.heartbeat.active_hours = None
-    agent._mcp_contexts = []
+    agent._mcp_connections = []
     agent._managed_mcp = []
     agent._mcp_locks = McpServerLocks()
     agent._deferred_tools = {}
@@ -240,33 +240,18 @@ def test_streamable_http_connect_uses_dict_params(monkeypatch):
         url="http://127.0.0.1:8011/mcp",
     )
     OuroAgent._connect_one_server(agent, server)
-    assert seen["params"] == {
-        "url": "http://127.0.0.1:8011/mcp",
-        "transport": "streamable-http",
-    }
+    transport = seen["transport"]
+    assert transport.func is streamable_http_transport
+    assert transport.args == ("http://127.0.0.1:8011/mcp", None)
     assert agent._mcp_locks.lock_for("ouro") is None
 
 
 def test_stdio_python_command_uses_running_interpreter(monkeypatch):
     from ouro_agents.config import MCPServerConfig
 
-    seen = {}
-
-    class _FakeCollection:
-        tools = []
-
-        def __enter__(self):
-            return self
-
-    def fake_from_mcp(server_parameters=None, **kwargs):
-        seen["params"] = server_parameters
-        return _FakeCollection()
-
-    monkeypatch.setattr(
-        "ouro_agents.agent.ToolCollection.from_mcp", fake_from_mcp
-    )
+    seen = _fake_mcp_connection(monkeypatch)
     agent = MagicMock(spec=OuroAgent)
-    agent._mcp_contexts = []
+    agent._mcp_connections = []
     agent._mcp_locks = McpServerLocks()
     agent._mcp_server_env = lambda server: {}
     agent._register_mcp_tools = lambda server, tools, lock_stdio=False: None
@@ -279,4 +264,6 @@ def test_stdio_python_command_uses_running_interpreter(monkeypatch):
     )
     OuroAgent._connect_one_server(agent, server)
 
-    assert seen["params"].command == sys.executable
+    transport = seen["transport"]
+    assert transport.func is stdio_client
+    assert transport.args[0].command == sys.executable

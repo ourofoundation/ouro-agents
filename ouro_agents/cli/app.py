@@ -585,24 +585,19 @@ class OuroApp(App[None]):
             log.line(f"Failed to refresh notifications: {exc}", style="red")
             return
         mention_types = {"mention", "comment", "share"}
-        mention_like = [
-            n
-            for n in notifications
-            if str(getattr(n, "type", "") or "") in mention_types
-        ]
+        mention_like = [n for n in notifications if n.type in mention_types]
         if not mention_like:
             log.line("No unread mentions/comments found.")
             return
         log.line("Unread mentions/comments", style="bold")
         for notification in mention_like:
-            content = getattr(notification, "content", None) or {}
-            asset = getattr(notification, "asset", None) or {}
-            source = getattr(notification, "source_user", None) or {}
-            title = asset.get("name") or asset.get("id") or getattr(notification, "asset_id", "")
-            actor = source.get("username") or getattr(notification, "source_user_id", "")
+            content = notification.content or {}
+            asset = notification.asset
+            source = notification.source_user
+            title = (asset and (asset.name or asset.id)) or notification.asset_id or ""
+            actor = (source and source.username) or notification.source_user_id or ""
             text = content.get("text") or content.get("message") or ""
-            notification_type = getattr(notification, "type", "notification")
-            log.line(f"{notification_type} from {actor}: {title} {text}")
+            log.line(f"{notification.type or 'notification'} from {actor}: {title} {text}")
 
     def _log_view_line(self, view_key: str, text: str, *, style: str = "dim") -> None:
         if view_key == "chat":

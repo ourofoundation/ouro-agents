@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from ouro.models import Asset
+from ouro.utils.content import description_to_markdown
 from pydantic import BaseModel
 
 from ..constants import _INTERVAL_RE, clip_text, parse_json_from_llm
@@ -174,7 +176,7 @@ def normalize_item(item: Any) -> dict[str, Any]:
                     data[key] = value
     data["id"] = str(data.get("id") or "")
     data["quest_id"] = str(data.get("quest_id") or "")
-    data.setdefault("description", "")
+    data["description"] = description_to_markdown(data.get("description"))
     data.setdefault("status", "pending")
     return data
 
@@ -250,16 +252,13 @@ def render_numbered_quest_items(
 # ---------------------------------------------------------------------------
 
 
-def search_own_quests(agent: "OuroAgent", limit: int = 20) -> list[dict[str, Any]]:
-    """Search the agent's own quests (newest activity first) as plain dicts."""
+def search_own_quests(agent: "OuroAgent", limit: int = 20) -> list[Asset]:
+    """Search the agent's own quests (newest activity first)."""
     own_user_id = getattr(agent, "own_user_id", None)
     if not own_user_id:
         return []
     try:
         ouro = agent._get_ouro_client()
-        search = getattr(getattr(ouro, "assets", None), "search", None)
-        if not search:
-            return []
         kwargs: dict[str, Any] = {
             "asset_type": "quest",
             "user_id": str(own_user_id),
@@ -269,30 +268,22 @@ def search_own_quests(agent: "OuroAgent", limit: int = 20) -> list[dict[str, Any
         org_id = getattr(agent.config.agent, "org_id", None)
         if org_id:
             kwargs["org_id"] = str(org_id)
-        raw = search(**kwargs)
-        if isinstance(raw, dict):
-            raw = raw.get("data") or raw.get("results") or []
-        return [asset for asset in raw or [] if isinstance(asset, dict)]
+        return list(ouro.assets.search(**kwargs))
     except Exception as e:
         logger.warning("Failed to search own quests: %s", e)
         return []
 
 
-def format_quests_index_for_prompt(quests: list[dict[str, Any]]) -> str:
+def format_quests_index_for_prompt(quests: list[Asset]) -> str:
     """Short list of the agent's own quest ids for system prompts.
 
     Lets the model call ``get_asset`` on a quest id when it needs details.
     """
     lines: list[str] = []
     for quest in quests:
-        quest_id = str(quest.get("id") or "")
-        if not quest_id:
-            continue
-        name = str(quest.get("name") or "Untitled quest")
-        team = str(quest.get("team_id") or "")
-        line = f"- `{quest_id}` — {name}"
-        if team:
-            line += f" (team: {team})"
+        line = f"- `{quest.id}` — {quest.name or 'Untitled quest'}"
+        if quest.team_id:
+            line += f" (team: {quest.team_id})"
         lines.append(line)
     if not lines:
         return ""
@@ -303,9 +294,9 @@ def format_quests_index_for_prompt(quests: list[dict[str, Any]]) -> str:
     )
 
 
-def format_quests_index_pointer(quests: list[dict[str, Any]]) -> str:
+def format_quests_index_pointer(quests: list[Asset]) -> str:
     """One-line pointer for chat — avoid dumping quest titles that steer the thread."""
-    n = sum(1 for q in quests if str(q.get("id") or "").strip())
+    n = len(quests)
     if n == 0:
         return ""
     noun = "quest" if n == 1 else "quests"
@@ -570,12 +561,10 @@ def build_quest_history_context(
         "digest.",
     ]
     for asset in assets:
-        quest_id = str(asset.get("id") or "")
-        if not quest_id:
-            continue
-        name = str(asset.get("name") or "Untitled")
-        team_id = str(asset.get("team_id") or "")
-        created = str(asset.get("created_at") or "")[:10]
+        quest_id = str(asset.id)
+        name = asset.name or "Untitled"
+        team_id = str(asset.team_id or "")
+        created = asset.created_at.date().isoformat() if asset.created_at else ""
         try:
             quest = ouro.quests.retrieve(quest_id)
         except Exception:
@@ -1049,9 +1038,7 @@ def find_reviewable_quests(
     ouro = agent._get_ouro_client()
     reviewable: list[dict[str, Any]] = []
     for asset in search_own_quests(agent, limit=25):
-        quest_id = str(asset.get("id") or "")
-        if not quest_id:
-            continue
+        quest_id = str(asset.id)
         try:
             quest = ouro.quests.retrieve(quest_id)
         except Exception:
@@ -1064,7 +1051,7 @@ def find_reviewable_quests(
         reviewable.append(
             {
                 "id": quest_id,
-                "name": str(read_field(quest, "name") or asset.get("name") or ""),
+                "name": str(read_field(quest, "name") or asset.name or ""),
                 "status": status,
                 "team_id": str(read_field(quest, "team_id") or ""),
                 "items_total": len(items),
