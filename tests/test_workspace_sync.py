@@ -47,6 +47,9 @@ class _FakeDocStore:
     def memory_name(self, agent_name: str) -> str:
         return f"MEMORY:{agent_name}:research"
 
+    def accepts(self, name: str) -> bool:
+        return True
+
     def read_with_meta(self, name: str):
         return types.SimpleNamespace(
             content=self.remote_content,

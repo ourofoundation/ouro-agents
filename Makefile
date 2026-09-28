@@ -6,11 +6,17 @@
 # Installed users should prefer `ouro-agents build-sandbox`, which builds the
 # same Dockerfile shipped in the wheel and tags it with the package version.
 # Extra packages belong in an agent repo's Dockerfile.agent overlay.
+#
+# Package release (see COMMANDS.md):
+#   make release | make release minor | make release major
+
+# UV_PYTHON overrides .python-version ("ouro" is a pyenv env name, not a uv request).
+export UV_PYTHON ?= python3
 
 IMAGE_PREFIX ?= ouro-agents-sandbox
 TAG ?= latest
 DOCKER ?= docker
-OURO_PY_VERSION ?= 0.11.17
+OURO_PY_VERSION ?= 2.0.1
 
 ifeq ($(NO_CACHE),1)
 BUILD_FLAGS += --no-cache
@@ -19,7 +25,7 @@ endif
 BASE_DOCKERFILE := Dockerfile.sandbox
 BASE_IMAGE := $(IMAGE_PREFIX):$(TAG)
 
-.PHONY: all base list help
+.PHONY: all base list help build release
 
 all: base
 
@@ -45,4 +51,21 @@ help:
 	  '  OURO_PY_VERSION=  pin for the last image layer (default $(OURO_PY_VERSION))' \
 	  '  NO_CACHE=1        rebuild without Docker cache' \
 	  '  BUILD_FLAGS=      extra docker build flags' \
-	  '  TAG=$(TAG)        image tag'
+	  '  TAG=$(TAG)        image tag' \
+	  '' \
+	  'Package:' \
+	  '  make build        uv build --clear' \
+	  '  make release      bump patch (or: minor, major). Commit and push to main to publish.'
+
+build:
+	uv build --clear
+
+# usage: make release | make release minor | make release major
+# Bumps pyproject.toml. Commit and push to main to publish via GitHub Actions.
+release:
+	uv version --bump $(or $(filter-out $@,$(MAKECMDGOALS)),patch) --no-sync
+	@echo ""
+	@echo "Bumped to $$(uv version --short). Commit and push to main to publish."
+
+%:
+	@:

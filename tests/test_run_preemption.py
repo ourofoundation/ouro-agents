@@ -111,6 +111,36 @@ def test_run_context_isolates_usage_trackers():
         assert get_run_context().usage_tracker.total_input_tokens == 0
 
 
+def test_model_built_before_run_records_into_that_run():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from ouro_agents.usage import TrackedOpenAIModel, UsageTracker
+
+    agent = OuroAgent.__new__(OuroAgent)
+    agent._usage_tracker = UsageTracker()
+    with patch("openai.OpenAI") as openai_cls:
+        openai_cls.return_value.chat.completions.create = lambda **_: SimpleNamespace(
+            id="gen-1",
+            usage=SimpleNamespace(prompt_tokens=7, completion_tokens=2),
+            choices=[],
+        )
+        model = TrackedOpenAIModel(
+            model_id="test/model",
+            api_base="https://example.test/v1",
+            api_key="sk-test",
+            tracker=agent._active_usage_tracker,
+        )
+
+    run = RunContext(run_id="plan", usage_tracker=UsageTracker())
+    with bind_run_context(run):
+        model.client.chat.completions.create(model="test/model", messages=[])
+
+    assert run.usage_tracker.total_input_tokens == 7
+    assert run.usage_tracker.total_output_tokens == 2
+    assert agent._usage_tracker.total_input_tokens == 0
+
+
 def test_active_run_registry_snapshots():
     registry = ActiveRunRegistry()
     token = RunCancellationToken()

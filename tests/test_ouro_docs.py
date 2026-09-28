@@ -732,6 +732,10 @@ class _FakeOuroForComposite:
         self.read_comment_calls: list[str] = []
         self.is_owner_calls: list[str] = []
         self.list_item_calls: list[tuple[str, str, str | None]] = []
+        self.can_create_private = True
+
+    def accepts(self, name):
+        return OuroDocStore.accepts(self, name)
 
     def memory_name(self, agent_name=None):
         return f"MEMORY:{agent_name or 'agent'}:research"
@@ -828,6 +832,25 @@ class TestCompositeDocStore(unittest.TestCase):
             self.assertEqual(ouro.writes, [("MEMORY:hermes:research", "fact")])
             self.assertEqual(ouro.appends, [("LOG:hermes:research:2026-04-05", "- x")])
             self.assertEqual(ouro.searches, ["query"])
+
+    def test_private_docs_stay_local_when_plan_cannot_create_private(self):
+        with TemporaryDirectory() as tmpdir:
+            composite, local, ouro = self._composite(tmpdir, with_ouro=True)
+            ouro.can_create_private = False
+
+            self.assertTrue(composite.write("MEMORY:hermes:research", "fact"))
+            self.assertTrue(
+                composite.append_list_item("LOG:hermes:research:2026-W40", "- x")
+            )
+            self.assertTrue(composite.exists("USER:abc"))
+
+            self.assertEqual(ouro.writes, [])
+            self.assertEqual(ouro.list_item_calls, [])
+            self.assertEqual(ouro.exists_calls, ["USER:abc"])
+            self.assertEqual(
+                local._name_to_path("MEMORY:hermes:research").read_text(), "fact"
+            )
+            self.assertTrue(local.exists("LOG:hermes:research:2026-W40"))
 
     def test_no_ouro_falls_back_to_local_for_everything(self):
         with TemporaryDirectory() as tmpdir:

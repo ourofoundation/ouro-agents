@@ -521,7 +521,7 @@ class TrackedOpenAIModel(OpenAIModel):
     def __init__(
         self,
         *args,
-        tracker: Optional[UsageTracker] = None,
+        tracker: UsageTracker | Callable[[], UsageTracker] | None = None,
         reasoning_callback: Optional[ReasoningCallback] = None,
         reasoning_stream_callback: Optional[ReasoningCallback] = None,
         retry_callback: Optional[RetryCallback] = None,
@@ -530,7 +530,7 @@ class TrackedOpenAIModel(OpenAIModel):
         client_kwargs: Optional[dict] = None,
         **kwargs,
     ):
-        self._tracker = tracker or UsageTracker()
+        self._tracker_source = tracker or UsageTracker()
         self._reasoning_callback = reasoning_callback
         self._reasoning_stream_callback = reasoning_stream_callback
         self._retry_callback = retry_callback
@@ -549,7 +549,10 @@ class TrackedOpenAIModel(OpenAIModel):
 
     @property
     def tracker(self) -> UsageTracker:
-        return self._tracker
+        """Tracker for the current call; a callable source is resolved per call
+        so a model built before its run records into that run."""
+        source = self._tracker_source
+        return source() if callable(source) else source
 
     @property
     def retry_callback(self) -> Optional[RetryCallback]:
@@ -688,10 +691,10 @@ class TrackedOpenAIModel(OpenAIModel):
     def create_client(self):
         client = super().create_client()
         original_create = client.chat.completions.create
-        tracker = self._tracker
 
         @functools.wraps(original_create)
         def tracked_create(*args, **kwargs):
+            tracker = self.tracker
             if self._cache_breakpoints:
                 messages = kwargs.get("messages")
                 if isinstance(messages, list):

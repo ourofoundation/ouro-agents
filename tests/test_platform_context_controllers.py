@@ -92,6 +92,12 @@ class TestPlatformContextControllers(unittest.TestCase):
                             "username": "hermes",
                             "display_name": "Hermes",
                         },
+                        "plan": {
+                            "type": "gold",
+                            "can_create_private_assets": True,
+                            "assets_used": 12,
+                            "assets_limit": 10000,
+                        },
                         "organizations": [],
                         "teams": [],
                         "controllers": [
@@ -108,6 +114,8 @@ class TestPlatformContextControllers(unittest.TestCase):
             text = format_platform_context_for_prompt(workspace)
 
             self.assertIn("You are: Hermes (@hermes)", text)
+            self.assertIn("Your plan: gold — assets 12/10000", text)
+            self.assertNotIn("cannot create private assets", text)
             self.assertIn("Your controllers (privileged humans who operate you):", text)
             self.assertIn(
                 "@mmoderwell (user_id: 847f4445-78ee-41b1-913b-5bd155c71b13)",
@@ -116,6 +124,31 @@ class TestPlatformContextControllers(unittest.TestCase):
             self.assertIn("user_id: 00000000-0000-0000-0000-000000000099", text)
             self.assertIn("share_asset", text)
             self.assertIn("Mentions and links do not grant access", text)
+
+    def test_free_plan_warns_about_private_assets_and_asset_limit(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            data_dir = workspace / "protected" / "data"
+            data_dir.mkdir(parents=True)
+            (data_dir / "platform_context.json").write_text(
+                json.dumps(
+                    {
+                        "plan": {
+                            "type": "free",
+                            "can_create_private_assets": False,
+                            "assets_used": 372,
+                            "assets_limit": 100,
+                        },
+                        "controllers": [{"username": "mmoderwell", "user_id": "u1"}],
+                    }
+                )
+            )
+
+            text = format_platform_context_for_prompt(workspace)
+
+            self.assertIn("Your plan: free — assets 372/100 (at limit", text)
+            self.assertIn("cannot create private assets", text)
+            self.assertNotIn("share_asset", text)
 
     def test_controller_context_entries_pairs_usernames_and_ids(self) -> None:
         agent = OuroAgent.__new__(OuroAgent)

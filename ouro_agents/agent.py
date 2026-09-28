@@ -293,6 +293,7 @@ class OuroAgent:
         self._server_descriptions: dict[str, str] = {}
         self._mcp_connected = False
         self._own_user_id: Optional[str] = None
+        self._can_create_private_assets = False
         self._active_runs_lock = threading.RLock()
         self._active_run_tokens: set[RunCancellationToken] = set()
         self._active_runs = ActiveRunRegistry()
@@ -451,6 +452,7 @@ class OuroAgent:
         """
         context: dict = {
             "profile": None,
+            "plan": None,
             "organizations": [],
             "teams": [],
             "base_url": os.getenv("OURO_FRONTEND_URL")
@@ -473,6 +475,18 @@ class OuroAgent:
                 }
             except Exception as e:
                 logger.warning("Platform context: failed to fetch profile: %s", e)
+
+            try:
+                plan = ouro.users.plan()
+                assets = plan.usage.get("assets")
+                context["plan"] = {
+                    "type": plan.plan_type,
+                    "can_create_private_assets": plan.limits.can_create_private_assets,
+                    "assets_used": assets.used if assets else None,
+                    "assets_limit": plan.limits.max_assets,
+                }
+            except Exception as e:
+                logger.warning("Platform context: failed to fetch plan: %s", e)
 
             try:
                 context["organizations"] = [
@@ -501,6 +515,9 @@ class OuroAgent:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._own_user_id = (context.get("profile") or {}).get("id")
+        self._can_create_private_assets = bool(
+            (context.get("plan") or {}).get("can_create_private_assets")
+        )
         self._resolve_security_actors()
         context["controllers"] = self._controller_context_entries()
 
@@ -1248,7 +1265,7 @@ class OuroAgent:
             model_id=model_id,
             api_base="https://openrouter.ai/api/v1",
             api_key=os.getenv("OPENROUTER_API_KEY"),
-            tracker=usage_tracker or self._active_usage_tracker(),
+            tracker=usage_tracker or self._active_usage_tracker,
             reasoning_callback=get_display().reasoning,
             cache_breakpoints=explicit_cache,
             cache_ttl=cache_cfg.ttl,
@@ -1431,9 +1448,11 @@ class OuroAgent:
             self._team_doc_stores.pop(tid, None)
 
         for tid in team_ids:
-            if tid in self._team_doc_stores:
-                continue
-            self._team_doc_stores[tid] = self._build_team_doc_store(tid, client=client)
+            store = self._team_doc_stores.get(tid)
+            if store is None:
+                self._team_doc_stores[tid] = self._build_team_doc_store(tid, client=client)
+            elif isinstance(store, CompositeDocStore) and store.ouro is not None:
+                store.ouro.can_create_private = self._can_create_private_assets
 
         self._sync_workspace_docs()
 
@@ -1483,6 +1502,7 @@ class OuroAgent:
             team_slug=team_slug,
             team_name=team_name,
             rhythm=self.config.memory.rhythm,
+            can_create_private=self._can_create_private_assets,
         )
         return CompositeDocStore(local=local, ouro=ouro)
 

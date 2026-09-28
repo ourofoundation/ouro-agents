@@ -72,6 +72,8 @@ def sync_workspace(
         )
         local_path = team_dir / "MEMORY.md"
         post_name = doc_store.memory_name(agent_name)
+        if not doc_store.accepts(post_name):
+            continue
         leaf = preferred_team_dir_name(
             team_id, team_slug=getattr(doc_store, "team_slug", None)
         )

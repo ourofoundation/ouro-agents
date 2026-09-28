@@ -9,8 +9,9 @@ Three classes:
   Identity at the workspace root, team docs under ``teams/{team_id}/``,
   shared docs under ``shared/...`` when no team is set.
 - ``CompositeDocStore``: routes by name prefix. ``SOUL``/``HEARTBEAT``/``NOTES``
-  always go local (per-machine identity); everything else goes to Ouro when
-  available, otherwise local.
+  always go local (per-machine identity); private docs go local when the plan
+  can't create private assets; everything else goes to Ouro when available,
+  otherwise local.
 
 ``workspace_sync`` is the only bridge that copies team ``MEMORY.md`` between
 disk and Ouro at startup.
@@ -170,8 +171,10 @@ class OuroDocStore:
         team_slug: str | None = None,
         team_name: str | None = None,
         rhythm: str = "daily",
+        can_create_private: bool = True,
     ):
         self.agent_name = agent_name
+        self.can_create_private = can_create_private
         self.org_id = org_id
         self.team_id = team_id
         self.team_name = team_name or ""
@@ -205,6 +208,14 @@ class OuroDocStore:
             team_slug=self.team_slug,
             team_id=self.team_id,
         )
+
+    def accepts(self, name: str) -> bool:
+        """Whether *name* can live on Ouro under the account's plan.
+
+        Private docs (MEMORY, logs) stay local when the plan can't create
+        private assets rather than being published more widely.
+        """
+        return self.can_create_private or _visibility_for_doc(name) != "private"
 
     # -- Registry persistence -------------------------------------------------
 
@@ -1016,7 +1027,11 @@ class CompositeDocStore:
 
     def _backend(self, name: str):
         prefix = name.split(":", 1)[0]
-        if prefix in IDENTITY_PREFIXES or self._ouro is None:
+        if (
+            prefix in IDENTITY_PREFIXES
+            or self._ouro is None
+            or not self._ouro.accepts(name)
+        ):
             return self._local
         return self._ouro
 

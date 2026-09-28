@@ -82,6 +82,22 @@ def _format_teams(teams: list[dict]) -> list[str]:
     return lines
 
 
+def _format_plan(plan: dict) -> str:
+    line = f"Your plan: {plan.get('type', '?')}"
+    used, limit = plan.get("assets_used"), plan.get("assets_limit")
+    if used is not None and limit is not None:
+        line += f" — assets {used}/{limit}"
+        if used >= limit:
+            line += " (at limit: creating new assets will fail)"
+    if not plan.get("can_create_private_assets"):
+        line += (
+            "\nThis plan cannot create private assets. Create assets as public "
+            "or organization visibility; keep anything that must stay private "
+            "in your local workspace instead of publishing it."
+        )
+    return line
+
+
 def format_platform_context_for_prompt(workspace: Path) -> str:
     """Load ``protected/data/platform_context.json`` and format for prompt injection.
 
@@ -107,6 +123,10 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
         # owner's address into every prompt invites accidental disclosure.
         parts.append(f"You are: {name_str} (id: {profile.get('id', '?')})")
 
+    plan = context.get("plan")
+    if plan:
+        parts.append(_format_plan(plan))
+
     orgs = context.get("organizations", [])
     if orgs:
         parts.append("\nYour organizations:")
@@ -130,11 +150,12 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
                 parts.append(f"- @{username} (user_id: {user_id})")
             else:
                 parts.append(f"- user_id: {user_id}")
-        parts.append(
-            "When you create a private asset that a controller needs to see, "
-            "call share_asset with their user_id (role read unless they need "
-            "write/admin). Mentions and links do not grant access."
-        )
+        if (plan or {}).get("can_create_private_assets"):
+            parts.append(
+                "When you create a private asset that a controller needs to see, "
+                "call share_asset with their user_id (role read unless they need "
+                "write/admin). Mentions and links do not grant access."
+            )
 
     if not parts:
         return ""
