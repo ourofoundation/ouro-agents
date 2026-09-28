@@ -107,7 +107,7 @@ ad hoc code when a platform action fits.
 
 - Search for route/service assets before building a one-off workflow.
 - Inspect route schemas with `get_asset(id=...)` before execution.
-- Execute with `execute_route(name_or_id=...)`: ordinary JSON fields in `body`,
+- Execute with `execute_route(route_id=...)`: ordinary JSON fields in `body`,
 URL/query values in `params` or `query`, and Ouro asset references in
 `input_assets` using the exact keys from the route's `input_assets` schema
 with asset IDs as values (`input_assets={"file": "<file-id>"}`).
