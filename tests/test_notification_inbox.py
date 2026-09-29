@@ -330,7 +330,7 @@ class TestHeartbeatDeliveryGate(unittest.IsolatedAsyncioTestCase):
         ):
             background = MagicMock()
             background.add_task = MagicMock()
-            result = await server.handle_event(
+            result = await server.process_event(
                 {"event": "comment", "data": {}}, background
             )
 
@@ -375,7 +375,7 @@ class TestHeartbeatDeliveryGate(unittest.IsolatedAsyncioTestCase):
         ):
             background = MagicMock()
             background.add_task = MagicMock()
-            result = await server.handle_event(
+            result = await server.process_event(
                 {"event": "mention", "data": {}}, background
             )
 
@@ -424,7 +424,7 @@ class TestHeartbeatDeliveryGate(unittest.IsolatedAsyncioTestCase):
         ):
             background = MagicMock()
             background.add_task = MagicMock()
-            result = await server.handle_event(
+            result = await server.process_event(
                 {"event": "comment", "data": {}}, background
             )
 
@@ -466,7 +466,7 @@ class TestHeartbeatDeliveryGate(unittest.IsolatedAsyncioTestCase):
         ):
             background = MagicMock()
             background.add_task = MagicMock()
-            result = await server.handle_event(
+            result = await server.process_event(
                 {"event": "comment", "data": {}}, background
             )
 

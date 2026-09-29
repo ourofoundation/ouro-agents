@@ -466,6 +466,19 @@ class ServerConfig(BaseModel):
     # "https://agents.ouro.foundation/apollo". Used by agent routes, and
     # available for any other feature that needs the externally reachable URL.
     public_base_url: Optional[str] = None
+    # The webhook endpoint's `whsec_` secret from Ouro's webhook settings. When
+    # set, every request to `webhook_path` must carry a valid X-Ouro-Signature
+    # (e.g. "${OURO_WEBHOOK_SECRET}"; an unset env var disables verification).
+    webhook_secret: Optional[str] = None
+    # Retried webhook deliveries reuse their delivery_id; repeats seen within
+    # this window are acknowledged without starting another run.
+    webhook_dedupe_ttl_seconds: float = Field(default=24 * 60 * 60, ge=0)
+
+    @model_validator(mode="after")
+    def _blank_webhook_secret_is_unset(self) -> "ServerConfig":
+        if self.webhook_secret is not None and not self.webhook_secret.strip():
+            self.webhook_secret = None
+        return self
 
 
 class EventPoolTimingConfig(BaseModel):

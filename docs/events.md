@@ -126,6 +126,16 @@ delivery mode is `realtime`.
 
 The order of branches in the server handler:
 
+0. **Transport checks** (`handle_event`, before `process_event`):
+   - **Signature** — when `server.webhook_secret` is set, `X-Ouro-Signature`
+     (`t=<unix>,v1=<hex HMAC-SHA256 of "{t}.{raw body}">`) must match the raw
+     request body and be within 5 minutes; otherwise `401`.
+   - **Delivery dedupe** — Ouro retries failed deliveries (and manual
+     "Resend") with the same `delivery_id`. A repeat seen within
+     `server.webhook_dedupe_ttl_seconds` (default 24h, in-memory, per
+     process) returns `200 {"status": "accepted", "duplicate": true}`
+     without running. An id is released again if processing raises, so a
+     retry of a failed attempt still goes through.
 1. **Self-event guard** — drop events whose actor is the agent's own
    user id.
 2. **Interrupt** — cancel in-flight chat work; no LLM run.

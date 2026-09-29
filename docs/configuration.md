@@ -459,6 +459,8 @@ set a positive character count in `mcp_servers[].env` to opt into MCP's soft
 | `port` | `8000` | uvicorn port. |
 | `webhook_path` | `/events` | URL path Ouro should POST events to. |
 | `public_base_url` | `null` | Public HTTPS origin for this agent (nginx front door), e.g. `https://agents.ouro.foundation/apollo`. Used by agent routes and available to other features that need the externally reachable URL. |
+| `webhook_secret` | `null` | The endpoint's `whsec_` secret from Ouro's webhook settings (e.g. `"${OURO_WEBHOOK_SECRET}"`). When set, requests without a valid `X-Ouro-Signature` get `401`. Empty string = off. |
+| `webhook_dedupe_ttl_seconds` | `86400` | How long accepted `delivery_id`s are remembered so retried deliveries don't start a second run. |
 
 ## `event_pooling`
 

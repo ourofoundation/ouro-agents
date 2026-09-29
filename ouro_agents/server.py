@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import time
@@ -44,6 +45,13 @@ from .utils.message_persistence import (
     should_persist_tool_call_payload,
 )
 from .uuid_v7 import uuid7_str
+from .webhooks import (
+    ATTEMPT_HEADER,
+    DELIVERY_HEADER,
+    SIGNATURE_HEADER,
+    DeliveryDedupe,
+    verify_webhook_signature,
+)
 
 if TYPE_CHECKING:
     from ouro.client import Ouro
@@ -104,6 +112,9 @@ active_chat_tokens: Dict[str, RunCancellationToken] = {}
 # Latest agent-authored chat event waiting because this conversation already
 # has an in-flight run. Human messages drop the queue; a finished run flushes it.
 pending_agent_chat_events: Dict[str, EventRunContext] = {}
+# Webhook delivery ids already accepted, so backend retries (same delivery_id)
+# don't start a second run for one event.
+delivery_dedupe = DeliveryDedupe()
 
 
 class RunRequest(BaseModel):
@@ -150,6 +161,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     agent_instance = OuroAgent(config)
     agent_instance.connect_mcp()
     event_pool = EventPool(config.event_pooling, _run_event_task)
+    delivery_dedupe.ttl_seconds = config.server.webhook_dedupe_ttl_seconds
     ouro_client = agent_instance._get_ouro_client()
     if ouro_client:
         reply_publisher = OuroReplyPublisher(client=ouro_client)
@@ -1299,10 +1311,66 @@ async def run_task(request: RunRequest, http_request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def handle_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
-    """Webhook receiver for Ouro platform events."""
+async def handle_event(request: Request, background_tasks: BackgroundTasks):
+    """Webhook receiver for Ouro platform events.
+
+    Verifies X-Ouro-Signature against the raw body when ``server.webhook_secret``
+    is set, and acknowledges repeated delivery ids without re-running.
+    """
     if not agent_instance:
         raise HTTPException(status_code=503, detail="Agent not initialized")
+
+    raw_body = await request.body()
+    secret = agent_instance.config.server.webhook_secret
+    if secret and not verify_webhook_signature(
+        raw_body, request.headers.get(SIGNATURE_HEADER), secret
+    ):
+        logger.warning(
+            "Rejected webhook with invalid signature (delivery=%s)",
+            request.headers.get(DELIVERY_HEADER),
+        )
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    try:
+        body = json.loads(raw_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON body: {exc}")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Webhook body must be an object")
+
+    delivery_id = body.get("delivery_id") or request.headers.get(DELIVERY_HEADER)
+    if not isinstance(delivery_id, str) or not delivery_id:
+        delivery_id = None
+    if delivery_id and not delivery_dedupe.claim(delivery_id):
+        logger.info(
+            "Skipping duplicate webhook delivery %s (%s, attempt %s)",
+            delivery_id,
+            body.get("event"),
+            request.headers.get(ATTEMPT_HEADER, "?"),
+        )
+        return {
+            "status": "accepted",
+            "event_type": body.get("event"),
+            "duplicate": True,
+        }
+
+    try:
+        return await process_event(body, background_tasks)
+    except BaseException:
+        # Not accepted (bad payload, crash, cancellation): let a retry through.
+        if delivery_id:
+            delivery_dedupe.release(delivery_id)
+        raise
+
+
+async def process_event(body: Dict[str, Any], background_tasks: BackgroundTasks):
+    """Route a parsed webhook body: ack, skip, defer, pool, or run."""
+    if not agent_instance:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+
+    # "Send test event" from Ouro's webhook settings: acknowledge without running.
+    if body.get("event") == "ping":
+        return {"status": "accepted", "event_type": "ping"}
 
     try:
         event_data = body.get("data", {}) or {}
