@@ -62,6 +62,10 @@ Ouro integration requirements (non-negotiable):
   `ouro-webhook-token` for async).
 - Declare inputs/outputs with `@ouro_field("x-ouro-input-assets", ...)` and
   `@ouro_field("x-ouro-output-assets", ...)` so routes can wire assets through.
+- Don't write a post on every run. A public post is announced in the team feed,
+  and the action already links a run's output files and datasets. Return those
+  by default; put any post behind a request flag that defaults to off and
+  declare it `"optional": True`.
 - Every request-body field needs `Field(..., title="...", description="...")`.
   `title` is the form label (human words, not snake_case); `description` is
   the help text (what it is, units, range). The OpenAPI schema *is* the
