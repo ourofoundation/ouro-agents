@@ -20,9 +20,11 @@ memory files, and working notes that change every tick do not need commits.
 
 1. Start with `git status --short --branch`. Do not discard changes you did not
    make.
-2. Branch from local `main`, not from whatever branch you are on:
-   `git switch -c <type>/<short-purpose> main`. If uncommitted files block the
-   switch, commit on the current branch instead and say so in the message.
+2. Your checkout is your live configuration, so never switch it to a commit
+   that lacks your current work. If `git merge-base --is-ancestor HEAD main`
+   succeeds, branch from `main`: `git switch -c <type>/<short-purpose> main`.
+   Otherwise stay where you are and commit on the current branch; a controller
+   lands it.
 3. Make the smallest coherent change, then check `git diff --check` and
    `git diff --stat`.
 4. Stage named files only (`git add path/to/file ...`), review

@@ -21,10 +21,12 @@ tick do not need a branch or PR; leave them for the framework.
 
 1. Start with `git status --short --branch`. Read `git diff` and do not discard
    changes you did not make.
-2. Branch from the up-to-date default branch, not from whatever branch you are
-   on: `git fetch origin` then
-   `git switch -c <type>/<short-purpose> origin/main`. Never work directly on
-   `main`.
+2. Your checkout is your live configuration, so never switch it to a commit
+   that lacks your current work. Run `git fetch origin`; if
+   `git merge-base --is-ancestor HEAD origin/main` succeeds, branch with
+   `git switch -c <type>/<short-purpose> origin/main`. Otherwise your current
+   branch is still in review: commit on it (or a branch from it) and add to its
+   PR instead of starting a new base. Never work directly on `main`.
 3. Make the smallest coherent change. Keep scratch work under `scratch/`, which
    is ignored; move only durable code, identity, skills, or curated memory into
    tracked paths.
