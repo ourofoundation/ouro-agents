@@ -284,7 +284,10 @@ class TestBuildEventRunContext(unittest.TestCase):
 
         self.assertEqual(event_run.prefetch.asset_ids, ["asset-123"])
         self.assertEqual(event_run.prefetch.comment_parent_ids, ["asset-123"])
-        self.assertEqual(event_run.prefetch.thread_comment_parent_ids, [])
+        # Replies already under the triggering comment are loaded too.
+        self.assertEqual(
+            event_run.prefetch.thread_comment_parent_ids, ["comment-456"]
+        )
         self.assertEqual(event_run.prefetch.focus_comment_id, "comment-456")
         self.assertEqual(event_run.prefetch.focus_comment_author, "alice")
         self.assertEqual(event_run.prefetch.focus_comment_text, "What do you think?")
@@ -409,7 +412,9 @@ class TestBuildEventRunContext(unittest.TestCase):
         self.assertEqual(event_run.root_asset_id, "thread-123")
         self.assertEqual(event_run.root_asset_type, "comment")
         self.assertEqual(event_run.thread_parent_id, "thread-123")
-        self.assertEqual(event_run.prefetch.thread_comment_parent_ids, [])
+        self.assertEqual(
+            event_run.prefetch.thread_comment_parent_ids, ["comment-789"]
+        )
         self.assertNotIn("mentioned-user-1", event_run.prefetch.asset_ids)
 
     def test_comment_task_includes_no_action_guidance(self):

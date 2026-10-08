@@ -545,6 +545,10 @@ class NotificationInboxConfig(BaseModel):
     max_threads: int = Field(default=15, ge=1)
     max_fetch: int = Field(default=100, ge=1, le=200)
     snippet_chars: int = Field(default=150, ge=20)
+    # Show the live comment thread (own replies flagged) under each digest item.
+    thread_context: bool = True
+    context_comments: int = Field(default=8, ge=2)
+    context_chars: int = Field(default=400, ge=40)
     # Backend notification categories included in the digest.
     categories: List[str] = Field(
         default_factory=_default_notification_inbox_categories

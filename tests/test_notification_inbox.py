@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -20,8 +21,10 @@ from ouro_agents.notification_inbox import (
     expire_stale,
     fetch_unread,
     group_threads,
+    mark_replied_notifications_read,
     render_inbox,
     thread_key_for,
+    wrap_write_comment_with_mark_read,
 )
 
 
@@ -288,6 +291,261 @@ class TestNotificationInbox(unittest.TestCase):
         self.assertIsNone(inbox.section)
         self.assertEqual(inbox.notification_ids, [])
         self.assertEqual(inbox.thread_count, 0)
+
+
+def _comment_notif(
+    *,
+    nid: str,
+    comment_id: str,
+    parent_id: str,
+    parent_type: str = "quest",
+    created_at: datetime,
+    notif_type: str = "mention",
+    username: str = "catastropiyush",
+) -> Notification:
+    """A comment-raised notification shaped the way the backend writes it."""
+    return Notification.model_validate(
+        {
+            "id": _uid(nid),
+            "type": notif_type,
+            "viewed": False,
+            "created_at": created_at,
+            "asset_id": comment_id,
+            "parent_asset_id": parent_id,
+            "content": {
+                "text": "mentioned you",
+                "asset": {"assetType": "comment", "assetId": comment_id},
+                "parent": {"assetType": parent_type, "assetId": parent_id},
+            },
+            "source_user": {
+                "user_id": _uid(username),
+                "username": username,
+                "actor_type": "human",
+            },
+        }
+    )
+
+
+def _comment(*, cid: str, username: str, text: str, created_at: datetime):
+    comment = MagicMock()
+    comment.id = cid
+    comment.user_id = _uid(username)
+    comment.user.username = username
+    comment.text = text
+    comment.created_at = created_at
+    return comment
+
+
+class TestInboxThreadContext(unittest.TestCase):
+    NOW = datetime(2026, 10, 8, 17, 0, tzinfo=timezone.utc)
+    ASK = _uid("ask-comment")
+    QUEST = _uid("quest")
+
+    def _ouro(self, replies):
+        ouro = MagicMock()
+        ouro.notifications.list.return_value = Page[Notification](
+            data=[
+                _comment_notif(
+                    nid="n1",
+                    comment_id=self.ASK,
+                    parent_id=self.QUEST,
+                    created_at=self.NOW - timedelta(hours=2),
+                )
+            ]
+        )
+        ouro.comments.retrieve.return_value = _comment(
+            cid=self.ASK,
+            username="catastropiyush",
+            text="@hermes any new updates here?",
+            created_at=self.NOW - timedelta(hours=2),
+        )
+        ouro.comments.list.return_value = replies
+        return ouro
+
+    def test_own_later_reply_is_flagged_as_already_answered(self):
+        ouro = self._ouro(
+            [
+                _comment(
+                    cid=_uid("first-reply"),
+                    username="hermes",
+                    text="Nothing new since Sep 23; compute is paused.",
+                    created_at=self.NOW - timedelta(hours=1),
+                )
+            ]
+        )
+        inbox = build_notification_inbox(
+            ouro, NotificationInboxConfig(), now=self.NOW, own_user_id=_uid("hermes")
+        )
+        assert inbox.section is not None
+        ouro.comments.list.assert_called_once_with(self.ASK, limit=50)
+        self.assertIn("@hermes any new updates here?", inbox.section)
+        self.assertIn("[notified you]", inbox.section)
+        self.assertIn("@hermes (you), 1h ago", inbox.section)
+        self.assertIn("ALREADY ANSWERED: you commented", inbox.section)
+
+    def test_unanswered_thread_is_not_flagged(self):
+        ouro = self._ouro(
+            [
+                _comment(
+                    cid=_uid("other-reply"),
+                    username="apollo",
+                    text="Curious too.",
+                    created_at=self.NOW - timedelta(hours=1),
+                )
+            ]
+        )
+        inbox = build_notification_inbox(
+            ouro, NotificationInboxConfig(), now=self.NOW, own_user_id=_uid("hermes")
+        )
+        assert inbox.section is not None
+        self.assertIn("Curious too.", inbox.section)
+        self.assertNotIn("ALREADY ANSWERED: you commented", inbox.section)
+        self.assertNotIn("(you)", inbox.section)
+
+    def test_own_reply_older_than_notification_is_not_an_answer(self):
+        ouro = self._ouro(
+            [
+                _comment(
+                    cid=_uid("old-reply"),
+                    username="hermes",
+                    text="Earlier note.",
+                    created_at=self.NOW - timedelta(hours=5),
+                )
+            ]
+        )
+        inbox = build_notification_inbox(
+            ouro, NotificationInboxConfig(), now=self.NOW, own_user_id=_uid("hermes")
+        )
+        assert inbox.section is not None
+        self.assertIn("(you)", inbox.section)
+        self.assertNotIn("ALREADY ANSWERED: you commented", inbox.section)
+
+    def test_reply_notification_loads_the_parent_comment_thread(self):
+        thread_head = _uid("thread-head")
+        ouro = self._ouro([])
+        ouro.notifications.list.return_value = Page[Notification](
+            data=[
+                _comment_notif(
+                    nid="n2",
+                    comment_id=_uid("sibling-reply"),
+                    parent_id=thread_head,
+                    parent_type="comment",
+                    created_at=self.NOW - timedelta(hours=1),
+                    notif_type="reply",
+                )
+            ]
+        )
+        build_notification_inbox(ouro, NotificationInboxConfig(), now=self.NOW)
+        ouro.comments.list.assert_called_once_with(thread_head, limit=50)
+
+    def test_context_failure_keeps_the_notification(self):
+        ouro = self._ouro([])
+        ouro.comments.list.side_effect = RuntimeError("boom")
+        inbox = build_notification_inbox(ouro, NotificationInboxConfig(), now=self.NOW)
+        assert inbox.section is not None
+        self.assertIn(_uid("n1"), inbox.section)
+        self.assertNotIn("Thread on comment", inbox.section)
+
+    def test_thread_context_can_be_disabled(self):
+        ouro = self._ouro([])
+        build_notification_inbox(
+            ouro, NotificationInboxConfig(thread_context=False), now=self.NOW
+        )
+        ouro.comments.list.assert_not_called()
+
+
+class TestMarkReadOnReply(unittest.TestCase):
+    NOW = datetime(2026, 10, 8, 17, 0, tzinfo=timezone.utc)
+    ASK = _uid("ask-comment")
+    QUEST = _uid("quest")
+    THREAD = _uid("thread-head")
+
+    def _ouro(self):
+        ouro = MagicMock()
+        ouro.notifications.list.return_value = Page[Notification](
+            data=[
+                _comment_notif(
+                    nid="direct",
+                    comment_id=self.ASK,
+                    parent_id=self.QUEST,
+                    created_at=self.NOW,
+                ),
+                _comment_notif(
+                    nid="in-thread",
+                    comment_id=_uid("sibling-reply"),
+                    parent_id=self.THREAD,
+                    parent_type="comment",
+                    created_at=self.NOW,
+                    notif_type="reply",
+                ),
+                _comment_notif(
+                    nid="unrelated",
+                    comment_id=_uid("other-comment"),
+                    parent_id=self.QUEST,
+                    created_at=self.NOW,
+                ),
+            ]
+        )
+        return ouro
+
+    def _wrapped(self, ouro, result):
+        tool = MagicMock()
+        tool.forward = MagicMock(return_value=result)
+        wrap_write_comment_with_mark_read(
+            tool, get_ouro=lambda: ouro, get_config=NotificationInboxConfig
+        )
+        return tool
+
+    def test_reply_to_notifying_comment_marks_it_read(self):
+        ouro = self._ouro()
+        marked = mark_replied_notifications_read(
+            ouro, [self.ASK], NotificationInboxConfig()
+        )
+        self.assertEqual(marked, [_uid("direct")])
+        ouro.notifications.read.assert_called_once_with(_uid("direct"))
+
+    def test_reply_in_comment_thread_marks_sibling_notifications_read(self):
+        ouro = self._ouro()
+        marked = mark_replied_notifications_read(
+            ouro, [self.THREAD], NotificationInboxConfig()
+        )
+        self.assertEqual(marked, [_uid("in-thread")])
+
+    def test_top_level_comment_on_root_asset_clears_nothing(self):
+        ouro = self._ouro()
+        marked = mark_replied_notifications_read(
+            ouro, [self.QUEST], NotificationInboxConfig()
+        )
+        self.assertEqual(marked, [])
+        ouro.notifications.read.assert_not_called()
+
+    def test_wrapped_tool_marks_read_after_posting(self):
+        ouro = self._ouro()
+        result = json.dumps({"id": _uid("new-reply"), "parent_id": self.ASK})
+        tool = self._wrapped(ouro, result)
+        self.assertEqual(tool.forward(parent_id=self.ASK, content_markdown="hi"), result)
+        ouro.notifications.read.assert_called_once_with(_uid("direct"))
+
+    def test_wrapped_tool_follows_backend_reparenting(self):
+        ouro = self._ouro()
+        result = json.dumps({"id": _uid("new-reply"), "parent_id": self.THREAD})
+        tool = self._wrapped(ouro, result)
+        tool.forward({"parent_id": _uid("sibling-reply"), "content_markdown": "hi"})
+        ouro.notifications.read.assert_called_once_with(_uid("in-thread"))
+
+    def test_failed_comment_marks_nothing(self):
+        ouro = self._ouro()
+        tool = self._wrapped(ouro, "Error: attribution is required")
+        tool.forward(parent_id=self.ASK, content_markdown="hi")
+        ouro.notifications.list.assert_not_called()
+        ouro.notifications.read.assert_not_called()
+
+    def test_mark_read_failure_never_breaks_the_comment(self):
+        ouro = self._ouro()
+        ouro.notifications.list.side_effect = RuntimeError("boom")
+        result = json.dumps({"id": _uid("new-reply"), "parent_id": self.ASK})
+        tool = self._wrapped(ouro, result)
+        self.assertEqual(tool.forward(parent_id=self.ASK), result)
 
 
 class TestHeartbeatDeliveryGate(unittest.IsolatedAsyncioTestCase):

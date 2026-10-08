@@ -1247,7 +1247,9 @@ def _append_notification_inbox(
             return playbook, preload_tools
 
         inbox_cfg = agent.config.event_delivery.notification_inbox
-        notif_inbox = build_notification_inbox(ouro, inbox_cfg)
+        notif_inbox = build_notification_inbox(
+            ouro, inbox_cfg, own_user_id=getattr(agent, "own_user_id", None)
+        )
         if not notif_inbox.section:
             return playbook, preload_tools
 

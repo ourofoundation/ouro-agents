@@ -272,6 +272,10 @@ class CommentContext:
         thread_parent_id = self.thread_context_parent_id
         if thread_parent_id and thread_parent_id != "unknown":
             thread_comment_parent_ids.append(thread_parent_id)
+        elif self.source_asset_type == "comment" and self.source_id != "unknown":
+            # A top-level comment can already have replies under it, including
+            # an earlier answer of ours; load them so we don't answer twice.
+            thread_comment_parent_ids.append(self.source_id)
 
         return PrefetchSpec(
             asset_ids=asset_ids,

@@ -74,6 +74,7 @@ from .mcp_client import MCPConnection, streamable_http_transport
 from .mcp_http import ManagedMcpProcess, spawn_managed_mcp_http
 from .mcp_locking import McpServerLocks, wrap_mcp_tool_with_lock
 from .mcp_paths import wrap_mcp_tool_with_workspace_paths
+from .notification_inbox import wrap_write_comment_with_mark_read
 from .run_context import (
     ActiveRunRegistry,
     RunContext,
@@ -1726,6 +1727,12 @@ class OuroAgent:
                     mcp_tool, server_name=server.name, locks=self._mcp_locks
                 )
             qualified_name = f"{server.name}:{mcp_tool.name}"
+            if qualified_name == "ouro:write_comment":
+                wrap_write_comment_with_mark_read(
+                    mcp_tool,
+                    get_ouro=self._get_ouro_client,
+                    get_config=lambda: self.config.event_delivery.notification_inbox,
+                )
             self._deferred_tools[qualified_name] = mcp_tool
             self._deferred_index.append(
                 {
