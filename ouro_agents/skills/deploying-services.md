@@ -62,6 +62,14 @@ Ouro integration requirements (non-negotiable):
   `ouro-webhook-token` for async).
 - Declare inputs/outputs with `@ouro_field("x-ouro-input-assets", ...)` and
   `@ouro_field("x-ouro-output-assets", ...)` so routes can wire assets through.
+- When a response returns a list of records (a curve, a ranking), declare
+  `@ouro_field("x-ouro-response-charts", [{"data": "<list key>", "title": ...,
+  "config": {...}}])` so Ouro charts every run from the JSON. `config` is a
+  dataset view chart config keyed by the records' own keys; set `"dataset"` to
+  a dataset output key and the chart also becomes that dataset's view. Keep the
+  list inline, and if a dataset copy is useful, put it under its own key behind
+  an `include_dataset` flag that defaults to off. See
+  https://ouro.foundation/docs/concepts/routes#charts-on-a-run.
 - Don't write a post on every run. A public post is announced in the team feed,
   and the action already links a run's output files and datasets. Return those
   by default; put any post behind a request flag that defaults to off and
