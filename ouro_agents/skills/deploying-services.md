@@ -68,12 +68,16 @@ Ouro integration requirements (non-negotiable):
   dataset view chart config keyed by the records' own keys; set `"dataset"` to
   a dataset output key and the chart also becomes that dataset's view. Keep the
   list inline, and if a dataset copy is useful, put it under its own key behind
-  an `include_dataset` flag that defaults to off. See
+  an `include_dataset` flag that defaults to off, declared
+  `{"asset_type": "dataset", "when": {"include_dataset": True}}`. See
   https://ouro.foundation/docs/concepts/routes#charts-on-a-run.
 - Don't write a post on every run. A public post is announced in the team feed,
   and the action already links a run's output files and datasets. Return those
   by default; put any post behind a request flag that defaults to off and
-  declare it `"optional": True`.
+  declare it `"when": {"include_report": True}`.
+- Any output a request field switches on gets `when: {field: value}` so the run
+  form and agents know what a run will save. `"optional": True` only means the
+  results may not produce it (e.g. no structures found).
 - Every request-body field needs `Field(..., title="...", description="...")`.
   `title` is the form label (human words, not snake_case); `description` is
   the help text (what it is, units, range). The OpenAPI schema *is* the
