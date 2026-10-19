@@ -78,6 +78,12 @@ Ouro integration requirements (non-negotiable):
 - Any output a request field switches on gets `when: {field: value}` so the run
   form and agents know what a run will save. `"optional": True` only means the
   results may not produce it (e.g. no structures found).
+- Give an output `"role"` when the default is wrong. Outputs of a run with an
+  input are `result`s of it (phonons, a phase diagram). Use `"version"` for the
+  input improved (a relaxed or symmetrized CIF), `"supporting"` for
+  intermediate or raw files (a trajectory, a supercell, logs), `"new"` for a
+  standalone asset (a generated structure). Lists fold versions, results and
+  supporting files under their source.
 - Every request-body field needs `Field(..., title="...", description="...")`.
   `title` is the form label (human words, not snake_case); `description` is
   the help text (what it is, units, range). The OpenAPI schema *is* the
