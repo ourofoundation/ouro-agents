@@ -98,7 +98,6 @@ AUTONOMOUS_ACTION_PRELOADS = list(AUTONOMOUS_ACTION)
 CHAT_EXCLUDED_TOOLS = [
     "ouro:list_conversations",
     "ouro:get_conversation",
-    "ouro:get_conversations",
     "ouro:create_conversation",
     "ouro:send_message",
     "ouro:list_messages",

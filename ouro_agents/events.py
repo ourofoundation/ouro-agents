@@ -308,10 +308,10 @@ def _default_comment_task(
     context_hint = (
         "The full post content, all top-level comments, and the "
         "current thread are provided below as pre-loaded context — "
-        "no need to call get_asset or get_comments."
+        "no need to call get_asset or list_comments."
         if ctx.is_thread_reply
         else "The full post content and all comments are provided below "
-        "as pre-loaded context — no need to call get_asset or get_comments."
+        "as pre-loaded context — no need to call get_asset or list_comments."
     )
 
     if ctx.comment_text.strip():

@@ -43,7 +43,7 @@ def _seed(workspace):
             RunStepRecord(
                 step_number=1,
                 step_type="action",
-                tool_calls=[{"name": "get_teams", "args": {}}],
+                tool_calls=[{"name": "list_teams", "args": {}}],
                 observations="team-alpha",
             )
         ]
@@ -83,7 +83,7 @@ def test_runs_show_by_prefix(tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "What teams am I on?" in result.output
-    assert "get_teams" in result.output
+    assert "list_teams" in result.output
 
 
 def test_runs_stats(tmp_path):

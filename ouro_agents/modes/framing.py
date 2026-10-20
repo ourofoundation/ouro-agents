@@ -281,7 +281,7 @@ PLAN_OUTPUT = (
     "## OUTPUT FORMAT\n"
     "Create or update your plan quest, then end the turn with a final message "
     "containing the required structured JSON and no tool calls. "
-    "Read-only tools (`search_assets`, `get_asset`, `get_comments`, `list_quest_items`) "
+    "Read-only tools (`search_assets`, `get_asset`, `list_comments`, `list_quest_items`) "
     "may be used for targeted inspection before writing. "
     "In planning runs, the only write tool is `create_quest`.\n\n"
     f"{EXTENDED_MARKDOWN_INSTRUCTIONS}"

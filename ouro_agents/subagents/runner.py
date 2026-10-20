@@ -508,13 +508,13 @@ def _format_task_context(
                 "`team_id` that best fit each artifact from the platform context above. "
                 "You may publish different outputs to different teams in the same run when appropriate. "
                 "If a team is marked `agent cannot create`, do not use it for API creates — pick another team "
-                "or call `get_teams` / `get_organizations` to refresh. "
+                "or call `list_teams` / `list_organizations` to refresh. "
                 "Default visibility: public unless the user or task requires otherwise."
             )
         else:
             parts.append(
                 "## Ouro asset placement\n"
-                "Platform context cache was empty. Call `get_teams` / `get_organizations` via `load_tool` "
+                "Platform context cache was empty. Call `list_teams` / `list_organizations` via `load_tool` "
                 "to choose `org_id` and `team_id`. If you need an org id before loading teams, use the "
                 f"global organization id `{GLOBAL_ORG_UUID}`. "
                 "Default visibility: public unless the user or task requires otherwise."

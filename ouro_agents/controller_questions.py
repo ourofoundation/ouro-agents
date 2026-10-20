@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from ouro.resources.conversations import Messages
-from ouro_mcp.utils import content_from_markdown
+from ouro_mcp.markdown_input import content_from_markdown
 from smolagents import tool
 
 from .cancellation import RunCancellationToken, RunCancelled

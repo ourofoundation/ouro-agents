@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Optional
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from ouro.resources.conversations import Messages
-from ouro_mcp.utils import content_from_markdown
+from ouro_mcp.markdown_input import content_from_markdown
 from pydantic import BaseModel
 
 from .agent import OuroAgent

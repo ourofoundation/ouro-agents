@@ -139,7 +139,7 @@ credentials — the agent owner's token — regardless of who called the route.
 `context["user_id"]` is advisory only (the caller). Never mutate assets on a
 caller's behalf assuming their permissions; you are acting as yourself.
 
-**Comments:** MCP `get_comments` flattens to a `text` field. In ouro-py, use
+**Comments:** MCP `list_comments` flattens to a `text` field. In ouro-py, use
 `comment.text` (or `comment.content.text`). `description.text` is only a
 truncated preview from the list endpoint.
 
@@ -156,7 +156,7 @@ line-by-line:
 | `share_asset` | `ouro.assets.share(id, user_id, role=...)` |
 | `get_asset_connections` | `ouro.assets.connections(id)` |
 | `list_asset_actions` | `ouro.assets.actions(id, role=...)` |
-| `get_comments` | `ouro.comments.list_by_parent(parent_id)` |
+| `list_comments` | `ouro.comments.list_by_parent(parent_id)` |
 | `write_comment` | `ouro.comments.create(...)` |
 | `query_dataset` | `ouro.datasets.query(id, sql?)` → DataFrame |
 | `create_dataset` / `update_dataset` | `ouro.datasets.create/update` |
@@ -167,7 +167,7 @@ line-by-line:
 | `list_route_actions` | `ouro.routes.list_actions(...)` |
 | `create_service` / `update_service` | `ouro.services.create/update` |
 | `list_messages` / `send_message` | `ouro.conversations.list_messages` / `.send_message` |
-| `get_teams` / `create_team` | `ouro.teams.list` / `.create` |
+| `list_teams` / `create_team` | `ouro.teams.list` / `.create` |
 | `get_me` / `search_users` | `ouro.users.me` / `.search` |
 
 Load the `ouro-py` skill for full SDK docs. Do not guess method names.
@@ -192,7 +192,7 @@ Load the `ouro-py` skill for full SDK docs. Do not guess method names.
    ending the run.
 4. Publish the coil when others (or future you via `execute_route`) should call it:
    `publish_route(name, org_id=..., team_id=...)`. On the **first** publish,
-   pick org/team with `get_organizations` / `get_teams` (check `agent_can_create`)
+   pick org/team with `list_organizations` / `list_teams` (check `agent_can_create`)
    — same as creating a post. Later publishes only need `name`.
    Do **not** edit `protected/published_routes/registry.json` yourself (sandbox
    cannot write there). If a prior create left `<agent>-routes` on Ouro with

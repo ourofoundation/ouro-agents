@@ -160,7 +160,7 @@ def format_platform_context_for_prompt(workspace: Path) -> str:
     if not parts:
         return ""
     parts.append(
-        "\nUse these IDs directly — no need to call get_organizations or get_teams "
+        "\nUse these IDs directly — no need to call list_organizations or list_teams "
         "unless you need to discover new teams or refresh membership info."
     )
     return "\n".join(parts)

@@ -61,7 +61,7 @@ def test_comment_keeps_registry_preloads():
         root_asset_type="post",
         data={"text": "looks good"},
     )
-    assert names == ("ouro:get_asset", "ouro:write_comment", "ouro:get_comments")
+    assert names == ("ouro:get_asset", "ouro:write_comment", "ouro:list_comments")
 
 
 def test_quest_comment_uses_manage_set():

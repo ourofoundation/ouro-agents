@@ -86,7 +86,7 @@ class TestFetchAssetContent(unittest.TestCase):
 
 class TestResolvePrefetchComments(unittest.TestCase):
     def test_marks_focused_top_level_comment_without_reordering(self):
-        def get_comments(**kwargs):
+        def list_comments(**kwargs):
             self.assertEqual(kwargs, {"parent_id": "post-1"})
             return {
                 "results": [
@@ -109,7 +109,7 @@ class TestResolvePrefetchComments(unittest.TestCase):
             }
 
         result = resolve_prefetch(
-            {"ouro:get_comments": get_comments},
+            {"ouro:list_comments": list_comments},
             PrefetchSpec(
                 comment_parent_ids=["post-1"],
                 focus_comment_id="comment-2",
@@ -126,7 +126,7 @@ class TestResolvePrefetchComments(unittest.TestCase):
         self.assertIn("<untrusted-evidence>", result)
 
     def test_includes_thread_parent_before_ordered_replies(self):
-        def get_comments(**kwargs):
+        def list_comments(**kwargs):
             self.assertEqual(kwargs, {"parent_id": "thread-1"})
             return {
                 "parent": {
@@ -150,7 +150,7 @@ class TestResolvePrefetchComments(unittest.TestCase):
             }
 
         result = resolve_prefetch(
-            {"ouro:get_comments": get_comments},
+            {"ouro:list_comments": list_comments},
             PrefetchSpec(
                 thread_comment_parent_ids=["thread-1"],
                 focus_comment_id="reply-2",
@@ -170,3 +170,49 @@ class TestResolvePrefetchComments(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestParseCommentsMarkdown(unittest.TestCase):
+    """The layout ouro-mcp's list_comments returns (0.27.1 and later)."""
+
+    def test_reply_thread_with_parent_comment(self):
+        from ouro_agents.artifacts import _parse_get_comments_markdown
+
+        raw = (
+            "**Replies to @alice** — id: `c-1`\n"
+            "  What do you think of the Fe2B result?\n"
+            "\n"
+            "Found 2 comments\n"
+            "\n"
+            "- **@bob** — id: `c-2` — 2026-10-20 16:46 UTC\n"
+            "  Looks right to me.\n"
+            "- **@carol** — id: `c-3` — 2026-10-20 17:01 UTC — replies: 1\n"
+            "  Agreed."
+        )
+
+        data = _parse_get_comments_markdown(raw)
+
+        self.assertEqual(data["parent"]["id"], "c-1")
+        self.assertEqual(data["parent"]["username"], "alice")
+        self.assertEqual(data["parent"]["text"], "What do you think of the Fe2B result?")
+        self.assertEqual([c["id"] for c in data["results"]], ["c-2", "c-3"])
+        self.assertEqual(data["results"][0]["created_at"], "2026-10-20 16:46 UTC")
+        self.assertEqual(data["results"][1]["reply_count"], 1)
+        self.assertEqual(data["results"][1]["text"], "Agreed.")
+
+    def test_comments_on_a_post(self):
+        from ouro_agents.artifacts import _parse_get_comments_markdown
+
+        raw = (
+            "**Comments on Fe2B screening** (post) — id: `p-1` — by @dana\n"
+            "\n"
+            "Found 1 comment\n"
+            "\n"
+            "- **@bob** — id: `c-2` — 2026-10-20 16:46 UTC\n"
+            "  Nice."
+        )
+
+        data = _parse_get_comments_markdown(raw)
+
+        self.assertEqual(data["parent"]["username"], "dana")
+        self.assertEqual([c["text"] for c in data["results"]], ["Nice."])

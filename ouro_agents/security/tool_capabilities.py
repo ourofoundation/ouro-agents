@@ -7,8 +7,9 @@ from .policy import Capability
 
 OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     # Organization / team discovery
-    "ouro:get_organizations": Capability.READ_PLATFORM,
-    "ouro:get_teams": Capability.READ_PLATFORM,
+    "ouro:list_organizations": Capability.READ_PLATFORM,
+    "ouro:list_teams": Capability.READ_PLATFORM,
+    "ouro:get_team": Capability.READ_PLATFORM,
     "ouro:get_team_feed": Capability.READ_PLATFORM,
     "ouro:create_team": Capability.UPDATE_ASSET,
     "ouro:update_team": Capability.UPDATE_ASSET,
@@ -30,6 +31,7 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:create_post": Capability.CREATE_ASSET,
     "ouro:update_post": Capability.UPDATE_ASSET,
     "ouro:create_file": Capability.CREATE_ASSET,
+    "ouro:create_upload_url": Capability.CREATE_ASSET,
     "ouro:update_file": Capability.UPDATE_ASSET,
     "ouro:query_dataset": Capability.READ_PLATFORM,
     "ouro:create_dataset": Capability.CREATE_ASSET,
@@ -51,12 +53,12 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:list_quest_entries": Capability.READ_PLATFORM,
     "ouro:list_quest_leaderboard": Capability.READ_PLATFORM,
     "ouro:review_quest_entry": Capability.MANAGE_QUEST,
+    "ouro:evaluate_quest_entry": Capability.MANAGE_QUEST,
     # Comments / conversations
-    "ouro:get_comments": Capability.READ_PLATFORM,
+    "ouro:list_comments": Capability.READ_PLATFORM,
     "ouro:write_comment": Capability.REPLY,
     "ouro:list_conversations": Capability.READ_PLATFORM,
     "ouro:get_conversation": Capability.READ_PLATFORM,
-    "ouro:get_conversations": Capability.READ_PLATFORM,
     "ouro:create_conversation": Capability.SEND_MESSAGE,
     "ouro:send_message": Capability.SEND_MESSAGE,
     "ouro:list_messages": Capability.READ_PLATFORM,
@@ -69,18 +71,19 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:execute_route": Capability.EXECUTE_ROUTE,
     "ouro:get_action": Capability.READ_PLATFORM,
     "ouro:list_route_actions": Capability.READ_PLATFORM,
+    "ouro:list_my_actions": Capability.READ_PLATFORM,
     "ouro:get_action_logs": Capability.READ_PLATFORM,
     # Money
     "ouro:get_balance": Capability.READ_PLATFORM,
-    "ouro:get_transactions": Capability.READ_PLATFORM,
+    "ouro:list_transactions": Capability.READ_PLATFORM,
     "ouro:get_deposit_address": Capability.READ_PLATFORM,
-    "ouro:get_usage_history": Capability.READ_PLATFORM,
+    "ouro:list_usage": Capability.READ_PLATFORM,
     "ouro:get_pending_earnings": Capability.READ_PLATFORM,
     "ouro:add_funds": Capability.EXECUTE_ROUTE,
     "ouro:unlock_asset": Capability.EXECUTE_ROUTE,
     "ouro:send_money": Capability.EXECUTE_ROUTE,
     # Notifications
-    "ouro:get_notifications": Capability.READ_PLATFORM,
+    "ouro:list_notifications": Capability.READ_PLATFORM,
     "ouro:read_notification": Capability.UPDATE_ASSET,
 }
 

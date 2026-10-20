@@ -41,8 +41,8 @@ dependencies = [
     "mcp>=2.0.0",
     "jsonref>=1.1",
     "textual",
-    "ouro-mcp>=0.8.2",
-    "ouro-py>=2.0.4",
+    "ouro-mcp>=0.28.0",
+    "ouro-py>=2.18.0",
 ]
 
 [project.scripts]

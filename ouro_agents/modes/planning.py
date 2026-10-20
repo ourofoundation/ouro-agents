@@ -697,7 +697,7 @@ You are entering a planning phase.{goal_section}
 Your previous plan's outcome, recent quests, outcome evidence, standing
 planning guidance, recent activity, and work-direction memory are included
 below. You may also use read-only tools (search_assets, get_asset,
-get_comments, list_quest_items) to inspect specific assets or threads before
+list_comments, list_quest_items) to inspect specific assets or threads before
 scoping items — but keep inspection brief and targeted; most of what you need
 is already here. Then create a plan for the upcoming period — or decline to
 plan when that is the better call.

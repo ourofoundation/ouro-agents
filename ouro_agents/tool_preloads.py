@@ -42,7 +42,7 @@ AUTONOMOUS_ACTION: tuple[str, ...] = (
 HEARTBEAT_DEFAULT: tuple[str, ...] = (
     "ouro:search_assets",
     GET_ASSET,
-    "ouro:get_comments",
+    "ouro:list_comments",
     "ouro:get_action",
     "ouro:write_comment",
     "ouro:create_post",
@@ -61,7 +61,7 @@ HEARTBEAT_INBOX: tuple[str, ...] = (
 
 HEARTBEAT_NOTIFICATIONS: tuple[str, ...] = (
     GET_ASSET,
-    "ouro:get_comments",
+    "ouro:list_comments",
     "ouro:write_comment",
     "ouro:read_notification",
 )
@@ -69,7 +69,7 @@ HEARTBEAT_NOTIFICATIONS: tuple[str, ...] = (
 PLANNING: tuple[str, ...] = (
     "ouro:search_assets",
     GET_ASSET,
-    "ouro:get_comments",
+    "ouro:list_comments",
     "ouro:create_quest",
     "ouro:create_quest_items",
     "ouro:update_quest",
@@ -79,7 +79,7 @@ PLANNING: tuple[str, ...] = (
 
 QUEST_COMMENT: tuple[str, ...] = (
     GET_ASSET,
-    "ouro:get_comments",
+    "ouro:list_comments",
     "ouro:write_comment",
     "ouro:update_quest",
     "ouro:list_quest_items",

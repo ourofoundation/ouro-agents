@@ -17,11 +17,11 @@ _NOISY_REFLECTION_TOOLS = {
     "search:web_search_exa",
     "search:web_fetch_exa",
     "ouro:get_asset",
-    "ouro:get_comments",
+    "ouro:list_comments",
     "ouro:search_assets",
     "ouro:get_team_feed",
-    "ouro:get_organizations",
-    "ouro:get_teams",
+    "ouro:list_organizations",
+    "ouro:list_teams",
     "ouro:get_team",
 }
 

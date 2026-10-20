@@ -322,13 +322,39 @@ def fetch_asset_content(
     return "\n\n".join(parts)
 
 
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+# The first-page line naming what the comments are on (ouro-mcp >= 0.27.1):
+#   **Replies to @alice** — id: `uuid`            (the parent is a comment)
+#   **Comments on <name>** (post) — id: `uuid` — by @alice
+_PARENT_LINE_RE = re.compile(r"\*\*(Replies to @?(?P<author>[^*]+)|Comments on [^*]*)\*\*")
+
+
+def _parse_parent_line(line: str) -> dict[str, Any] | None:
+    match = _PARENT_LINE_RE.match(line)
+    if not match:
+        return None
+    id_match = re.search(r"id:\s*`([^`]+)`", line)
+    by_match = re.search(r"by @(\S+)", line)
+    author = (match.group("author") or (by_match.group(1) if by_match else "unknown")).strip()
+    return {
+        "author": author,
+        "id": id_match.group(1) if id_match else "",
+        "created_at": "",
+        "reply_count": 0,
+        "text": "",
+        "username": author,
+    }
+
+
 def _parse_comment_bullet(line: str) -> dict[str, Any] | None:
-    """Parse one markdown comment bullet from ``get_comments``.
+    """Parse one markdown comment bullet from ``list_comments``.
 
     Expected shape::
 
-        - **@author** — id: `uuid` — 2026-07-01T12:00:00+00:00 — replies: 2
+        - **@author** — id: `uuid` — 2026-07-01 12:00 UTC — replies: 2
           comment text…
+
+    Times were ISO (``2026-07-01T12:00:00+00:00``) before ouro-mcp 0.27.1.
     """
     if not line.startswith("- "):
         return None
@@ -346,9 +372,7 @@ def _parse_comment_bullet(line: str) -> dict[str, Any] | None:
             continue
         if part.startswith("(") and part.endswith(")"):
             continue
-        if "T" in part and (
-            part.endswith("Z") or "+" in part or part.count("-") >= 2
-        ):
+        if _TIMESTAMP_RE.match(part):
             created = part
             break
     return {
@@ -362,7 +386,7 @@ def _parse_comment_bullet(line: str) -> dict[str, Any] | None:
 
 
 def _parse_get_comments_markdown(raw: str) -> dict[str, Any]:
-    """Parse markdown ``get_comments`` output into ``{results, parent?}``."""
+    """Parse markdown ``list_comments`` output into ``{results, parent?}``."""
     lines = raw.splitlines()
     parent: dict[str, Any] | None = None
     results: list[dict[str, Any]] = []
@@ -385,6 +409,16 @@ def _parse_get_comments_markdown(raw: str) -> dict[str, Any]:
         pending_body = []
 
     for line in lines:
+        parent_line = _parse_parent_line(line)
+        if parent_line is not None:
+            flush()
+            section = "parent"
+            pending_bullet = parent_line
+            continue
+        if line.startswith("Found ") or line.startswith("No comments"):
+            flush()
+            section = "comments"
+            continue
         if line.startswith("## Parent"):
             flush()
             section = "parent"
@@ -415,7 +449,7 @@ def _parse_get_comments_markdown(raw: str) -> dict[str, Any]:
 
 
 def _load_get_comments_payload(raw: Any) -> dict[str, Any]:
-    """Accept JSON (legacy) or markdown (current) ``get_comments`` output."""
+    """Accept JSON (legacy) or markdown (current) ``list_comments`` output."""
     if isinstance(raw, dict):
         return raw
     if not isinstance(raw, str):
@@ -442,9 +476,9 @@ def _fetch_comment_thread(
     if not parent_ids:
         return ""
 
-    get_comments = deferred_tools.get("ouro:get_comments")
-    if not get_comments:
-        logger.warning("Cannot fetch comments: ouro:get_comments not available")
+    list_comments = deferred_tools.get("ouro:list_comments")
+    if not list_comments:
+        logger.warning("Cannot fetch comments: ouro:list_comments not available")
         return ""
 
     parts: list[str] = []
@@ -453,7 +487,7 @@ def _fetch_comment_thread(
 
     for parent_id in parent_ids:
         try:
-            raw = get_comments(parent_id=parent_id)
+            raw = list_comments(parent_id=parent_id)
             data = _load_get_comments_payload(raw)
         except Exception as e:
             logger.warning("Failed to fetch comments for %s: %s", parent_id, e)

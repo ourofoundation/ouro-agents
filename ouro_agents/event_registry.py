@@ -85,7 +85,7 @@ def _is_top_level_asset_comment(event: "EventRunContext") -> bool:
 _COMMENT_TOOL_PRELOADS: tuple[str, ...] = (
     "ouro:get_asset",
     "ouro:write_comment",
-    "ouro:get_comments",
+    "ouro:list_comments",
 )
 
 

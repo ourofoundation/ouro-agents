@@ -94,7 +94,7 @@ def test_write_round_trips_full_record(tmp_path):
                 step_number=1,
                 step_type="action",
                 model_output="Looking it up",
-                tool_calls=[{"name": "get_teams", "args": {}}],
+                tool_calls=[{"name": "list_teams", "args": {}}],
                 observations="team-1",
             ),
         ]
@@ -124,7 +124,7 @@ def test_write_round_trips_full_record(tmp_path):
     action = conn.execute(
         "SELECT * FROM run_steps WHERE run_id=? AND step_type='action'", ("run-1",)
     ).fetchone()
-    assert json.loads(action["tool_calls_json"]) == [{"name": "get_teams", "args": {}}]
+    assert json.loads(action["tool_calls_json"]) == [{"name": "list_teams", "args": {}}]
     assert action["observations"] == "team-1"
     conn.close()
     store.close()

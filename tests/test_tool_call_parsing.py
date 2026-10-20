@@ -220,13 +220,13 @@ class TestToolCallParsing(unittest.TestCase):
             Sure, using the requested tool now.
 
             ```json
-            {"function": {"name": "get_comments", "arguments": {"parent_id": "abc-123"}}}
+            {"function": {"name": "list_comments", "arguments": {"parent_id": "abc-123"}}}
             ```
             """
         )
 
         self.assertIsNotNone(tool_calls)
-        self.assertEqual(tool_calls[0].function.name, "get_comments")
+        self.assertEqual(tool_calls[0].function.name, "list_comments")
         self.assertEqual(tool_calls[0].function.arguments, {"parent_id": "abc-123"})
 
     def test_recovered_narrated_tool_call_scrubs_raw_content(self):

@@ -73,7 +73,7 @@ EVENT_REGISTRY = {
 ```
 
 Comment / mention preloads: `ouro:get_asset`, `ouro:write_comment`,
-`ouro:get_comments`. New events get a zero-config `EventSpec` by default.
+`ouro:list_comments`. New events get a zero-config `EventSpec` by default.
 
 Payload-dependent extras are composed in `ouro_agents/tool_preloads.py`
 (`preloads_for_event`): quest comments also preload quest-manage tools, and

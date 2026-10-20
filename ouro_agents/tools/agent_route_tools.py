@@ -238,7 +238,7 @@ def make_publish_route_tools(
             service on Ouro from the live OpenAPI spec.
 
             On the first publish (no service yet), pass org_id and team_id — pick
-            them with get_organizations / get_teams the same way you would for
+            them with list_organizations / list_teams the same way you would for
             create_post. Later publishes re-sync the existing service and ignore
             org/team.
 
@@ -354,7 +354,7 @@ def make_publish_route_tools(
                             _rollback_registry()
                             return (
                                 "Error: first publish requires org_id and team_id. "
-                                "Call get_organizations / get_teams, pick where this "
+                                "Call list_organizations / list_teams, pick where this "
                                 "service should live, then retry publish_route with "
                                 "those ids."
                             )

@@ -431,7 +431,7 @@ def render_inbox(
         "For each thread decide one of:",
         (
             "- **Handle**: read the thread shown under the item (open more with "
-            "`get_comments`/`get_asset` if needed), reply once with "
+            "`list_comments`/`get_asset` if needed), reply once with "
             "`write_comment`. Check the thread for a reply of yours first — an "
             "item marked ALREADY ANSWERED needs no second reply."
         ),
