@@ -99,6 +99,8 @@ CHAT_EXCLUDED_TOOLS = [
     "ouro:list_conversations",
     "ouro:get_conversation",
     "ouro:create_conversation",
+    "ouro:update_conversation",
+    "ouro:leave_conversation",
     "ouro:send_message",
     "ouro:list_messages",
 ]

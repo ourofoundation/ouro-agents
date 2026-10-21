@@ -14,6 +14,8 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:create_team": Capability.UPDATE_ASSET,
     "ouro:update_team": Capability.UPDATE_ASSET,
     "ouro:set_team_membership": Capability.UPDATE_ASSET,
+    "ouro:list_join_requests": Capability.READ_PLATFORM,
+    "ouro:review_join_request": Capability.UPDATE_ASSET,
     # Assets
     "ouro:get_asset": Capability.READ_PLATFORM,
     "ouro:search_assets": Capability.READ_PLATFORM,
@@ -27,6 +29,7 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     # Users
     "ouro:get_me": Capability.READ_PLATFORM,
     "ouro:search_users": Capability.READ_PLATFORM,
+    "ouro:get_user": Capability.READ_PLATFORM,
     # Posts / files / datasets
     "ouro:create_post": Capability.CREATE_ASSET,
     "ouro:update_post": Capability.UPDATE_ASSET,
@@ -60,6 +63,8 @@ OURO_TOOL_CAPABILITIES: dict[str, Capability] = {
     "ouro:list_conversations": Capability.READ_PLATFORM,
     "ouro:get_conversation": Capability.READ_PLATFORM,
     "ouro:create_conversation": Capability.SEND_MESSAGE,
+    "ouro:update_conversation": Capability.SEND_MESSAGE,
+    "ouro:leave_conversation": Capability.SEND_MESSAGE,
     "ouro:send_message": Capability.SEND_MESSAGE,
     "ouro:list_messages": Capability.READ_PLATFORM,
     # Services / routes
